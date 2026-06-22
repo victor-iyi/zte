@@ -1,0 +1,106 @@
+"""Centralised logging and progress-bar helpers.
+
+Console logging is routed through `rich` when available (pretty, coloured, single-line tracebacks) and falls back to the standard library otherwise. A
+single `get_logger` accessor is used everywhere so log formatting is consistent across the dataset, model, training and CLI layers.
+"""
+# pylint: disable=import-outside-toplevel
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+
+_STATE: dict[str, bool] = {'configured': False}
+_LOGGER_NAME: str = 'zte'
+
+
+def configure_logging(
+    level: int | str = logging.INFO,
+    log_file: str | Path | None = None,
+) -> None:
+    """Configures the root `zte` logger exactly once.
+
+    Args:
+        level (int | str): Logging level (e.g. `logging.INFO` or `'DEBUG'`).
+        log_file (str | Path | None): Optional path; when given, logs are also appended to this file with a verbose formatter.
+
+    """
+    logger = logging.getLogger(_LOGGER_NAME)
+    logger.setLevel(level)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    try:
+        from rich.logging import RichHandler
+
+        console_handler: logging.Handler = RichHandler(
+            rich_tracebacks=True, show_path=False, markup=True
+        )
+        console_handler.setFormatter(logging.Formatter('%(message)s', datefmt='[%X]'))
+    except ImportError:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(
+            logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s | %(message)s')
+        )
+    logger.addHandler(console_handler)
+
+    if log_file is not None:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler.setFormatter(
+            logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s:%(lineno)d | %(message)s')
+        )
+        logger.addHandler(file_handler)
+
+    _STATE['configured'] = True
+
+
+def get_logger(name: str | None = None) -> logging.Logger:
+    """Returns a namespaced child of the `zte` logger.
+
+    Args:
+        name (str | None): Optional dotted suffix (e.g. `'data.dataset'`). When omitted the root `zte` logger is returned.
+
+    Returns:
+        A configured `logging.Logger`.
+    """
+    if not _STATE['configured']:
+        configure_logging()
+    if name is None:
+        return logging.getLogger(_LOGGER_NAME)
+    return logging.getLogger(f'{_LOGGER_NAME}.{name}')
+
+
+def progress[_T](
+    iterable: Iterable[_T],
+    description: str = 'working',
+    total: int | None = None,
+    disable: bool = False,
+    unit: str = 'it',
+) -> Iterator[_T]:
+    """Wraps an iterable in a progress bar (`tqdm` if installed).
+
+    A single helper is used for every long-running loop in the package so the
+    progress UI is consistent. When `tqdm` is unavailable the iterable is
+    yielded unchanged, so callers never need to branch.
+
+    Args:
+        iterable (Iterable[_T]): The iterable to consume.
+        description (str): Text shown to the left of the bar.
+        total (int | None): Optional length hint when `iterable` has no `__len__`.
+        disable (bool): If `True`, suppress the bar entirely.
+        unit (str): Unit label for the rate display.
+
+    Yields:
+        Items from `iterable` unchanged.
+    """
+    if disable:
+        yield from iterable
+        return
+    try:
+        from tqdm.auto import tqdm
+
+        yield from tqdm(iterable, desc=description, total=total, unit=unit, leave=False)
+    except ImportError:
+        yield from iterable
