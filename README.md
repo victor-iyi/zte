@@ -101,7 +101,13 @@ artifacts = run_training(cfg, ds)      # logs, progress bars, checkpoints
 
 embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt', ds)
 embeddings, meta = embedder.embed(ds, level='word')            # (M, 768), aligned metadata
+
+# Embed brand-new EEG signals held in memory (no dataset needed):
+new_emb = embedder.embed_signals(band_power=my_array)          # (N, F*C) -> (N, 768)
 ```
+
+Embedding new EEG with a trained checkpoint -- both from new `.mat` files and from
+in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
 
 ---
 

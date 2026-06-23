@@ -1,8 +1,11 @@
 """Inference: turn a trained ZTE checkpoint into thought embeddings.
 
-:class:`ZTEEmbedder` rebuilds the encoder from a checkpoint's embedded config, restores its weights, and produces word- or sentence-level embeddings for a
-:class:`~zte.data.dataset.ZuCoDataset`. Outputs can be exported to `.npz` (with aligned metadata) and uploaded to Google Drive, and a nearest-neighbour helper
-supports qualitative probing of the learned space.
+:class:`ZTEEmbedder` rebuilds the encoder (and its fitted normaliser) from a
+checkpoint's embedded state and produces embeddings either for a built
+:class:`~zte.data.dataset.ZuCoDataset` (:meth:`ZTEEmbedder.embed`, word/sentence
+level with aligned metadata) or for brand-new in-memory EEG token arrays
+(:meth:`ZTEEmbedder.embed_signals`). Outputs can be exported to `.npz` and a
+nearest-neighbour helper supports qualitative probing of the learned space.
 """
 
 from __future__ import annotations
@@ -51,34 +54,63 @@ class ZTEEmbedder:
         self.config = config
         self.device = device
         self.model = model.to(device.device).eval()
+        # Populated by :meth:`from_checkpoint` so new in-memory signals can be
+        # normalised exactly as during training.
+        self.normalizer: Any | None = None
+        self.subject_vocab: dict[str, int] | None = None
 
     @classmethod
     def from_checkpoint(
         cls,
         ckpt_path: str | Path,
-        dataset: ZuCoDataset,
+        dataset: ZuCoDataset | None = None,
         device: DeviceSpec | None = None,
     ) -> ZTEEmbedder:
-        """Rebuilds the encoder from a checkpoint, sized to `dataset`.
+        """Rebuilds the encoder (and its normaliser) from a checkpoint.
+
+        Input shapes and the fitted feature-normaliser are read from the
+        checkpoint's embedded state, so a dataset is *not* required to embed new
+        signals. A `dataset` is only used as a fallback for older checkpoints that
+        predate shape embedding.
 
         Args:
             ckpt_path (str | Path): Path to a `best.pt`/`last.pt` checkpoint.
-            dataset (ZuCoDataset): The (built) dataset to be embedded; used to infer the
-                frontend's input shapes.
+            dataset (ZuCoDataset | None): Optional built dataset, used only to
+                infer frontend input shapes when the checkpoint lacks them.
             device (DeviceSpec | None): Optional device spec (auto-resolved when `None`).
 
         Returns:
             ZTEEmbedder: A ready :class:`ZTEEmbedder`.
 
+        Raises:
+            ValueError: If input shapes can be found neither in the checkpoint nor
+                from a supplied dataset.
+
         """
         device = device or resolve_device('auto')
         payload = CheckpointManager.load(ckpt_path, map_location=str(device.device))
         config = ZTEConfig.from_dict(payload['config'])
-        in_dim, raw_shape = _input_shapes(dataset)
+        extra = payload.get('extra', {}) or {}
+
+        in_dim = extra.get('in_dim')
+        raw_shape = extra.get('raw_shape')
+        raw_shape = tuple(raw_shape) if raw_shape is not None else None
+        if in_dim is None and raw_shape is None and dataset is not None:
+            in_dim, raw_shape = _input_shapes(dataset)
+        if in_dim is None and raw_shape is None:
+            raise ValueError('Checkpoint lacks input shapes; pass the dataset it was trained on.')
+
         model = build_model(config.model, in_dim=in_dim, raw_shape=raw_shape)
         model.load_state_dict(payload['model'])
+        embedder = cls(model, config, device)
+
+        if extra.get('normalizer'):
+            from zte.data.transforms import FeatureNormalizer
+
+            embedder.normalizer = FeatureNormalizer.from_state(extra['normalizer'])
+        embedder.subject_vocab = extra.get('subject_vocab')
         _LOG.info('Loaded ZTE checkpoint %s (epoch %s)', ckpt_path, payload.get('epoch'))
-        return cls(model, config, device)
+        return embedder
 
     @torch.no_grad()
     def embed(
@@ -138,6 +170,90 @@ class ZTEEmbedder:
             else np.empty((0, self.model.embed_dim), np.float32)
         )
         return emb_array, pd.DataFrame(meta_rows)
+
+    @torch.no_grad()
+    def embed_signals(
+        self,
+        band_power: np.ndarray | None = None,
+        raw: np.ndarray | None = None,
+        subjects: np.ndarray | None = None,
+        apply_normalizer: bool = True,
+        batch_size: int = 256,
+        show_progress: bool = True,
+    ) -> np.ndarray:
+        """Embeds brand-new EEG token signals held in memory (no ZuCoDataset needed).
+
+        Each input row is one word's neural response and yields one embedding.
+        Pass `band_power` for a band-power checkpoint or `raw` for a raw-Conformer
+        checkpoint -- the one matching the model's frontend is used. Band-power
+        inputs are passed through the checkpoint's fitted normaliser by default so
+        they are scaled exactly as during training.
+
+        Args:
+            band_power (np.ndarray | None): `(N, F*C)` *un-normalised* band-power
+                tokens; the last dim must equal the model's input size.
+            raw (np.ndarray | None): `(N, C, T)` raw EEG windows for a raw model.
+            subjects (np.ndarray | None): Optional `(N,)` integer subject ids for a
+                subject-conditioned model (defaults to id 0).
+            apply_normalizer (bool): Apply the checkpoint's band-power normaliser
+                (ignored for raw input).
+            batch_size (int): Tokens per forward pass.
+            show_progress (bool): Show a progress bar.
+
+        Returns:
+            np.ndarray: `(N, embed_dim)` float32 embeddings, one per input token.
+
+        Raises:
+            ValueError: If the input required by the model's frontend is missing or
+                mis-shaped.
+        """
+        if self.model.uses_raw:
+            if raw is None:
+                raise ValueError('This checkpoint uses a raw frontend; pass raw=(N, C, T).')
+            signals = np.asarray(raw, dtype=np.float32)
+            if signals.ndim != 3:
+                raise ValueError(f'raw must be (N, C, T); got shape {signals.shape}.')
+        else:
+            if band_power is None:
+                raise ValueError(
+                    'This checkpoint uses a band-power frontend; pass band_power=(N, F*C).'
+                )
+            signals = np.asarray(band_power, dtype=np.float32)
+            if signals.ndim != 2:
+                raise ValueError(f'band_power must be (N, F*C); got shape {signals.shape}.')
+            if apply_normalizer and self.normalizer is not None:
+                signals = self.normalizer.transform(signals)
+
+        n = signals.shape[0]
+        subj = (
+            np.zeros(n, dtype=np.int64)
+            if subjects is None
+            else np.asarray(subjects, dtype=np.int64)
+        )
+        dev = self.device.device
+        out: list[np.ndarray] = []
+        for start in progress(
+            range(0, n, batch_size), description='embedding signals', disable=not show_progress
+        ):
+            end = min(start + batch_size, n)
+            count = end - start
+            chunk = torch.from_numpy(np.ascontiguousarray(signals[start:end])).to(dev)
+            # Treat each token as a length-1 sequence so the non-contextual path
+            # produces one embedding per signal.
+            batch: dict[str, Any] = {
+                'features': None,
+                'raw': None,
+                'pad_mask': torch.ones(count, 1, dtype=torch.bool, device=dev),
+                'presence': torch.ones(count, 1, dtype=torch.bool, device=dev),
+                'subject': torch.from_numpy(subj[start:end]).to(dev),
+                'lengths': torch.ones(count, dtype=torch.long, device=dev),
+            }
+            batch['raw' if self.model.uses_raw else 'features'] = chunk.unsqueeze(1)
+            token_emb = self.model(batch, contextual=False)  # (count, 1, E)
+            out.append(token_emb[:, 0, :].cpu().numpy())
+        if not out:
+            return np.empty((0, self.model.embed_dim), dtype=np.float32)
+        return np.concatenate(out, axis=0)
 
     @staticmethod
     def _word_meta(dataset: ZuCoDataset, row: int) -> dict[str, Any]:

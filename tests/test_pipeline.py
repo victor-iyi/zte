@@ -1,5 +1,6 @@
 """End-to-end integration: train a tiny model, checkpoint, and extract embeddings."""
 
+# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from pathlib import Path
@@ -64,3 +65,24 @@ def test_sentence_embeddings_and_metrics(small_dataset: ZuCoDataset, tmp_path: P
     assert noise.shape == emb.shape
     probe = linear_probe(emb, meta['n_words'].to_numpy())
     assert 'score' in probe
+
+
+def test_embed_new_signals_in_memory(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """from_checkpoint (no dataset) restores the normaliser and embeds new arrays."""
+    import numpy as np
+
+    from zte.data.features import flatten_band_power
+
+    cfg = _tiny_config(tmp_path / 'ckpt3')
+    run_training(cfg, small_dataset)
+
+    # Restore WITHOUT a dataset -> shapes and normaliser come from the checkpoint.
+    embedder = ZTEEmbedder.from_checkpoint(tmp_path / 'ckpt3' / 'best.pt')
+    assert embedder.normalizer is not None
+
+    # New, un-normalised band-power token signals (as from a custom pipeline).
+    feats = flatten_band_power(small_dataset.band_power_raw)
+    signals = feats[small_dataset.presence][:16]
+    emb = embedder.embed_signals(band_power=signals, show_progress=False)
+    assert emb.shape == (signals.shape[0], cfg.model.embed_dim)
+    assert np.isfinite(emb).all()

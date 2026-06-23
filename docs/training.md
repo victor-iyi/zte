@@ -77,6 +77,39 @@ uv run zte-extract --ckpt res/checkpoints/best.pt --bundle res/bundle \
     --level word --probe-target log_freq --out res/embeddings/embeddings.npz
 ```
 
+### Embedding brand-new EEG signals
+
+`from_checkpoint` reads the input shapes and the fitted normaliser from the
+checkpoint itself, so **no dataset is required** to embed new signals. Use
+`embed` for new recordings packaged as `.mat` files, or `embed_signals` for EEG
+already in memory (any `(N, F*C)` band-power array, or `(N, C, T)` raw windows for
+a raw-Conformer model). Band-power inputs are normalised exactly as in training.
+
+```python
+from zte.inference.embed import ZTEEmbedder
+
+embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt')  # no dataset needed
+
+# (a) New recordings as .mat files -> build a dataset, then embed.
+from zte.config import DatasetConfig
+from zte.data.dataset import ZuCoDataset
+new_ds = ZuCoDataset(DatasetConfig(root='res/data/new_subject',
+                                   representation=embedder.config.dataset.representation)).build()
+word_emb, word_meta = embedder.embed(new_ds, level='word')
+
+# (b) New signals already in memory (e.g. from a custom pipeline).
+import numpy as np
+signals = np.load('my_band_power.npy')          # shape (N, F*C), un-normalised
+emb = embedder.embed_signals(band_power=signals)  # -> (N, embed_dim); normaliser applied
+```
+
+A complete runnable version of both flows is in `examples/embed_new_signals.py`:
+
+```sh
+uv run python examples/embed_new_signals.py            # trains a tiny model first
+uv run python examples/embed_new_signals.py --ckpt res/checkpoints/best.pt
+```
+
 ## Evaluating honestly
 
 ```python
