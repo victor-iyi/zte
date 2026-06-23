@@ -134,7 +134,23 @@ class ZuCoDataset:
         Returns:
             ZuCoDataset: `self`, fully populated.
 
+        Raises:
+            NotImplementedError: If a reserved option is requested -- only
+                `granularity='word'` and `cache_format='npz'` are implemented
+                (sentence-level embeddings are produced at inference time via
+                `ZTEEmbedder(level='sentence')`).
+
         """
+        if self.config.granularity != 'word':
+            raise NotImplementedError(
+                "Only granularity='word' is implemented. For sentence-level "
+                "embeddings, train on words and pool via ZTEEmbedder(level='sentence')."
+            )
+        if self.config.cache_format != 'npz':
+            raise NotImplementedError(
+                f'cache_format={self.config.cache_format!r} is reserved; only '
+                "'npz' is currently implemented."
+            )
         cache_dir = Path(self.config.cache_dir) / self._cache_key()
         if not force and (cache_dir / 'meta.json').is_file():
             _LOG.info('Loading processed dataset from cache: %s', cache_dir)
@@ -209,7 +225,9 @@ class ZuCoDataset:
         if self.raw_eeg is not None and self.config.bandpass is not None:
             low, high = self.config.bandpass
             self.raw_eeg = np.stack([bandpass_filter(epoch, low, high) for epoch in self.raw_eeg])
-        if self.config.missing.method == 'drop':
+        # Omitted words are physically removed when the missing strategy is 'drop'
+        # or when the caller opts out of keeping them as masked tokens.
+        if self.config.missing.method == 'drop' or not self.config.include_omitted:
             self._drop_missing_rows()
 
     def _add_linguistic_features(self) -> None:
@@ -304,16 +322,18 @@ class ZuCoDataset:
         """Produces leakage-aware train/val (or train/test) row-index splits.
 
         Args:
-            strategy: `'random'` (per-word), `'by_sentence'` (whole sentences
-                kept together), `'by_subject_loso'` (hold out one subject) or
-                `'by_task'` (hold out one task). Defaults to `'by_sentence'`.
+            strategy: Leakage-aware split strategy.
+                - `random`: Per-word random split.
+                - `by_sentence`: Whole sentences kept together.
+                - `by_subject_loso`: Hold out one subject.
+                - `by_task`: Hold out one task. Defaults to `by_sentence`.
             val_fraction (float): Held-out fraction for `random`/`by_sentence`.
             holdout_subject (str): Subject to hold out for LOSO (else the last subject).
             holdout_task (str): Task to hold out for `by_task` (else the last task).
             seed (int): RNG seed for the randomised strategies.
 
         Returns:
-            dict[str, np.ndarray]: A mapping with `'train'` and `'val'` row-index arrays.
+            dict[str, np.ndarray]: A mapping with `train` and `val` row-index arrays.
 
         """
         strategy = strategy or 'by_sentence'

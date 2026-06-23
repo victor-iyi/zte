@@ -1,22 +1,16 @@
 """Canonical ZuCo dataset schema constants and helpers.
 
-This module encodes the *verified* structural facts about the Zurich Cognitive
-Language Processing Corpus (ZuCo 1.0 / 2.0) so the rest of the package never has
-to hard-code magic strings. The numbers below are taken from the ZuCo data
-papers and confirmed against the project's own exploration notebook:
+This module encodes the *verified* structural facts about the Zurich Cognitive Language Processing Corpus (ZuCo 1.0 / 2.0) so the rest of the package never has
+to hard-code magic strings. The numbers below are taken from the ZuCo data papers and confirmed against the project's own exploration notebook:
 
-* High-density EEG was recorded with a 128-channel EGI Geodesic Hydrocel system
-  at ``500 Hz`` (band-pass ``0.1-100 Hz``). The 23 outermost electrodes (cheeks
-  and neck) are dropped during preprocessing, leaving ``105`` channels for every
-  word-/sentence-level EEG feature.
-* EEG power is split into ``8`` frequency bands (``t1`` ... ``g2``).
-* Five eye-tracking measures are provided per word.
-* Word-level EEG features are named ``<measure>_<band>`` (e.g. ``TRT_t1``) and
-  each is a ``105``-dimensional vector (one value per channel).
+- High-density EEG was recorded with a 128-channel EGI Geodesic Hydrocel system at `500 Hz` (band-pass `0.1-100 Hz`).
+  The 23 outermost electrodes (cheeks and neck) are dropped during preprocessing, leaving `105` channels for every word-/sentence-level EEG feature.
+- EEG power is split into `8` frequency bands (`t1` ... `g2`).
+- Five eye-tracking measures are provided per word.
+- Word-level EEG features are named `<measure>_<band>` (e.g. `TRT_t1`) and each is a `105`-dimensional vector (one value per channel).
 
 References:
-    Hollenstein et al. (2018), *ZuCo, a simultaneous EEG and eye-tracking
-    resource for natural sentence reading*, Scientific Data.
+    Hollenstein et al. (2018), *ZuCo, a simultaneous EEG and eye-tracking resource for natural sentence reading*, Scientific Data.
     Hollenstein et al. (2020), *ZuCo 2.0*, LREC.
 """
 
@@ -37,7 +31,7 @@ ACQUISITION_BANDPASS_HZ: Final[tuple[float, float]] = (0.1, 100.0)
 
 # --- Frequency bands -------------------------------------------------------- #
 
-Band = Literal['t1', 't2', 'a1', 'a2', 'b1', 'b2', 'g1', 'g2']
+type Band = Literal['t1', 't2', 'a1', 'a2', 'b1', 'b2', 'g1', 'g2']
 
 #: The eight ZuCo EEG bands in canonical order.
 BANDS: Final[tuple[Band, ...]] = ('t1', 't2', 'a1', 'a2', 'b1', 'b2', 'g1', 'g2')
@@ -68,7 +62,7 @@ BAND_FAMILY: Final[dict[Band, str]] = {
 
 # --- Eye-tracking measures -------------------------------------------------- #
 
-EyeTrackingMeasure = Literal['FFD', 'SFD', 'GD', 'GPT', 'TRT']
+type EyeTrackingMeasure = Literal['FFD', 'SFD', 'GD', 'GPT', 'TRT']
 
 #: The five fixation-duration measures (milliseconds), canonical order.
 ET_MEASURES: Final[tuple[EyeTrackingMeasure, ...]] = ('FFD', 'SFD', 'GD', 'GPT', 'TRT')
@@ -87,10 +81,9 @@ WORD_SCALAR_FIELDS: Final[tuple[str, ...]] = ('nFixations', 'meanPupilSize')
 
 # --- Tasks and subjects ----------------------------------------------------- #
 
-Task = Literal['SR', 'NR', 'TSR']
+type Task = Literal['SR', 'NR', 'TSR']
 
-#: ZuCo reading tasks. ``SR`` = sentiment reading (task 1), ``NR`` = normal
-#: reading (task 2), ``TSR`` = task-specific reading (task 3).
+#: ZuCo reading tasks. `SR` = sentiment reading (task 1), `NR` = normal reading (task 2), `TSR` = task-specific reading (task 3).
 TASKS: Final[tuple[Task, ...]] = ('SR', 'NR', 'TSR')
 
 TASK_NAMES: Final[dict[Task, str]] = {
@@ -122,11 +115,11 @@ def band_feature_name(measure: EyeTrackingMeasure, band: Band) -> str:
     """Returns the ZuCo word-level EEG field name for a measure/band pair.
 
     Args:
-        measure: One of the five eye-tracking measures (e.g. ``'TRT'``).
-        band: One of the eight frequency bands (e.g. ``'t1'``).
+        measure: One of the five eye-tracking measures (e.g. `'TRT'`).
+        band: One of the eight frequency bands (e.g. `'t1'`).
 
     Returns:
-        The ``<measure>_<band>`` field name, e.g. ``'TRT_t1'``.
+        The `<measure>_<band>` field name, e.g. `'TRT_t1'`.
 
     Example:
         >>> band_feature_name('TRT', 't1')
@@ -142,11 +135,12 @@ def sentence_band_field(band: Band) -> str:
         band: One of the eight frequency bands.
 
     Returns:
-        The ``mean_<band>`` field name, e.g. ``'mean_t1'``.
+        The `mean_<band>` field name, e.g. `'mean_t1'`.
 
     Example:
         >>> sentence_band_field('g2')
         'mean_g2'
+
     """
     return f'mean_{band}'
 
@@ -155,13 +149,14 @@ def all_word_band_fields(
     measures: tuple[EyeTrackingMeasure, ...] = ET_MEASURES,
     bands: tuple[Band, ...] = BANDS,
 ) -> list[str]:
-    """Enumerates every ``<measure>_<band>`` word-level EEG field name.
+    """Enumerates every `<measure>_<band>` word-level EEG field name.
 
     Args:
-        measures: Eye-tracking measures to include. Defaults to all five.
-        bands: Frequency bands to include. Defaults to all eight.
+        measures (tuple[EyeTrackingMeasure, ...]): Eye-tracking measures to include. Defaults to all five.
+        bands (tuple[Band, ...]): Frequency bands to include. Defaults to all eight.
 
     Returns:
-        A flat list of field names in measure-major, band-minor order.
+        A `list` of field names in measure-major, band-minor order.
+
     """
     return [band_feature_name(m, b) for m in measures for b in bands]

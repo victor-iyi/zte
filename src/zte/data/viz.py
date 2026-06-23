@@ -1,10 +1,8 @@
-"""Matplotlib visualisations for a :class:`~zte.data.dataset.ZuCoDataset`.
+"""Matplotlib visualisations for a `ZuCoDataset`.
 
-These mirror the analyses in the exploration notebook -- missingness, eye-tracking
-distributions and correlations, omission-vs-length, EEG availability and per-word
-band-power heatmaps -- but as reusable functions that return `Figure` objects
-and can be dumped to disk in one call via :func:`save_overview`. Seaborn is used
-when present for nicer styling but is never required.
+These mirror the analyses in the exploration notebook -- missingness, eye-tracking distributions and correlations, omission-vs-length,
+EEG availability and per-word band-power heatmaps -- but as reusable functions that return `Figure` objects
+and can be dumped to disk in one call via `save_overview`. Seaborn is used when present for nicer styling but is never required.
 """
 
 # pylint: disable=wrong-import-position

@@ -49,7 +49,19 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         '--missing-method',
-        choices=['zero', 'row_mean', 'col_mean', 'global_mean', 'median', 'knn', 'iterative', 'ffill', 'interpolate', 'drop', 'mask_only'],
+        choices=[
+            'zero',
+            'row_mean',
+            'col_mean',
+            'global_mean',
+            'median',
+            'knn',
+            'iterative',
+            'ffill',
+            'interpolate',
+            'drop',
+            'mask_only',
+        ],
         default='mask_only',
         help='Missing-value strategy.',
     )

@@ -1,10 +1,10 @@
 """Signal transforms: band-pass filtering and feature normalisation.
 
-These operate on NumPy arrays before tensors are built. Normalisers are stateful
-so the statistics learned on the training split can be re-applied verbatim to
-validation/test splits, preventing information leakage.
+These operate on NumPy arrays before tensors are built. Normalisers are stateful so the statistics learned
+on the training split can be re-applied verbatim to validation/test splits, preventing information leakage.
 """
 
+# pylint: disable=import-outside-toplevel,protected-access
 from __future__ import annotations
 
 import numpy as np
@@ -31,16 +31,16 @@ def bandpass_filter(
         order: Filter order.
 
     Returns:
-        The filtered array, same shape and dtype family as ``data``.
+        The filtered array, same shape and dtype family as `data`.
 
     Raises:
-        ValueError: If the requested band is not within ``(0, fs/2)``.
+        ValueError: If the requested band is not within `(0, fs/2)`.
     """
     nyq = 0.5 * fs
     low, high = lowcut / nyq, highcut / nyq
     if not 0 < low < high < 1:
         raise ValueError(f'Invalid band {lowcut}-{highcut} Hz for fs={fs} Hz.')
-    b, a = butter(order, [low, high], btype='band')
+    b, a = butter(order, [low, high], btype='band')  # type: ignore[assignment]
     # filtfilt needs more samples than the padding length; guard short segments.
     if data.shape[-1] <= 3 * max(len(a), len(b)):
         return data.astype(np.float32, copy=False)
@@ -48,13 +48,13 @@ def bandpass_filter(
 
 
 def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Per-channel z-scores a single raw EEG epoch ``(channels, time)``.
+    """Per-channel z-scores a single raw EEG epoch `(channels, time)`.
 
     Per-channel standardisation absorbs impedance and gain differences across
     electrodes, as recommended for ZuCo raw EEG.
 
     Args:
-        epoch: Array ``(channels, time)``.
+        epoch: Array `(channels, time)`.
         eps: Numerical floor added to the per-channel standard deviation.
 
     Returns:
@@ -66,7 +66,7 @@ def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
 
 
 class FeatureNormalizer:
-    """Stateful normaliser for 2-D feature matrices ``(N, F)``.
+    """Stateful normaliser for 2-D feature matrices `(N, F)`.
 
     Attributes:
         mode: The normalisation scheme.
@@ -77,8 +77,8 @@ class FeatureNormalizer:
         """Initialises the normaliser.
 
         Args:
-            mode: One of ``'zscore_channel'`` (per-column z-score),
-                ``'zscore_global'`` (single mean/std), ``'minmax'`` or ``'none'``.
+            mode: One of `'zscore_channel'` (per-column z-score),
+                `'zscore_global'` (single mean/std), `'minmax'` or `'none'`.
             eps: Numerical floor for divisions.
         """
         self.mode = mode
@@ -87,13 +87,13 @@ class FeatureNormalizer:
         self._b: np.ndarray | None = None  # std or (max-min)
 
     def fit(self, x: np.ndarray) -> FeatureNormalizer:
-        """Learns normalisation statistics from ``x``.
+        """Learns normalisation statistics from `x`.
 
         Args:
-            x: Training feature matrix ``(N, F)``.
+            x: Training feature matrix `(N, F)`.
 
         Returns:
-            ``self``, for chaining.
+            `self`, for chaining.
         """
         if self.mode == 'none':
             return self
@@ -110,25 +110,25 @@ class FeatureNormalizer:
         return self
 
     def transform(self, x: np.ndarray) -> np.ndarray:
-        """Applies learned statistics to ``x``.
+        """Applies learned statistics to `x`.
 
         Args:
-            x: Feature matrix ``(N, F)``.
+            x: Feature matrix `(N, F)`.
 
         Returns:
-            The normalised matrix as float32 (unchanged when ``mode='none'``).
+            The normalised matrix as float32 (unchanged when `mode='none'`).
         """
         if self.mode == 'none' or self._a is None:
             return x.astype(np.float32, copy=False)
         if self.mode == 'minmax':
-            return ((x - self._a) / (self._b + self.eps)).astype(np.float32)
+            return ((x - self._a) / (self._b + self.eps)).astype(np.float32)  # type: ignore[operator]
         return ((x - self._a) / self._b).astype(np.float32)
 
     def fit_transform(self, x: np.ndarray) -> np.ndarray:
         """Convenience for :meth:`fit` followed by :meth:`transform`.
 
         Args:
-            x: Training feature matrix ``(N, F)``.
+            x: Training feature matrix `(N, F)`.
 
         Returns:
             The normalised matrix.

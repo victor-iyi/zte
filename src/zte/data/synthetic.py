@@ -210,8 +210,8 @@ def _build_word(
 
 def generate_subject_file(
     path: str | Path,
-    subject: str, # pylint: disable=unused-argument
-    task: str, # pylint: disable=unused-argument
+    subject: str,  # pylint: disable=unused-argument
+    task: str,  # pylint: disable=unused-argument
     sentences: tuple[str, ...],
     measures: tuple[EyeTrackingMeasure, ...] = ET_MEASURES,
     bands: tuple[Band, ...] = BANDS,

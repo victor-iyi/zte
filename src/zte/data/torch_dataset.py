@@ -1,11 +1,8 @@
 """PyTorch `Dataset`/`DataLoader` adapters over a processed :class:`ZuCoDataset`.
 
-The self-supervised objectives (skip-gram, CBOW, masked, CPC) all consume a
-*sentence as a sequence of word-EEG tokens*, so the dataset's atomic item is a
-sentence. Each item carries the per-word band-power vector and/or raw EEG window,
-a **presence mask** (`False` for omitted words -- the key anti-leakage signal),
-the subject id and the sequence length. The collate function pads variable-length
-sentences into a batch and emits a padding mask; objectives build their own
+The self-supervised objectives (skip-gram, CBOW, masked, CPC) all consume a *sentence as a sequence of word-EEG tokens*, so the dataset's atomic item is a
+sentence. Each item carries the per-word band-power vector and/or raw EEG window, a **presence mask** (`False` for omitted words -- the key anti-leakage signal),
+the subject id and the sequence length. The collate function pads variable-length sentences into a batch and emits a padding mask; objectives build their own
 positive/negative pairs and masking on top of this batch.
 """
 
@@ -58,7 +55,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
     """Yields sentence-level sequences of word-EEG tokens for SSL training.
 
     Attributes:
-        representation (str | None): Which tensors to emit (`'band_power'`, `'raw'` or `'both'`); defaults to the dataset's own setting.
+        representation (str | None): Which tensors to emit (`band_power`, `raw` or `both`); defaults to the dataset's own setting.
         subject_vocab (dict[str, int] | None): The `{subject: id}` mapping in use.
 
     """

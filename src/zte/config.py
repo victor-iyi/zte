@@ -66,26 +66,27 @@ class DatasetConfig:
 
     Attributes:
         root: Directory holding extracted `.mat` files (searched recursively).
-        tasks: Which reading tasks to include.
+        tasks: Which reading tasks to include (`SR`, `NR`, `TSR`).
         subjects: Subject codes to include, or `None` for all discovered.
-        granularity: Build one token per word or one per sentence.
-        representation: Use compact band-power vectors, raw time-series windows,
-            or both.
-        band_power_measures: Eye-tracking measures whose band features are used
-            for the band-power representation.
+        granularity: Token granularity. Only `'word'` is implemented; `'sentence'`
+            is reserved (use `ZTEEmbedder(level='sentence')` for pooled sentence
+            embeddings at inference time).
+        representation: Use compact band-power vectors, raw time-series windows, or both.
+        band_power_measures: Eye-tracking measures whose band features are used for the band-power representation.
         bands: Frequency bands used for the band-power representation.
-        raw_field: Which raw EEG field to read (`'rawEEG'` per word or
-            `'rawData'` per sentence).
+        raw_field: Which raw EEG field to read (`'rawEEG'` per word or `'rawData'` per sentence).
         raw_window: Fixed time length (samples) raw EEG is padded/truncated to.
         normalize: Per-channel/global normalisation applied to features.
         bandpass: Optional `(low, high)` Hz Butterworth band-pass for raw EEG.
         missing: Missing-value handling configuration.
         include_omitted: Keep omitted words as masked tokens (preserves sentence
-            sequence integrity) instead of dropping them.
+            sequence integrity). When `False`, omitted-word rows are dropped (as
+            with `missing.method='drop'`).
         min_words: Drop sentences shorter than this many words.
         max_words: Drop sentences longer than this many words (`None` = no cap).
         cache_dir: Where processed artifacts are cached.
-        cache_format: On-disk format for cached features.
+        cache_format: On-disk cache format. Only `'npz'` is implemented;
+            `'parquet'`/`'hdf5'` are reserved.
     """
 
     root: str = 'res/data/zuco_extracted'

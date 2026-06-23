@@ -3,6 +3,7 @@
 Console logging is routed through `rich` when available (pretty, coloured, single-line tracebacks) and falls back to the standard library otherwise. A
 single `get_logger` accessor is used everywhere so log formatting is consistent across the dataset, model, training and CLI layers.
 """
+
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
