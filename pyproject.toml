@@ -3,13 +3,9 @@ name = 'zte'
 version = '0.1.0'
 description = 'ZuCo Thought Embedding (ZTE): a tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG embedding pipeline for the Cross-Modal Transfer Learning project.'
 readme = 'README.md'
-# Target runtime is CPython 3.14; the floor is 3.12 so the smoke-train can run
-# on platforms where PyTorch wheels for 3.14 are not yet published. Bump to
-# '>=3.14' once your local torch build supports it -- nothing in the source
-# relies on pre-3.12 behaviour.
 requires-python = '>=3.12'
 license = { text = 'MIT' }
-authors = [{ name = 'Victor I. Afolabi', email = 'javafolabi@gmail.com' }]
+authors = [{ name = 'Victor I. Afolabi', email = 'iyiola.afolabi@stu.mmu.ac.uk' }]
 keywords = ['eeg', 'zuco', 'bci', 'self-supervised', 'embeddings', 'pytorch', 'neuroscience']
 
 dependencies = [
