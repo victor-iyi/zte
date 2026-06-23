@@ -1,0 +1,55 @@
+{
+  "objective": "skipgram",
+  "dataset": {
+    "n_words": 614,
+    "n_sentences": 72,
+    "n_subjects": 3,
+    "subjects": [
+      "ZAB",
+      "ZDM",
+      "ZJN"
+    ],
+    "tasks": [
+      "NR",
+      "SR"
+    ],
+    "words_per_task": {
+      "NR": 304,
+      "SR": 310
+    },
+    "omission_rate_overall": 0.2947882736156352,
+    "omission_rate_by_subject": {
+      "ZAB": 0.3103,
+      "ZDM": 0.2919,
+      "ZJN": 0.2822
+    },
+    "missing_rate_by_measure": {
+      "FFD": 0.2947882736156352,
+      "SFD": 0.2947882736156352,
+      "GD": 0.2947882736156352,
+      "GPT": 0.2947882736156352,
+      "TRT": 0.2947882736156352
+    },
+    "word_eeg_present_fraction": 0.7052117263843648
+  },
+  "final_train_loss": 3.471891701221466,
+  "n_word_embeddings": 433,
+  "embed_dim": 128,
+  "probes": {
+    "log_freq": {
+      "score": 0.014474779653115352,
+      "baseline": 0.0,
+      "task": "regression"
+    },
+    "word_len": {
+      "score": 0.014077981313069662,
+      "baseline": 0.0,
+      "task": "regression"
+    }
+  },
+  "noise_floor_shape": [
+    614,
+    840
+  ],
+  "device": "cpu (4 cores)"
+}

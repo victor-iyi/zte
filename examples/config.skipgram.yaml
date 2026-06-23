@@ -1,0 +1,50 @@
+# Example ZTE run config: skip-gram band-power pretraining with LOSO evaluation.
+# Use with:  uv run zte-train --bundle res/bundle --config examples/config.skipgram.yaml
+run_name: zte-skipgram-loso
+
+dataset:
+  root: res/data/zuco_extracted
+  tasks: [SR, NR]
+  representation: band_power
+  band_power_measures: [TRT]
+  normalize: zscore_channel
+  raw_window: 128
+  missing:
+    method: knn
+    knn_neighbors: 5
+    add_missing_indicator: true
+
+model:
+  frontend: band_power_mlp
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  pool: attention
+  subject_conditioning: false
+
+objective:
+  name: skipgram
+  temperature: 0.07
+  context_window: 2
+  n_negatives: 20
+
+train:
+  epochs: 50
+  batch_size: 128
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_clip: 1.0
+  split: by_subject_loso
+  loso_holdout_subject: ZPH
+  device: auto
+  precision: auto
+  num_workers: 4
+  seed: 42
+  ckpt_dir: res/checkpoints/skipgram_loso
+  ckpt_keep_last: 3
+  tensorboard: false
+  drive_backup_dir: null
