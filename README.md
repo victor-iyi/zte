@@ -3,10 +3,12 @@
 > Pretraining word-level **thought embeddings** from EEG the way word embeddings are pretrained from text.
 > Part of the **Cross-Modal Transfer Learning: Aligning EEG Signals to Language** project.
 
-ZTE is two things in one `uv`-managed package:
+ZTE is a `uv`-managed package with one front door (`zte-run`) and four pillars:
 
-1. A **highly tunable ZuCo dataset toolkit** — load, process, impute, normalise, visualise, analyse, select features, split (leakage-aware, incl. LOSO), convert to `torch`, cache, and round-trip to/from Google Drive.
-2. A **state-of-the-art self-supervised EEG embedding pipeline** — train a `ZTEModel` with four interchangeable objectives (skip-gram, CBOW, masked/data2vec, CPC), with full logging, checkpointing, progress bars, and CPU/CUDA/MPS portability.
+1. A **highly tunable ZuCo dataset toolkit** — load (local dir / `.zip` / Google Drive), unzip, process, impute, normalise, visualise, analyse, select features, split (leakage-aware, incl. LOSO), convert to `torch`, cache, and round-trip to/from Drive. Real corpus word-frequencies and real sentence categories (SR sentiment, TSR relations) are joined in automatically, and **eye-tracking behaviour is an explicit include/exclude knob** (`include_eye_tracking`, default on) so you can build reading-evoked *or* EEG-only "imagined-thought" representations.
+2. A **state-of-the-art self-supervised EEG embedding pipeline** — a `ZTEModel` with four interchangeable objectives (skip-gram, CBOW, masked/data2vec, CPC) and a **pluggable positional encoding** (RoPE by default, plus sinusoidal / learned / ALiBi / none), full logging, checkpointing, progress bars and CPU/CUDA/MPS portability.
+3. A **rigorous, stratified evaluation** — transfer probes vs raw features and a noise control, cross-subject content retrieval, geometry/collapse checks, **per-subject / per-task / per-category breakdowns**, **scalp-region importance** (which brain areas encode thought vs reading), and **word2vec-style vector arithmetic** on thoughts (`emb(t, A) − centroid(A) + centroid(B) ≈ emb(t, B)`).
+4. **Interactive, reproducible reporting** — a self-contained interactive HTML embedding explorer, a maximally-used **TensorBoard** (embedding projector, HParams, scalars, histograms, figures, text), fixed-seed **benchmarks**, and a per-run catalogue.
 
 The learned embedding is *not yet* the device-, subject-, and task-agnostic brain representation that is the project's north star. It is the **first step**: a principled, reusable EEG token representation, analogous to what `word2vec` was for language modelling.
 
@@ -73,17 +75,64 @@ uv sync --no-default-groups  # core only, without the `dev` group
 
 ---
 
-## 60-second quickstart (no real data needed)
+## Quickstart: one command, end to end
+
+`zte-run` takes an **experiment config** and a **data source**, then runs the whole
+pipeline — resolve/unzip → prepare + cache → train → evaluate → explore — and files
+every artifact under `res/experiments/<run_name>/` so each experiment is
+self-contained and reproducible.
 
 ```sh
-# 1) Synthesise a schema-faithful ZuCo tree + build a processed bundle (+figures).
-uv run zte-prepare --synthetic --representation both --figures res/figures --out res/bundle
+# No data needed: full pipeline on a synthetic ZuCo tree (great smoke test).
+uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --synthetic --epochs 5
 
-# 2) Pretrain a thought embedding (skip-gram) on CPU/GPU (auto-detected).
-uv run zte-train --bundle res/bundle --objective skipgram --epochs 20 --run-name demo
+# Real data from a local folder (extracted .mat files, or a folder of task .zip archives).
+uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
 
-# 3) Extract word-level embeddings from the best checkpoint.
-uv run zte-extract --ckpt res/checkpoints/best.pt --bundle res/bundle --level word --out res/embeddings/embeddings.npz
+# Real data straight from Google Drive (folder id or shareable URL; needs the `drive` group).
+uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
+
+# Any subset, any override:
+uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml \
+    --root res/data/zuco_extracted --subjects ZAB,ZDM,ZJS --tasks SR,NR --epochs 20 \
+    --name my_first_run
+```
+
+Each run writes:
+
+```text
+res/experiments/<run_name>/
+  config.yaml     bundle/     checkpoints/    figures/
+  evaluation/     exploration/    tb/     manifest.json    README.md
+res/experiments/INDEX.md          # a growing catalogue of every run + headline metrics
+```
+
+The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by
+`zte.data.sources.resolve_source`: an already-extracted directory is used as-is, a
+`.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive
+id/URL is downloaded then unzipped. So "load from Drive or locally, unzip, prepare,
+cache, train, evaluate" is a single command either way.
+
+### The 5 flagship experiments
+
+| Config | Objective | Positional | Eye-tracking | Why run it |
+| ------ | --------- | ---------- | ------------ | ---------- |
+| `exp1_skipgram_rope_et` | skip-gram | RoPE | included | **Start here** — best general reading-evoked embedding |
+| `exp2_masked_rope_eegonly` | masked (data2vec) | RoPE | **excluded** | Device-agnostic / imagined-thought path (EEG only) |
+| `exp3_cpc_rope_et` | CPC (wav2vec/BENDR) | RoPE | included | Does reading *order* carry transferable structure? |
+| `exp4_skipgram_loso` | skip-gram | RoPE | included | Subject-invariance: leave-one-subject-out validation |
+| `exp5_raw_conformer_masked` | masked | RoPE | excluded | Raw temporal path (EEG-Conformer) instead of band power |
+
+See [`experiments/README.md`](experiments/README.md) for the full rationale.
+
+### Prefer the individual steps? They still exist
+
+```sh
+uv run zte-prepare  --root res/data/zuco_extracted --representation band_power --out res/bundle
+uv run zte-train    --bundle res/bundle --objective skipgram --tensorboard --run-name demo
+uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation --tensorboard
+uv run zte-explore  --bundle res/bundle --out res/exploration   # brain regions + eye-tracking
+uv run zte-benchmark --root res/data/zuco_extracted --objectives skipgram,masked --pos-encodings rope,learned
 ```
 
 Equivalent Python:
@@ -93,23 +142,91 @@ from zte import ZuCoDataset, DatasetConfig, ZTEConfig, run_training, ZTEEmbedder
 from zte.data.synthetic import generate_synthetic_zuco
 
 generate_synthetic_zuco('res/data/synthetic_zuco')             # or point at real .mat files
-ds = ZuCoDataset(DatasetConfig(root='res/data/synthetic_zuco', representation='band_power')).build()
+# EEG-only (include_eye_tracking=False) so brand-new EEG can be embedded later.
+ds = ZuCoDataset(DatasetConfig(root='res/data/synthetic_zuco', representation='band_power',
+                               include_eye_tracking=False)).build()
 
 cfg = ZTEConfig()
 cfg.objective.name = 'skipgram'        # 'cbow' | 'masked' | 'cpc'
+cfg.model.pos_encoding = 'rope'        # 'sinusoidal' | 'learned' | 'alibi' | 'none'
 artifacts = run_training(cfg, ds)      # logs, progress bars, checkpoints
 
 embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt', ds)
 embeddings, meta = embedder.embed(ds, level='word')            # (M, 768), aligned metadata
 
-# Embed brand-new EEG signals held in memory (no dataset needed):
-new_emb = embedder.embed_signals(band_power=my_array)          # (N, F*C) -> (N, 768)
+# Embed brand-new EEG signals held in memory (no dataset needed).
+# The vector width must match the checkpoint's input: F*C for an EEG-only model,
+# or F*C + gaze scalars if it was trained with include_eye_tracking=True.
+new_emb = embedder.embed_signals(band_power=my_array)          # (N, in_dim) -> (N, 768)
 ```
 
 Embedding new EEG with a trained checkpoint -- both from new `.mat` files and from
 in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
 
 ---
+
+## Headline capabilities
+
+### Eye-tracking: include or exclude (default include)
+
+ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`,
+pupil size) is richly informative — for reading. But an imagined-thought BCI has no
+gaze. `include_eye_tracking` makes this a first-class switch:
+
+```python
+DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to each token
+DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
+```
+
+The EEG band-power is always kept; the toggle only governs the extra gaze dimensions.
+`zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a
+*cognitive* target, so the choice is evidence-based, not a guess.
+
+### Brain-region exploration (`zte-explore`)
+
+Which parts of the cortex encode thought vs reading? `zte-explore` groups the 105
+channels into anterior→posterior scalp regions and scores each region's share of the
+decodable information for reading targets (word length, frequency) and cognitive
+targets (task, subject). Supply an exact montage with `RegionMap.from_csv(...)`; the
+default map is documented and approximate.
+
+```sh
+uv run zte-explore --root res/data/zuco_extracted --out res/exploration
+```
+
+### Thought arithmetic (`king − man + woman` for EEG)
+
+If ZTE is a real thought code, *who* produced a thought should be a translation in the
+space. For a stimulus token `t`, `emb(t, subject A) − centroid(A) + centroid(B)` should
+retrieve `emb(t, subject B)`. The evaluation reports this **subject-transfer** (and
+task-transfer) analogy accuracy vs chance, with a raw-feature control — a direct,
+falsifiable test of subject-agnosticism.
+
+### State-of-the-art positional encoding
+
+`model.pos_encoding` selects the sequence encoding for the context transformer:
+`rope` (rotary, default — relative, length-generalising, SOTA), `sinusoidal`, `learned`,
+`alibi`, or `none` (ablation). RoPE and ALiBi act inside attention; the encoder is a
+pre-norm, GELU Transformer honouring padding and causal (CPC) masks.
+
+### Stratified evaluation + interactive reporting
+
+`zte-evaluate` (and `zte-run`) produce per-subject / per-task / per-sentence-category
+breakdowns, a `report.md`, a `metrics.json`, figures, a **self-contained interactive
+HTML explorer** (rotate the 3-D embedding cloud, hover a point for its word, recolour by
+subject/task/category), and a **TensorBoard** log that uses the embedding projector,
+HParams, scalars, histograms, images and text. Add `--tensorboard`:
+
+```sh
+uv run zte-evaluate --ckpt <best.pt> --bundle res/bundle --out res/evaluation --tensorboard
+tensorboard --logdir res/evaluation/tb        # then open the PROJECTOR tab
+```
+
+### Reproducible benchmarks (`zte-benchmark`)
+
+Fixed-seed sweep over **objective × positional-encoding × eye-tracking × seed**,
+aggregated into a sortable `benchmark.csv` / `benchmark.md`; every cell writes its own
+`config.yaml` so any row reproduces exactly.
 
 ## The dataset class, end to end
 
@@ -255,11 +372,27 @@ Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` 
 
 ## Rigorous evaluation (built in)
 
+A full representation-evaluation suite (`zte.evaluation`, CLI `zte-evaluate`) shows
+through figures, tables and numbers that the encoder produces a re-purposable space —
+transfer probes (vs raw features and a noise control), cross-subject content retrieval,
+and geometry/collapse checks. See **`docs/EVALUATION.md`** for methodology and results.
+
+```sh
+uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation
+uv run python examples/evaluate_zte.py    # self-contained synthetic demo
+```
+
 The project's anti-"BLEU-trap" controls are first-class:
 
-- `zte.training.metrics.linear_probe` — cross-validated linear probe of embedding content (predict word length / frequency / omission).
-- `zte.training.metrics.retrieval_metrics` — Top-K / MRR (used downstream for EEG<->text).
-- `zte.training.metrics.noise_matched` — Gaussian control matched to the data's mean/variance: a real encoder must beat embeddings learned from this noise.
+- `zte.evaluation.representation_comparison` — linear + kNN probes of ZTE vs raw features vs noise, per attribute.
+- `zte.evaluation.content_retrieval` — cross-subject same-stimulus Top-K / MRR vs chance.
+- `zte.evaluation.embedding_health` — effective rank, uniformity, alignment, anisotropy, dead dims (collapse check).
+- `zte.evaluation.breakdown` — the same metrics stratified by subject, task and sentence category.
+- `zte.evaluation.analogy` — subject/task vector-arithmetic transfer (the `king − man + woman` test for thoughts) vs a raw-feature control.
+- `zte.data.regions.region_importance` — which scalp regions carry which information (reading vs cognitive).
+- `zte.evaluation.interactive` / `zte.evaluation.tensorboard` — self-contained interactive HTML + a maximally-used TensorBoard (projector, HParams, histograms, figures).
+- `zte.inference.retrieval.NearestNeighborIndex` — temporary nearest-neighbour decoder/probe over a labelled embedding bank.
+- `zte.training.metrics.noise_matched` — Gaussian control matched to the data's mean/variance: a real encoder must beat it.
 
 ---
 
@@ -268,38 +401,33 @@ The project's anti-"BLEU-trap" controls are first-class:
 ```sh
 zte/
 ├── pyproject.toml            # uv + ruff (single quotes) + deps
+├── experiments/              # the 5 flagship experiment configs (+ README)
 ├── src/zte/
-│   ├── config.py             # typed, YAML-serialisable configs
-│   ├── device.py             # CPU/CUDA/MPS + autocast resolution
+│   ├── config.py             # typed, YAML-serialisable configs (eye-tracking, pos-encoding, ...)
+│   ├── device.py             # CPU/CUDA/MPS + autocast + seeding
 │   ├── logging_utils.py      # rich logging + tqdm progress
-│   ├── data/                 # schema, mat_loader, synthetic, missing, transforms,
-│   │                         #   features, dataset, torch_dataset, remote, viz
-│   ├── models/               # frontends, embedding (ZTEModel), objectives, heads
-│   ├── training/             # trainer, checkpoint, scheduler, metrics, pipeline
-│   ├── inference/            # embed (ZTEEmbedder)
-│   └── cli/                  # zte-prepare · zte-train · zte-extract
-├── tests/                    # synthetic schema, dataset, missing, models, e2e
-├── docs/                     # architecture, dataset, training, results (mermaid + figures)
+│   ├── data/                 # schema, mat_loader, synthetic, missing, transforms, features,
+│   │                         #   dataset, torch_dataset, remote, viz, sources, categories, regions
+│   ├── models/               # frontends, embedding (ZTEModel), transformer (RoPE/ALiBi), objectives, heads
+│   ├── training/             # trainer (+TensorBoard), checkpoint, scheduler, metrics, pipeline
+│   ├── inference/            # embed (ZTEEmbedder), retrieval
+│   ├── evaluation/           # metrics, breakdown, analogy, regions-eval, plots, interactive, tensorboard, report
+│   └── cli/                  # zte-run · prepare · train · extract · evaluate · explore · benchmark
+├── tests/                    # synthetic schema, dataset, missing, models, evaluation, e2e
+├── docs/                     # architecture, dataset, training, results, evaluation (mermaid + figures)
 └── res/                      # all generated resources (gitignored)
-    ├── data/                 #   raw/extracted + synthetic ZuCo .mat trees
-    ├── cache/                #   processed feature cache
-    ├── bundle/               #   saved ZuCoDataset bundles
-    ├── checkpoints/          #   best/last + rotating checkpoints, config, curves
-    ├── embeddings/           #   exported thought embeddings (.npz)
-    └── figures/              #   overview/analysis figures
+    ├── data/                 #   raw/extracted (+ _downloads) + synthetic ZuCo .mat trees
+    └── experiments/          #   one self-contained folder per run + INDEX.md catalogue
+        └── <run_name>/       #     config · bundle · checkpoints · evaluation · exploration · tb · manifest
 ```
 
-> **Resources live under `res/`.** Every generated artefact — extracted/synthetic
-> data, the feature cache, dataset bundles, checkpoints, embeddings and figures —
-> defaults to a subfolder of `res/` (which is gitignored). Override any of these
-> via the CLI flags (`--out`, `--cache-dir`, `--ckpt-dir`, …) or the matching
-> `DatasetConfig`/`TrainConfig` fields.
+> **Resources live under `res/`.** Every generated artefact — extracted/synthetic data, the feature cache, dataset bundles, checkpoints, embeddings and figures — defaults to a subfolder of `res/` (which is gitignored). Override any of these via the CLI flags (`--out`, `--cache-dir`, `--ckpt-dir`, …) or the matching `DatasetConfig`/`TrainConfig` fields.
 
 ---
 
 ## Roadmap — toward a device/subject/task-agnostic brain representation
 
-ZTE v1 is intentionally subject/task-aware. The path to invariance (documented in `docs/architecture.md`):
+ZTE v1 is intentionally subject/task-aware. The path to invariance (documented in `docs/ARCHITECTURE.md`):
 
 1. **Subject-invariance** — adversarial subject head / domain confusion; SPD-tangent-space features.
 2. **Task/device-invariance** — multi-corpus pretraining; channel-set adapters for differing montages.

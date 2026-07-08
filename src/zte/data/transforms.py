@@ -1,7 +1,7 @@
 """Signal transforms: band-pass filtering and feature normalisation.
 
-These operate on NumPy arrays before tensors are built. Normalisers are stateful so the statistics learned
-on the training split can be re-applied verbatim to validation/test splits, preventing information leakage.
+These operate on NumPy arrays before tensors are built. Normalisers are stateful so the statistics learned on the training
+split can be re-applied verbatim to validation/test splits, preventing information leakage.
 """
 
 # pylint: disable=import-outside-toplevel,protected-access
@@ -24,11 +24,11 @@ def bandpass_filter(
     """Applies a zero-phase Butterworth band-pass filter along the last axis.
 
     Args:
-        data: EEG array; filtering is applied over the final (time) axis.
-        lowcut: Low cut-off frequency in Hz.
-        highcut: High cut-off frequency in Hz.
-        fs: Sampling rate in Hz.
-        order: Filter order.
+        data (np.ndarray): EEG array; filtering is applied over the final (time) axis.
+        lowcut (float): Low cut-off frequency in Hz.
+        highcut (float): High cut-off frequency in Hz.
+        fs (float): Sampling rate in Hz.
+        order (int): Filter order.
 
     Returns:
         The filtered array, same shape and dtype family as `data`.
@@ -48,17 +48,17 @@ def bandpass_filter(
 
 
 def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Per-channel z-scores a single raw EEG epoch `(channels, time)`.
+    """Per-channel z-scores a single raw EEG epoch `(n_channels, time_steps)`.
 
-    Per-channel standardisation absorbs impedance and gain differences across
-    electrodes, as recommended for ZuCo raw EEG.
+    Per-channel standardisation absorbs impedance and gain differences across electrodes, as recommended for ZuCo raw EEG.
 
     Args:
-        epoch: Array `(channels, time)`.
-        eps: Numerical floor added to the per-channel standard deviation.
+        epoch (np.ndarray): Array `(n_channels, time_steps)`.
+        eps (float): Numerical floor added to the per-channel standard deviation.
 
     Returns:
         The standardised epoch as float32.
+
     """
     mean = epoch.mean(axis=-1, keepdims=True)
     std = epoch.std(axis=-1, keepdims=True)
@@ -66,7 +66,7 @@ def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
 
 
 class FeatureNormalizer:
-    """Stateful normaliser for 2-D feature matrices `(N, F)`.
+    """Stateful normaliser for 2-D feature matrices `(n_words, n_features)`.
 
     Attributes:
         mode: The normalisation scheme.
@@ -77,9 +77,9 @@ class FeatureNormalizer:
         """Initialises the normaliser.
 
         Args:
-            mode: One of `'zscore_channel'` (per-column z-score),
-                `'zscore_global'` (single mean/std), `'minmax'` or `'none'`.
-            eps: Numerical floor for divisions.
+            mode (Normalization): One of `zscore_channel` (per-column z-score), `zscore_global` (single mean/std), `minmax` or `none`.
+            eps (float): Numerical floor for divisions.
+
         """
         self.mode = mode
         self.eps = eps
@@ -90,10 +90,11 @@ class FeatureNormalizer:
         """Learns normalisation statistics from `x`.
 
         Args:
-            x: Training feature matrix `(N, F)`.
+            x (np.ndarray): Training feature matrix `(n_words, n_features)`.
 
         Returns:
             `self`, for chaining.
+
         """
         if self.mode == 'none':
             return self
@@ -113,7 +114,7 @@ class FeatureNormalizer:
         """Applies learned statistics to `x`.
 
         Args:
-            x: Feature matrix `(N, F)`.
+            x (np.ndarray): Feature matrix `(n_words, n_features)`.
 
         Returns:
             The normalised matrix as float32 (unchanged when `mode='none'`).
@@ -125,13 +126,14 @@ class FeatureNormalizer:
         return ((x - self._a) / self._b).astype(np.float32)
 
     def fit_transform(self, x: np.ndarray) -> np.ndarray:
-        """Convenience for :meth:`fit` followed by :meth:`transform`.
+        """Convenience for `fit` followed by `transform`.
 
         Args:
-            x: Training feature matrix `(N, F)`.
+            x (np.ndarray): Training feature matrix `(n_words, n_features)`.
 
         Returns:
-            The normalised matrix.
+            The normalised matrix as float32.
+
         """
         return self.fit(x).transform(x)
 
@@ -150,10 +152,11 @@ class FeatureNormalizer:
         """Rebuilds a normaliser from :attr:`state`.
 
         Args:
-            state: A dict previously produced by :attr:`state`.
+            state (dict[str, object]): A dict previously produced by `state`.
 
         Returns:
-            A restored :class:`FeatureNormalizer`.
+            A restored `FeatureNormalizer`.
+
         """
         norm = cls(mode=state['mode'], eps=float(state['eps']))  # type: ignore[arg-type]
         if state['a'] is not None:

@@ -1,10 +1,9 @@
 """ZuCo Thought Embedding (ZTE).
 
-A tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG
-embedding pipeline, built for the *Cross-Modal Transfer Learning: Aligning EEG
-Signals to Language* project. ZTE pretrains word-level "thought embeddings" from
-ZuCo EEG the way word embeddings are pretrained from text -- via skip-gram/CBOW
-contrastive, masked (data2vec/MAEEG) and CPC (wav2vec/BENDR) objectives -- and is
+A tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG embedding pipeline,
+built for the *Cross-Modal Transfer Learning: Aligning EEG Signals to Language* project.
+ZTE pretrains word-level "thought embeddings" from ZuCo EEG the way word embeddings are pretrained
+from text -- via skip-gram/CBOW contrastive, masked (data2vec/MAEEG) and CPC (wav2vec/BENDR) objectives -- and is
 the first step toward a device-, subject- and task-agnostic brain representation.
 
 Typical usage::
@@ -46,7 +45,7 @@ __version__ = '0.1.0'
 
 
 def __getattr__(name: str) -> object:
-    """Lazily exposes heavier entry points to keep ``import zte`` light.
+    """Lazily exposes heavier entry points to keep `import zte` light.
 
     Args:
         name: The attribute being accessed.
@@ -55,7 +54,8 @@ def __getattr__(name: str) -> object:
         The requested object.
 
     Raises:
-        AttributeError: If ``name`` is not a known lazy export.
+        AttributeError: If `name` is not a known lazy export.
+
     """
     if name == 'run_training':
         from zte.training.pipeline import run_training

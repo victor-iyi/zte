@@ -1,0 +1,210 @@
+# The ZuCoDataset guide
+
+`ZuCoDataset` is the tunable front door to ZuCo. This guide covers its lifecycle, every configuration knob, the CLI wrapper (`zte-prepare`), and the analysis/visualisation helpers.
+
+> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (how data flows through the system),
+> [TRAINING.md](TRAINING.md) (consuming a bundle), [EVALUATION.md](EVALUATION.md).
+
+## How to run it
+
+### CLI — build and cache a bundle (`zte-prepare`)
+
+```sh
+# Real data: point --root at a directory of extracted .mat files.
+uv run zte-prepare --root res/data/zuco_extracted --representation band_power --out res/bundle
+
+# No data: synthesise a schema-faithful tree, then build (great smoke test).
+uv run zte-prepare --synthetic --synthetic-sentences 12 --out res/bundle --figures res/figures
+
+# Choose the missing-value strategy, normalisation and raw window.
+uv run zte-prepare --root res/data/zuco_extracted \
+    --representation both --missing-method knn --normalize zscore_channel --raw-window 128 \
+    --tasks SR,NR --subjects ZAB,ZDM,ZJS --out res/bundle
+```
+
+`zte-prepare` flags (all optional except a source):
+
+| Flag                                                                 | Default                                          | Meaning                                                   |
+| -------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------- |
+| `--root` / `--synthetic`                                             | — (one required)                                 | Extracted `.mat` dir, or synthesise a tree                |
+| `--representation`                                                   | `band_power`                                     | `band_power` \| `raw` \| `both`                           |
+| `--missing-method`                                                   | `mask_only`                                      | Any strategy from the table below                         |
+| `--normalize`                                                        | `zscore_channel`                                 | `zscore_channel` \| `zscore_global` \| `minmax` \| `none` |
+| `--raw-window`                                                       | `128`                                            | Samples raw EEG is padded/truncated to                    |
+| `--tasks`                                                            | `SR,NR`                                          | Comma-separated tasks (`SR`,`NR`,`TSR`)                   |
+| `--subjects`                                                         | all                                              | Comma-separated subject filter                            |
+| `--cache-dir`                                                        | `res/cache`                                      | Feature-cache location                                    |
+| `--out`                                                              | `res/bundle`                                     | Where the reusable bundle is saved                        |
+| `--figures`                                                          | off                                              | If set, render the overview figures here                  |
+| `--synthetic-out` / `--synthetic-subjects` / `--synthetic-sentences` | `res/data/synthetic_zuco` / `ZAB,ZDM,ZJN` / `12` | Synthetic generator options                               |
+
+### Python API
+
+```python
+from zte.config import DatasetConfig, MissingConfig
+from zte.data.dataset import ZuCoDataset
+
+ds = ZuCoDataset(DatasetConfig(
+    root='res/data/zuco_extracted',
+    tasks=('SR', 'NR'),
+    representation='both',                 # band_power | raw | both
+    band_power_measures=('TRT',),          # which eye-tracking-locked features
+    include_eye_tracking=True,             # gaze scalars appended? (see below)
+    normalize='zscore_channel',
+    missing=MissingConfig(method='knn'),   # see table below
+    raw_window=128,
+)).build()                                 # caches a bundle; reloads instantly next time
+
+ds.analyze()                               # dict: counts, omission, missingness
+ds.select_features(target='log_freq', method='mutual_info', k=64)
+splits = ds.split('by_subject_loso', holdout_subject='ZPH')
+torch_ds = ds.to_torch(split=splits['train'])
+ds.save('res/bundle')                      # round-trips arrays + tables + normaliser
+```
+
+## Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant D as ZuCoDataset
+    participant M as mat_loader
+    participant I as MissingValueImputer
+    participant N as FeatureNormalizer
+    U->>D: ZuCoDataset(config).build()
+    D->>D: cache hit? → load() and return
+    D->>M: extract_file() per .mat (progress bar)
+    M-->>D: rows + band-power (N,F,C) + raw (N,C,T)
+    D->>D: join corpus frequency + sentence category
+    D->>D: add linguistic features, length filters
+    D->>I: fit_transform(flatten(band_power))
+    I-->>D: imputed features + presence mask
+    D->>N: fit on PRESENT tokens, transform all
+    N-->>D: normalised features (N, F·C [+ gaze dims])
+    D->>D: save() bundle to cache
+    D-->>U: built dataset
+```
+
+## Configuration reference (`DatasetConfig`)
+
+Defaults come straight from `src/zte/config.py`.
+
+| Field                        | Default                                     | Meaning                                                   |
+| ---------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| `root`                       | `res/data/zuco_extracted`                   | Directory of `.mat` files (searched recursively)          |
+| `tasks`                      | `('SR','NR')`                               | Reading tasks to include (`SR`,`NR`,`TSR`)                |
+| `subjects`                   | `None`                                      | Subject filter (`None` = all discovered)                  |
+| `granularity`                | `word`                                      | Token granularity (`word`; `sentence` reserved)           |
+| `representation`             | `band_power`                                | `band_power` \| `raw` \| `both`                           |
+| `band_power_measures`        | `('TRT',)`                                  | Eye-tracking-locked measures for band power               |
+| `include_eye_tracking`       | `True`                                      | Append gaze-behaviour scalars to each token (see below)   |
+| `eye_tracking_measures`      | `FFD,SFD,GD,GPT,TRT,n_fixations,mean_pupil` | Which gaze scalars are appended                           |
+| `bands`                      | all 8                                       | Frequency bands for band power                            |
+| `raw_field`                  | `rawEEG`                                    | Word raw-EEG field (`rawData` for sentence)               |
+| `raw_window`                 | `128`                                       | Samples raw EEG is padded/truncated to                    |
+| `normalize`                  | `zscore_channel`                            | `zscore_channel` \| `zscore_global` \| `minmax` \| `none` |
+| `bandpass`                   | `None`                                      | Optional `(low, high)` Hz Butterworth filter for raw      |
+| `missing`                    | `MissingConfig()`                           | Missing-value strategy (see table)                        |
+| `include_omitted`            | `True`                                      | Keep omitted words as masked tokens (else drop them)      |
+| `min_words` / `max_words`    | `1` / `None`                                | Sentence-length filter                                    |
+| `cache_dir` / `cache_format` | `res/cache` / `npz`                         | Processed cache location/format                           |
+
+### Eye-tracking: include or exclude
+
+ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`, pupil size) is richly informative — **for reading**. But an imagined-thought BCI has no gaze. `include_eye_tracking` makes this a first-class switch:
+
+```python
+DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to each token
+DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
+```
+
+The EEG band-power is always kept; the toggle only governs the extra gaze dimensions. `zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a *cognitive* target, so the choice is evidence-based (see [EVALUATION.md](EVALUATION.md)).
+
+## Representations
+
+| Representation | Per-token shape    | Frontend         | When to use                                |
+| -------------- | ------------------ | ---------------- | ------------------------------------------ |
+| `band_power`   | `F·C` (e.g. 8×105) | `band_power_mlp` | Compact, fast, proven; great default       |
+| `raw`          | `C×T` (105×window) | `raw_conformer`  | Richer temporal detail; heavier            |
+| `both`         | both available     | either           | Keep options open; switch via model config |
+
+## Missing-value strategies (`MissingConfig.method`)
+
+Omitted (skipped) words carry **no** EEG. Every strategy returns a **presence mask** so omitted-word zero-vectors never leak into training losses.
+
+| Method                                | What it does                                                      |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| `mask_only`                           | Fill with 0, rely entirely on the presence mask (default, safest) |
+| `zero`                                | Fill with 0                                                       |
+| `row_mean`                            | Fill from each token's own present features                       |
+| `col_mean` / `global_mean` / `median` | Fill from column / global statistics                              |
+| `knn`                                 | `KNNImputer` (predict from similar tokens)                        |
+| `iterative`                           | Model-based round-robin regression imputation                     |
+| `ffill` / `interpolate`               | Sequence-aware fills along reading order (never cross sentences)  |
+| `drop`                                | Remove omitted-word rows entirely                                 |
+
+```mermaid
+flowchart TD
+    Q{Word fixated?} -->|yes| keep[Use real EEG features]
+    Q -->|no, omitted| M{missing.method}
+    M -->|mask_only / zero| z[fill 0 · mask=False]
+    M -->|row/col/global/median| s[fill statistic · mask=False]
+    M -->|knn / iterative| p[predict value · mask=False]
+    M -->|ffill / interpolate| seq[fill within sentence · mask=False]
+    M -->|drop| d[remove row]
+    z --> L[loss ignores masked tokens]
+    s --> L
+    p --> L
+    seq --> L
+```
+
+## Analysis & visualisation
+
+```python
+from zte.data.viz import save_overview
+summary = ds.analyze()                 # counts, omission, missingness (JSON-safe)
+save_overview(ds, 'res/figures')       # missingness, ET dists, correlations, omission, availability
+```
+
+| Figure                      | Function                  | What it shows         |
+| --------------------------- | ------------------------- | --------------------- |
+| Missingness by measure/task | `plot_missingness`        | missing-rate analysis |
+| ET duration histograms      | `plot_et_distributions`   | word-level durations  |
+| ET correlation matrix       | `plot_correlations`       | measure correlations  |
+| Omission & TRT vs length    | `plot_omission_by_length` | length effects        |
+| EEG availability heatmap    | `plot_eeg_availability`   | availability heatmap  |
+
+Sample outputs (from the synthetic smoke run) are shown in [RESULTS.md](RESULTS.md).
+
+## Feature selection
+
+```python
+res = ds.select_features(target='log_freq', method='mutual_info', k=64)
+res.indices   # selected flattened (channel×band) indices
+res.scores    # importance per input feature
+res.names     # e.g. 'TRT_t1::ch042'
+```
+
+Methods: `variance`, `f_score`, `mutual_info`, `rf_importance`. Scoring is restricted to present tokens (`present_only=True`) so omitted words never drive the ranking.
+
+## Splits
+
+Choose with `train.split` (see [TRAINING.md](TRAINING.md)) or `ds.split(...)`.
+
+| Strategy          | Holds out       | Use                                          |
+| ----------------- | --------------- | -------------------------------------------- |
+| `random`          | random words    | quick sanity checks                          |
+| `by_sentence`     | whole sentences | default; no within-sentence leakage          |
+| `by_subject_loso` | one subject     | cross-subject generalisation (the real test) |
+| `by_task`         | one task        | cross-task transfer                          |
+
+## Persistence & remote
+
+```python
+ds.save('res/bundle')                       # arrays.npz + words.pkl + sentences.pkl + meta.json
+ds2 = ZuCoDataset.load('res/bundle')        # exact round-trip incl. normaliser state
+ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')
+ZuCoDataset.from_drive('<file id | url | mounted path>')
+```
+
+A saved bundle is the unit of reuse: build once with `zte-prepare`, then train, evaluate and explore from it repeatedly without re-reading the `.mat` files.

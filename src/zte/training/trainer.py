@@ -78,7 +78,7 @@ class Trainer:
             device (DeviceSpec | None): Pre-resolved device spec; auto-resolved when `None`.
             extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
         """
-        seed_everything(config.train.seed)
+        seed_everything(config.train.seed, deterministic=config.train.deterministic)
         self.config = config
         self.device = device or resolve_device(config.train.device, config.train.precision)
         self.model = model.to(self.device.device)
@@ -111,6 +111,7 @@ class Trainer:
         self.writer = self._build_tensorboard()
         self.history: dict[str, list[float]] = defaultdict(list)
         self._global_step = 0
+        self._last_grad_norm: float | None = None
         self._maybe_compile()
         _LOG.info(
             'Trainer ready | device=%s | objective=%s | steps=%d | params=%.2fM',
@@ -152,9 +153,34 @@ class Trainer:
                 self.writer.add_scalar('loss/train', train_loss, epoch)
                 if not _isnan(val_loss):
                     self.writer.add_scalar('loss/val', val_loss, epoch)
+        self._log_hparams()
         if self.writer is not None:
             self.writer.close()
         return dict(self.history)
+
+    def _log_hparams(self) -> None:
+        """Records this run's key knobs joined to its final losses (HParams tab)."""
+        if self.writer is None:
+            return
+        cfg = self.config
+        hparams = {
+            'objective': cfg.objective.name,
+            'frontend': cfg.model.frontend,
+            'pos_encoding': cfg.model.pos_encoding,
+            'embed_dim': cfg.model.embed_dim,
+            'hidden_dim': cfg.model.hidden_dim,
+            'lr': cfg.train.lr,
+            'include_eye_tracking': cfg.dataset.include_eye_tracking,
+        }
+        final = {
+            'hparam/final_train_loss': self.history['train_loss'][-1]
+            if self.history['train_loss'] else float('nan'),
+        }
+        if self.history.get('val_loss'):
+            final['hparam/final_val_loss'] = self.history['val_loss'][-1]
+        clean = {k: v for k, v in final.items() if not _isnan(v)}
+        if clean:
+            self.writer.add_hparams(hparams, clean)
 
     @torch.no_grad()
     def evaluate(self) -> float:
@@ -210,9 +236,23 @@ class Trainer:
                         metrics.get('loss', float('nan')),
                         {k: round(v, 3) for k, v in metrics.items() if k != 'loss'},
                     )
+                    self._log_step(metrics)
             running += metrics.get('loss', 0.0)
             n_steps += 1
         return running / max(n_steps, 1)
+
+    def _log_step(self, metrics: dict[str, float]) -> None:
+        """Writes per-step training scalars to TensorBoard (loss, lr, grad-norm, ...)."""
+        if self.writer is None:
+            return
+        step = self._global_step
+        self.writer.add_scalar('train/loss', metrics.get('loss', float('nan')), step)
+        self.writer.add_scalar('train/lr', self.optimizer.param_groups[0]['lr'], step)
+        if self._last_grad_norm is not None:
+            self.writer.add_scalar('train/grad_norm', self._last_grad_norm, step)
+        for key, value in metrics.items():
+            if key != 'loss' and isinstance(value, (int, float)):
+                self.writer.add_scalar(f'train/{key}', value, step)
 
     def _backward(self, loss: torch.Tensor) -> None:
         """Backpropagates, scaling the loss when an AMP scaler is active."""
@@ -227,7 +267,9 @@ class Trainer:
         if self.config.train.grad_clip > 0:
             if self.scaler is not None:
                 self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(params, self.config.train.grad_clip)
+            self._last_grad_norm = float(
+                torch.nn.utils.clip_grad_norm_(params, self.config.train.grad_clip)
+            )
         if self.scaler is not None:
             self.scaler.step(self.optimizer)
             self.scaler.update()

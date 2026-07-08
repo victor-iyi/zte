@@ -28,8 +28,8 @@ def build_scheduler(
         optimizer: The optimiser whose LR is scheduled.
         total_steps: Total number of optimiser steps over training.
         warmup_steps: Steps spent linearly warming up from 0 to the peak LR.
-        kind: Decay shape after warmup (``'cosine'``, ``'linear'`` or
-            ``'constant'``).
+        kind: Decay shape after warmup (`'cosine'`, `'linear'` or
+            `'constant'`).
         min_lr_ratio: Floor for the LR multiplier (as a fraction of peak).
 
     Returns:

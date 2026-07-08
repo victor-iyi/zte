@@ -1,12 +1,13 @@
 """A schema-faithful synthetic ZuCo generator for tests, demos and smoke-trains.
 
-The raw ZuCo EEG archives are tens of gigabytes, so this module fabricates small `.mat` files that match ZuCo's *exact* on-disk structure: a `sentenceData`
-struct array whose elements expose `content`, `word` (a nested struct array), `omissionRate` and `mean_<band>` fields, and whose words expose the five
-eye-tracking scalars, `meanPupilSize`, `rawEEG` and the `<measure>_<band>` 105-channel band features. Omitted words carry *empty* arrays exactly as the
-real corpus does.
+The raw ZuCo EEG archives are tens of gigabytes, so this module fabricates small `.mat` files that match ZuCo's *exact*
+on-disk structure: a `sentenceData` struct array whose elements expose `content`, `word` (a nested struct array),
+`omissionRate` and `mean_<band>` fields, and whose words expose the five eye-tracking scalars, `meanPupilSize`, `rawEEG`
+and the `<measure>_<band>` 105-channel band features. Omitted words carry *empty* arrays exactly as the real corpus does.
 
-Crucially the generator injects realistic latent structure -- omission depends on word length/frequency, band power correlates with word length and frequency, and
-each subject has its own offset/scale -- so that the dataset's analysis tools and the self-supervised objectives have genuine signal to find.
+Crucially the generator injects realistic latent structure -- omission depends on word length/frequency, band power correlates
+with word length and frequency, and each subject has its own offset/scale -- so that the dataset's analysis tools and the self-supervised
+objectives have genuine signal to find.
 """
 
 from __future__ import annotations
@@ -59,11 +60,11 @@ def _word_dtype(measures: tuple[EyeTrackingMeasure, ...], bands: tuple[Band, ...
     """Builds the structured dtype for a single ZuCo word struct.
 
     Args:
-        measures: Eye-tracking measures to expose as band-feature fields.
-        bands: Frequency bands to expose per measure.
+        measures (tuple[EyeTrackingMeasure, ...]): Eye-tracking measures to expose as band-feature fields.
+        bands (tuple[Band, ...]): Frequency bands to expose per measure.
 
     Returns:
-        A NumPy structured dtype with object fields matching ZuCo's layout.
+        A `np.dtype` with object fields matching ZuCo's layout.
     """
     fields: list[tuple[str, str]] = [
         ('content', 'O'),
@@ -89,10 +90,10 @@ def _sentence_dtype() -> np.dtype:
 
 
 def _word_frequency(word: str) -> float:
-    """Cheap pseudo-frequency proxy in ``(0, 1]`` (short words score higher).
+    """Cheap pseudo-frequency proxy in `(0, 1]` (short words score higher).
 
     Args:
-        word: The surface word form.
+        word (str): The surface word form.
 
     Returns:
         A value where common short tokens approach 1 and long tokens approach 0.
@@ -109,19 +110,18 @@ def _band_power_vector(
 ) -> np.ndarray:
     """Synthesises a 105-channel band-power vector with embedded structure.
 
-    Power scales with word length and inverse frequency (longer, rarer words
-    evoke stronger responses), is modulated per band, and carries a subject gain
-    plus a spatial gradient across channels and channel-wise noise.
+    Power scales with word length and inverse frequency (longer, rarer words evoke stronger responses), is modulated per band,
+    and carries a subject gain plus a spatial gradient across channels and channel-wise noise.
 
     Args:
-        band: The frequency band being generated.
-        word_len: Word length in characters.
-        freq: Word-frequency proxy in ``(0, 1]``.
-        subject_gain: Per-subject multiplicative offset.
-        rng: Seeded random generator.
+        band (Band): The frequency band being generated.
+        word_len (int): Word length in characters.
+        freq (float): Word-frequency proxy in `(0, 1]`.
+        subject_gain (float): Per-subject multiplicative offset.
+        rng (np.random.Generator): Seeded random generator.
 
     Returns:
-        A ``(N_CHANNELS,)`` float32 vector.
+        A `(N_CHANNELS,)` float32 vector.
     """
     band_scale = {'t': 1.0, 'a': 0.8, 'b': 0.6, 'g': 0.4}[band[0]]
     base = band_scale * subject_gain * (0.5 + 0.08 * word_len + 0.6 * (1.0 - freq))
@@ -131,15 +131,16 @@ def _band_power_vector(
 
 
 def _raw_segment(word_len: int, subject_gain: float, rng: np.random.Generator) -> np.ndarray:
-    """Synthesises a short ``(N_CHANNELS, time)`` raw EEG segment for a word.
+    """Synthesises a short `(N_CHANNELS, time_steps)` raw EEG segment for a word.
 
     Args:
-        word_len: Word length, which scales the fixation (segment) duration.
-        subject_gain: Per-subject amplitude offset.
-        rng: Seeded random generator.
+        word_len (int): Word length, which scales the fixation (segment) duration.
+        subject_gain (float): Per-subject amplitude offset.
+        rng (np.random.Generator): Seeded random generator.
 
     Returns:
-        A ``(N_CHANNELS, time)`` float32 array with band-like oscillations.
+        A `(n_channels, time_steps)` float32 array with band-like oscillations.
+
     """
     time = int(np.clip(20 + 6 * word_len + rng.integers(-5, 6), 16, 80))
     t = np.arange(time, dtype=np.float32) / 500.0
@@ -282,13 +283,10 @@ def generate_synthetic_zuco(
     """Generates a small synthetic ZuCo tree under `out_dir`.
 
     Args:
-        out_dir (str | Path): Destination directory (created if missing). One `.mat` file is
-            written per subject/task as `results<SUBJECT>_<TASK>.mat`.
+        out_dir (str | Path): Destination directory (created if missing). One `.mat` file is written per subject/task as `results<SUBJECT>_<TASK>.mat`.
         subjects (tuple[str, ...]): Subject codes to fabricate.
-        tasks (tuple[str, ...]): Tasks to fabricate (`'SR'` draws sentiment lines, others draw
-            Wikipedia-style lines).
-        n_sentences (int): Sentences per subject/task (sampled with replacement from
-            the built-in corpus when larger than it).
+        tasks (tuple[str, ...]): Tasks to fabricate (`'SR'` draws sentiment lines, others draw Wikipedia-style lines).
+        n_sentences (int): Sentences per subject/task (sampled with replacement from the built-in corpus when larger than it).
         measures (tuple[EyeTrackingMeasure, ...]): Band-feature measures to populate.
         bands (tuple[Band, ...]): Band-feature bands to populate.
         seed (int): Base seed; each file is seeded deterministically from it.
@@ -304,15 +302,19 @@ def generate_synthetic_zuco(
     """
     out_dir = Path(out_dir)
     rng = np.random.default_rng(seed)
+    task_sentences: dict[str, tuple[str, ...]] = {}
+    for task in tasks:
+        corpus = _CORPUS_SR if task == 'SR' else _CORPUS_NR
+        idx = rng.integers(0, len(corpus), size=n_sentences)
+        task_sentences[task] = tuple(corpus[j] for j in idx)
+
     jobs = [(subj, task) for subj in subjects for task in tasks]
     paths: list[Path] = []
 
     for i, (subject, task) in enumerate(
         progress(jobs, description='Synthesising ZuCo', disable=not show_progress)
     ):
-        corpus = _CORPUS_SR if task == 'SR' else _CORPUS_NR
-        idx = rng.integers(0, len(corpus), size=n_sentences)
-        sentences = tuple(corpus[j] for j in idx)
+        sentences = task_sentences[task]
         file_path = out_dir / f'results{subject}_{task}.mat'
         generate_subject_file(
             file_path,

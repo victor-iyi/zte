@@ -36,10 +36,9 @@ class FileExtract:
         task: Task code parsed from the filename (e.g. `'SR'`).
         sentence_rows: One metadata dict per sentence.
         word_rows: One metadata/scalar dict per word (sentence order preserved).
-        band_power: Array `(n_words, n_bp_features, N_CHANNELS)` with `NaN`
-            for omitted words / rejected epochs, or `None` if not requested.
+        band_power: Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words / rejected epochs, or `None` if not requested.
         bp_feature_names: Names (`'<measure>_<band>'`) for the band-power axis.
-        raw_eeg: Array `(n_words, N_CHANNELS, raw_window)` or `None`.
+        raw_eeg: Array `(n_words, n_channels, time_steps)` or `None`.
     """
 
     subject: str
@@ -55,7 +54,7 @@ def parse_subject_task(path: Path) -> tuple[str, str]:
     """Extracts subject and task codes from a ZuCo `.mat` filename.
 
     Args:
-        path: Path such as `resultsZAB_SR.mat`.
+        path (Path): Path such as `resultsZAB_SR.mat`.
 
     Returns:
         `(subject, task)`, or `('?', stem)` when the name does not match.
@@ -75,7 +74,7 @@ def scalar_or_nan(value: object) -> float:
     treated as missing.
 
     Args:
-        value: A scipy-loaded scalar or (possibly empty) array.
+        value (object): A scipy-loaded scalar or (possibly empty) array.
 
     Returns:
         The scalar value, or `NaN` if the underlying array is empty.
@@ -100,12 +99,11 @@ def _channel_vector(value: object, n_channels: int = N_CHANNELS) -> np.ndarray:
     """Coerces a word band feature into a length-`n_channels` float vector.
 
     Args:
-        value: A scipy-loaded band feature (ideally a 105-vector).
-        n_channels: Expected channel count.
+        value (object): A scipy-loaded band feature (ideally a 105-vector).
+        n_channels (int): Expected channel count.
 
     Returns:
-        A `(n_channels,)` float32 array; all-`NaN` when the source is empty,
-        truncated/zero-padded when the length is unexpected.
+        A `(n_channels,)` float32 array; all-`NaN` when the source is empty, truncated/zero-padded when the length is unexpected.
     """
     arr = np.asarray(value, dtype=np.float32).ravel()
     if arr.size == 0:
@@ -121,9 +119,9 @@ def _raw_window(value: object, n_channels: int, window: int) -> np.ndarray:
     """Pads/truncates a raw EEG segment to `(n_channels, window)`.
 
     Args:
-        value: Raw EEG array, ideally `(channels, time)`.
-        n_channels: Target channel count.
-        window: Target time length in samples.
+        value (object): Raw EEG array, ideally `(channels, time)`.
+        n_channels (int): Target channel count.
+        window (int): Target time length in samples.
 
     Returns:
         A `(n_channels, window)` float32 array; all-zero when the source is empty (an omitted word), so callers must consult the presence mask.
@@ -146,7 +144,7 @@ def load_mat(path: str | Path) -> dict[str, Any]:
     """Loads a ZuCo `.mat` file, transparently handling v7.3 (HDF5) files.
 
     Args:
-        path: Path to a `.mat` file (v5/v6 or v7.3).
+        path (str | Path): Path to a `.mat` file (v5/v6 or v7.3).
 
     Returns:
         A dict of variables. Pre-v7.3 structs are attribute-style objects.
@@ -182,14 +180,14 @@ def extract_file(
     should process one file at a time and let it be garbage-collected.
 
     Args:
-        path: Path to a v5/v6 ZuCo `.mat` file.
-        measures: Eye-tracking measures whose band features feed the band-power tensor.
-        bands: Frequency bands for the band-power tensor (empty disables it).
-        load_band_power: Whether to assemble the band-power tensor.
-        load_raw: Whether to assemble the raw EEG tensor.
-        raw_field: Word field holding raw EEG (typically `'rawEEG'`).
-        raw_window: Fixed time length raw EEG is padded/truncated to.
-        eeg_probe: `(measure, band)` used as the per-word EEG presence probe.
+        path (str | Path): Path to a v5/v6 ZuCo `.mat` file.
+        measures (tuple[EyeTrackingMeasure, ...]): Eye-tracking measures whose band features feed the band-power tensor.
+        bands (tuple[Band, ...]): Frequency bands for the band-power tensor (empty disables it).
+        load_band_power (bool): Whether to assemble the band-power tensor.
+        load_raw (bool): Whether to assemble the raw EEG tensor.
+        raw_field (str): Word field holding raw EEG (typically `'rawEEG'`).
+        raw_window (int): Fixed time length raw EEG is padded/truncated to.
+        eeg_probe (tuple[EyeTrackingMeasure, Band]): `(measure, band)` used as the per-word EEG presence probe.
 
     Returns:
         A populated :class:`FileExtract`.

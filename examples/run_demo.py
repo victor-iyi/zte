@@ -1,11 +1,10 @@
 """End-to-end ZTE demo: synthesise ZuCo, pretrain a thought embedding, evaluate.
 
-Runs the entire pipeline on synthetic (but schema-faithful) data so it works
-with no downloads: generate -> build dataset -> pretrain (chosen objective) ->
-extract word embeddings -> linear-probe the embedding -> render figures.
+Runs the entire pipeline on synthetic (but schema-faithful) data so it works with no downloads:
+generate -> build dataset -> pretrain (chosen objective) -> extract word embeddings -> linear-probe the embedding -> render figures.
 
 Example:
-    >>> # uv run python examples/run_demo.py --objective skipgram --epochs 8
+    $ uv run python examples/run_demo.py --objective skipgram --epochs 8
 """
 
 from __future__ import annotations

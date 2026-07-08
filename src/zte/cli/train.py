@@ -1,7 +1,8 @@
 """`zte-train` -- pretrain a ZTE model with a chosen self-supervised objective.
 
-Configuration comes from a YAML file (`--config`) and/or individual flags that override it, so quick experiments need no file while reproducible runs can pin
-everything. The trained run writes checkpoints (best/last), the resolved config and a training-curve figure under the checkpoint directory.
+Configuration comes from a YAML file (`--config`) and/or individual flags that override it, so quick experiments need no file
+while reproducible runs can pin everything. The trained run writes checkpoints (best/last), the resolved config and a training-curve
+figure under the checkpoint directory.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def build_config(args: argparse.Namespace) -> ZTEConfig:
         args (argparse.Namespace): Parsed CLI arguments.
 
     Returns:
-        ZTEConfig: The merged :class:`ZTEConfig`.
+        ZTEConfig: The merged `ZTEConfig`.
 
     """
     config = ZTEConfig.from_yaml(args.config) if args.config else ZTEConfig()
@@ -99,7 +100,7 @@ def load_dataset(args: argparse.Namespace, config: ZTEConfig) -> ZuCoDataset:
         config (ZTEConfig): The run config (its dataset section is used when building).
 
     Returns:
-        ZuCoDataset: A built :class:`ZuCoDataset`.
+        ZuCoDataset: A built `ZuCoDataset`.
 
     """
     if args.bundle:

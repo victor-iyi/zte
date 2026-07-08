@@ -1,7 +1,9 @@
 """Centralised logging and progress-bar helpers.
 
-Console logging is routed through `rich` when available (pretty, coloured, single-line tracebacks) and falls back to the standard library otherwise. A
-single `get_logger` accessor is used everywhere so log formatting is consistent across the dataset, model, training and CLI layers.
+Console logging is routed through `rich` when available (pretty, coloured, single-line
+tracebacks) and falls back to the standard library otherwise. A single `get_logger`
+accessor is used everywhere so log formatting is consistent across the dataset, model,
+training and CLI layers.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -23,7 +25,8 @@ def configure_logging(
 
     Args:
         level (int | str): Logging level (e.g. `logging.INFO` or `'DEBUG'`).
-        log_file (str | Path | None): Optional path; when given, logs are also appended to this file with a verbose formatter.
+        log_file (str | Path | None): Optional path; when given, logs are also
+            appended to this file with a verbose formatter.
 
     """
     logger = logging.getLogger(_LOGGER_NAME)
@@ -61,7 +64,8 @@ def get_logger(name: str | None = None) -> logging.Logger:
     """Returns a namespaced child of the `zte` logger.
 
     Args:
-        name (str | None): Optional dotted suffix (e.g. `'data.dataset'`). When omitted the root `zte` logger is returned.
+        name (str | None): Optional dotted suffix (e.g. `'data.dataset'`). When
+            omitted the root `zte` logger is returned.
 
     Returns:
         A configured `logging.Logger`.

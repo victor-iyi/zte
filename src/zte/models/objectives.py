@@ -26,7 +26,7 @@ from zte.models.heads import EMATeacher, Predictor, ProjectionHead
 
 
 def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
-    """Returns `(B, L)` mask of tokens usable as anchors/positives/targets.
+    """Returns `(batch_size, seq_len)` mask of tokens usable as anchors/positives/targets.
 
     A token is usable only if it is a real (non-padding) position *and* the word
     received a fixation (present). This is the anti-leakage gate.
@@ -35,7 +35,7 @@ def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
         batch (dict[str, Any]): A collated batch dict.
 
     Returns:
-        Boolean tensor `(B, L)`.
+        Boolean tensor `(batch_size, seq_len)`.
     """
     return batch['pad_mask'] & batch['presence']
 
@@ -53,7 +53,7 @@ def _context_key_mask(batch: dict[str, Any]) -> torch.Tensor:
         batch (dict[str, Any]): A collated batch dict.
 
     Returns:
-        Boolean tensor `(B, L)`; `True` at positions allowed as attention keys.
+        Boolean tensor `(batch_size, seq_len)`; `True` at positions allowed as attention keys.
     """
     valid = batch['pad_mask'] & batch['presence']
     empty = ~valid.any(dim=1)
@@ -99,14 +99,14 @@ class SkipGramObjective(nn.Module):  # pylint: disable=abstract-method
             tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)` where metrics include `loss` and `n_anchors`.
 
         """
-        hidden = model.token_hidden(batch)  # (B, L, Hd), non-contextual
+        hidden = model.token_hidden(batch)  # (batch_size, seq_len, hidden_dim), non-contextual
         center = F.normalize(model.project(hidden), dim=-1)
         context = F.normalize(self.context_head(hidden), dim=-1)
         b, length, _ = center.shape
 
         center_flat = center.reshape(b * length, -1)
         context_flat = context.reshape(b * length, -1)
-        usable = _usable_mask(batch).reshape(-1)  # (M,)
+        usable = _usable_mask(batch).reshape(-1)  # (n_tokens,)
 
         sent_id = torch.arange(b, device=center.device).repeat_interleave(length)
         pos = torch.arange(length, device=center.device).repeat(b)
@@ -188,7 +188,7 @@ class CBOWObjective(nn.Module):  # pylint: disable=abstract-method
         neigh = same_sent & within & not_self & usable[None, :]
 
         counts = neigh.sum(dim=1, keepdim=True).clamp_min(1).float()
-        ctx_repr = (neigh.float() @ context_flat) / counts  # (M, E)
+        ctx_repr = (neigh.float() @ context_flat) / counts  # (n_tokens, embed_dim)
         ctx_repr = F.normalize(ctx_repr, dim=-1)
 
         anchors = usable & (neigh.sum(dim=1) > 0)
@@ -226,8 +226,9 @@ class MaskedObjective(nn.Module):  # pylint: disable=abstract-method
             config (ObjectiveConfig): Objective configuration (uses `mask_ratio`,
                 `masked_target`, `ema_decay`).
             model (ZTEModel): The encoder (also cloned into the EMA teacher).
-            feature_dim (int | None): Reconstruct-target dimension -- `F*C` for the
-                band-power frontend or `C*T` for the raw frontend. Only used when
+            feature_dim (int | None): Reconstruct-target dimension -- `n_features`
+                (flattened band power) for the band-power frontend or
+                `n_channels * time_steps` for the raw frontend. Only used when
                 `masked_target='reconstruct'`.
         """
         super().__init__()
@@ -256,8 +257,8 @@ class MaskedObjective(nn.Module):  # pylint: disable=abstract-method
         Returns:
             tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`.
         """
-        usable = _usable_mask(batch)  # (B, L)
-        hidden = model.token_hidden(batch)  # (B, L, Hd)
+        usable = _usable_mask(batch)  # (batch_size, seq_len)
+        hidden = model.token_hidden(batch)  # (batch_size, seq_len, hidden_dim)
         rand = torch.rand_like(usable, dtype=torch.float32)
         mask = usable & (rand < self.config.mask_ratio)
         if not bool(mask.any()):  # guarantee at least one masked token
@@ -341,10 +342,10 @@ class CPCObjective(nn.Module):  # pylint: disable=abstract-method
 
         """
         hidden = model.token_hidden(batch)
-        targets = F.normalize(self.target_head(hidden), dim=-1)  # (B, L, E)
+        targets = F.normalize(self.target_head(hidden), dim=-1)  # (batch_size, seq_len, embed_dim)
         # Exclude omitted tokens from the causal context's keys/values.
         context = model.contextualize(hidden, _context_key_mask(batch), causal=True)
-        context = F.normalize(model.project(context), dim=-1)  # (B, L, E)
+        context = F.normalize(model.project(context), dim=-1)  # (batch_size, seq_len, embed_dim)
         b, length, e = targets.shape
         usable = _usable_mask(batch)
 
@@ -362,8 +363,8 @@ class CPCObjective(nn.Module):  # pylint: disable=abstract-method
             anchor_valid = usable[:, :-k] & usable[:, k:]
             if not bool(anchor_valid.any()):
                 continue
-            pred = self.predictors[k - 1](context[:, :-k])  # (B, L-k, E)
-            pred = F.normalize(pred, dim=-1)[anchor_valid]  # (A, E)
+            pred = self.predictors[k - 1](context[:, :-k])  # (batch_size, seq_len - k, embed_dim)
+            pred = F.normalize(pred, dim=-1)[anchor_valid]  # (n_anchors, embed_dim)
             tgt_index = (
                 torch.arange(b, device=context.device).repeat_interleave(length - k) * length
                 + (torch.arange(k, length, device=context.device).repeat(b))

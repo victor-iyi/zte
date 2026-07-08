@@ -37,11 +37,11 @@ class SentenceSample:
     """One sentence's tensors prior to collation.
 
     Attributes:
-        features: torch.Tensor | None: `(L, D)` band-power token matrix, or `None`.
-        raw: torch.Tensor | None: `(L, C, T)` raw EEG windows, or `None`.
-        presence: torch.Tensor: `(L,)` boolean presence mask.
-        subject: int: Integer subject id.
-        length: int: Number of word tokens `L`.
+        features (torch.Tensor | None): `(seq_len, n_features)` band-power token matrix, or `None`.
+        raw (torch.Tensor | None): `(seq_len, n_channels, time_steps)` raw EEG windows, or `None`.
+        presence (torch.Tensor): `(seq_len,)` boolean presence mask.
+        subject (int): Integer subject id.
+        length (int): Number of word tokens (`seq_len`).
     """
 
     features: torch.Tensor | None
@@ -106,7 +106,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
 
     @property
     def subject_ids(self) -> list[int]:
-        """Integer subject id per sentence, aligned with :attr:`sequences`."""
+        """Integer subject id per sentence, aligned with `sequences`."""
         return self._subjects
 
     def __len__(self) -> int:
@@ -154,13 +154,12 @@ def collate_sentences(batch: list[SentenceSample]) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: A dict with keys:
-
-        * `features`: `(B, Lmax, D)` or `None`.
-        * `raw`: `(B, Lmax, C, T)` or `None`.
-        * `pad_mask`: `(B, Lmax)` bool, `True` at valid positions.
-        * `presence`: `(B, Lmax)` bool, `True` for present (non-omitted) words.
-        * `subject`: `(B,)` long.
-        * `lengths`: `(B,)` long.
+        - `features`: `(batch_size, max_seq_len, n_features)` or `None`.
+        - `raw`: `(batch_size, max_seq_len, n_channels, time_steps)` or `None`.
+        - `pad_mask`: `(batch_size, max_seq_len)` bool, `True` at valid positions.
+        - `presence`: `(batch_size, max_seq_len)` bool, `True` for present (non-omitted) words.
+        - `subject`: `(batch_size,)` long.
+        - `lengths`: `(batch_size,)` long.
 
     """
     lengths = torch.tensor([s.length for s in batch], dtype=torch.long)

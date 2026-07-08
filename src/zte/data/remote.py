@@ -2,13 +2,12 @@
 
 Three transport mechanisms are supported, tried in order of convenience:
 
-#. **Mounted Drive path** -- on Colab (`drive.mount('/content/drive')`) or any
-   machine where Drive is mounted as a folder, reads/writes are ordinary file copies. This is the most reliable path.
-#. **gdown** -- downloads public/shared files and folders by id or URL (e.g. `uv add 'zte[drive]` or `pip install 'zte[drive]'). Download-only.
+#. **Mounted Drive path** -- on Colab (`drive.mount('/content/drive')`) or any machine where Drive is mounted as a folder,
+    reads/writes are ordinary file copies. This is the most reliable path.
+#. **gdown** -- downloads public/shared files and folders by id or URL (e.g. `uv add 'zte[drive]'` or `pip install 'zte[drive]'`). Download-only.
 #. **PyDrive2 / service account** -- authenticated uploads when configured.
 
-Every function degrades gracefully with an actionable error rather than a stack
-trace when an optional dependency or credential is missing.
+Every function degrades gracefully with an actionable error rather than a stack trace when an optional dependency or credential is missing.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -26,10 +25,10 @@ def mount_drive(mount_point: str = '/content/drive') -> bool:
     """Mounts Google Drive when running inside Google Colab.
 
     Args:
-        mount_point: Where to mount Drive.
+        mount_point (str): Where to mount Drive.
 
     Returns:
-        ``True`` if mounted (or already mounted), ``False`` outside Colab.
+        `True` if mounted (or already mounted), `False` outside Colab.
     """
     try:
         from google.colab import drive  # type: ignore[import-not-found]
@@ -42,13 +41,13 @@ def mount_drive(mount_point: str = '/content/drive') -> bool:
 
 
 def is_mounted_path(spec: str) -> bool:
-    """Heuristically decides whether ``spec`` is a local (mounted) filesystem path.
+    """Heuristically decides whether `spec` is a local (mounted) filesystem path.
 
     Args:
-        spec: A path or remote identifier/URL.
+        spec (str): A path or remote identifier/URL.
 
     Returns:
-        ``True`` when ``spec`` looks like a local path whose parent exists.
+        `True` when `spec` looks like a local path whose parent exists.
     """
     if spec.startswith(('http://', 'https://')):
         return False
@@ -57,20 +56,20 @@ def is_mounted_path(spec: str) -> bool:
 
 
 def download_to_dir(remote_spec: str, local_dir: str | Path) -> Path:
-    """Downloads a Drive file/folder (or copies a mounted path) into ``local_dir``.
+    """Downloads a Drive file/folder (or copies a mounted path) into `local_dir`.
 
-    If the downloaded artifact is a ``.zip`` it is extracted in place. If it is a
-    directory bundle (already containing ``meta.json``) it is returned as-is.
+    If the downloaded artifact is a `.zip` it is extracted in place. If it is a
+    directory bundle (already containing `meta.json`) it is returned as-is.
 
     Args:
-        remote_spec: A Drive file/folder id, a shareable URL, or a local path.
-        local_dir: Local destination directory (created if missing).
+        remote_spec (str): A Drive file/folder id, a shareable URL, or a local path.
+        local_dir (str | Path): Local destination directory (created if missing).
 
     Returns:
         The local directory containing the downloaded bundle.
 
     Raises:
-        RuntimeError: If a network download is required but ``gdown`` is absent.
+        RuntimeError: If a network download is required but `gdown` is absent.
     """
     dest = Path(local_dir)
     dest.mkdir(parents=True, exist_ok=True)
@@ -102,16 +101,15 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
     """Uploads a directory bundle to Drive (mounted-path copy or PyDrive2).
 
     Args:
-        local_dir: The local bundle directory to upload.
-        remote_dir: A mounted Drive folder path, or a Drive folder id when using
-            PyDrive2.
+        local_dir (str | Path): The local bundle directory to upload.
+        remote_dir (str): A mounted Drive folder path, or a Drive folder id when using PyDrive2.
 
     Returns:
         A string describing the remote destination.
 
     Raises:
-        RuntimeError: If neither a mounted path nor PyDrive2 credentials are
-            available.
+        RuntimeError: If neither a mounted path nor PyDrive2 credentials are available.
+
     """
     local = Path(local_dir)
     if is_mounted_path(remote_dir):
@@ -125,8 +123,7 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
         from pydrive2.drive import GoogleDrive  # type: ignore[reportMissingImports]
     except ImportError as exc:
         raise RuntimeError(
-            'Drive upload requires either a mounted Drive path or PyDrive2 '
-            '(uv add pydrive2) with configured credentials.'
+            'Drive upload requires either a mounted Drive path or PyDrive2 (uv add pydrive2) with configured credentials.'
         ) from exc
 
     gauth = GoogleAuth()
@@ -141,7 +138,7 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
 
 
 def _maybe_unzip(directory: Path) -> Path:
-    """Extracts any single top-level zip in ``directory`` and returns the dir."""
+    """Extracts any single top-level zip in `directory` and returns the dir."""
     zips = list(directory.glob('*.zip'))
     for archive in zips:
         shutil.unpack_archive(str(archive), str(directory))

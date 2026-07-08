@@ -67,22 +67,40 @@ def test_sentence_embeddings_and_metrics(small_dataset: ZuCoDataset, tmp_path: P
     assert 'score' in probe
 
 
-def test_embed_new_signals_in_memory(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
-    """from_checkpoint (no dataset) restores the normaliser and embeds new arrays."""
+def test_embed_new_signals_in_memory(synthetic_dir: Path, tmp_path: Path) -> None:
+    """from_checkpoint (no dataset) restores the normaliser and embeds new EEG arrays.
+
+    Brand-new EEG for an imagined-thought BCI carries no eye tracking, so the
+    device-agnostic path trains and embeds EEG-only (band power without the gaze
+    scalars).
+    """
     import numpy as np
 
+    from zte.config import DatasetConfig, MissingConfig
     from zte.data.features import flatten_band_power
 
+    eeg_only = ZuCoDataset(
+        DatasetConfig(
+            root=str(synthetic_dir),
+            tasks=('SR', 'NR'),
+            representation='band_power',
+            include_eye_tracking=False,
+            missing=MissingConfig(method='mask_only'),
+            cache_dir=str(tmp_path / 'eeg_only_cache'),
+        )
+    ).build(show_progress=False)
+
     cfg = _tiny_config(tmp_path / 'ckpt3')
-    run_training(cfg, small_dataset)
+    run_training(cfg, eeg_only)
 
     # Restore WITHOUT a dataset -> shapes and normaliser come from the checkpoint.
     embedder = ZTEEmbedder.from_checkpoint(tmp_path / 'ckpt3' / 'best.pt')
     assert embedder.normalizer is not None
+    assert embedder.in_dim == len(eeg_only.feature_names)
 
-    # New, un-normalised band-power token signals (as from a custom pipeline).
-    feats = flatten_band_power(small_dataset.band_power_raw)
-    signals = feats[small_dataset.presence][:16]
+    # New, un-normalised band-power token signals (as from a custom EEG pipeline).
+    feats = flatten_band_power(eeg_only.band_power_raw)
+    signals = feats[eeg_only.presence][:16]
     emb = embedder.embed_signals(band_power=signals, show_progress=False)
     assert emb.shape == (signals.shape[0], cfg.model.embed_dim)
     assert np.isfinite(emb).all()

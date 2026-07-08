@@ -23,15 +23,15 @@ _LOG = get_logger('cli.extract')
 def load_dataset(args: argparse.Namespace) -> ZuCoDataset:
     """Loads the bundle, or builds a dataset from `.mat` files matching the checkpoint.
 
-    When building from `--root`, the dataset's representation (and band/measure/raw
-    settings) are taken from the checkpoint's embedded config so the encoder's
-    expected tensors are present -- otherwise a raw/`both` checkpoint would fail.
+    When building from `--root`, the dataset's representation (and band/measure/raw settings) are taken from the checkpoint's
+    embedded config so the encoder's expected tensors are present -- otherwise a raw/`both` checkpoint would fail.
 
     Args:
         args (argparse.Namespace): Parsed CLI arguments.
 
     Returns:
         ZuCoDataset: A built dataset ready for embedding.
+
     """
     if args.bundle:
         return ZuCoDataset.load(args.bundle)

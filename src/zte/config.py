@@ -1,7 +1,9 @@
 """Typed, serialisable configuration objects for the whole ZTE pipeline.
 
-Every tunable knob lives in a frozen-ish :mod:`dataclasses` object so configs are explicit, IDE-discoverable and round-trip cleanly to YAML. The top-level
-:class:`ZTEConfig` aggregates the dataset, model, objective and training sub-configs and is what the CLIs read and write.
+Every tunable knob lives in a :mod:`dataclasses` object so configs are explicit,
+IDE-discoverable and round-trip cleanly to YAML. The top-level :class:`ZTEConfig`
+aggregates the dataset, model, objective and training sub-configs and is what the
+CLIs read and write.
 """
 
 from __future__ import annotations
@@ -31,11 +33,12 @@ MissingMethod = Literal[
     'drop',
     'mask_only',
 ]
-SplitStrategy = Literal['random', 'by_sentence', 'by_subject_loso', 'by_task']
-ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc']
-FrontendName = Literal['band_power_mlp', 'raw_conformer']
-PoolName = Literal['mean', 'attention', 'cls']
-SchedulerName = Literal['cosine', 'linear', 'constant']
+type SplitStrategy = Literal['random', 'by_sentence', 'by_subject_loso', 'by_task']
+type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc']
+type FrontendName = Literal['band_power_mlp', 'raw_conformer']
+type PoolName = Literal['mean', 'attention', 'cls']
+type SchedulerName = Literal['cosine', 'linear', 'constant']
+type PosEncoding = Literal['rope', 'sinusoidal', 'learned', 'alibi', 'none']
 
 
 @dataclass
@@ -68,25 +71,30 @@ class DatasetConfig:
         root: Directory holding extracted `.mat` files (searched recursively).
         tasks: Which reading tasks to include (`SR`, `NR`, `TSR`).
         subjects: Subject codes to include, or `None` for all discovered.
-        granularity: Token granularity. Only `'word'` is implemented; `'sentence'`
-            is reserved (use `ZTEEmbedder(level='sentence')` for pooled sentence
-            embeddings at inference time).
+        granularity: Token granularity. Only `'word'` is implemented; `'sentence'` is reserved
+            (use `ZTEEmbedder(level='sentence')` for pooled sentence embeddings at inference time).
         representation: Use compact band-power vectors, raw time-series windows, or both.
         band_power_measures: Eye-tracking measures whose band features are used for the band-power representation.
+        include_eye_tracking: Whether eye-tracking *behaviour* (the fixation-duration
+            scalars FFD/SFD/GD/GPT/TRT, `nFixations` and `meanPupilSize`) is appended
+            to each word's band-power feature vector. `True` (default) enriches the
+            reading-evoked representation; `False` yields an EEG-only representation
+            better suited to imagined thought, where no eye-tracking exists. The EEG
+            band-power itself is always kept -- this toggle only governs the extra
+            gaze-behaviour dimensions.
+        eye_tracking_measures: Which per-word eye-tracking scalars are appended when `include_eye_tracking` is `True`.
         bands: Frequency bands used for the band-power representation.
         raw_field: Which raw EEG field to read (`'rawEEG'` per word or `'rawData'` per sentence).
         raw_window: Fixed time length (samples) raw EEG is padded/truncated to.
         normalize: Per-channel/global normalisation applied to features.
         bandpass: Optional `(low, high)` Hz Butterworth band-pass for raw EEG.
         missing: Missing-value handling configuration.
-        include_omitted: Keep omitted words as masked tokens (preserves sentence
-            sequence integrity). When `False`, omitted-word rows are dropped (as
-            with `missing.method='drop'`).
+        include_omitted: Keep omitted words as masked tokens (preserves sentence sequence integrity).
+            When `False`, omitted-word rows are dropped (as with `missing.method='drop'`).
         min_words: Drop sentences shorter than this many words.
         max_words: Drop sentences longer than this many words (`None` = no cap).
         cache_dir: Where processed artifacts are cached.
-        cache_format: On-disk cache format. Only `'npz'` is implemented;
-            `'parquet'`/`'hdf5'` are reserved.
+        cache_format: On-disk cache format. Only `'npz'` is implemented; `'parquet'`/`'hdf5'` are reserved.
     """
 
     root: str = 'res/data/zuco_extracted'
@@ -95,6 +103,16 @@ class DatasetConfig:
     granularity: Granularity = 'word'
     representation: Representation = 'band_power'
     band_power_measures: tuple[EyeTrackingMeasure, ...] = ('TRT',)
+    include_eye_tracking: bool = True
+    eye_tracking_measures: tuple[str, ...] = (
+        'FFD',
+        'SFD',
+        'GD',
+        'GPT',
+        'TRT',
+        'n_fixations',
+        'mean_pupil',
+    )
     bands: tuple[Band, ...] = BANDS
     raw_field: str = 'rawEEG'
     raw_window: int = 128
@@ -121,6 +139,14 @@ class ModelConfig:
         dropout (float): Dropout probability throughout the encoder.
         conformer_filters (int): Channel count after the temporal convolution.
         conformer_temporal_kernel (int): Temporal conv kernel size (acts as a learnable band-pass filter).
+        pos_encoding (PosEncoding): Sequence positional-encoding scheme for the context
+            transformer. `'rope'` (rotary, the default) injects relative position inside
+            attention and generalises to any sentence length -- the current SOTA choice;
+            `'sinusoidal'` adds the fixed Transformer encoding; `'learned'` adds an
+            absolute learned table; `'alibi'` adds linear distance attention biases;
+            `'none'` disables positional information (ablation). Each run records its
+            scheme in the checkpoint config, so inference rebuilds the matching encoder.
+        max_positions (int): Position table size for `'learned'`/`'sinusoidal'`.
         pool (PoolName): How per-word tokens are pooled into a sentence embedding.
         subject_conditioning (bool): Add a learned subject embedding (ZTE v1 is not yet subject-invariant; this exposes the knob for ablations).
         n_subjects (int): Vocabulary size for subject conditioning.
@@ -135,6 +161,8 @@ class ModelConfig:
     dropout: float = 0.1
     conformer_filters: int = 40
     conformer_temporal_kernel: int = 25
+    pos_encoding: PosEncoding = 'rope'
+    max_positions: int = 512
     pool: PoolName = 'attention'
     subject_conditioning: bool = False
     n_subjects: int = 12
@@ -154,11 +182,12 @@ class ObjectiveConfig:
         context_window (int): Number of neighbouring words on each side used as context.
         n_negatives (int): Negative samples per positive for contrastive losses.
         mask_ratio (float): Fraction of tokens masked for the `'masked'` objective.
-        masked_target (Literal['reconstruct', 'latent']): Reconstruct raw features (`'reconstruct'`) or predict an
-            EMA-teacher latent (`'latent'`, the data2vec variant).
+        masked_target (Literal['reconstruct', 'latent']): Reconstruct raw features (`'reconstruct'`)
+            or predict an EMA-teacher latent (`'latent'`, the data2vec variant).
         ema_decay (float): Teacher EMA decay for `masked_target='latent'`.
         cpc_steps (int): How many future steps CPC predicts.
-        reduce_omitted_weight (float): Down-weight (0..1) contribution of omitted-word tokens so zero-vector leakage cannot inflate the loss.
+        reduce_omitted_weight (float): Down-weight (0..1) contribution of omitted-word
+            tokens so zero-vector leakage cannot inflate the loss.
     """
 
     name: ObjectiveName = 'skipgram'
@@ -190,14 +219,20 @@ class TrainConfig:
         num_workers (int): DataLoader worker processes.
         split (SplitStrategy): Train/val split strategy.
         val_fraction (float): Validation fraction for random/by_sentence splits.
+        test_fraction (float): Held-out test fraction (`0` disables). For
+            `random`/`by_sentence` a disjoint test set is carved out; evaluation then
+            runs on this untouched split. For `by_subject_loso` the held-out subject is
+            always the test set regardless of this value.
         loso_holdout_subject (str | None): Held-out subject for `by_subject_loso`.
         seed (int): Global RNG seed.
+        deterministic (bool): Request deterministic cuDNN kernels for byte-for-byte
+            reproducible CUDA runs (slower). Always seeds Python/NumPy/Torch.
         log_every (int): Log training metrics every N optimiser steps.
         eval_every (int): Run validation every N epochs.
         ckpt_dir (str): Local checkpoint directory.
         ckpt_keep_last (int): How many recent checkpoints to retain.
         tensorboard: Enable TensorBoard logging if installed.
-        drive_backup_dir (str | None): Optional Google Drive folder id/path to mirror checkpoints to (see :mod:`zte.data.remote`).
+        drive_backup_dir (str | None): Optional Google Drive folder id/path to mirror checkpoints to (see `zte.data.remote`).
         compile_model (bool): Apply `torch.compile` (skipped on MPS/CPU).
 
     """
@@ -215,8 +250,10 @@ class TrainConfig:
     num_workers: int = 0
     split: SplitStrategy = 'by_sentence'
     val_fraction: float = 0.1
+    test_fraction: float = 0.0
     loso_holdout_subject: str | None = None
     seed: int = 42
+    deterministic: bool = False
     log_every: int = 10
     eval_every: int = 1
     ckpt_dir: str = 'res/checkpoints'
@@ -268,8 +305,7 @@ class ZTEConfig:
         """Builds a `ZTEConfig` from a nested dict, coercing tuples/types.
 
         Args:
-            data (dict[str, Any]): A nested mapping such as one produced by :meth:`to_dict` or
-                parsed from YAML.
+            data (dict[str, Any]): A nested mapping such as one produced by :meth:`to_dict` or parsed from YAML.
 
         Returns:
             A fully constructed config with sub-dataclasses rebuilt `ZTEConfig`.
@@ -288,10 +324,10 @@ class ZTEConfig:
         """Loads a :class:`ZTEConfig` from a YAML file.
 
         Args:
-            path: Path to a YAML config previously written by :meth:`to_yaml`.
+            path (str | Path): Path to a YAML config previously written by :meth:`to_yaml`.
 
         Returns:
-            The parsed config.
+            ZTEConfig: The parsed config.
 
         """
         data = yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}
@@ -334,7 +370,7 @@ def _strip_optional(hint: Any) -> Any:
 
 
 def _is_tuple_hint(hint: Any) -> bool:
-    """Returns whether a type hint resolves to a ``tuple[...]`` type."""
+    """Returns whether a type hint resolves to a `tuple[...]` type."""
     origin = getattr(hint, '__origin__', None)
     if origin is tuple:
         return True

@@ -1,0 +1,95 @@
+# Subject-invariance benchmark: leave-one-subject-out (hold out ZPH). The evaluation
+# validation set is an unseen person -- the honest test for a subject-agnostic code.
+dataset:
+  root: res/data/zuco_extracted
+  tasks:
+  - SR
+  - NR
+  subjects: null
+  granularity: word
+  representation: band_power
+  band_power_measures:
+  - TRT
+  include_eye_tracking: true
+  eye_tracking_measures:
+  - FFD
+  - SFD
+  - GD
+  - GPT
+  - TRT
+  - n_fixations
+  - mean_pupil
+  bands:
+  - t1
+  - t2
+  - a1
+  - a2
+  - b1
+  - b2
+  - g1
+  - g2
+  raw_field: rawEEG
+  raw_window: 128
+  normalize: zscore_channel
+  bandpass: null
+  missing:
+    method: mask_only
+    knn_neighbors: 5
+    iterative_max_iter: 10
+    interpolate_method: linear
+    add_missing_indicator: true
+  include_omitted: true
+  min_words: 1
+  max_words: null
+  cache_dir: res/cache
+  cache_format: npz
+model:
+  frontend: band_power_mlp
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  conformer_filters: 40
+  conformer_temporal_kernel: 25
+  pos_encoding: rope
+  max_positions: 512
+  pool: attention
+  subject_conditioning: false
+  n_subjects: 12
+  projection_hidden: 512
+objective:
+  name: skipgram
+  temperature: 0.07
+  context_window: 2
+  n_negatives: 20
+  mask_ratio: 0.5
+  masked_target: latent
+  ema_decay: 0.999
+  cpc_steps: 4
+  reduce_omitted_weight: 0.0
+train:
+  epochs: 40
+  batch_size: 128
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_accum_steps: 1
+  grad_clip: 1.0
+  device: auto
+  precision: auto
+  num_workers: 0
+  split: by_subject_loso
+  val_fraction: 0.1
+  loso_holdout_subject: ZPH
+  seed: 42
+  deterministic: true
+  log_every: 10
+  eval_every: 1
+  ckpt_dir: res/checkpoints
+  ckpt_keep_last: 3
+  tensorboard: true
+  drive_backup_dir: null
+  compile_model: false
+run_name: exp4_skipgram_loso

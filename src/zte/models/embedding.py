@@ -18,6 +18,7 @@ from torch import nn
 from zte.config import ModelConfig
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
+from zte.models.transformer import ZTETransformerEncoder, sinusoidal_encoding
 
 
 class AttentionPool(nn.Module):
@@ -40,15 +41,15 @@ class AttentionPool(nn.Module):
         """Pools `x` over the sequence axis using masked softmax weights.
 
         Args:
-            x (torch.Tensor): Tensor `(B, L, D)`.
-            mask (torch.Tensor): Boolean `(B, L)`; `True` marks valid positions.
+            x (torch.Tensor): Tensor `(batch_size, seq_len, hidden_dim)`.
+            mask (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` marks valid positions.
 
         Returns:
-            torch.Tensor: Pooled tensor `(B, D)`.
+            torch.Tensor: Pooled tensor `(batch_size, hidden_dim)`.
         """
-        logits = self.score(x).squeeze(-1)  # (B, L)
+        logits = self.score(x).squeeze(-1)  # (batch_size, seq_len)
         logits = logits.masked_fill(~mask, float('-inf'))
-        weights = torch.softmax(logits, dim=1).unsqueeze(-1)  # (B, L, 1)
+        weights = torch.softmax(logits, dim=1).unsqueeze(-1)  # (batch_size, seq_len, 1)
         return (weights * x).sum(dim=1)
 
 
@@ -72,8 +73,9 @@ class ZTEModel(nn.Module):
 
         Args:
             config (ModelConfig): Model configuration.
-            in_dim (int | None): Flattened band-power size `F*C` (band-power frontend).
-            raw_shape (tuple[int, int] | None): `(C, T)` raw window shape (raw frontend).
+            in_dim (int | None): Flattened band-power size `n_features` (band-power frontend).
+            raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
+                (raw frontend).
         """
         super().__init__()
         self.config = config
@@ -87,21 +89,26 @@ class ZTEModel(nn.Module):
             if config.subject_conditioning
             else None
         )
-        self.pos_emb = nn.Parameter(torch.zeros(1, 512, self.hidden_dim))
-        nn.init.trunc_normal_(self.pos_emb, std=0.02)
-
-        layer = nn.TransformerEncoderLayer(
-            d_model=self.hidden_dim,
-            nhead=_largest_divisor(self.hidden_dim, config.n_heads),
-            dim_feedforward=self.hidden_dim * 4,  # type: ignore[arg-type]
+        # Absolute positional schemes are added to the inputs here; relative schemes
+        # (RoPE / ALiBi) are applied inside the encoder's attention.
+        self.pos_encoding = config.pos_encoding
+        self.pos_emb: nn.Parameter | None = None
+        if config.pos_encoding == 'learned':
+            self.pos_emb = nn.Parameter(torch.zeros(1, config.max_positions, self.hidden_dim))
+            nn.init.trunc_normal_(self.pos_emb, std=0.02)
+        elif config.pos_encoding == 'sinusoidal':
+            self.register_buffer(
+                'sinusoidal',
+                sinusoidal_encoding(config.max_positions, self.hidden_dim),
+                persistent=False,
+            )
+        attn_pos = config.pos_encoding if config.pos_encoding in {'rope', 'alibi'} else 'none'
+        self.context_encoder = ZTETransformerEncoder(
+            dim=self.hidden_dim,
+            n_heads=_largest_divisor(self.hidden_dim, config.n_heads),
+            n_layers=config.n_layers,
             dropout=config.dropout,
-            batch_first=True,
-            activation='gelu',
-        )
-        # enable_nested_tensor=False keeps the explicit padding/causal mask path
-        # active (the nested-tensor fast path is a prototype and warns).
-        self.context_encoder = nn.TransformerEncoder(
-            layer, num_layers=config.n_layers, enable_nested_tensor=False
+            pos=attn_pos,
         )
         self.projection = ProjectionHead(
             self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout
@@ -115,7 +122,8 @@ class ZTEModel(nn.Module):
             batch: A batch dict from :func:`~zte.data.torch_dataset.collate_sentences`.
 
         Returns:
-            torch.Tensor: `(B, L, C, T)` raw tensor or `(B, L, D)` band-power tensor.
+            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or
+                `(batch_size, seq_len, n_features)` band-power tensor.
 
         Raises:
             ValueError: If the required representation is missing from `batch`.
@@ -136,11 +144,11 @@ class ZTEModel(nn.Module):
             batch(dict[str, Any]): A collated batch dict.
 
         Returns:
-            Tensor (torch.Tensor): `(B, L, hidden_dim)`.
+            Tensor (torch.Tensor): `(batch_size, seq_len, hidden_dim)`.
 
         """
         x = self.select_input(batch)
-        hidden = self.frontend(x)  # (B, L, Hd)
+        hidden = self.frontend(x)  # (batch_size, seq_len, hidden_dim)
         if self.subject_emb is not None:
             hidden = hidden + self.subject_emb(batch['subject']).unsqueeze(1)
         return hidden
@@ -151,24 +159,26 @@ class ZTEModel(nn.Module):
         """Applies the transformer over the token sequence.
 
         Args:
-            hidden(torch.Tensor): Token hiddens `(B, L, hidden_dim)`.
-            pad_mask(torch.Tensor): Boolean `(B, L)`; `True` at valid positions.
+            hidden(torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
+            pad_mask(torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at valid positions.
             causal(bool): If `True`, apply a causal mask (for CPC).
 
         Returns:
-            Contextualised hiddens (torch.Tensor): `(B, L, hidden_dim)`.
+            Contextualised hiddens (torch.Tensor): `(batch_size, seq_len, hidden_dim)`.
 
         """
         length = hidden.shape[1]
-        hidden = hidden + self.pos_emb[:, :length]
-        attn_mask = None
-        if causal:
-            # Boolean mask (True = disallowed) matches the boolean padding mask
-            # dtype, avoiding the "mismatched mask types" deprecation.
-            attn_mask = torch.triu(
-                torch.ones(length, length, dtype=torch.bool, device=hidden.device), diagonal=1
+        if self.pos_emb is not None:  # learned absolute
+            hidden = hidden + self.pos_emb[:, :length]
+        elif self.pos_encoding == 'sinusoidal':
+            table = self.sinusoidal
+            pe = table[:, :length] if length <= table.shape[1] else sinusoidal_encoding(
+                length, self.hidden_dim, hidden.device
             )
-        return self.context_encoder(hidden, mask=attn_mask, src_key_padding_mask=~pad_mask)
+            hidden = hidden + pe.to(hidden.dtype)
+        # RoPE / ALiBi (or none) are handled inside the encoder; pad_mask marks valid
+        # (attendable) positions, and `causal` gates future tokens for CPC.
+        return self.context_encoder(hidden, pad_mask, causal=causal)
 
     def project(self, hidden: torch.Tensor) -> torch.Tensor:
         """Projects hiddens to the embedding space.
@@ -192,7 +202,7 @@ class ZTEModel(nn.Module):
             causal: Use a causal mask when `contextual` (CPC).
 
         Returns:
-            Token embeddings `(B, L, embed_dim)`.
+            Token embeddings `(batch_size, seq_len, embed_dim)`.
         """
         hidden = self.token_hidden(batch)
         if contextual:
@@ -207,7 +217,7 @@ class ZTEModel(nn.Module):
             batch: A collated batch dict.
 
         Returns:
-            Sentence embeddings `(B, embed_dim)`.
+            Sentence embeddings `(batch_size, embed_dim)`.
         """
         # Treat omitted words as non-tokens for both attention and pooling, with a
         # fallback so a sentence with no present words is never fully masked.
@@ -236,7 +246,8 @@ def build_model(
     Args:
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (band-power frontend).
-        raw_shape (tuple[int, int] | None): `(C, T)` raw window shape (raw frontend).
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
+            (raw frontend).
 
     Returns:
         ZTEModel: An initialised :class:`ZTEModel`.

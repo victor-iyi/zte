@@ -1,8 +1,8 @@
 """Device, dtype and autocast helpers for portable CPU / CUDA / MPS execution.
 
-The package is meant to run unchanged on a CPU box, an Apple-silicon Mac (the `mps` backend, e.g. an M-series chip) and an Nvidia GPU (`cuda`).
-All device-specific decisions -- which accelerator to use, whether mixed precision is safe, which autocast dtype to pick,
-whether to pin host memory -- are centralised here so model and training code stays backend-agnostic.
+The package is meant to run unchanged on a CPU box, an Apple-silicon Mac (the `mps` backend, e.g. an M-series chip)
+and an Nvidia GPU (`cuda`). All device-specific decisions -- which accelerator to use, whether mixed precision is safe,
+which autocast dtype to pick, whether to pin host memory -- are centralised here so model and training code stays backend-agnostic.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class DeviceSpec:
 
     Attributes:
         device (torch.device): The concrete `torch.device` to place tensors/modules on.
-        kind (DeviceKind): The backend family (`'cpu'`, `'cuda'` or `'mps'`).
+        kind (DeviceKind): The backend family (`cpu`, `cuda` or `mps`).
         autocast_dtype (torch.dtype | None): The dtype to use under `torch.autocast`, or `None` when mixed precision is disabled.
         use_amp (bool): Whether automatic mixed precision should be enabled.
         supports_pin_memory (bool): Whether `DataLoader(pin_memory=True)` helps.
@@ -67,14 +67,14 @@ def resolve_device(
 ) -> DeviceSpec:
     """Selects the best available device and a safe autocast configuration.
 
-    Selection order for ``prefer='auto'`` is CUDA, then MPS, then CPU. Mixed
+    Selection order for `prefer='auto'` is CUDA, then MPS, then CPU. Mixed
     precision defaults are chosen conservatively: bfloat16 on capable CUDA
     devices, float16 on older CUDA devices, and full precision on MPS/CPU where
     autocast support is partial or unhelpful.
 
     Args:
-        prefer (DeviceKind | Literal['auto']): Force a backend, or `'auto'` to pick the best available.
-        precision (PrecisionPreference): `'auto'` to choose per backend, or force one of `'fp32'`, `'fp16'` or `'bf16'`.
+        prefer (DeviceKind | Literal['auto']): Force a backend, or 'auto' to pick the best available.
+        precision (PrecisionPreference): 'auto' to choose per backend, or force one of `fp32`, `fp16` or `bf16`.
 
     Returns:
         A fully populated `DeviceSpec`.
@@ -163,8 +163,7 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         spec (DeviceSpec): The resolved device specification.
 
     Yields:
-        Control inside a `torch.autocast` block when AMP is enabled, or a
-        no-op context otherwise.
+        Control inside a `torch.autocast` block when AMP is enabled, or a no-op context otherwise.
 
     Example:
         >>> spec = resolve_device('cpu')
@@ -190,6 +189,7 @@ def seed_everything(seed: int, deterministic: bool = False) -> None:
         >>> seed_everything(42)
         >>> torch.randn(10).mean()
         tensor(0.0000)
+
     """
     import random
 

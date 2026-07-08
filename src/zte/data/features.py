@@ -1,12 +1,10 @@
 """Feature engineering and supervised feature selection for ZuCo band power.
 
-The band-power tensor is ``(n_words, n_bp_features, n_channels)``. This module
-reshapes it for modelling/analysis and ranks the most informative dimensions
-(channels x bands) for a target -- e.g. word frequency or omission -- mirroring
-the channel-importance analyses in the exploration notebook but packaged for
-reuse.
+The band-power tensor is `(n_words, n_bp_features, n_channels)`. This module reshapes it for modelling/analysis and ranks
+the most informative dimensions (channels x bands) for a target -- e.g. word frequency or omission -- mirroring the
+channel-importance analyses in the exploration notebook but packaged for reuse.
 """
-
+# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,17 +20,17 @@ SelectionMethod = Literal['variance', 'f_score', 'mutual_info', 'rf_importance']
 
 
 def channel_mean_features(band_power: np.ndarray) -> np.ndarray:
-    """Reduces ``(N, F, C)`` band power to ``(N, F)`` by averaging over channels.
+    """Averages `(n_words, n_bp_features, n_channels)` band power over channels.
 
-    The per-(measure, band) channel mean is a compact, analysis-friendly summary
-    (e.g. "mean theta power for this word").
+    The per-(measure, band) channel mean is a compact, analysis-friendly summary (e.g. 'mean theta power for this word').
 
     Args:
-        band_power: Array ``(n_words, n_bp_features, n_channels)``.
+        band_power (np.ndarray): Array `(n_words, n_bp_features, n_channels)`.
 
     Returns:
-        Array ``(n_words, n_bp_features)`` of channel means (NaN-aware). Rows for
-        omitted words are entirely ``NaN`` (no channels), which is expected.
+        An array `(n_words, n_bp_features)` of channel means (NaN-aware). Rows for omitted words are
+            entirely `NaN` (no channels), which is expected.
+
     """
     import warnings
 
@@ -43,13 +41,13 @@ def channel_mean_features(band_power: np.ndarray) -> np.ndarray:
 
 
 def flatten_band_power(band_power: np.ndarray) -> np.ndarray:
-    """Flattens ``(N, F, C)`` band power to a 2-D matrix ``(N, F*C)``.
+    """Flattens `(n_words, n_bp_features, n_channels)` band power to 2-D.
 
     Args:
-        band_power: Array ``(n_words, n_bp_features, n_channels)``.
+        band_power: Array `(n_words, n_bp_features, n_channels)`.
 
     Returns:
-        Array ``(n_words, n_bp_features * n_channels)`` (C-contiguous, band-major).
+        Array `(n_words, n_bp_features * n_channels)` (C-contiguous, band-major).
     """
     n = band_power.shape[0]
     return band_power.reshape(n, -1).astype(np.float32)
@@ -59,11 +57,11 @@ def flat_feature_names(bp_feature_names: list[str], n_channels: int) -> list[str
     """Builds names for the flattened band-power matrix.
 
     Args:
-        bp_feature_names: The ``(measure, band)`` names, length ``F``.
-        n_channels: Number of channels ``C``.
+        bp_feature_names: The `(measure, band)` names, length `n_bp_features`.
+        n_channels: Number of channels.
 
     Returns:
-        ``F*C`` names like ``'TRT_t1::ch007'`` in flatten order.
+        `n_bp_features * n_channels` names like `'TRT_t1::ch007'` in flatten order.
     """
     return [f'{name}::ch{ch:03d}' for name in bp_feature_names for ch in range(n_channels)]
 
@@ -89,9 +87,9 @@ class FeatureSelector:
     """Ranks and selects the most informative features for a target.
 
     Attributes:
-        method: The scoring method.
-        k: Number of features to keep (``None`` keeps all, just ranks them).
-        task: ``'regression'`` or ``'classification'`` (affects scoring funcs).
+        method (SelectionMethod): The scoring method.
+        k (int | None): Number of features to keep (`None` keeps all, just ranks them).
+        task (Literal['regression', 'classification']): Whether the target is continuous or categorical.
     """
 
     def __init__(
@@ -103,10 +101,10 @@ class FeatureSelector:
         """Initialises the selector.
 
         Args:
-            method: One of ``'variance'``, ``'f_score'``, ``'mutual_info'`` or
-                ``'rf_importance'``.
-            k: How many top features to keep, or ``None`` to rank only.
-            task: Whether the target is continuous or categorical.
+            method (SelectionMethod): One of `variance`, `f_score`, `mutual_info` or `rf_importance`.
+            k (int | None): How many top features to keep, or `None` to rank only.
+            task (Literal['regression', 'classification']): Whether the target is continuous or categorical.
+
         """
         self.method = method
         self.k = k
@@ -119,20 +117,20 @@ class FeatureSelector:
         names: list[str] | None = None,
         sample_mask: np.ndarray | None = None,
     ) -> SelectionResult:
-        """Scores features and returns the top-``k`` selection.
+        """Scores features and returns the top-`k` selection.
 
         Args:
-            x: Feature matrix ``(N, F)`` (NaNs are mean-filled before scoring).
-            y: Target ``(N,)``; required for every method except ``'variance'``.
-            names: Optional feature names aligned with ``x``'s columns.
-            sample_mask: Optional boolean ``(N,)`` selecting valid rows (e.g.
-                present tokens) so omitted words never drive the ranking.
+            x (np.ndarray): Feature matrix `(n_words, n_features)` (NaNs are mean-filled before scoring).
+            y (np.ndarray | None): Target `(n_words,)`; required for every method except `'variance'`.
+            names (list[str] | None): Optional feature names aligned with `x`'s columns.
+            sample_mask (np.ndarray | None): Optional boolean `(n_words,)` selecting valid rows (e.g. present tokens)
+                so omitted words never drive the ranking.
 
         Returns:
             A :class:`SelectionResult`.
 
         Raises:
-            ValueError: If a supervised method is chosen without ``y``.
+            ValueError: If a supervised method is chosen without `y`.
         """
         x = np.asarray(x, dtype=np.float32)
         if sample_mask is not None:

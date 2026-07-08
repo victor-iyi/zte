@@ -46,7 +46,10 @@ def test_dataset_builds_with_aligned_shapes(small_dataset: ZuCoDataset) -> None:
     n = len(ds.words)
     assert n > 0
     assert ds.band_power_raw.shape == (n, len(BANDS), N_CHANNELS)
-    assert ds.features.shape == (n, len(BANDS) * N_CHANNELS)
+    # Features are flattened band power plus the appended eye-tracking scalars
+    # (included by default); the toggle governs how many extra columns appear.
+    n_et = len(ds.config.eye_tracking_measures) if ds.config.include_eye_tracking else 0
+    assert ds.features.shape == (n, len(BANDS) * N_CHANNELS + n_et)
     assert ds.presence.shape == (n,)
     assert ds.raw_eeg.shape[0] == n and ds.raw_eeg.shape[1] == N_CHANNELS
     assert not np.isnan(ds.features).any(), 'features must be finite after imputation'

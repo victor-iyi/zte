@@ -1,10 +1,10 @@
 """Configurable missing-value imputation for word-level EEG features.
 
 Natural reading means readers skip words: those words carry *no* EEG and surface as empty arrays (`NaN` after stacking).
-Treating those zero/NaN rows as real signal is the single biggest source of leakage in word-level ZuCo modelling, so
-every strategy here also returns a per-token **presence mask** that downstream objectives use to ignore filled entries.
+Treating those zero/NaN rows as real signal is the single biggest source of leakage in word-level ZuCo modelling,
+so every strategy here also returns a per-token **presence mask** that downstream objectives use to ignore filled entries.
 
-Supported methods (see :class:`~zte.config.MissingConfig`):
+Supported methods (see `MissingConfig`):
 
 - `zero` / `mask_only` -- fill with `0` (rely on the mask).
 - `row_mean` -- fill from each token's own non-missing features.
@@ -29,12 +29,12 @@ _LOG = get_logger('data.missing')
 class MissingValueImputer:
     """Applies a configured missing-value strategy to a 2-D feature matrix.
 
-    The imputer is stateful for the column/global statistics methods so the same
-    fill learned on the training split can be re-applied to validation/test
-    splits via :meth:`transform`.
+    The imputer is stateful for the column/global statistics methods so the same fill learned
+    on the training split can be re-applied to validation/test splits via `transform`.
 
     Attributes:
-        config (MissingConfig): The :class:`~zte.config.MissingConfig` driving behaviour.
+        config (MissingConfig): The `MissingConfig` driving behaviour.
+
     """
 
     def __init__(self, config: MissingConfig) -> None:
@@ -42,6 +42,7 @@ class MissingValueImputer:
 
         Args:
             config (MissingConfig): Missing-value configuration.
+
         """
         self.config = config
         self._stats: np.ndarray | None = None
@@ -52,10 +53,10 @@ class MissingValueImputer:
         """Computes a per-row presence mask (`True` = the token has real data).
 
         Args:
-            x (np.ndarray): Feature matrix `(N, F)` possibly containing `NaN`.
+            x (np.ndarray): Feature matrix `(n_words, n_features)` possibly containing `NaN`.
 
         Returns:
-            np.ndarray: A boolean array `(N,)` that is `False` for all-`NaN` rows.
+            np.ndarray: A boolean array `(n_words,)` that is `False` for all-`NaN` rows.
         """
         return ~np.all(np.isnan(x), axis=1)
 
@@ -65,13 +66,12 @@ class MissingValueImputer:
         """Fits any needed statistics and returns `(imputed, presence_mask)`.
 
         Args:
-            x (np.ndarray): Feature matrix `(N, F)` with `NaN` for missing entries.
-            group_ids (np.ndarray | None): Optional integer group id per row (e.g. a sentence id)
-                used by sequence-aware methods (`ffill`/`interpolate`) so
-                fills never cross sentence boundaries.
+            x (np.ndarray): Feature matrix `(n_words, n_features)` with `NaN` for missing entries.
+            group_ids (np.ndarray | None): Optional integer group id per row (e.g. a sentence id) used
+                by sequence-aware methods (`ffill`/`interpolate`) so fills never cross sentence boundaries.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: A tuple `(imputed (N, F) float32, presence_mask (N,) bool)`.
+            tuple[np.ndarray, np.ndarray]: A tuple `(imputed (n_words, n_features) float32, presence_mask (n_words,) bool)`.
         """
         x = np.asarray(x, dtype=np.float32)
         mask = self.presence_mask(x)
@@ -105,7 +105,7 @@ class MissingValueImputer:
         reuse fitted statistics. Sequence and row methods recompute per call.
 
         Args:
-            x (np.ndarray): Feature matrix `(N, F)` with `NaN` for missing entries.
+            x (np.ndarray): Feature matrix `(n_words, n_features)` with `NaN` for missing entries.
             group_ids (np.ndarray | None): Optional group ids for sequence-aware methods.
 
         Returns:
@@ -189,7 +189,7 @@ class MissingValueImputer:
                 return block.ffill().bfill()
             return block.interpolate(method=self.config.interpolate_method, limit_direction='both')
 
-        # Group by the id array directly so grouping keys never enter ``apply``.
+        # Group by the id array directly so grouping keys never enter `apply`.
         filled = frame.groupby(group_ids, group_keys=False, sort=False).apply(_fill)
         out = filled.to_numpy(dtype=np.float32)
         return np.nan_to_num(out, nan=0.0)

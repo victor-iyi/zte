@@ -28,14 +28,15 @@ def linear_probe(
     """Cross-validated linear probe of an embedding's information content.
 
     Args:
-        embeddings: Array `(N, E)` of frozen embeddings.
-        targets: Array `(N,)` of attributes to predict.
-        task: `regression`, `classification` or `auto` (decided from the number of unique targets).
+        embeddings: Array `(n_samples, embed_dim)` of frozen embeddings.
+        targets: Array `(n_samples,)` of attributes to predict.
+        task: `regression`, `classification` or `auto` (decided from the number
+            of unique targets).
         n_splits: Cross-validation folds.
 
     Returns:
-        A dict with `score` (R^2 for regression, accuracy for classification), `baseline` (predict-the-mean / majority) and `task`.
-
+        A dict with `score` (R^2 for regression, accuracy for classification),
+        `baseline` (predict-the-mean / majority) and `task`.
     """
     embeddings = np.asarray(embeddings, dtype=np.float32)
     targets = np.asarray(targets)
@@ -74,8 +75,8 @@ def retrieval_metrics(
     cosine; the diagonal rank determines the metrics.
 
     Args:
-        query: Array `(N, E)`.
-        key: Array `(N, E)` aligned with `query`.
+        query: Array `(n_samples, embed_dim)`.
+        key: Array `(n_samples, embed_dim)` aligned with `query`.
         ks: Cut-offs for Top-K accuracy.
 
     Returns:
@@ -101,7 +102,7 @@ def noise_matched(x: np.ndarray, seed: int = 0) -> np.ndarray:
     learned from this noise to claim it decodes real neural structure.
 
     Args:
-        x: Real feature matrix `(N, F)`.
+        x: Real feature matrix `(n_samples, n_features)`.
         seed: RNG seed.
 
     Returns:
@@ -117,7 +118,7 @@ def _l2(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """L2-normalises rows of `x`.
 
     Args:
-        x: Array `(N, E)`.
+        x: Array `(n_samples, embed_dim)`.
         eps: Numerical floor.
 
     Returns:

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import build_subject_vocab, make_dataloader
@@ -31,17 +33,20 @@ class TrainingArtifacts:
         trainer: The (already-run) trainer, exposing the model and checkpoints.
         history: The per-epoch metric history.
         device: The resolved device spec used for training.
+        test_indices: Held-out test row indices (from `train.test_fraction`), or
+            `None` when no test split was carved. Never seen during training.
     """
 
     trainer: Trainer
     history: dict[str, list[float]]
     device: DeviceSpec
+    test_indices: np.ndarray | None = None
 
 
 def run_training(
     config: ZTEConfig, dataset: ZuCoDataset, device: DeviceSpec | None = None
 ) -> TrainingArtifacts:
-    """Builds and runs a full ZTE pretraining job over ``dataset``.
+    """Builds and runs a full ZTE pretraining job over `dataset`.
 
     Args:
         config: The complete run configuration.
@@ -59,6 +64,7 @@ def run_training(
     splits = dataset.split(
         config.train.split,
         val_fraction=config.train.val_fraction,
+        test_fraction=config.train.test_fraction,
         holdout_subject=config.train.loso_holdout_subject,
         seed=config.train.seed,
     )
@@ -108,7 +114,9 @@ def run_training(
         config.train.epochs,
         history['train_loss'][-1] if history['train_loss'] else float('nan'),
     )
-    return TrainingArtifacts(trainer=trainer, history=history, device=device)
+    return TrainingArtifacts(
+        trainer=trainer, history=history, device=device, test_indices=splits.get('test')
+    )
 
 
 def _shapes(
@@ -121,7 +129,7 @@ def _shapes(
         config: The run configuration.
 
     Returns:
-        ``(in_dim, raw_shape, feature_dim)`` for model/objective construction.
+        `(in_dim, raw_shape, feature_dim)` for model/objective construction.
 
     Raises:
         ValueError: If required tensors are missing for the chosen frontend.
@@ -136,8 +144,9 @@ def _shapes(
         raise ValueError('band_power_mlp frontend needs band-power features in the dataset.')
     if config.model.frontend == 'raw_conformer' and raw_shape is None:
         raise ValueError('raw_conformer frontend needs raw EEG in the dataset.')
-    # The masked-reconstruct head predicts the per-token *input*, so its target
-    # dimension follows the frontend: F*C for band power, C*T for raw windows.
+    # The masked-reconstruct head predicts the per-token input, so its target
+    # dimension follows the frontend: n_features for band power, or
+    # n_channels * time_steps for raw windows.
     recon_dim = in_dim
     if config.model.frontend == 'raw_conformer' and raw_shape is not None:
         recon_dim = raw_shape[0] * raw_shape[1]

@@ -1,7 +1,7 @@
 """`zte-prepare` -- build (or synthesise) a processed ZuCo bundle.
 
-Loads ZuCo `.mat` files (or generates a synthetic tree), processes them into a :class:`~zte.data.dataset.ZuCoDataset` with the chosen missing-value strategy and
-normalisation, optionally renders the analysis figures, and saves a self-contained bundle that :mod:`zte.cli.train` can consume directly.
+Loads ZuCo `.mat` files (or generates a synthetic tree), processes them into a `ZuCoDataset` with the chosen missing-value strategy
+and normalisation, optionally renders the analysis figures, and saves a self-contained bundle that `zte.cli.train` can consume directly.
 """
 
 from __future__ import annotations

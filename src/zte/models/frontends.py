@@ -26,7 +26,7 @@ class BandPowerMLP(nn.Module):
         """Initialises the band-power MLP.
 
         Args:
-            in_dim (int): Flattened band-power size `F*C` per token.
+            in_dim (int): Flattened band-power size `n_features` per token.
             config (ModelConfig): Model configuration (uses `hidden_dim`, `n_layers`, `dropout`).
         """
         super().__init__()
@@ -55,7 +55,7 @@ class BandPowerMLP(nn.Module):
 
 
 class RawConformer(nn.Module):
-    """Conformer-style token encoder for raw EEG windows `(..., C, T)`.
+    """Conformer-style token encoder for raw EEG windows `(..., n_channels, time_steps)`.
 
     Attributes:
         out_dim (int): The hidden dimensionality produced for each token.
@@ -65,8 +65,8 @@ class RawConformer(nn.Module):
         """Initialises the raw Conformer frontend.
 
         Args:
-            n_channels (int): EEG channel count `C`.
-            time_steps (int): Raw window length `T`.
+            n_channels (int): EEG channel count.
+            time_steps (int): Raw window length (time steps).
             config (ModelConfig): Model configuration
                 (uses `conformer_filters`, `conformer_temporal_kernel`, `n_heads`, `n_layers`, `hidden_dim`, `dropout`).
         """
@@ -97,7 +97,7 @@ class RawConformer(nn.Module):
         """Encodes raw EEG tokens.
 
         Args:
-            x (torch.Tensor): Tensor `(..., C, T)` with arbitrary leading dims.
+            x (torch.Tensor): Tensor `(..., n_channels, time_steps)` with arbitrary leading dims.
 
         Returns:
             torch.Tensor: `(..., hidden_dim)`.
@@ -106,12 +106,12 @@ class RawConformer(nn.Module):
         c, t = x.shape[-2:]
         flat = x.reshape(-1, c, t)
         h = self.act(self.temporal(flat))
-        h = self.act(self.spatial(h))  # (N, filters, T)
-        h = h.transpose(1, 2)  # (N, T, filters)
+        h = self.act(self.spatial(h))  # (n_tokens, filters, time_steps)
+        h = h.transpose(1, 2)  # (n_tokens, time_steps, filters)
         h = self.norm(h)
-        h = self.transformer(h)  # (N, T, filters)
-        pooled = h.mean(dim=1)  # temporal average pool -> (N, filters)
-        out = self.head(pooled)  # (N, hidden_dim)
+        h = self.transformer(h)  # (n_tokens, time_steps, filters)
+        pooled = h.mean(dim=1)  # temporal average pool -> (n_tokens, filters)
+        out = self.head(pooled)  # (n_tokens, hidden_dim)
         return out.reshape(*lead, self.out_dim)
 
 
@@ -143,7 +143,8 @@ def build_frontend(
     Args:
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (required for `band_power_mlp`).
-        raw_shape (tuple[int, int] | None): `(C, T)` raw window shape (required for `raw_conformer`).
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
+            (required for `raw_conformer`).
 
     Returns:
         nn.Module: An initialised frontend module exposing `out_dim`.
@@ -154,8 +155,8 @@ def build_frontend(
     """
     if config.frontend == 'band_power_mlp':
         if in_dim is None:
-            raise ValueError('band_power_mlp frontend requires in_dim (F*C).')
+            raise ValueError('band_power_mlp frontend requires in_dim (n_bp_features * n_channels).')
         return BandPowerMLP(in_dim, config)
     if raw_shape is None:
-        raise ValueError('raw_conformer frontend requires raw_shape (C, T).')
+        raise ValueError('raw_conformer frontend requires raw_shape (n_channels, time_steps).')
     return RawConformer(raw_shape[0], raw_shape[1], config)
