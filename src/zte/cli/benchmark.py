@@ -162,8 +162,13 @@ def main() -> None:
         embedder = ZTEEmbedder.from_checkpoint(out / 'runs' / tag / 'best.pt', datasets[include_et])
         metrics = headline_metrics(embedder, datasets[include_et])
         rows.append(
-            {'objective': objective, 'pos_encoding': pos, 'eye_tracking': include_et,
-             'seed': seed, **metrics}
+            {
+                'objective': objective,
+                'pos_encoding': pos,
+                'eye_tracking': include_et,
+                'seed': seed,
+                **metrics,
+            }
         )
         _LOG.info('[%s] %s', tag, json.dumps(metrics))
 
@@ -178,9 +183,7 @@ def _render_markdown(frame: pd.DataFrame) -> str:
     """Renders the benchmark table as a Markdown document (no extra deps)."""
     cols = list(frame.columns)
     head = '| ' + ' | '.join(cols) + ' |\n| ' + ' | '.join(['---'] * len(cols)) + ' |\n'
-    body = ''.join(
-        '| ' + ' | '.join(str(v) for v in row) + ' |\n' for row in frame.to_numpy()
-    )
+    body = ''.join('| ' + ' | '.join(str(v) for v in row) + ' |\n' for row in frame.to_numpy())
     header = (
         '# ZTE benchmark\n\nEach row is a fixed-seed, reproducible run; sorted by '
         'subject-transfer lift (higher = more subject-agnostic).\n\n'

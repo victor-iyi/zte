@@ -9,9 +9,7 @@ uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/z
 uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
 ```
 
-Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`,
-`--epochs N`, `--device auto|cpu|cuda|mps`, `--no-tensorboard`, `--no-interactive`,
-`--skip-eval`, `--skip-explore`.
+Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
 ## The five configs
 
@@ -25,21 +23,14 @@ Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`,
 
 ### Why these five
 
-* **exp1 vs exp2** isolates the single most important design question for a *thought*
-  code: does the representation lean on eye-tracking (great for reading, absent for
-  imagined thought)? Compare their `evaluation/report.md` and the
-  `exploration/eye_tracking_contribution.csv`.
-* **exp1 vs exp3** compares a context-free word2vec objective against a causal,
-  order-aware one.
-* **exp4** is the honest subject-agnosticism test — the validation subject is never
-  seen in training; watch the subject-transfer analogy and cross-subject retrieval.
-* **exp5** swaps the entire input pathway (raw EEG + Conformer) to check the band-power
-  compression is not leaving signal on the table.
+- **exp1 vs exp2** isolates the single most important design question for a *thought* code: does the representation lean on eye-tracking (great for reading, absent for imagined thought)? Compare their `evaluation/report.md` and the `exploration/eye_tracking_contribution.csv`.
+- **exp1 vs exp3** compares a context-free word2vec objective against a causal, order-aware one.
+- **exp4** is the honest subject-agnosticism test — the validation subject is never seen in training; watch the subject-transfer analogy and cross-subject retrieval.
+- **exp5** swaps the entire input pathway (raw EEG + Conformer) to check the band-power compression is not leaving signal on the table.
 
 ## Reproducibility
 
-Every config fixes `train.seed` and sets `train.deterministic: true`. `zte-run` copies
-the fully-resolved `config.yaml` into the run directory, so any run reproduces with:
+Every config fixes `train.seed` and sets `train.deterministic: true`. `zte-run` copies the fully-resolved `config.yaml` into the run directory, so any run reproduces with:
 
 ```sh
 uv run zte-run --config res/experiments/<run_name>/config.yaml --root <data> --name <run_name>
@@ -47,8 +38,7 @@ uv run zte-run --config res/experiments/<run_name>/config.yaml --root <data> --n
 
 ## Sweeping the grid
 
-To compare objectives × positional encodings × eye-tracking under fixed seeds in one
-shot (headline metrics only, no per-run figures):
+To compare objectives × positional encodings × eye-tracking under fixed seeds in one shot (headline metrics only, no per-run figures):
 
 ```sh
 uv run zte-benchmark --root res/data/zuco_extracted \
@@ -58,7 +48,4 @@ uv run zte-benchmark --root res/data/zuco_extracted \
 
 ## Catalogue
 
-`res/experiments/INDEX.md` accumulates one row per run (words, cross-subject retrieval
-Top-1, subject-transfer Top-1, effective-rank ratio) so runs are comparable at a glance.
-Each run's own `README.md` and `manifest.json` hold the full configuration, data source
-and verdict.
+`res/experiments/INDEX.md` accumulates one row per run (words, cross-subject retrieval Top-1, subject-transfer Top-1, effective-rank ratio) so runs are comparable at a glance.  Each run's own `README.md` and `manifest.json` hold the full configuration, data source and verdict.

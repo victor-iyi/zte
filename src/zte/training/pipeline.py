@@ -1,10 +1,8 @@
 """High-level training orchestration tying a dataset to a trained ZTE model.
 
-:func:`run_training` is the one call the CLI (and the smoke-test) make: it builds
-leakage-aware splits, sizes the encoder to the data, constructs the chosen
-objective, wires DataLoaders with a shared subject vocabulary, and runs the
-:class:`~zte.training.trainer.Trainer`. The fitted normaliser and subject
-vocabulary are embedded in every checkpoint for reproducible inference.
+`run_training` is the one call the CLI (and the smoke-test) make: it builds leakage-aware splits, sizes the encoder to the data,
+constructs the chosen objective, wires DataLoaders with a shared subject vocabulary, and runs the `Trainer`. The fitted normaliser
+and subject vocabulary are embedded in every checkpoint for reproducible inference.
 """
 
 from __future__ import annotations
@@ -27,13 +25,13 @@ _LOG = get_logger('training.pipeline')
 
 @dataclass(slots=True)
 class TrainingArtifacts:
-    """Everything :func:`run_training` produces.
+    """Everything `run_training` produces.
 
     Attributes:
-        trainer: The (already-run) trainer, exposing the model and checkpoints.
-        history: The per-epoch metric history.
-        device: The resolved device spec used for training.
-        test_indices: Held-out test row indices (from `train.test_fraction`), or
+        trainer (Trainer): The (already-run) trainer, exposing the model and checkpoints.
+        history (dict[str, list[float]]): The per-epoch metric history.
+        device (DeviceSpec): The resolved device spec used for training.
+        test_indices (np.ndarray | None): Held-out test row indices (from `train.test_fraction`), or
             `None` when no test split was carved. Never seen during training.
     """
 
@@ -49,16 +47,15 @@ def run_training(
     """Builds and runs a full ZTE pretraining job over `dataset`.
 
     Args:
-        config: The complete run configuration.
-        dataset: A built :class:`ZuCoDataset`.
-        device: Optional pre-resolved device spec.
+        config (ZTEConfig): The complete run configuration.
+        dataset (ZuCoDataset): A built `ZuCoDataset`.
+        device (DeviceSpec | None): Optional pre-resolved device spec.
 
     Returns:
-        A :class:`TrainingArtifacts` with the trainer, history and device.
+        TrainingArtifacts: A `TrainingArtifacts` with the trainer, history and device.
 
     Raises:
-        ValueError: If the configured representation has no matching tensors in
-            the dataset (e.g. raw frontend but band-power-only dataset).
+        ValueError: If the configured representation has no matching tensors in the dataset (e.g. raw frontend but band-power-only dataset).
     """
     device = device or resolve_device(config.train.device, config.train.precision)
     splits = dataset.split(
@@ -125,8 +122,8 @@ def _shapes(
     """Resolves frontend input shapes from the dataset and config.
 
     Args:
-        dataset: A built dataset.
-        config: The run configuration.
+        dataset (ZuCoDataset): A built dataset.
+        config (ZTEConfig): The run configuration.
 
     Returns:
         `(in_dim, raw_shape, feature_dim)` for model/objective construction.

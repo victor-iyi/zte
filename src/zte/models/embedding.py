@@ -1,6 +1,6 @@
 """The ZTE encoder: tokens -> (optionally contextual) word/sentence embeddings.
 
-:class:`ZTEModel` is the trainable backbone shared by every objective. It runs a per-token frontend, optionally adds a learned subject embedding, optionally
+`ZTEModel` is the trainable backbone shared by every objective. It runs a per-token frontend, optionally adds a learned subject embedding, optionally
 contextualises tokens with a transformer (bidirectional for masked modelling, causal for CPC), and projects to the `embed_dim` space (768 by default, to
 stay plug-compatible with the frozen LLM space used downstream in EEG-OT-CLIP).
 
@@ -74,8 +74,7 @@ class ZTEModel(nn.Module):
         Args:
             config (ModelConfig): Model configuration.
             in_dim (int | None): Flattened band-power size `n_features` (band-power frontend).
-            raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
-                (raw frontend).
+            raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
         """
         super().__init__()
         self.config = config
@@ -119,7 +118,7 @@ class ZTEModel(nn.Module):
         """Picks the frontend's input tensor from a collated batch.
 
         Args:
-            batch: A batch dict from :func:`~zte.data.torch_dataset.collate_sentences`.
+            batch: A batch dict from `~zte.data.torch_dataset.collate_sentences`.
 
         Returns:
             torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or
@@ -172,8 +171,12 @@ class ZTEModel(nn.Module):
             hidden = hidden + self.pos_emb[:, :length]
         elif self.pos_encoding == 'sinusoidal':
             table = self.sinusoidal
-            pe = table[:, :length] if length <= table.shape[1] else sinusoidal_encoding(
-                length, self.hidden_dim, hidden.device
+            pe = (
+                table[:, :length]
+                if length <= table.shape[1]
+                else sinusoidal_encoding(  # type: ignore[attr-defined]
+                    length, self.hidden_dim, hidden.device
+                )
             )
             hidden = hidden + pe.to(hidden.dtype)
         # RoPE / ALiBi (or none) are handled inside the encoder; pad_mask marks valid
@@ -241,7 +244,7 @@ def build_model(
     in_dim: int | None = None,
     raw_shape: tuple[int, int] | None = None,
 ) -> ZTEModel:
-    """Factory that constructs a :class:`ZTEModel` for the given input shapes.
+    """Factory that constructs a `ZTEModel` for the given input shapes.
 
     Args:
         config (ModelConfig): Model configuration.
@@ -250,7 +253,7 @@ def build_model(
             (raw frontend).
 
     Returns:
-        ZTEModel: An initialised :class:`ZTEModel`.
+        ZTEModel: An initialised `ZTEModel`.
 
     """
     return ZTEModel(config, in_dim=in_dim, raw_shape=raw_shape)

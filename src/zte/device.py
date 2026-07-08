@@ -57,7 +57,7 @@ def _cuda_supports_bf16() -> bool:
         return False
     try:
         return torch.cuda.is_bf16_supported()
-    except (AssertionError, RuntimeError):
+    except AssertionError, RuntimeError:
         return False
 
 
@@ -148,7 +148,7 @@ def _device_name(kind: DeviceKind, device: torch.device) -> str:
     if kind == 'cuda':
         try:
             return f'cuda:{device.index or 0} ({torch.cuda.get_device_name(device)})'
-        except (AssertionError, RuntimeError):
+        except AssertionError, RuntimeError:
             return 'cuda'
     if kind == 'mps':
         return 'mps (Apple Silicon)'

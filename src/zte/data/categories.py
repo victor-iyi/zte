@@ -109,11 +109,13 @@ def _scan_label_files(root: Path) -> dict[str, str]:
     for csv_path in sorted(root.rglob('*.csv')):
         try:
             frame = pd.read_csv(csv_path, sep=None, engine='python', dtype=str, on_bad_lines='skip')
-        except (ValueError, OSError, pd.errors.ParserError):
+        except ValueError, OSError, pd.errors.ParserError:
             continue
         for _, row in frame.iterrows():
             cells = [str(v) for v in row.to_numpy() if isinstance(v, str) or not pd.isna(v)]
-            label = next((c.strip().upper() for c in cells if c.strip().upper() in _LABEL_TOKENS), None)
+            label = next(
+                (c.strip().upper() for c in cells if c.strip().upper() in _LABEL_TOKENS), None
+            )
             if label is None:
                 continue
             text_cells = [c for c in cells if len(_WORD_RE.findall(c)) >= 3]
@@ -155,9 +157,7 @@ def sentence_categories(sentences: pd.DataFrame, root: str | Path | None = None)
     keys = out['text'].map(normalise_text) if 'text' in out else pd.Series([''] * len(out))
     joined = keys.map(labels.get)
     out['category'] = joined.where(joined.notna(), out['task'].astype(str))
-    out['category_scheme'] = np.where(
-        joined.notna(), 'sentiment/relation', 'task'
-    )
+    out['category_scheme'] = np.where(joined.notna(), 'sentiment/relation', 'task')
     n_labeled = int(joined.notna().sum())
     if n_labeled:
         _LOG.info('Matched %d/%d sentences to real category labels.', n_labeled, len(out))

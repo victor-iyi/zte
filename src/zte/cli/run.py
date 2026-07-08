@@ -52,19 +52,28 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--config', type=str, required=True, help='Experiment YAML (a ZTEConfig).')
     source = parser.add_mutually_exclusive_group()
-    source.add_argument('--root', type=str, help='Local extracted dir, a .zip, or a folder of zips.')
+    source.add_argument(
+        '--root', type=str, help='Local extracted dir, a .zip, or a folder of zips.'
+    )
     source.add_argument('--drive', type=str, help='Google Drive folder id / shareable URL.')
     source.add_argument('--synthetic', action='store_true', help='Generate a synthetic tree.')
 
-    parser.add_argument('--name', type=str, default=None, help='Run name (default: config run_name).')
+    parser.add_argument(
+        '--name', type=str, default=None, help='Run name (default: config run_name).'
+    )
     parser.add_argument('--out-root', type=str, default='res/experiments')
     parser.add_argument('--extract-dir', type=str, default='res/data/zuco_extracted')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
     parser.add_argument('--epochs', type=int, default=None, help='Override config epochs.')
-    parser.add_argument('--subjects', type=str, default=None,
-                        help='Comma-separated subject subset (overrides config).')
-    parser.add_argument('--tasks', type=str, default=None,
-                        help='Comma-separated task subset (overrides config).')
+    parser.add_argument(
+        '--subjects',
+        type=str,
+        default=None,
+        help='Comma-separated subject subset (overrides config).',
+    )
+    parser.add_argument(
+        '--tasks', type=str, default=None, help='Comma-separated task subset (overrides config).'
+    )
     parser.add_argument('--skip-eval', action='store_true')
     parser.add_argument('--skip-explore', action='store_true')
     parser.add_argument('--no-tensorboard', action='store_true')
@@ -124,8 +133,12 @@ def main() -> None:
     _save_overview(dataset, run_dir / 'figures')
 
     # 2) Train.
-    _LOG.info('[2/4] Training (%s / %s / pos=%s) ...',
-              config.objective.name, config.model.frontend, config.model.pos_encoding)
+    _LOG.info(
+        '[2/4] Training (%s / %s / pos=%s) ...',
+        config.objective.name,
+        config.model.frontend,
+        config.model.pos_encoding,
+    )
     from zte.training.pipeline import run_training
 
     artifacts = run_training(config, dataset)
@@ -148,8 +161,12 @@ def main() -> None:
         summary = run_exploration(dataset, run_dir / 'exploration')
         manifest['region_map_approximate'] = summary['region_map_approximate']
 
-    (run_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, default=str), encoding='utf-8')
-    (run_dir / 'README.md').write_text(_render_run_readme(config, manifest, run_dir), encoding='utf-8')
+    (run_dir / 'manifest.json').write_text(
+        json.dumps(manifest, indent=2, default=str), encoding='utf-8'
+    )
+    (run_dir / 'README.md').write_text(
+        _render_run_readme(config, manifest, run_dir), encoding='utf-8'
+    )
     _catalogue(Path(args.out_root), config.run_name, manifest)
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
 
@@ -167,9 +184,16 @@ def _evaluate(
         embedder, dataset
     )
     metrics = evaluate_representation(
-        word_emb, word_meta, raw_feats, sent_emb, sent_ids,
-        out_dir=run_dir / 'evaluation', run_name=config.run_name,
-        sent_meta=sent_meta, word_band_power=word_bp, config=config,
+        word_emb,
+        word_meta,
+        raw_feats,
+        sent_emb,
+        sent_ids,
+        out_dir=run_dir / 'evaluation',
+        run_name=config.run_name,
+        sent_meta=sent_meta,
+        word_band_power=word_bp,
+        config=config,
         tensorboard=str(run_dir / 'tb' / 'eval') if not args.no_tensorboard else False,
         interactive=not args.no_interactive,
     )
@@ -206,31 +230,41 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
     """Builds the per-run README summarising configuration and headline results."""
     ev = manifest.get('evaluation', {})
     lines = [
-        f'# Experiment: {config.run_name}', '',
-        '## Configuration', '',
+        f'# Experiment: {config.run_name}',
+        '',
+        '## Configuration',
+        '',
         f'- Objective: **{config.objective.name}** | frontend: **{config.model.frontend}** | '
         f'positional encoding: **{config.model.pos_encoding}**',
         f'- Eye-tracking: **{"included" if config.dataset.include_eye_tracking else "excluded"}** '
         f'| representation: **{config.dataset.representation}** | tasks: {list(config.dataset.tasks)}',
         f'- embed_dim {config.model.embed_dim} | hidden {config.model.hidden_dim} | '
         f'layers {config.model.n_layers} | epochs {config.train.epochs} | split {config.train.split}',
-        '', '## Data', '',
+        '',
+        '## Data',
+        '',
         f'- Source: `{manifest.get("data_root")}`',
         f'- Words: {manifest.get("dataset", {}).get("n_words")} | '
         f'sentences: {manifest.get("dataset", {}).get("n_sentences")} | '
         f'subjects: {manifest.get("dataset", {}).get("n_subjects")}',
-        '', '## Headline results', '',
+        '',
+        '## Headline results',
+        '',
         f'- Final train loss: {manifest.get("final_train_loss")}',
         f'- Cross-subject sentence retrieval Top-1: {ev.get("sentence_retrieval_top1")}',
         f'- Subject-transfer analogy Top-1: {ev.get("subject_transfer_top1")}',
         f'- Embedding effective-rank ratio: {ev.get("effective_rank_ratio")}',
         f'- Verdict: `{json.dumps(ev.get("verdict", {}))}`',
-        '', '## Reproduce', '',
+        '',
+        '## Reproduce',
+        '',
         '```sh',
         f'zte-run --config {run_dir.name}/config.yaml --root <data> --name {config.run_name}',
-        '```', '',
+        '```',
+        '',
         'Artifacts: `bundle/`, `checkpoints/`, `evaluation/report.md`, '
-        '`exploration/report.md`, `tb/` (TensorBoard incl. embedding projector).', '',
+        '`exploration/report.md`, `tb/` (TensorBoard incl. embedding projector).',
+        '',
     ]
     return '\n'.join(lines)
 

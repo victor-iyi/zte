@@ -1,12 +1,9 @@
 """A lightweight cosine nearest-neighbour index over a labelled embedding bank.
 
-This is a *temporary* stand-in for a learned decoder: given a bank of ZTE
-embeddings with known labels (e.g. the word each EEG token corresponds to), it
-answers "which known items is this new embedding closest to?" and turns that into
-predictions (majority vote / distance-weighted mean) or a crude `decode` to the
-nearest word. It also powers the evaluation suite's kNN probes and content
-retrieval. Brute-force cosine is used (no FAISS dependency); ZuCo-scale banks
-(thousands of tokens) are well within reach.
+This is a *temporary* stand-in for a learned decoder: given a bank of ZTE embeddings with known labels (e.g. the word each EEG token corresponds to),
+it answers "which known items is this new embedding closest to?" and turns that into predictions (majority vote / distance-weighted mean) or a crude
+`decode` to the nearest word. It also powers the evaluation suite's kNN probes and content retrieval. Brute-force cosine is used (no FAISS dependency);
+ZuCo-scale banks (thousands of tokens) are well within reach.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-ProbeTask = Literal['auto', 'classification', 'regression']
+type ProbeTask = Literal['auto', 'classification', 'regression']
 
 
 def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -24,7 +21,7 @@ def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 
     Args:
         x (np.ndarray): Array `(n_samples, embed_dim)`.
-        eps (float): Numerical floor.
+        eps (float): Numerical floor (default `1e-8`).
 
     Returns:
         np.ndarray: Row-normalised float32 array.
@@ -39,6 +36,7 @@ class NearestNeighborIndex:
     Attributes:
         bank (np.ndarray): L2-normalised bank embeddings `(n_items, embed_dim)`.
         metadata (pd.DataFrame): Per-bank-row labels, length `n_items`.
+
     """
 
     def __init__(self, embeddings: np.ndarray, metadata: pd.DataFrame) -> None:
@@ -74,12 +72,11 @@ class NearestNeighborIndex:
         Args:
             queries (np.ndarray): Query embeddings `(n_queries, embed_dim)`.
             k (int): Number of neighbours to return.
-            self_indices (np.ndarray | None): Optional `(n_queries,)` bank row to
-                exclude per query (for leave-one-out when the queries *are* the bank).
+            self_indices (np.ndarray | None): Optional `(n_queries,)` bank row to exclude per query (for leave-one-out when the queries *are* the bank).
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: `(indices (n_queries, k), similarities
-            (n_queries, k))`, neighbours sorted by descending cosine similarity.
+            tuple[np.ndarray, np.ndarray]: `(indices (n_queries, k), similarities (n_queries, k))`, neighbours sorted by descending cosine similarity.
+
         """
         q = _l2_normalize(queries)
         sims = q @ self.bank.T  # (n_queries, n_items)
@@ -102,8 +99,7 @@ class NearestNeighborIndex:
             k (int): Number of neighbours.
 
         Returns:
-            list[pd.DataFrame]: One DataFrame of neighbour rows per query (with a
-            `similarity` column added).
+            list[pd.DataFrame]: One DataFrame of neighbour rows per query (with a `similarity` column added).
         """
         idx, sims = self.query(queries, k)
         out: list[pd.DataFrame] = []
@@ -118,7 +114,7 @@ class NearestNeighborIndex:
 
         Args:
             queries (np.ndarray): Query embeddings `(n_queries, embed_dim)`.
-            column (str): Metadata column to read (default `'word'`).
+            column (str): Metadata column to read (default `word`).
 
         Returns:
             list[Any]: The nearest-neighbour value of `column` for each query.
@@ -140,11 +136,12 @@ class NearestNeighborIndex:
             queries (np.ndarray): Query embeddings `(n_queries, embed_dim)`.
             column (str): Metadata column to predict.
             k (int): Neighbour count.
-            task (ProbeTask): `'classification'`, `'regression'` or `'auto'`.
+            task (ProbeTask): `classification`, `regression` or `auto`.
             self_indices (np.ndarray | None): Per-query bank rows to exclude.
 
         Returns:
             np.ndarray: Predictions `(n_queries,)`.
+
         """
         values = self.metadata[column].to_numpy()
         if task == 'auto':

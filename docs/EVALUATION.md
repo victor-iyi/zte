@@ -1,14 +1,9 @@
 # Evaluation guide
 
-How ZTE proves — without training a decoder — that its encoder turns EEG into a
-**structured, re-purposable** space rather than memorising noise. This is the
-project's defence against the "BLEU-trap": every headline number is checked
-against a raw-feature reference **and** a noise-matched control.
+How ZTE proves — without training a decoder — that its encoder turns EEG into a **structured, re-purposable** space rather than memorising noise. This is the project's defence against the "BLEU-trap": every headline number is checked against a raw-feature reference **and** a noise-matched control.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) · [TRAINING.md](TRAINING.md) ·
-> [RESULTS.md](RESULTS.md) (validated numbers from a real run). The figures below
-> come from the synthetic smoke run (`examples/evaluate_zte.py`); on real ZuCo the
-> same commands produce the same artifacts at scale.
+> Related: [ARCHITECTURE.md](ARCHITECTURE.md) · [TRAINING.md](TRAINING.md) · [RESULTS.md](RESULTS.md) (validated numbers from a real run).
+> The figures below come from the synthetic smoke run (`examples/evaluate_zte.py`); on real ZuCo the same commands produce the same artifacts at scale.
 
 ## How to run it
 
@@ -89,18 +84,13 @@ flowchart LR
 
 ### 1. Transfer probes (does the space *carry* attributes?)
 
-Linear + kNN probes predict known attributes (word length, log frequency, subject,
-task) from **frozen** embeddings. Each is run on three representations so the
-result is interpretable:
+Linear + kNN probes predict known attributes (word length, log frequency, subject, task) from **frozen** embeddings. Each is run on three representations so the result is interpretable:
 
 - **ZTE** — the learned embedding.
 - **raw band-power** — the un-learned input features (a strong reference).
-- **noise (matched)** — Gaussian noise matched to the data's mean/variance (the
-  floor a *real* encoder must beat).
+- **noise (matched)** — Gaussian noise matched to the data's mean/variance (the floor a *real* encoder must beat).
 
-R² for regression, accuracy for classification; a dashed baseline marks
-predict-the-mean / majority. ZTE should beat the noise control and rival raw
-band-power in far fewer dimensions.
+R² for regression, accuracy for classification; a dashed baseline marks predict-the-mean / majority. ZTE should beat the noise control and rival raw band-power in far fewer dimensions.
 
 ![Linear probe comparison](figures/eval/probe_linear.png)
 ![kNN probe comparison](figures/eval/probe_knn.png)
@@ -110,27 +100,24 @@ band-power in far fewer dimensions.
 
 Label-free metrics from `zte.evaluation.metrics`:
 
-| Metric | Good sign | Detects |
-| ------ | --------- | ------- |
-| Effective rank / ratio | high (near `embed_dim`) | dimensional collapse |
-| Uniformity (Wang & Isola) | low (spread out) | crowding on the sphere |
-| Alignment (adjacent words) | low | neighbours drifting apart |
-| Anisotropy | low | a degenerate "cone" |
-| Dead-dim fraction | ~0 | unused dimensions |
+| Metric                     | Good sign               | Detects                   |
+| -------------------------- | ----------------------- | ------------------------- |
+| Effective rank / ratio     | high (near `embed_dim`) | dimensional collapse      |
+| Uniformity (Wang & Isola)  | low (spread out)        | crowding on the sphere    |
+| Alignment (adjacent words) | low                     | neighbours drifting apart |
+| Anisotropy                 | low                     | a degenerate "cone"       |
+| Dead-dim fraction          | ~0                      | unused dimensions         |
 
 ![Embedding health](figures/eval/embedding_health.png)
 
-The PCA projections should show smooth structure by word length and separable
-subjects rather than a featureless blob:
+The PCA projections should show smooth structure by word length and separable subjects rather than a featureless blob:
 
 ![PCA by word length](figures/eval/pca_by_word_length.png)
 ![PCA by subject](figures/eval/pca_by_subject.png)
 
 ### 3. Content retrieval (do same-thoughts attract?)
 
-Leave-one-out retrieval: does the *same stimulus read by a different subject*
-retrieve its counterparts better than chance (Top-K, MRR)? This is the honest
-cross-subject test and the direct analogue of the downstream zero-shot task.
+Leave-one-out retrieval: does the *same stimulus read by a different subject* retrieve its counterparts better than chance (Top-K, MRR)? This is the honest cross-subject test and the direct analogue of the downstream zero-shot task.
 
 ![Same vs different content similarity](figures/eval/similarity_by_content.png)
 ![Cross-subject sentence retrieval](figures/eval/retrieval_sentence.png)
@@ -147,21 +134,14 @@ with a raw-feature control — a falsifiable test of subject-agnosticism.
 
 ## Stratified breakdowns
 
-The same metrics are re-computed **per subject, per task and per sentence
-category** (`zte.evaluation.breakdown`), so a strong global number can't hide a
-subject that fails:
+The same metrics are re-computed **per subject, per task and per sentence category** (`zte.evaluation.breakdown`), so a strong global number can't hide a subject that fails:
 
 ![Per-subject breakdown](figures/eval/breakdown_subject.png)
 ![Per-task breakdown](figures/eval/breakdown_task.png)
 
 ## Scalp-region importance & eye-tracking (`zte-explore`)
 
-Which parts of the cortex encode *thought* vs *reading*, and how much does gaze
-behaviour actually help? `zte-explore` groups the 105 channels into
-anterior→posterior scalp regions and scores each region's share of the decodable
-information for reading targets (word length, frequency) and cognitive targets
-(task, subject). It also probes EEG-only vs eye-tracking-only vs both, quantifying
-the intuition behind the `include_eye_tracking` switch.
+Which parts of the cortex encode *thought* vs *reading*, and how much does gaze behaviour actually help? `zte-explore` groups the 105 channels into anterior->posterior scalp regions and scores each region's share of the decodable information for reading targets (word length, frequency) and cognitive targets (task, subject). It also probes EEG-only vs eye-tracking-only vs both, quantifying the intuition behind the `include_eye_tracking` switch.
 
 ```sh
 uv run zte-explore --root res/data/zuco_extracted --out res/exploration
@@ -171,8 +151,7 @@ uv run zte-explore --bundle res/bundle --montage-csv my_montage.csv --out res/ex
 
 ![Scalp-region importance](figures/eval/region_importance.png)
 
-Flags: one of `--bundle` / `--root` / `--synthetic`, `--tasks`, `--out`,
-`--montage-csv`, `--method mutual_info|f_score`.
+Flags: one of `--bundle` / `--root` / `--synthetic`, `--tasks`, `--out`, `--montage-csv`, `--method mutual_info|f_score`.
 
 ## The verdict
 
@@ -183,17 +162,11 @@ Flags: one of `--bundle` / `--root` / `--synthetic`, `--tasks`, `--out`,
 - **cross-subject retrieval above chance**,
 - **subject arithmetic above chance**.
 
-These are intentionally strict: on tiny synthetic data some will legitimately fail
-(there is little real cross-subject signal to find), which is exactly why the same
-commands must be run on real ZuCo to make claims. See [RESULTS.md](RESULTS.md).
+These are intentionally strict: on tiny synthetic data some will legitimately fail (there is little real cross-subject signal to find), which is exactly why the same commands must be run on real ZuCo to make claims. See [RESULTS.md](RESULTS.md).
 
 ## Reproducible benchmarks (`zte-benchmark`)
 
-To claim ZTE's *choices* are good (not just asserted), sweep them under fixed
-seeds. `zte-benchmark` trains + evaluates a small model across
-**objective × positional-encoding × eye-tracking × seed** and writes a sortable
-`benchmark.csv` / `benchmark.md`; every cell writes its own `config.yaml` so any
-row reproduces exactly.
+To claim ZTE's *choices* are good (not just asserted), sweep them under fixed seeds. `zte-benchmark` trains + evaluates a small model across **objective × positional-encoding × eye-tracking × seed** and writes a sortable `benchmark.csv` / `benchmark.md`; every cell writes its own `config.yaml` so any row reproduces exactly.
 
 ```sh
 uv run zte-benchmark --root res/data/zuco_extracted \
@@ -203,18 +176,17 @@ uv run zte-benchmark --root res/data/zuco_extracted \
 uv run zte-benchmark --synthetic --objectives skipgram --pos-encodings rope,none --out res/benchmark
 ```
 
-Rows are sorted by **subject-transfer lift** (higher = more subject-agnostic),
-the metric that matters most for the project's north star.
+Rows are sorted by **subject-transfer lift** (higher = more subject-agnostic), the metric that matters most for the project's north star.
 
 ## The reusable building blocks
 
-| Module | What it provides |
-| ------ | ---------------- |
-| `zte.evaluation.metrics` | probes, retrieval, geometry/health |
-| `zte.evaluation.breakdown` | per-subject / per-task / per-category stratification |
-| `zte.evaluation.analogy` | subject/task vector-arithmetic transfer |
-| `zte.data.regions.region_importance` | scalp-region information share |
-| `zte.evaluation.interactive` | self-contained interactive HTML explorer |
-| `zte.evaluation.tensorboard` | projector + HParams + scalars + histograms + figures |
-| `zte.inference.retrieval.NearestNeighborIndex` | kNN decoder/probe over a labelled bank |
-| `zte.training.metrics.noise_matched` | the Gaussian control a real encoder must beat |
+| Module                                         | What it provides                                     |
+| ---------------------------------------------- | ---------------------------------------------------- |
+| `zte.evaluation.metrics`                       | probes, retrieval, geometry/health                   |
+| `zte.evaluation.breakdown`                     | per-subject / per-task / per-category stratification |
+| `zte.evaluation.analogy`                       | subject/task vector-arithmetic transfer              |
+| `zte.data.regions.region_importance`           | scalp-region information share                       |
+| `zte.evaluation.interactive`                   | self-contained interactive HTML explorer             |
+| `zte.evaluation.tensorboard`                   | projector + HParams + scalars + histograms + figures |
+| `zte.inference.retrieval.NearestNeighborIndex` | kNN decoder/probe over a labelled bank               |
+| `zte.training.metrics.noise_matched`           | the Gaussian control a real encoder must beat        |

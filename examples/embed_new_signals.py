@@ -12,6 +12,7 @@ Example:
     >>> # uv run python examples/embed_new_signals.py
     >>> # uv run python examples/embed_new_signals.py --ckpt res/checkpoints/best.pt
 """
+
 # pyright: reportOptionalSubscript=false
 from __future__ import annotations
 

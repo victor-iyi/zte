@@ -1,21 +1,17 @@
 """A pre-norm Transformer encoder with pluggable positional encoding.
 
-The stock :class:`torch.nn.TransformerEncoder` only supports *absolute* position
-information added to the inputs. Modern sequence models favour **relative** schemes
-applied inside attention -- rotary embeddings (RoPE) and ALiBi -- which generalise
-to unseen sequence lengths and encode *distance* directly. Since ZuCo sentences vary
-in length and the north-star goal is a length-/device-agnostic thought code, this
-module implements a small, explicit encoder supporting all of:
+The stock `torch.nn.TransformerEncoder` only supports *absolute* position information added to the inputs.
+Modern sequence models favour **relative** schemes applied inside attention -- rotary embeddings (RoPE) and ALiBi
+-- which generalise to unseen sequence lengths and encode *distance* directly. Since ZuCo sentences vary in length and
+the north-star goal is a length-/device-agnostic thought code, this module implements a small, explicit encoder supporting all of:
 
-* `rope` -- rotary position embedding rotated into the query/key subspaces.
-* `alibi` -- linear, head-specific distance penalties added to attention logits.
-* `sinusoidal` / `learned` -- classic absolute encodings (added to inputs by the
-  caller); attention here is then position-agnostic.
-* `none` -- no positional signal (ablation).
+- `rope` -- rotary position embedding rotated into the query/key subspaces.
+- `alibi` -- linear, head-specific distance penalties added to attention logits.
+- `sinusoidal` / `learned` -- classic absolute encodings (added to inputs by the caller); attention here is then position-agnostic.
+- `none` -- no positional signal (ablation).
 
-The encoder is pre-norm (stable training), GELU-activated, and honours both a
-key-padding mask (variable-length sentences) and an optional causal mask (for CPC),
-matching the interface the ZTE objectives already rely on.
+The encoder is pre-norm (stable training), GELU-activated, and honours both a key-padding mask (variable-length sentences)
+and an optional causal mask (for CPC), matching the interface the ZTE objectives already rely on.
 """
 
 from __future__ import annotations
@@ -60,6 +56,7 @@ def _alibi_slopes(n_heads: int) -> torch.Tensor:
     Returns:
         A `(n_heads,)` tensor of positive slopes.
     """
+
     def pow2_slopes(n: int) -> list[float]:
         start = 2.0 ** (-(2.0 ** -(math.log2(n) - 3)))
         return [start ** (i + 1) for i in range(n)]
@@ -74,7 +71,9 @@ def _alibi_slopes(n_heads: int) -> torch.Tensor:
     return torch.tensor(slopes, dtype=torch.float32)
 
 
-def _rope_cos_sin(length: int, head_dim: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def _rope_cos_sin(
+    length: int, head_dim: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Precomputes RoPE cosine/sine tables for a sequence.
 
     Args:
@@ -143,9 +142,7 @@ class MultiHeadSelfAttention(nn.Module):
         if pos == 'alibi':
             self.register_buffer('slopes', _alibi_slopes(n_heads), persistent=False)
 
-    def forward(
-        self, x: torch.Tensor, valid_mask: torch.Tensor, causal: bool
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor, causal: bool) -> torch.Tensor:
         """Runs masked self-attention over a token sequence.
 
         Args:
@@ -169,7 +166,7 @@ class MultiHeadSelfAttention(nn.Module):
         if self.pos == 'alibi':
             dist = torch.arange(length, device=x.device)
             rel = -(dist[None, :] - dist[:, None]).abs().float()  # (seq_len, seq_len), <= 0
-            scores = scores + self.slopes[None, :, None, None] * rel[None, None]
+            scores = scores + self.slopes[None, :, None, None] * rel[None, None]  # type: ignore[index]
 
         allow = valid_mask[:, None, None, :].expand(b, self.n_heads, length, length)
         if causal:
@@ -234,9 +231,7 @@ class ZTETransformerEncoder(nn.Module):
             `'alibi'` or `'none'` -- absolute schemes are added by the caller).
     """
 
-    def __init__(
-        self, dim: int, n_heads: int, n_layers: int, dropout: float, pos: AttnPos
-    ) -> None:
+    def __init__(self, dim: int, n_heads: int, n_layers: int, dropout: float, pos: AttnPos) -> None:
         """Builds the encoder stack.
 
         Args:

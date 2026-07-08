@@ -125,8 +125,17 @@ def test_evaluate_representation_writes_artifacts(
 
     out = tmp_path / 'eval'
     metrics = evaluate_representation(
-        word_emb, word_meta, raw_feats, sent_emb, sent_ids, out_dir=out, run_name='test',
-        sent_meta=sent_meta, word_band_power=word_bp, config=cfg, interactive=True,
+        word_emb,
+        word_meta,
+        raw_feats,
+        sent_emb,
+        sent_ids,
+        out_dir=out,
+        run_name='test',
+        sent_meta=sent_meta,
+        word_band_power=word_bp,
+        config=cfg,
+        interactive=True,
     )
     assert 'embedding_health' in metrics and 'verdict' in metrics
     # New analyses are present and catalogued.

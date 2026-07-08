@@ -115,7 +115,9 @@ def transfer_analogy(
 
     if n_queries == 0:
         return {f'top{k}': float('nan') for k in ks} | {
-            'mrr': float('nan'), 'n_queries': 0.0, 'chance_top1': float('nan'),
+            'mrr': float('nan'),
+            'n_queries': 0.0,
+            'chance_top1': float('nan'),
             'n_groups': float(len(uniq_groups)),
         }
     out = {f'top{k}': float(np.mean(hits_at[k])) for k in ks}
@@ -207,8 +209,10 @@ def analogy_report(
     meta = meta.reset_index(drop=True)
     stimulus = (
         meta['task'].astype(str)
-        + '|' + meta['sentence_idx'].astype(str)
-        + '|' + meta['word_idx'].astype(str)
+        + '|'
+        + meta['sentence_idx'].astype(str)
+        + '|'
+        + meta['word_idx'].astype(str)
     ).to_numpy()
 
     report: dict[str, Any] = {}
@@ -220,12 +224,17 @@ def analogy_report(
             np.asarray(raw_feats, dtype=np.float32), meta['subject'].to_numpy(), stimulus
         )
     report['examples'] = analogy_examples(
-        emb, meta.assign(_stim=stimulus), group_col='subject', content_col='_stim',
+        emb,
+        meta.assign(_stim=stimulus),
+        group_col='subject',
+        content_col='_stim',
         label_col='word',
     )
     st = report['subject_transfer']
     _LOG.info(
         'Subject-transfer analogy: Top-1 %.3f vs chance %.3f (%d queries).',
-        st.get('top1', float('nan')), st.get('chance_top1', float('nan')), int(st.get('n_queries', 0)),
+        st.get('top1', float('nan')),
+        st.get('chance_top1', float('nan')),
+        int(st.get('n_queries', 0)),
     )
     return report

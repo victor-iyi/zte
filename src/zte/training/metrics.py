@@ -2,15 +2,11 @@
 
 Two complementary, leakage-resistant probes are provided:
 
-* :func:`linear_probe` -- freezes the embeddings and fits a cheap linear model to
-  predict a held-out attribute (word length, frequency, omission). A score well
-  above chance means the embedding captured linguistic structure *without* the
-  probe being able to memorise, since it is linear and cross-validated.
-* :func:`retrieval_metrics` -- Top-K / MRR for matching one set of embeddings to
-  another (used downstream for EEG<->text retrieval; here for neighbour probes).
+- `linear_probe` -- freezes the embeddings and fits a cheap linear model to predict a held-out attribute (word length, frequency, omission).  A score
+well above chance means the embedding captured linguistic structure *without* the probe being able to memorise, since it is linear and cross-validated.
+- `retrieval_metrics` -- Top-K / MRR for matching one set of embeddings to another (used downstream for EEG<->text retrieval; here for neighbour probes).
 
-:func:`noise_matched` builds the Gaussian control the project mandates: inputs
-with the genuine data's per-feature mean/variance but no real structure.
+`noise_matched` builds the Gaussian control the project mandates: inputs with the genuine data's per-feature mean/variance but no real structure.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -28,15 +24,15 @@ def linear_probe(
     """Cross-validated linear probe of an embedding's information content.
 
     Args:
-        embeddings: Array `(n_samples, embed_dim)` of frozen embeddings.
-        targets: Array `(n_samples,)` of attributes to predict.
-        task: `regression`, `classification` or `auto` (decided from the number
-            of unique targets).
-        n_splits: Cross-validation folds.
+        embeddings (np.ndarray): Array `(n_samples, embed_dim)` of frozen embeddings.
+        targets (np.ndarray): Array `(n_samples,)` of attributes to predict.
+        task (str): `regression`, `classification` or `auto` (decided from the number of unique targets).
+        n_splits (int): Cross-validation folds.
 
     Returns:
-        A dict with `score` (R^2 for regression, accuracy for classification),
-        `baseline` (predict-the-mean / majority) and `task`.
+        dict[str, float | str]: A dict with `score` (R^2 for regression, accuracy for classification),
+            `baseline` (predict-the-mean / majority) and `task`.
+
     """
     embeddings = np.asarray(embeddings, dtype=np.float32)
     targets = np.asarray(targets)
@@ -71,16 +67,16 @@ def retrieval_metrics(
 ) -> dict[str, float]:
     """Computes Top-K accuracy and MRR for paired query/key embeddings.
 
-    Row `i` of `query` is assumed to match row `i` of `key`. Similarity is
-    cosine; the diagonal rank determines the metrics.
+    Row `i` of `query` is assumed to match row `i` of `key`. Similarity is cosine; the diagonal rank determines the metrics.
 
     Args:
-        query: Array `(n_samples, embed_dim)`.
-        key: Array `(n_samples, embed_dim)` aligned with `query`.
-        ks: Cut-offs for Top-K accuracy.
+        query (np.ndarray): Array `(n_samples, embed_dim)`.
+        key (np.ndarray): Array `(n_samples, embed_dim)` aligned with `query`.
+        ks (tuple[int, ...]): Cut-offs for Top-K accuracy.
 
     Returns:
-        A dict with `top{k}` for each `k` and `mrr`.
+        dict[str, float]: A dict with `top{k}` for each `k` and `mrr`.
+
     """
     q = _l2(np.asarray(query, dtype=np.float32))
     k = _l2(np.asarray(key, dtype=np.float32))
@@ -98,15 +94,15 @@ def retrieval_metrics(
 def noise_matched(x: np.ndarray, seed: int = 0) -> np.ndarray:
     """Returns Gaussian noise matched to `x`'s per-feature mean and variance.
 
-    This is the empirical-floor control: a genuine encoder must beat embeddings
-    learned from this noise to claim it decodes real neural structure.
+    This is the empirical-floor control: a genuine encoder must beat embeddings learned from this noise to claim it decodes real neural structure.
 
     Args:
-        x: Real feature matrix `(n_samples, n_features)`.
-        seed: RNG seed.
+        x (np.ndarray): Real feature matrix `(n_samples, n_features)`.
+        seed (int): RNG seed.
 
     Returns:
-        A noise matrix of the same shape with matched first/second moments.
+        np.ndarray: A noise matrix of the same shape with matched first/second moments.
+
     """
     rng = np.random.default_rng(seed)
     mean = np.nanmean(x, axis=0, keepdims=True)
@@ -118,10 +114,11 @@ def _l2(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """L2-normalises rows of `x`.
 
     Args:
-        x: Array `(n_samples, embed_dim)`.
-        eps: Numerical floor.
+        x (np.ndarray): Array `(n_samples, embed_dim)`.
+        eps (float): Numerical floor.
 
     Returns:
-        Row-normalised array.
+        np.ndarray: Row-normalised array.
+
     """
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)

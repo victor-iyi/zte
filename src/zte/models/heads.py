@@ -80,8 +80,7 @@ class Predictor(nn.Module):
 class EMATeacher:
     """An exponential-moving-average copy of a module (data2vec target network).
 
-    The teacher is not optimised by gradients; its weights track the student so
-    it provides stable latent targets that the student predicts.
+    The teacher is not optimised by gradients; its weights track the student so it provides stable latent targets that the student predicts.
 
     Attributes:
         decay (float): EMA decay applied each update.

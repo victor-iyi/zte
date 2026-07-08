@@ -42,12 +42,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--run-name', type=str, default='zte-eval')
     parser.add_argument(
-        '--tensorboard', action='store_true',
-        help='Write the full TensorBoard log (projector, hparams, scalars, figures).'
+        '--tensorboard',
+        action='store_true',
+        help='Write the full TensorBoard log (projector, hparams, scalars, figures).',
     )
     parser.add_argument(
-        '--no-interactive', action='store_true',
-        help='Skip the self-contained interactive HTML embedding explorer.'
+        '--no-interactive',
+        action='store_true',
+        help='Skip the self-contained interactive HTML embedding explorer.',
     )
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()
@@ -55,7 +57,9 @@ def parse_arguments() -> argparse.Namespace:
 
 def collect_embeddings(
     embedder: ZTEEmbedder, dataset: ZuCoDataset, indices: np.ndarray | None = None
-) -> tuple[np.ndarray, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, pd.DataFrame, np.ndarray | None]:
+) -> tuple[
+    np.ndarray, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, pd.DataFrame, np.ndarray | None
+]:
     """Produces aligned word/sentence embeddings + a raw-feature baseline.
 
     Word-level arrays are built in dataset row order over the present tokens so the ZTE embeddings, the raw-feature
@@ -108,7 +112,8 @@ def collect_embeddings(
     sent_content_ids = pd.factorize(merged['text'])[0]
     # Per-word band power (present rows), aligned to word_emb, for region analysis.
     word_band_power = (
-        None if embedder.model.uses_raw or dataset.band_power_raw is None
+        None
+        if embedder.model.uses_raw or dataset.band_power_raw is None
         else dataset.band_power_raw[present]
     )
     return word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, merged, word_band_power

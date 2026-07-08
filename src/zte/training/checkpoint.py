@@ -1,10 +1,8 @@
 """Checkpoint management: best/last tracking, rotation, resume and Drive backup.
 
-A :class:`CheckpointManager` serialises everything needed to resume or to run
-inference later -- model weights, optimiser/scheduler/scaler state, the config,
-the fitted feature-normaliser state and the subject vocabulary -- and keeps the
-checkpoint directory tidy by rotating older "last" checkpoints. When a Google
-Drive backup directory is configured each saved checkpoint is mirrored remotely.
+A `CheckpointManager` serialises everything needed to resume or to run inference later -- model weights, optimiser/scheduler/scaler state,
+the config, the fitted feature-normaliser state and the subject vocabulary -- and keeps the checkpoint directory tidy by rotating
+older "last" checkpoints. When a Google Drive backup directory is configured each saved checkpoint is mirrored remotely.
 """
 
 from __future__ import annotations
@@ -25,10 +23,11 @@ class CheckpointManager:
     """Saves, rotates, restores and (optionally) backs up training checkpoints.
 
     Attributes:
-        ckpt_dir: Local directory holding checkpoint files.
-        keep_last: How many rolling "last" checkpoints to retain.
-        best_metric: The best (lowest) monitored value seen so far.
-        drive_backup_dir: Optional remote folder to mirror checkpoints to.
+        ckpt_dir (Path): Local directory holding checkpoint files.
+        keep_last (int): How many rolling "last" checkpoints to retain.
+        best_metric (float): The best (lowest) monitored value seen so far.
+        drive_backup_dir (str | None): Optional remote folder to mirror checkpoints to.
+        higher_is_better (bool): Whether a higher monitored metric is better.
     """
 
     def __init__(
@@ -41,10 +40,10 @@ class CheckpointManager:
         """Initialises the manager and ensures the checkpoint directory exists.
 
         Args:
-            ckpt_dir: Local checkpoint directory (created if missing).
-            keep_last: Number of recent "last" checkpoints to keep.
-            drive_backup_dir: Optional Drive folder path/id for remote mirroring.
-            higher_is_better: Whether a higher monitored metric is better.
+            ckpt_dir (str | Path): Local checkpoint directory (created if missing).
+            keep_last (int): Number of recent "last" checkpoints to keep.
+            drive_backup_dir (str | None): Optional Drive folder path/id for remote mirroring.
+            higher_is_better (bool): Whether a higher monitored metric is better.
         """
         self.ckpt_dir = Path(ckpt_dir)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -58,10 +57,10 @@ class CheckpointManager:
         """Returns whether `metric` improves on the best seen so far.
 
         Args:
-            metric: The freshly computed monitored value.
+            metric (float): The freshly computed monitored value.
 
         Returns:
-            `True` if it is a new best.
+            bool: `True` if it is a new best.
         """
         return metric > self.best_metric if self.higher_is_better else metric < self.best_metric
 
@@ -75,13 +74,13 @@ class CheckpointManager:
         """Writes a checkpoint and updates best/rotation bookkeeping.
 
         Args:
-            state: The payload to serialise (model/optimiser/etc.).
-            epoch: Current epoch (used in the filename).
-            metric: Monitored value to record (and compare for best).
-            is_best: Force-mark this as the best checkpoint.
+            state (dict[str, Any]): The payload to serialise (model/optimiser/etc.).
+            epoch (int): Current epoch (used in the filename).
+            metric (float | None): Monitored value to record (and compare for best).
+            is_best (bool): Force-mark this as the best checkpoint.
 
         Returns:
-            The path of the written `last` checkpoint.
+            Path: The path of the written `last` checkpoint.
         """
         path = self.ckpt_dir / f'ckpt_epoch{epoch:04d}.pt'
         torch.save(state, path)
@@ -138,17 +137,17 @@ class CheckpointManager:
         """Assembles a serialisable checkpoint payload.
 
         Args:
-            model: The model to snapshot.
-            config: The full run config.
-            epoch: Current epoch.
-            step: Global optimiser step.
-            optimizer: Optional optimiser to snapshot.
-            scheduler: Optional scheduler to snapshot.
-            scaler: Optional AMP grad scaler to snapshot.
-            extra: Extra picklable data (normaliser state, subject vocab, ...).
+            model (torch.nn.Module): The model to snapshot.
+            config (ZTEConfig): The full run config.
+            epoch (int): Current epoch.
+            step (int): Global optimiser step.
+            optimizer (torch.optim.Optimizer | None): Optional optimiser to snapshot.
+            scheduler (Any | None): Optional scheduler to snapshot.
+            scaler (Any | None): Optional AMP grad scaler to snapshot.
+            extra (dict[str, Any] | None): Extra picklable data (normaliser state, subject vocab, ...).
 
         Returns:
-            A dict suitable for :func:`torch.save`.
+            dict[str, Any]: A dict suitable for `torch.save`.
         """
         state: dict[str, Any] = {
             'model': model.state_dict(),
@@ -171,10 +170,10 @@ class CheckpointManager:
         """Loads a checkpoint payload from disk.
 
         Args:
-            path: Checkpoint file path.
-            map_location: Device mapping for tensor storage.
+            path (str | Path): Checkpoint file path.
+            map_location (str | torch.device): Device mapping for tensor storage.
 
         Returns:
-            The deserialised checkpoint dict.
+            dict[str, Any]: The deserialised checkpoint dict.
         """
         return torch.load(path, map_location=map_location, weights_only=False)

@@ -1,8 +1,7 @@
 """Learning-rate schedules with linear warmup.
 
-A single :func:`build_scheduler` returns a :class:`~torch.optim.lr_scheduler.LambdaLR`
-implementing linear warmup followed by cosine, linear or constant decay -- the
-schedules that work well for transformer-style self-supervised pretraining.
+A single `build_scheduler` returns a `~torch.optim.lr_scheduler.LambdaLR` implementing linear warmup followed by cosine,
+linear or constant decay -- the schedules that work well for transformer-style self-supervised pretraining.
 """
 
 from __future__ import annotations
@@ -25,15 +24,15 @@ def build_scheduler(
     """Builds a warmup + decay learning-rate scheduler.
 
     Args:
-        optimizer: The optimiser whose LR is scheduled.
-        total_steps: Total number of optimiser steps over training.
-        warmup_steps: Steps spent linearly warming up from 0 to the peak LR.
-        kind: Decay shape after warmup (`'cosine'`, `'linear'` or
-            `'constant'`).
-        min_lr_ratio: Floor for the LR multiplier (as a fraction of peak).
+        optimizer (Optimizer): The optimiser whose LR is scheduled.
+        total_steps (int): Total number of optimiser steps over training.
+        warmup_steps (int): Steps spent linearly warming up from 0 to the peak LR.
+        kind (SchedulerName): Decay shape after warmup (`cosine`, `linear` or `constant`).
+        min_lr_ratio (float): Floor for the LR multiplier (as a fraction of peak).
 
     Returns:
-        A :class:`~torch.optim.lr_scheduler.LambdaLR`.
+        LambdaLR: A `LambdaLR` scheduler.
+
     """
     total_steps = max(total_steps, 1)
     warmup_steps = max(0, min(warmup_steps, total_steps - 1))

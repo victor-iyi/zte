@@ -75,7 +75,9 @@ def stratified_report(
 
     """
     word_meta = word_meta.reset_index(drop=True)
-    rows: list[dict[str, Any]] = [{'group': 'ALL', 'value': 'all', **stratum_metrics(word_emb, word_meta)}]
+    rows: list[dict[str, Any]] = [
+        {'group': 'ALL', 'value': 'all', **stratum_metrics(word_emb, word_meta)}
+    ]
     for col in group_cols:
         if col not in word_meta:
             continue

@@ -3,7 +3,7 @@
 A *token* is one word's neural response. A frontend maps that token to a hidden vector, independent of its neighbours, so the sequence/objective layers can treat
 words like tokens in a language model. Both frontends accept an arbitrary number of leading (batch/sequence) dimensions and only touch the trailing feature axes.
 
-The :class:`RawConformer` follows the project's EEG-Conformer recipe: a temporal 1-D convolution (a learnable band-pass),
+The `RawConformer` follows the project's EEG-Conformer recipe: a temporal 1-D convolution (a learnable band-pass),
 a spatial/pointwise mixer, a small self-attention stack over time, and temporal pooling to a fixed hidden vector.
 """
 
@@ -155,7 +155,9 @@ def build_frontend(
     """
     if config.frontend == 'band_power_mlp':
         if in_dim is None:
-            raise ValueError('band_power_mlp frontend requires in_dim (n_bp_features * n_channels).')
+            raise ValueError(
+                'band_power_mlp frontend requires in_dim (n_bp_features * n_channels).'
+            )
         return BandPowerMLP(in_dim, config)
     if raw_shape is None:
         raise ValueError('raw_conformer frontend requires raw_shape (n_channels, time_steps).')

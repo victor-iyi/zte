@@ -174,7 +174,8 @@ class Trainer:
         }
         final = {
             'hparam/final_train_loss': self.history['train_loss'][-1]
-            if self.history['train_loss'] else float('nan'),
+            if self.history['train_loss']
+            else float('nan'),
         }
         if self.history.get('val_loss'):
             final['hparam/final_val_loss'] = self.history['val_loss'][-1]
@@ -303,7 +304,7 @@ class Trainer:
             from torch.amp import GradScaler
 
             return GradScaler('cuda')
-        except (ImportError, TypeError):  # pragma: no cover - older torch
+        except ImportError, TypeError:  # pragma: no cover - older torch
             from torch.cuda.amp import GradScaler as CudaGradScaler
 
             return CudaGradScaler()

@@ -1,12 +1,12 @@
 """Self-supervised training objectives for ZTE -- the EEG analogues of word2vec.
 
-Four interchangeable objectives, all driven by :class:`~zte.config.ObjectiveConfig`:
+Four interchangeable objectives, all driven by `~zte.config.ObjectiveConfig`:
 
-* :class:`SkipGramObjective` -- given a word's EEG embedding, identify the EEG of its neighbours via multi-positive
+- `SkipGramObjective` -- given a word's EEG embedding, identify the EEG of its neighbours via multi-positive
     InfoNCE with in-batch negatives (word2vec skip-gram, but over continuous neural tokens).
-* :class:`CBOWObjective` -- predict a word's embedding from the averaged embeddings of its neighbours.
-* :class:`MaskedObjective` -- mask word tokens and predict either an EMA-teacher latent (data2vec) or the raw features (MAEEG-style reconstruction).
-* :class:`CPCObjective` -- autoregressively predict future word latents (wav2vec/BENDR contrastive predictive coding).
+- `CBOWObjective` -- predict a word's embedding from the averaged embeddings of its neighbours.
+- `MaskedObjective` -- mask word tokens and predict either an EMA-teacher latent (data2vec) or the raw features (MAEEG-style reconstruction).
+- `CPCObjective` -- autoregressively predict future word latents (wav2vec/BENDR contrastive predictive coding).
 
 **Every** objective treats omitted words (presence `False`) as non-tokens:
 they are never anchors, positives or targets, so the zero/NaN vectors that plague word-level ZuCo modelling cannot leak into the loss.
@@ -28,8 +28,7 @@ from zte.models.heads import EMATeacher, Predictor, ProjectionHead
 def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
     """Returns `(batch_size, seq_len)` mask of tokens usable as anchors/positives/targets.
 
-    A token is usable only if it is a real (non-padding) position *and* the word
-    received a fixation (present). This is the anti-leakage gate.
+    A token is usable only if it is a real (non-padding) position *and* the word received a fixation (present). This is the anti-leakage gate.
 
     Args:
         batch (dict[str, Any]): A collated batch dict.
@@ -43,11 +42,9 @@ def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
 def _context_key_mask(batch: dict[str, Any]) -> torch.Tensor:
     """Returns the attention key mask for contextual objectives (`True` = attend).
 
-    Omitted words carry no real signal, so they are excluded from the transformer's
-    keys/values as well -- otherwise their zero-imputed states would leak into the
-    contextual representation and the teacher targets. Sentences that happen to
-    have *no* present tokens fall back to the padding mask so a row is never fully
-    masked (which would produce NaNs).
+    Omitted words carry no real signal, so they are excluded from the transformer's keys/values as well -- otherwise
+    their zero-imputed states would leak into the contextual representation and the teacher targets. Sentences that happen to
+    have *no* present tokens fall back to the padding mask so a row is never fully masked (which would produce NaNs).
 
     Args:
         batch (dict[str, Any]): A collated batch dict.
@@ -223,13 +220,10 @@ class MaskedObjective(nn.Module):  # pylint: disable=abstract-method
         """Initialises the masked objective and its prediction machinery.
 
         Args:
-            config (ObjectiveConfig): Objective configuration (uses `mask_ratio`,
-                `masked_target`, `ema_decay`).
+            config (ObjectiveConfig): Objective configuration (uses `mask_ratio`, `masked_target`, `ema_decay`).
             model (ZTEModel): The encoder (also cloned into the EMA teacher).
-            feature_dim (int | None): Reconstruct-target dimension -- `n_features`
-                (flattened band power) for the band-power frontend or
-                `n_channels * time_steps` for the raw frontend. Only used when
-                `masked_target='reconstruct'`.
+            feature_dim (int | None): Reconstruct-target dimension -- `n_features` (flattened band power) for the band-power frontend or
+                `n_channels * time_steps` for the raw frontend. Only used when `masked_target='reconstruct'`.
         """
         super().__init__()
         self.config = config

@@ -1,18 +1,12 @@
 # Training & inference guide
 
-Pretrain a self-supervised EEG **thought embedding**, then use the checkpoint to
-embed words, sentences, or brand-new signals. This guide covers the one-command
-path, the individual steps, every config knob, and inference.
+Pretrain a self-supervised EEG **thought embedding**, then use the checkpoint to embed words, sentences, or brand-new signals. This guide covers the one-command path, the individual steps, every config knob, and inference.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (model & objectives),
-> [DATASET.md](DATASET.md) (building a bundle), [EVALUATION.md](EVALUATION.md)
-> (proving the embedding is good), [RESULTS.md](RESULTS.md) (validated numbers).
+> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (model & objectives), [DATASET.md](DATASET.md) (building a bundle), [EVALUATION.md](EVALUATION.md) (proving the embedding is good), [RESULTS.md](RESULTS.md) (validated numbers).
 
 ## One command: `zte-run`
 
-The recommended entry point. It resolves the data source, prepares + caches the
-dataset, trains, evaluates and explores, cataloguing everything under
-`res/experiments/<run_name>/`:
+The recommended entry point. It resolves the data source, prepares + caches the dataset, trains, evaluates and explores, cataloguing everything under `res/experiments/<run_name>/`:
 
 ```sh
 # No data needed — full pipeline on a synthetic ZuCo tree (great smoke test).
@@ -25,14 +19,9 @@ uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/z
 uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
 ```
 
-Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`,
-`--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir`,
-`--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
+Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir`, `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
-Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`,
-`evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in
-`res/experiments/INDEX.md`. See [`experiments/README.md`](../experiments/README.md)
-for the five flagship configs and their rationale.
+Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. See [`experiments/README.md`](../experiments/README.md) for the five flagship configs and their rationale.
 
 ## Prefer the individual steps? `zte-train`
 
@@ -53,8 +42,7 @@ uv run zte-train --root res/data/zuco_extracted --objective skipgram
 uv run zte-train --synthetic --objective masked --epochs 5
 ```
 
-`zte-train` flags (a data source — `--bundle` / `--root` / `--synthetic` — is
-required; everything else overrides the YAML/defaults):
+`zte-train` flags (a data source — `--bundle` / `--root` / `--synthetic` — is required; everything else overrides the YAML/defaults):
 
 | Flag                                               | Choices / type                                     | Overrides                                          |
 | -------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
@@ -72,9 +60,7 @@ required; everything else overrides the YAML/defaults):
 
 ## Config-driven runs
 
-Every knob is a field on a typed, YAML-serialisable `ZTEConfig`
-(`src/zte/config.py`). A YAML file only needs to set what differs from the
-defaults:
+Every knob is a field on a typed, YAML-serialisable `ZTEConfig` (`src/zte/config.py`). A YAML file only needs to set what differs from the defaults:
 
 ```yaml
 # config.yaml
@@ -110,8 +96,7 @@ train:
 uv run zte-train --bundle res/bundle --config config.yaml
 ```
 
-CLI flags override YAML, so you can pin a base config and sweep one knob:
-`uv run zte-train --config config.yaml --bundle b --objective cpc --lr 1e-4`.
+CLI flags override YAML, so you can pin a base config and sweep one knob: `uv run zte-train --config config.yaml --bundle b --objective cpc --lr 1e-4`.
 
 ### Objective hyper-parameters (`ObjectiveConfig`)
 
@@ -129,10 +114,7 @@ CLI flags override YAML, so you can pin a base config and sweep one knob:
 
 ### Model knobs (`ModelConfig`)
 
-`frontend`, `embed_dim` (768 by default → LLM-compatible), `hidden_dim`,
-`n_layers`, `n_heads`, `dropout`, `pos_encoding`, `max_positions`, `pool`
-(`mean`/`attention`/`cls`), `subject_conditioning`, `n_subjects`. Raw-Conformer
-adds `conformer_filters` and `conformer_temporal_kernel`.
+`frontend`, `embed_dim` (768 by default → LLM-compatible), `hidden_dim`, `n_layers`, `n_heads`, `dropout`, `pos_encoding`, `max_positions`, `pool` (`mean`/`attention`/`cls`), `subject_conditioning`, `n_subjects`. Raw-Conformer adds `conformer_filters` and `conformer_temporal_kernel`.
 
 ## Device & precision
 
@@ -179,17 +161,11 @@ res/checkpoints/
 └── training_curves.png
 ```
 
-Each checkpoint embeds the model, optimiser, scheduler, AMP scaler, the full
-config, the fitted feature-normaliser state and the subject vocabulary, so
-inference reconstructs the exact pipeline — and can even run with no dataset.
+Each checkpoint embeds the model, optimiser, scheduler, AMP scaler, the full config, the fitted feature-normaliser state and the subject vocabulary, so inference reconstructs the exact pipeline — and can even run with no dataset.
 
 ## Reproducibility
 
-Every config fixes `train.seed`; set `train.deterministic: true` for deterministic
-cuDNN kernels on CUDA. Checkpoints embed the config, fitted normaliser and subject
-vocabulary, so inference is exact. `zte-benchmark` runs a fixed-seed grid over
-objective × positional-encoding × eye-tracking and writes each cell's `config.yaml`
-(see [EVALUATION.md](EVALUATION.md)).
+Every config fixes `train.seed`; set `train.deterministic: true` for deterministic cuDNN kernels on CUDA. Checkpoints embed the config, fitted normaliser and subject vocabulary, so inference is exact. `zte-benchmark` runs a fixed-seed grid over objective × positional-encoding × eye-tracking and writes each cell's `config.yaml` (see [EVALUATION.md](EVALUATION.md)).
 
 ## Inference
 
@@ -217,12 +193,7 @@ uv run zte-extract --ckpt res/checkpoints/best.pt --bundle res/bundle \
 
 ### Embedding brand-new EEG signals
 
-`from_checkpoint` reads the input shapes and the fitted normaliser from the
-checkpoint itself, so **no dataset is required** to embed new signals. Use
-`embed` for new recordings packaged as `.mat` files, or `embed_signals` for EEG
-already in memory (any `(N, F·C)` band-power array, or `(N, C, T)` raw windows
-for a raw-Conformer model). Band-power inputs are normalised exactly as in
-training.
+`from_checkpoint` reads the input shapes and the fitted normaliser from the checkpoint itself, so **no dataset is required** to embed new signals. Use `embed` for new recordings packaged as `.mat` files, or `embed_signals` for EEG already in memory (any `(N, F·C)` band-power array, or `(N, C, T)` raw windows for a raw-Conformer model). Band-power inputs are normalised exactly as in training.
 
 ```python
 from zte.inference.embed import ZTEEmbedder
@@ -251,11 +222,9 @@ uv run python examples/embed_new_signals.py --ckpt res/checkpoints/best.pt
 
 ## Performance tips
 
-- **GPU**: `--device cuda --precision bf16` on Ampere+; raise `--batch-size`; set
-  `compile_model: true` in YAML.
+- **GPU**: `--device cuda --precision bf16` on Ampere+; raise `--batch-size`; set `compile_model: true` in YAML.
 - **Apple silicon**: `--device mps` (fp32). Great for development-scale runs.
 - **Throughput**: increase `train.num_workers`; `pin_memory` is auto-enabled on CUDA.
-- **Large data**: cache once (`zte-prepare`/`build()` writes a bundle), then train
-  from the bundle repeatedly.
+- **Large data**: cache once (`zte-prepare`/`build()` writes a bundle), then train from the bundle repeatedly.
 - **Contrastive objectives** benefit from larger batches (more in-batch negatives)
   — `skipgram`/`cbow`/`cpc` drop the last short batch automatically.

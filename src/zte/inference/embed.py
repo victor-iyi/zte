@@ -1,13 +1,11 @@
 """Inference: turn a trained ZTE checkpoint into thought embeddings.
 
-:class:`ZTEEmbedder` rebuilds the encoder (and its fitted normaliser) from a
-checkpoint's embedded state and produces embeddings either for a built
-:class:`~zte.data.dataset.ZuCoDataset` (:meth:`ZTEEmbedder.embed`, word/sentence
-level with aligned metadata) or for brand-new in-memory EEG token arrays
-(:meth:`ZTEEmbedder.embed_signals`). Outputs can be exported to `.npz` and a
-nearest-neighbour helper supports qualitative probing of the learned space.
+`ZTEEmbedder` rebuilds the encoder (and its fitted normaliser) from a checkpoint's embedded state and produces embeddings either for a built
+`ZuCoDataset` (`ZTEEmbedder.embed`, word/sentence level with aligned metadata) or for brand-new in-memory EEG token arrays
+(`ZTEEmbedder.embed_signals`). Outputs can be exported to `.npz` and a nearest-neighbour helper supports qualitative probing of the learned space.
 """
 
+# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from pathlib import Path
@@ -44,10 +42,10 @@ class ZTEEmbedder:
     """
 
     def __init__(self, model: ZTEModel, config: ZTEConfig, device: DeviceSpec) -> None:
-        """Wraps an already-built model (prefer :meth:`from_checkpoint`).
+        """Wraps an already-built model (prefer `from_checkpoint`).
 
         Args:
-            model (ZTEModel): A constructed and weight-loaded :class:`ZTEModel`.
+            model (ZTEModel): A constructed and weight-loaded `ZTEModel`.
             config (ZTEConfig): The run configuration.
             device (DeviceSpec): The resolved device spec.
         """
@@ -70,23 +68,19 @@ class ZTEEmbedder:
     ) -> ZTEEmbedder:
         """Rebuilds the encoder (and its normaliser) from a checkpoint.
 
-        Input shapes and the fitted feature-normaliser are read from the
-        checkpoint's embedded state, so a dataset is *not* required to embed new
-        signals. A `dataset` is only used as a fallback for older checkpoints that
-        predate shape embedding.
+        Input shapes and the fitted feature-normaliser are read from the checkpoint's embedded state, so a dataset is *not* required
+        to embed new signals. A `dataset` is only used as a fallback for older checkpoints that predate shape embedding.
 
         Args:
             ckpt_path (str | Path): Path to a `best.pt`/`last.pt` checkpoint.
-            dataset (ZuCoDataset | None): Optional built dataset, used only to
-                infer frontend input shapes when the checkpoint lacks them.
+            dataset (ZuCoDataset | None): Optional built dataset, used only to infer frontend input shapes when the checkpoint lacks them.
             device (DeviceSpec | None): Optional device spec (auto-resolved when `None`).
 
         Returns:
-            ZTEEmbedder: A ready :class:`ZTEEmbedder`.
+            ZTEEmbedder: A ready `ZTEEmbedder`.
 
         Raises:
-            ValueError: If input shapes can be found neither in the checkpoint nor
-                from a supplied dataset.
+            ValueError: If input shapes can be found neither in the checkpoint nor from a supplied dataset.
         """
         device = device or resolve_device('auto')
         payload = CheckpointManager.load(ckpt_path, map_location=str(device.device))
@@ -128,16 +122,15 @@ class ZTEEmbedder:
 
         Args:
             dataset (ZuCoDataset): A built dataset.
-            level (EmbeddingLevel): `'word'` for one embedding per (present) word, or
-                `'sentence'` for one pooled embedding per sentence.
+            level (EmbeddingLevel): `word` for one embedding per (present) word, or `sentence` for one pooled embedding per sentence.
             indices (np.ndarray | None): Optional word-row indices to restrict to (e.g. a split).
             batch_size (int): Sentences per forward pass.
             present_only (bool): For word level, keep only present (non-omitted) words.
 
         Returns:
-            tuple[np.ndarray, pd.DataFrame]: `(embeddings, metadata)` where
-            `embeddings` is `(n_samples, embed_dim)` and `metadata` is a DataFrame
-            of length `n_samples`.
+            tuple[np.ndarray, pd.DataFrame]: `(embeddings, metadata)` where `embeddings` is `(n_samples, embed_dim)` and `metadata`
+                is a DataFrame of length `n_samples`.
+
         """
         vocab = build_subject_vocab(dataset)
         torch_ds = ZuCoTorchDataset(dataset, indices=indices, subject_vocab=vocab)
@@ -188,21 +181,15 @@ class ZTEEmbedder:
     ) -> np.ndarray:
         """Embeds brand-new EEG token signals held in memory (no ZuCoDataset needed).
 
-        Each input row is one word's neural response and yields one embedding.
-        Pass `band_power` for a band-power checkpoint or `raw` for a raw-Conformer
-        checkpoint -- the one matching the model's frontend is used. Band-power
-        inputs are passed through the checkpoint's fitted normaliser by default so
-        they are scaled exactly as during training.
+        Each input row is one word's neural response and yields one embedding.  Pass `band_power` for a band-power checkpoint or
+        `raw` for a raw-Conformer checkpoint -- the one matching the model's frontend is used. Band-power inputs are passed through
+        the checkpoint's fitted normaliser by default so they are scaled exactly as during training.
 
         Args:
-            band_power (np.ndarray | None): `(n_tokens, n_features)` *un-normalised*
-                band-power tokens; the last dim must equal the model's input size.
-            raw (np.ndarray | None): `(n_tokens, n_channels, time_steps)` raw EEG
-                windows for a raw model.
-            subjects (np.ndarray | None): Optional `(n_tokens,)` integer subject ids
-                for a subject-conditioned model (defaults to id 0).
-            apply_normalizer (bool): Apply the checkpoint's band-power normaliser
-                (ignored for raw input).
+            band_power (np.ndarray | None): `(n_tokens, n_features)` *un-normalised* band-power tokens; the last dim must equal the model's input size.
+            raw (np.ndarray | None): `(n_tokens, n_channels, time_steps)` raw EEG windows for a raw model.
+            subjects (np.ndarray | None): Optional `(n_tokens,)` integer subject ids for a subject-conditioned model (defaults to id 0).
+            apply_normalizer (bool): Apply the checkpoint's band-power normaliser (ignored for raw input).
             batch_size (int): Tokens per forward pass.
             show_progress (bool): Show a progress bar.
 
@@ -210,8 +197,7 @@ class ZTEEmbedder:
             np.ndarray: `(n_tokens, embed_dim)` float32 embeddings, one per input token.
 
         Raises:
-            ValueError: If the input required by the model's frontend is missing or
-                mis-shaped.
+            ValueError: If the input required by the model's frontend is missing or mis-shaped.
         """
         if self.model.uses_raw:
             if raw is None:
@@ -338,8 +324,8 @@ class ZTEEmbedder:
             k (int): Number of neighbours to return (excluding the query itself).
 
         Returns:
-            list[tuple[int, float]]: A list of `(index, cosine_similarity)` pairs,
-            most similar first.
+            list[tuple[int, float]]: A list of `(index, cosine_similarity)` pairs, most similar first.
+
         """
         normed = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8)
         sims = normed @ normed[query_idx]
@@ -355,8 +341,8 @@ def _input_shapes(dataset: ZuCoDataset) -> tuple[int | None, tuple[int, int] | N
         dataset (ZuCoDataset): A built dataset.
 
     Returns:
-        tuple[int | None, tuple[int, int] | None]: `(in_dim, raw_shape)` where
-        unused entries are `None`.
+        tuple[int | None, tuple[int, int] | None]: `(in_dim, raw_shape)` where unused entries are `None`.
+
     """
     in_dim = None if dataset.features is None else int(dataset.features.shape[1])
     raw_shape = (

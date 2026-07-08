@@ -36,7 +36,10 @@ def _fake_batch(b: int = 4, max_len: int = 6, dim: int = 40) -> dict:
         samples.append(
             SentenceSample(
                 features=torch.from_numpy(rng.standard_normal((length, dim)).astype('float32')),
-                raw=None, presence=presence, subject=0, length=length,
+                raw=None,
+                presence=presence,
+                subject=0,
+                length=length,
             )
         )
     return collate_sentences(samples)
@@ -45,13 +48,22 @@ def _fake_batch(b: int = 4, max_len: int = 6, dim: int = 40) -> dict:
 @pytest.mark.parametrize('pos', ['rope', 'sinusoidal', 'learned', 'alibi', 'none'])
 def test_positional_encoding_forward(pos: str) -> None:
     """Every positional scheme runs contextual + causal forward without NaNs."""
-    cfg = ModelConfig(frontend='band_power_mlp', embed_dim=32, hidden_dim=48, n_layers=2,
-                      n_heads=6, pos_encoding=pos)
+    cfg = ModelConfig(
+        frontend='band_power_mlp',
+        embed_dim=32,
+        hidden_dim=48,
+        n_layers=2,
+        n_heads=6,
+        pos_encoding=pos,
+    )
     model = build_model(cfg, in_dim=40).eval()
     batch = _fake_batch(dim=40)
     with torch.no_grad():
-        for kwargs in ({'contextual': False}, {'contextual': True},
-                       {'contextual': True, 'causal': True}):
+        for kwargs in (
+            {'contextual': False},
+            {'contextual': True},
+            {'contextual': True, 'causal': True},
+        ):
             out = model(batch, **kwargs)
             assert out.shape[-1] == 32
             assert not torch.isnan(out).any()
@@ -60,7 +72,9 @@ def test_positional_encoding_forward(pos: str) -> None:
 
 def test_learned_encoding_has_position_table() -> None:
     """The learned scheme adds a position table; rope/alibi/none do not."""
-    learned = build_model(ModelConfig(pos_encoding='learned', hidden_dim=32, embed_dim=32), in_dim=40)
+    learned = build_model(
+        ModelConfig(pos_encoding='learned', hidden_dim=32, embed_dim=32), in_dim=40
+    )
     rope = build_model(ModelConfig(pos_encoding='rope', hidden_dim=32, embed_dim=32), in_dim=40)
     assert learned.pos_emb is not None
     assert rope.pos_emb is None
@@ -128,7 +142,7 @@ def test_transfer_analogy_recovers_additive_offset() -> None:
 
     out = transfer_analogy(emb, groups, contents, ks=(1, 5))
     assert out['n_queries'] > 0
-    assert out['top1'] > 0.9            # offset is perfectly cancellable
+    assert out['top1'] > 0.9  # offset is perfectly cancellable
     assert out['top1'] > out['chance_top1']
 
 
@@ -141,8 +155,15 @@ def test_analogy_report_structure() -> None:
     for s_i, subj in enumerate(subjects):
         rows.append(content + s_i)
         for w in range(n_content):
-            meta_rows.append({'subject': subj, 'task': 'SR', 'sentence_idx': w // 3,
-                              'word_idx': w % 3, 'word': f'w{w}'})
+            meta_rows.append(
+                {
+                    'subject': subj,
+                    'task': 'SR',
+                    'sentence_idx': w // 3,
+                    'word_idx': w % 3,
+                    'word': f'w{w}',
+                }
+            )
     emb = np.concatenate(rows).astype('float32')
     report = analogy_report(emb, pd.DataFrame(meta_rows))
     assert 'subject_transfer' in report
@@ -156,11 +177,16 @@ def test_analogy_report_structure() -> None:
 
 def test_eye_tracking_toggle_changes_width(synthetic_dir: Path, tmp_path: Path) -> None:
     """Including eye tracking appends exactly the configured gaze scalars."""
+
     def build(include: bool, cache: str) -> ZuCoDataset:
-        cfg = DatasetConfig(root=str(synthetic_dir), tasks=('SR', 'NR'),
-                            representation='band_power', include_eye_tracking=include,
-                            missing=MissingConfig(method='mask_only'),
-                            cache_dir=str(tmp_path / cache))
+        cfg = DatasetConfig(
+            root=str(synthetic_dir),
+            tasks=('SR', 'NR'),
+            representation='band_power',
+            include_eye_tracking=include,
+            missing=MissingConfig(method='mask_only'),
+            cache_dir=str(tmp_path / cache),
+        )
         return ZuCoDataset(cfg).build(show_progress=False)
 
     on, off = build(True, 'on'), build(False, 'off')
@@ -172,11 +198,15 @@ def test_eye_tracking_toggle_changes_width(synthetic_dir: Path, tmp_path: Path) 
 
 def test_categories_and_corpus_frequency() -> None:
     """Categories fall back to task; corpus frequency is in (0, 1]."""
-    sentences = pd.DataFrame({
-        'subject': ['ZAB'] * 3, 'task': ['SR', 'NR', 'SR'],
-        'sentence_idx': [0, 1, 2], 'n_words': [5, 12, 20],
-        'text': ['a short one', 'a medium length sentence here now', 'x ' * 20],
-    })
+    sentences = pd.DataFrame(
+        {
+            'subject': ['ZAB'] * 3,
+            'task': ['SR', 'NR', 'SR'],
+            'sentence_idx': [0, 1, 2],
+            'n_words': [5, 12, 20],
+            'text': ['a short one', 'a medium length sentence here now', 'x ' * 20],
+        }
+    )
     out = sentence_categories(sentences, root=None)
     assert list(out['length_band']) == ['short', 'medium', 'long']
     assert set(out['category']) <= {'SR', 'NR'}
@@ -214,9 +244,13 @@ def test_interactive_explorer_writes_file(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(0)
     emb = rng.standard_normal((80, 16)).astype('float32')
-    meta = pd.DataFrame({'word': [f'w{i}' for i in range(80)],
-                         'subject': np.repeat(['ZAB', 'ZDM'], 40),
-                         'task': np.tile(['SR', 'NR'], 40)})
+    meta = pd.DataFrame(
+        {
+            'word': [f'w{i}' for i in range(80)],
+            'subject': np.repeat(['ZAB', 'ZDM'], 40),
+            'task': np.tile(['SR', 'NR'], 40),
+        }
+    )
     out = embedding_explorer_html(emb, meta, tmp_path / 'explorer.html')
     assert out.is_file() and out.suffix in {'.html', '.png'}
 

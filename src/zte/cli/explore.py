@@ -48,8 +48,12 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument('--tasks', type=str, default='SR,NR')
     parser.add_argument('--out', type=str, default='res/exploration')
-    parser.add_argument('--montage-csv', type=str, default=None,
-                        help='Exact channel->region CSV (else the default anterior-posterior map).')
+    parser.add_argument(
+        '--montage-csv',
+        type=str,
+        default=None,
+        help='Exact channel->region CSV (else the default anterior-posterior map).',
+    )
     parser.add_argument('--method', choices=['mutual_info', 'f_score'], default='mutual_info')
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()
@@ -68,8 +72,11 @@ def _load_dataset(args: argparse.Namespace) -> ZuCoDataset:
         root = 'res/data/synthetic_zuco'
         generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
     cfg = DatasetConfig(
-        root=root, tasks=tuple(args.tasks.split(',')), representation='band_power',
-        include_eye_tracking=True, missing=MissingConfig(method='mask_only'),
+        root=root,
+        tasks=tuple(args.tasks.split(',')),
+        representation='band_power',
+        include_eye_tracking=True,
+        missing=MissingConfig(method='mask_only'),
     )
     return ZuCoDataset(cfg).build()
 
@@ -113,7 +120,8 @@ def eye_tracking_contribution(ds: ZuCoDataset, region_map: RegionMap) -> list[di
     }
     if ds.words['task'].nunique() > 1:
         targets['task (cognitive)'] = (
-            pd.factorize(ds.words.loc[present, 'task'])[0], 'classification'
+            pd.factorize(ds.words.loc[present, 'task'])[0],
+            'classification',
         )
     rows: list[dict[str, Any]] = []
     for tname, (y, task) in targets.items():
@@ -147,14 +155,20 @@ def run_exploration(
     out = Path(out)
     (out / 'figures').mkdir(parents=True, exist_ok=True)
     if ds.band_power_raw is None:
-        raise ValueError('Exploration needs band-power features; rebuild with representation band_power.')
+        raise ValueError(
+            'Exploration needs band-power features; rebuild with representation band_power.'
+        )
     region_map = (
         RegionMap.from_csv(montage_csv, ds.band_power_raw.shape[-1])
-        if montage_csv else default_region_map(ds.band_power_raw.shape[-1])
+        if montage_csv
+        else default_region_map(ds.band_power_raw.shape[-1])
     )
     region_rows = region_importance(
-        ds.band_power_raw, _region_targets(ds), region_map=region_map,
-        presence=ds.presence, method=method,
+        ds.band_power_raw,
+        _region_targets(ds),
+        region_map=region_map,
+        presence=ds.presence,
+        method=method,
     )
     et_rows = eye_tracking_contribution(ds, region_map)
 
@@ -179,10 +193,15 @@ def main() -> None:
     configure_logging(args.log_level)
     ds = _load_dataset(args)
     summary = run_exploration(ds, args.out, montage_csv=args.montage_csv, method=args.method)
-    print(json.dumps(
-        {'region_map_approximate': summary['region_map_approximate'],
-         'region_sizes': summary['region_sizes']}, indent=2
-    ))
+    print(
+        json.dumps(
+            {
+                'region_map_approximate': summary['region_map_approximate'],
+                'region_sizes': summary['region_sizes'],
+            },
+            indent=2,
+        )
+    )
 
 
 def _render_figures(
@@ -204,9 +223,12 @@ def _render_figures(
         _LOG.warning('Region heatmap skipped: %r', exc)
     try:
         fig = P.bar_probe_comparison(
-            [{**r, 'linear_score': r['score'], 'knn_score': r['score'], 'baseline': 0.0}
-             for r in et_rows],
-            'linear_score', title='Eye-tracking contribution by target (linear probe)',
+            [
+                {**r, 'linear_score': r['score'], 'knn_score': r['score'], 'baseline': 0.0}
+                for r in et_rows
+            ],
+            'linear_score',
+            title='Eye-tracking contribution by target (linear probe)',
         )
         path = fig_dir / 'eye_tracking_contribution.png'
         fig.savefig(path, dpi=120, bbox_inches='tight')
@@ -231,22 +253,29 @@ def _render_report(
     )
     et_frame = pd.DataFrame(et_rows).pivot(index='representation', columns='target', values='score')
     lines = [
-        '# ZTE exploration -- brain regions & eye-tracking', '',
+        '# ZTE exploration -- brain regions & eye-tracking',
+        '',
         f'Words: **{len(ds.words)}** | region map: '
         f'**{"approximate default" if region_map.approximate else "montage-derived"}** '
-        f'({region_map.n_regions} regions)', '',
-        '## Region importance (share of decodable information)', '',
+        f'({region_map.n_regions} regions)',
+        '',
+        '## Region importance (share of decodable information)',
+        '',
         '`reading` targets vs `cognitive` targets; higher = that region carries more '
-        'of the attribute.', '',
+        'of the attribute.',
+        '',
         '| region | ' + ' | '.join(str(c) for c in region_frame.columns) + ' |',
         '| --- |' + ' --- |' * len(region_frame.columns),
     ]
     for name, row in region_frame.iterrows():
         lines.append(f'| {name} | ' + ' | '.join(f'{v:.2f}' for v in row.to_numpy()) + ' |')
     lines += [
-        '', '## Eye-tracking contribution (linear-probe score)', '',
+        '',
+        '## Eye-tracking contribution (linear-probe score)',
+        '',
         'Eye-tracking should help *reading* targets much more than *cognitive* ones -- '
-        'the reason ZTE makes it optional (`include_eye_tracking`).', '',
+        'the reason ZTE makes it optional (`include_eye_tracking`).',
+        '',
         '| representation | ' + ' | '.join(str(c) for c in et_frame.columns) + ' |',
         '| --- |' + ' --- |' * len(et_frame.columns),
     ]

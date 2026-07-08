@@ -213,9 +213,14 @@ class TensorBoardReporter:
                 value = getattr(getattr(config, section), field)
             except AttributeError:
                 continue
-            hparams[f'{section}.{field}'] = value if isinstance(value, (int, float, str, bool)) else str(value)
-        clean = {k: float(v) for k, v in metrics.items()
-                 if isinstance(v, (int, float, np.floating)) and np.isfinite(v)}
+            hparams[f'{section}.{field}'] = (
+                value if isinstance(value, (int, float, str, bool)) else str(value)
+            )
+        clean = {
+            k: float(v)
+            for k, v in metrics.items()
+            if isinstance(v, (int, float, np.floating)) and np.isfinite(v)
+        }
         if clean:
             self.writer.add_hparams(hparams, clean)
 

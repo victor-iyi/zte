@@ -4,6 +4,7 @@ The band-power tensor is `(n_words, n_bp_features, n_channels)`. This module res
 the most informative dimensions (channels x bands) for a target -- e.g. word frequency or omission -- mirroring the
 channel-importance analyses in the exploration notebook but packaged for reuse.
 """
+
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
 

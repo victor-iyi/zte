@@ -114,9 +114,18 @@ def main() -> None:
         embedder, dataset
     )
     metrics = evaluate_representation(
-        word_emb, word_meta, raw_feats, sent_emb, sent_ids, out_dir=args.out, run_name='eval-demo',
-        sent_meta=sent_meta, word_band_power=word_bp, config=embedder.config,
-        tensorboard=True, interactive=True,
+        word_emb,
+        word_meta,
+        raw_feats,
+        sent_emb,
+        sent_ids,
+        out_dir=args.out,
+        run_name='eval-demo',
+        sent_meta=sent_meta,
+        word_band_power=word_bp,
+        config=embedder.config,
+        tensorboard=True,
+        interactive=True,
     )
 
     print(json.dumps(metrics['verdict'], indent=2))

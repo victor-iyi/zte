@@ -230,8 +230,15 @@ def region_importance_heatmap(
     ax.set_yticklabels(regions)
     for i in range(len(regions)):
         for j in range(len(targets)):
-            ax.text(j, i, f'{mat[i, j]:.2f}', ha='center', va='center',
-                    color='white' if mat[i, j] < mat.max() * 0.6 else 'black', fontsize=8)
+            ax.text(
+                j,
+                i,
+                f'{mat[i, j]:.2f}',
+                ha='center',
+                va='center',
+                color='white' if mat[i, j] < mat.max() * 0.6 else 'black',
+                fontsize=8,
+            )
     fig.colorbar(im, ax=ax, label='share of decodable info')
     ax.set_title(title)
     fig.tight_layout()

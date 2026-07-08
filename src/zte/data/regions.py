@@ -12,6 +12,7 @@ downstream analysis is exact for whatever mapping is supplied; only the default 
 Reading is a visual task (occipito-parietal word-form and eye-movement systems), while imagined/inner language leans on
 fronto-central and temporal language areas; region-level importance makes that contrast measurable and plottable.
 """
+
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
@@ -273,8 +274,10 @@ def region_importance(
             x, y = flat[presence], y[presence]
         scores = _feature_scores(x, y, task, method)
         per_region = np.array(
-            [float(scores[region_of_col == ri].mean()) if (region_of_col == ri).any() else 0.0
-             for ri in range(r)]
+            [
+                float(scores[region_of_col == ri].mean()) if (region_of_col == ri).any() else 0.0
+                for ri in range(r)
+            ]
         )
         total = float(per_region.sum()) or 1.0
         for ri, name in enumerate(region_map.names):

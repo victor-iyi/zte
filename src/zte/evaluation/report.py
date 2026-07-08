@@ -192,7 +192,9 @@ def evaluate_representation(
     # 7) TensorBoard (projector + hparams + scalars + histograms + figures + text).
     if tensorboard:
         tb_dir = tensorboard if isinstance(tensorboard, str) else str(out / 'tb' / run_name)
-        _write_tensorboard(tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config)
+        _write_tensorboard(
+            tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config
+        )
 
     # 8) Persist artifacts.
     (out / 'metrics.json').write_text(
@@ -270,7 +272,10 @@ def _render_extended_figures(
     for group, metric in (('subject', 'retrieval_top1'), ('task', 'retrieval_top1')):
         if any(r.get('group') == group for r in breakdown_words):
             builders.append(
-                (f'breakdown_{group}.png', lambda g=group, m=metric: P.breakdown_bars(breakdown_words, m, g))
+                (
+                    f'breakdown_{group}.png',
+                    lambda g=group, m=metric: P.breakdown_bars(breakdown_words, m, g),
+                )
             )
     for name, builder in builders:
         try:
@@ -298,8 +303,12 @@ def _write_tensorboard(
             return
         tb.log_embeddings(word_emb, word_meta, tag='word_embeddings')
         if sent_meta is not None:
-            tb.log_embeddings(sent_emb, sent_meta, tag='sentence_embeddings',
-                              columns=('subject', 'task', 'category'))
+            tb.log_embeddings(
+                sent_emb,
+                sent_meta,
+                tag='sentence_embeddings',
+                columns=('subject', 'task', 'category'),
+            )
         tb.log_embedding_stats(word_emb)
         tb.log_scalars('health', metrics['embedding_health'])
         tb.log_scalars('retrieval/sentence', metrics['sentence_retrieval'])
@@ -307,7 +316,7 @@ def _write_tensorboard(
         tb.log_scalars('analogy/subject', metrics['analogy'].get('subject_transfer', {}))
         tb.log_scalars('analogy/task', metrics['analogy'].get('task_transfer', {}))
         for row in metrics['breakdown_words']:
-            tb.log_scalars(f"breakdown/{row['group']}/{row['value']}", row)
+            tb.log_scalars(f'breakdown/{row["group"]}/{row["value"]}', row)
         tb.log_table('tables/probe_comparison', metrics['probe_comparison'])
         tb.log_table('tables/region_importance', metrics['region_importance'])
         for fig_path in figures:
@@ -590,8 +599,12 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
 
     by_cat = metrics.get('retrieval_by_category', [])
     if by_cat:
-        lines += ['## Cross-subject retrieval by sentence category', '',
-                  '| category | n | Top-1 | Top-5 | MRR | chance |', '| --- | --- | --- | --- | --- | --- |']
+        lines += [
+            '## Cross-subject retrieval by sentence category',
+            '',
+            '| category | n | Top-1 | Top-5 | MRR | chance |',
+            '| --- | --- | --- | --- | --- | --- |',
+        ]
         lines += [
             f'| {r["value"]} | {r["n"]} | {r["top1"]} | {r["top5"]} | {r["mrr"]} | {r["chance_top1"]} |'
             for r in by_cat
@@ -601,9 +614,12 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     breakdown = metrics.get('breakdown_words', [])
     subject_rows = [r for r in breakdown if r.get('group') == 'subject']
     if subject_rows:
-        lines += ['## Per-subject probe / retrieval', '',
-                  '| subject | n | r2(word_len) | retrieval Top-1 | eff-rank ratio |',
-                  '| --- | --- | --- | --- | --- |']
+        lines += [
+            '## Per-subject probe / retrieval',
+            '',
+            '| subject | n | r2(word_len) | retrieval Top-1 | eff-rank ratio |',
+            '| --- | --- | --- | --- | --- |',
+        ]
         lines += [
             f'| {r["value"]} | {r.get("n", "")} | {r.get("r2_word_len", "-")} | '
             f'{r.get("retrieval_top1", "-")} | {r.get("eff_rank_ratio", "-")} |'

@@ -2,8 +2,7 @@
 
 `ZuCoDataset` is the tunable front door to ZuCo. This guide covers its lifecycle, every configuration knob, the CLI wrapper (`zte-prepare`), and the analysis/visualisation helpers.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (how data flows through the system),
-> [TRAINING.md](TRAINING.md) (consuming a bundle), [EVALUATION.md](EVALUATION.md).
+> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (how data flows through the system), [TRAINING.md](TRAINING.md) (consuming a bundle), [EVALUATION.md](EVALUATION.md).
 
 ## How to run it
 
