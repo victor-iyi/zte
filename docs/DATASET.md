@@ -2,7 +2,7 @@
 
 `ZuCoDataset` is the tunable front door to ZuCo. This guide covers its lifecycle, every configuration knob, the CLI wrapper (`zte-prepare`), and the analysis/visualisation helpers.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (how data flows through the system), [TRAINING.md](TRAINING.md) (consuming a bundle), [EVALUATION.md](EVALUATION.md).
+> Related: [ARCHITECTURE.md] (how data flows through the system), [TRAINING.md] (consuming a bundle), [EVALUATION.md].
 
 ## How to run it
 
@@ -11,6 +11,11 @@
 ```sh
 # Real data: point --root at a directory of extracted .mat files.
 uv run zte-prepare --root res/data/zuco_extracted --representation band_power --out res/bundle
+
+# Or download + extract straight from Google Drive (needs `uv sync --group drive`).
+uv run zte-prepare \
+    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --representation band_power --out res/bundle
 
 # No data: synthesise a schema-faithful tree, then build (great smoke test).
 uv run zte-prepare --synthetic --synthetic-sentences 12 --out res/bundle --figures res/figures
@@ -25,7 +30,8 @@ uv run zte-prepare --root res/data/zuco_extracted \
 
 | Flag                                                                 | Default                                          | Meaning                                                   |
 | -------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------- |
-| `--root` / `--synthetic`                                             | — (one required)                                 | Extracted `.mat` dir, or synthesise a tree                |
+| `--root` / `--drive` / `--synthetic`                                 | — (one required)                                 | Local `.mat` dir / zip(s), Drive folder, or synthesise    |
+| `--extract-dir`                                                      | `res/data/zuco_extracted`                        | Where Drive/zips are unzipped (idempotent)                |
 | `--representation`                                                   | `band_power`                                     | `band_power` \| `raw` \| `both`                           |
 | `--missing-method`                                                   | `mask_only`                                      | Any strategy from the table below                         |
 | `--normalize`                                                        | `zscore_channel`                                 | `zscore_channel` \| `zscore_global` \| `minmax` \| `none` |
@@ -117,7 +123,7 @@ DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to e
 DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
 ```
 
-The EEG band-power is always kept; the toggle only governs the extra gaze dimensions. `zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a *cognitive* target, so the choice is evidence-based (see [EVALUATION.md](EVALUATION.md)).
+The EEG band-power is always kept; the toggle only governs the extra gaze dimensions. `zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a *cognitive* target, so the choice is evidence-based (see [EVALUATION.md]).
 
 ## Representations
 
@@ -173,7 +179,7 @@ save_overview(ds, 'res/figures')       # missingness, ET dists, correlations, om
 | Omission & TRT vs length    | `plot_omission_by_length` | length effects        |
 | EEG availability heatmap    | `plot_eeg_availability`   | availability heatmap  |
 
-Sample outputs (from the synthetic smoke run) are shown in [RESULTS.md](RESULTS.md).
+Sample outputs (from the synthetic smoke run) are shown in [RESULTS.md].
 
 ## Feature selection
 
@@ -188,7 +194,7 @@ Methods: `variance`, `f_score`, `mutual_info`, `rf_importance`. Scoring is restr
 
 ## Splits
 
-Choose with `train.split` (see [TRAINING.md](TRAINING.md)) or `ds.split(...)`.
+Choose with `train.split` (see [TRAINING.md]) or `ds.split(...)`.
 
 | Strategy          | Holds out       | Use                                          |
 | ----------------- | --------------- | -------------------------------------------- |
@@ -199,6 +205,21 @@ Choose with `train.split` (see [TRAINING.md](TRAINING.md)) or `ds.split(...)`.
 
 ## Persistence & remote
 
+### Downloading raw ZuCo
+
+Every CLI that loads `.mat` files (`zte-prepare`, `zte-train`, `zte-extract`, `zte-evaluate`, `zte-explore`, `zte-benchmark`, `zte-run`) accepts the same data source flags. Install Drive support once, then pass `--drive`:
+
+```sh
+uv sync --group drive
+uv run zte-prepare --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --out res/bundle
+```
+
+`--drive` downloads the folder to `res/data/_downloads`, unzips task archives into `--extract-dir` (default `res/data/zuco_extracted`), then proceeds. Re-runs skip archives already extracted. `--root` still works for a local extracted dir, a single `.zip`, or a folder of task `.zip` files.
+
+**Resumable downloads:** Drive downloads are interrupt-safe (Ctrl+C). Each archive is fetched individually with byte-level progress; completed files are tracked in `res/data/_downloads/.zte_drive_manifest.json`. Re-run the same `--drive` command (or `zte-download`) to resume.
+
+### Bundles
+
 ```python
 ds.save('res/bundle')                       # arrays.npz + words.pkl + sentences.pkl + meta.json
 ds2 = ZuCoDataset.load('res/bundle')        # exact round-trip incl. normaliser state
@@ -207,3 +228,8 @@ ZuCoDataset.from_drive('<file id | url | mounted path>')
 ```
 
 A saved bundle is the unit of reuse: build once with `zte-prepare`, then train, evaluate and explore from it repeatedly without re-reading the `.mat` files.
+
+[ARCHITECTURE.md]: ./ARCHITECTURE.md
+[EVALUATION.md]: ./EVALUATION.md
+[RESULTS.md]: ./RESULTS.md
+[TRAINING.md]: ./TRAINING.md

@@ -2,8 +2,8 @@
 
 How the pieces fit together, why the design choices were made, and how ZTE feeds the parent **Cross-Modal Transfer Learning** project.
 
-> New here? Read the [top-level README](../README.md) first for the one-command quickstart, then use this document to understand *why* the pipeline is shaped the way it is.
-> Sibling guides: [DATASET](DATASET.md) · [TRAINING](TRAINING.md) · [EVALUATION](EVALUATION.md) · [RESULTS](RESULTS.md).
+> New here? Read the [top-level README] first for the one-command quickstart, then use this document to understand *why* the pipeline is shaped the way it is.
+> Sibling guides: [DATASET] · [TRAINING] · [EVALUATION] · [RESULTS].
 
 ## 1. Component overview
 
@@ -97,7 +97,11 @@ ZuCo's verified structure is encoded once in `schema.py`:
 
 A `ZuCoDataset` flattens files into a **word table** + a **sentence table** + an aligned band-power tensor `(N, F, C)` and/or raw tensor `(N, C, T)`, plus a **presence mask** `(N,)`. Everything is row-aligned, so a single boolean filter (length cap, `drop`, or a split) stays consistent across every store. Real corpus word-frequencies and sentence categories (SR sentiment, TSR relations) are joined in automatically by `categories.py`.
 
-See [DATASET.md](DATASET.md) for every knob and the analysis helpers.
+See [DATASET.md] for every knob and the analysis helpers.
+
+### Data source resolution
+
+`data/sources.py` normalises every supported input into a local directory of `.mat` files: an already-extracted tree, a `.zip` (or folder of task archives), or a Google Drive folder id/URL (downloaded via `data/remote.py` + `gdown` into `res/data/_downloads`, then unzipped into `--extract-dir`). Every CLI that loads raw ZuCo data shares the same flags through `cli/sources.py` (`--root`, `--drive`, `--extract-dir`).
 
 ## 3. The ZTE model
 
@@ -168,7 +172,7 @@ The symmetric InfoNCE used here is the same family the parent project applies fo
 
 $$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{B}\sum_i \log \frac{\exp(\text{sim}(e_i, t_i)/\tau)}{\sum_j \exp(\text{sim}(e_i, t_j)/\tau)}$$
 
-In ZTE, `t` is a *neighbouring word's EEG* (skip-gram) or a *future word latent* (CPC) rather than text — pretraining the geometry that alignment later reuses.  The objective is selected with `objective.name`; see [TRAINING.md](TRAINING.md) for the full hyper-parameter table.
+In ZTE, `t` is a *neighbouring word's EEG* (skip-gram) or a *future word latent* (CPC) rather than text — pretraining the geometry that alignment later reuses.  The objective is selected with `objective.name`; see [TRAINING.md] for the full hyper-parameter table.
 
 ## 5. Anti-leakage: the presence mask
 
@@ -194,3 +198,8 @@ flowchart LR
 ## 7. Where ZTE stops and EEG-OT-CLIP begins
 
 ZTE outputs `(M, 768)` embeddings + aligned metadata. The downstream aligner adds a frozen LLM text encoder and the composite loss $\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}$ (Sinkhorn-regularised Wasserstein, optionally Gromov-Wasserstein for distinct metric spaces), evaluated by **noise-anchored zero-shot retrieval** under LOSO.  ZTE ships the building blocks for that evaluation in `training/metrics.py` and `evaluation/`. Because the default `embed_dim` is **768**, ZTE embeddings are plug-compatible with that downstream space.
+
+[top-level README]: ../README.md
+[EVALUATION]: ./EVALUATION.md
+[RESULTS]: ./RESULTS.md
+[TRAINING]: ./TRAINING.md

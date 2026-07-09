@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.synthetic import generate_synthetic_zuco
@@ -30,10 +31,8 @@ def parse_arguments() -> argparse.Namespace:
         description='Pretrain a ZuCo Thought Embedding model.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    data = parser.add_mutually_exclusive_group(required=True)
-    data.add_argument('--bundle', type=str, help='Path to a saved ZuCoDataset bundle.')
-    data.add_argument('--root', type=str, help='Directory of extracted ZuCo .mat files.')
-    data.add_argument('--synthetic', action='store_true', help='Train on a synthetic tree.')
+    add_data_source_args(parser, include_bundle=True, include_synthetic=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--config', type=str, default=None, help='Optional base YAML config.')
     parser.add_argument('--objective', choices=['skipgram', 'cbow', 'masked', 'cpc'], default=None)
@@ -112,10 +111,11 @@ def load_dataset(args: argparse.Namespace, config: ZTEConfig) -> ZuCoDataset:
                 args.bundle,
             )
         return ZuCoDataset.load(args.bundle)
-    root = args.root
     if args.synthetic:
         generate_synthetic_zuco(args.synthetic_out)
         root = args.synthetic_out
+    else:
+        root = resolve_data_root(args)
     ds_config = DatasetConfig(
         root=root,
         representation=config.dataset.representation,

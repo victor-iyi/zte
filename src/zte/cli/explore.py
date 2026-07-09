@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.data.dataset import ZuCoDataset
 from zte.data.regions import RegionMap, default_region_map, region_importance
 from zte.logging_utils import configure_logging, get_logger
@@ -41,10 +42,8 @@ def parse_arguments() -> argparse.Namespace:
         description='Explore brain-region and eye-tracking contributions in ZuCo band power.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--bundle', type=str, help='Saved ZuCoDataset bundle directory.')
-    source.add_argument('--root', type=str, help='Directory of extracted ZuCo `.mat` files.')
-    source.add_argument('--synthetic', action='store_true', help='Use a synthetic tree.')
+    add_data_source_args(parser, include_bundle=True, include_synthetic=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--tasks', type=str, default='SR,NR')
     parser.add_argument('--out', type=str, default='res/exploration')
@@ -65,12 +64,13 @@ def _load_dataset(args: argparse.Namespace) -> ZuCoDataset:
 
     if args.bundle:
         return ZuCoDataset.load(args.bundle)
-    root = args.root
     if args.synthetic:
         from zte.data.synthetic import generate_synthetic_zuco
 
         root = 'res/data/synthetic_zuco'
         generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
+    else:
+        root = resolve_data_root(args)
     cfg = DatasetConfig(
         root=root,
         tasks=tuple(args.tasks.split(',')),

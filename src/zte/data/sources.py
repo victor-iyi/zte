@@ -49,9 +49,9 @@ def resolve_source(
 
     Resolution order:
 
-    1. **Directory already holding `.mat` files** -> returned unchanged.
-    2. **A `.zip` file, or a directory containing `.zip` files** -> extracted into `extract_dir` (idempotently) and returned.
-    3. **A Google Drive id / URL** -> downloaded (and unzipped) via `download_to_dir`, then resolved recursively.
+    1. **A `.zip` file, or a directory containing `.zip` files** -> extracted into `extract_dir` (idempotently) and returned.
+    2. **Directory already holding `.mat` files** -> returned unchanged.
+    3. **A Google Drive id / URL** -> downloaded via `download_to_dir`, then resolved recursively.
 
     Args:
         spec (str | Path): A local directory, a `.zip` path, a directory of zips, or a Drive id/URL.
@@ -69,11 +69,12 @@ def resolve_source(
     spec_str = str(spec)
 
     # 3) Remote Google Drive id / URL.
-    if spec_str.startswith(('http://', 'https://')) or (
-        not Path(spec_str).exists() and '/' not in spec_str and '.' not in spec_str
-    ):
-        from zte.data.remote import download_to_dir  # pylint: disable=import-outside-toplevel
+    from zte.data.remote import (  # pylint: disable=import-outside-toplevel
+        download_to_dir,
+        is_drive_spec,
+    )
 
+    if is_drive_spec(spec_str):
         _LOG.info('Fetching source from Google Drive: %s', spec_str)
         downloaded = download_to_dir(spec_str, download_dir)
         return resolve_source(downloaded, extract_dir=extract_dir, download_dir=download_dir)
@@ -82,18 +83,18 @@ def resolve_source(
     if not path.exists():
         raise FileNotFoundError(f'Source does not exist: {path}')
 
-    # 1) Already-extracted directory.
-    if path.is_dir() and _has_mat(path):
-        _LOG.info('Using extracted ZuCo data at %s', path)
-        return path
-
-    # 2) A zip, or a directory of zips.
+    # 1) A zip, or a directory of zips (checked before .mat so staging dirs extract to extract_dir).
     if path.is_file() and path.suffix == '.zip':
         return _finalise(_unzip_all([path], extract_dir))
     if path.is_dir():
         zips = sorted(path.glob('*.zip'))
         if zips:
             return _finalise(_unzip_all(zips, extract_dir))
+
+    # 2) Already-extracted directory.
+    if path.is_dir() and _has_mat(path):
+        _LOG.info('Using extracted ZuCo data at %s', path)
+        return path
 
     raise FileNotFoundError(
         f'No .mat files (or .zip archives) found under {path}. Point --root at the '

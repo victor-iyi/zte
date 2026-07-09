@@ -1,0 +1,68 @@
+"""Shared data-source CLI flags and resolution for all ZTE commands."""
+
+from __future__ import annotations
+
+import argparse
+from typing import Final
+
+DEFAULT_EXTRACT_DIR: Final[str] = 'res/data/zuco_extracted'
+DEFAULT_DOWNLOAD_DIR: Final[str] = 'res/data/_downloads'
+
+_ROOT_HELP: Final[str] = (
+    'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
+)
+_DRIVE_HELP: Final[str] = (
+    'Google Drive folder id or shareable URL (downloads + extracts task archives).'
+)
+_EXTRACT_HELP: Final[str] = (
+    'Where Drive/zips are extracted to (idempotent; default: res/data/zuco_extracted).'
+)
+
+
+def add_data_source_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_bundle: bool = False,
+    include_synthetic: bool = False,
+    required: bool = True,
+) -> argparse._MutuallyExclusiveGroup:
+    """Adds `--root` / `--drive` / optional `--bundle` / `--synthetic` to a parser."""
+    group = parser.add_mutually_exclusive_group(required=required)
+    if include_bundle:
+        group.add_argument('--bundle', type=str, help='Saved ZuCoDataset bundle directory.')
+    group.add_argument('--root', type=str, help=_ROOT_HELP)
+    group.add_argument('--drive', type=str, help=_DRIVE_HELP)
+    if include_synthetic:
+        group.add_argument(
+            '--synthetic',
+            action='store_true',
+            help='Generate a schema-faithful synthetic ZuCo tree instead.',
+        )
+    return group
+
+
+def add_extract_dir(parser: argparse.ArgumentParser) -> None:
+    """Adds `--extract-dir` for Drive/zip staging."""
+    parser.add_argument('--extract-dir', type=str, default=DEFAULT_EXTRACT_DIR, help=_EXTRACT_HELP)
+
+
+def resolve_data_root(
+    args: argparse.Namespace,
+    *,
+    default: str | None = None,
+) -> str:
+    """Resolves `--root` or `--drive` to a local directory of `.mat` files."""
+    from zte.data.sources import resolve_source  # pylint: disable=import-outside-toplevel
+
+    spec = getattr(args, 'drive', None) or getattr(args, 'root', None) or default
+    if spec is None:
+        msg = 'One of --root or --drive is required.'
+        raise ValueError(msg)
+    extract_dir = getattr(args, 'extract_dir', DEFAULT_EXTRACT_DIR)
+    return str(
+        resolve_source(
+            spec,
+            extract_dir=extract_dir,
+            download_dir=DEFAULT_DOWNLOAD_DIR,
+        )
+    )

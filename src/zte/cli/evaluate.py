@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from zte.cli.extract import load_dataset
+from zte.cli.sources import add_data_source_args, add_extract_dir
 from zte.data.dataset import ZuCoDataset
 from zte.device import resolve_device
 from zte.evaluation.report import evaluate_representation
@@ -34,9 +35,8 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--ckpt', type=str, required=True, help='Checkpoint (best.pt/last.pt).')
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--bundle', type=str, help='Saved ZuCoDataset bundle directory.')
-    source.add_argument('--root', type=str, help='Directory of extracted ZuCo `.mat` files.')
+    add_data_source_args(parser, include_bundle=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--out', type=str, default='res/evaluation')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')

@@ -107,21 +107,17 @@ res/experiments/<run_name>/
 res/experiments/INDEX.md          # a growing catalogue of every run + headline metrics
 ```
 
-The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by
-`zte.data.sources.resolve_source`: an already-extracted directory is used as-is, a
-`.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive
-id/URL is downloaded then unzipped. So "load from Drive or locally, unzip, prepare,
-cache, train, evaluate" is a single command either way.
+The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte.data.sources.resolve_source`: an already-extracted directory is used as-is, a `.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive id/URL is downloaded to `res/data/_downloads` then unzipped into `--extract-dir`.  Every CLI that loads raw ZuCo data accepts the same flags (`--root`, `--drive`, `--extract-dir`), so "load from Drive or locally, unzip, prepare, cache, train, evaluate" is a single command either way.
 
 ### The 5 flagship experiments
 
-| Config | Objective | Positional | Eye-tracking | Why run it |
-| ------ | --------- | ---------- | ------------ | ---------- |
-| `exp1_skipgram_rope_et` | skip-gram | RoPE | included | **Start here** — best general reading-evoked embedding |
-| `exp2_masked_rope_eegonly` | masked (data2vec) | RoPE | **excluded** | Device-agnostic / imagined-thought path (EEG only) |
-| `exp3_cpc_rope_et` | CPC (wav2vec/BENDR) | RoPE | included | Does reading *order* carry transferable structure? |
-| `exp4_skipgram_loso` | skip-gram | RoPE | included | Subject-invariance: leave-one-subject-out validation |
-| `exp5_raw_conformer_masked` | masked | RoPE | excluded | Raw temporal path (EEG-Conformer) instead of band power |
+| Config                      | Objective           | Positional | Eye-tracking | Why run it                                              |
+| --------------------------- | ------------------- | ---------- | ------------ | ------------------------------------------------------- |
+| `exp1_skipgram_rope_et`     | skip-gram           | RoPE       | included     | **Start here** — best general reading-evoked embedding  |
+| `exp2_masked_rope_eegonly`  | masked (data2vec)   | RoPE       | **excluded** | Device-agnostic / imagined-thought path (EEG only)      |
+| `exp3_cpc_rope_et`          | CPC (wav2vec/BENDR) | RoPE       | included     | Does reading *order* carry transferable structure?      |
+| `exp4_skipgram_loso`        | skip-gram           | RoPE       | included     | Subject-invariance: leave-one-subject-out validation    |
+| `exp5_raw_conformer_masked` | masked              | RoPE       | excluded     | Raw temporal path (EEG-Conformer) instead of band power |
 
 See [`experiments/README.md`](experiments/README.md) for the full rationale.
 
@@ -129,10 +125,14 @@ See [`experiments/README.md`](experiments/README.md) for the full rationale.
 
 ```sh
 uv run zte-prepare  --root res/data/zuco_extracted --representation band_power --out res/bundle
+# Or download + prepare straight from the public ZuCo Drive folder (needs `uv sync --group drive`):
+uv run zte-prepare --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --representation band_power --out res/bundle
 uv run zte-train    --bundle res/bundle --objective skipgram --tensorboard --run-name demo
 uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation --tensorboard
 uv run zte-explore  --bundle res/bundle --out res/exploration   # brain regions + eye-tracking
 uv run zte-benchmark --root res/data/zuco_extracted --objectives skipgram,masked --pos-encodings rope,learned
+# `--drive` works on every step above instead of `--root` / `--bundle`.
 ```
 
 Equivalent Python:
@@ -361,12 +361,44 @@ cfg.train.precision = 'auto'   # or 'bf16' | 'fp16' | 'fp32'
 
 ## Remote (Google Drive)
 
+### Downloading raw ZuCo (any CLI)
+
+Install Drive support once (`uv sync --group drive`), then pass `--drive` to any
+command that accepts a data source — `zte-prepare`, `zte-train`, `zte-extract`,
+`zte-evaluate`, `zte-explore`, `zte-benchmark`, or `zte-run`:
+
+```sh
+uv run zte-prepare \
+    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --representation band_power --out res/bundle
+```
+
+| Flag            | Default                   | Meaning                                                                   |
+| --------------- | ------------------------- | ------------------------------------------------------------------------- |
+| `--drive`       | —                         | Google Drive folder id or shareable URL                                   |
+| `--root`        | —                         | Local extracted `.mat` dir, a `.zip`, or a folder of task `.zip` archives |
+| `--extract-dir` | `res/data/zuco_extracted` | Where task archives are unzipped (idempotent)                             |
+
+Zips are downloaded to `res/data/_downloads` first; extraction is skipped for
+archives already marked done. A folder id alone (e.g. `1Rd3vZq404sykxhCfkIJERz6qT5csWARL`)
+works the same as the full URL.
+
+**Interrupt & resume:** Downloads are safe to stop (Ctrl+C). Each zip is fetched
+separately with per-file byte progress (`tqdm`). Finished files are recorded in
+`.zte_drive_manifest.json`; re-run the same command to continue. For download-only:
+
+```sh
+uv run zte-download --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --out res/data/_downloads
+```
+
+### Bundles & uploads (Python API)
+
 ```python
 ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')   # Colab mounted path
 ZuCoDataset.from_drive('https://drive.google.com/.../view')  # public link via gdown
 ```
 
-Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` (public download) -> PyDrive2 (authenticated upload). The raw ZuCo archives are tens of GB; prefer mounting Drive and pointing `root` at the extracted files, or stage a processed **bundle** (small) to Drive.
+Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` (public download) -> PyDrive2 (authenticated upload). The raw ZuCo archives are tens of GB; prefer `--drive` for a one-shot download, mounting Drive and pointing `--root` at extracted files, or staging a processed **bundle** (small) to Drive.
 
 ---
 
@@ -412,7 +444,7 @@ zte/
 │   ├── training/             # trainer (+TensorBoard), checkpoint, scheduler, metrics, pipeline
 │   ├── inference/            # embed (ZTEEmbedder), retrieval
 │   ├── evaluation/           # metrics, breakdown, analogy, regions-eval, plots, interactive, tensorboard, report
-│   └── cli/                  # zte-run · prepare · train · extract · evaluate · explore · benchmark
+│   └── cli/                  # zte-run · prepare · train · extract · evaluate · explore · benchmark · download
 ├── tests/                    # synthetic schema, dataset, missing, models, evaluation, e2e
 ├── docs/                     # architecture, dataset, training, results, evaluation (mermaid + figures)
 └── res/                      # all generated resources (gitignored)

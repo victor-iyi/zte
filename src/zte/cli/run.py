@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.logging_utils import configure_logging, get_logger
@@ -51,18 +52,13 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--config', type=str, required=True, help='Experiment YAML (a ZTEConfig).')
-    source = parser.add_mutually_exclusive_group()
-    source.add_argument(
-        '--root', type=str, help='Local extracted dir, a .zip, or a folder of zips.'
-    )
-    source.add_argument('--drive', type=str, help='Google Drive folder id / shareable URL.')
-    source.add_argument('--synthetic', action='store_true', help='Generate a synthetic tree.')
+    add_data_source_args(parser, include_synthetic=True)
+    add_extract_dir(parser)
 
     parser.add_argument(
         '--name', type=str, default=None, help='Run name (default: config run_name).'
     )
     parser.add_argument('--out-root', type=str, default='res/experiments')
-    parser.add_argument('--extract-dir', type=str, default='res/data/zuco_extracted')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
     parser.add_argument('--epochs', type=int, default=None, help='Override config epochs.')
     parser.add_argument(
@@ -84,16 +80,13 @@ def parse_arguments() -> argparse.Namespace:
 
 def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
     """Resolves the data source to a local directory of `.mat` files."""
-    from zte.data.sources import resolve_source
-
     if args.synthetic:
         from zte.data.synthetic import generate_synthetic_zuco
 
         root = 'res/data/synthetic_zuco'
         generate_synthetic_zuco(root, tasks=config.dataset.tasks)
         return root
-    spec = args.root or args.drive or config.dataset.root
-    return str(resolve_source(spec, extract_dir=args.extract_dir))
+    return resolve_data_root(args, default=config.dataset.root)
 
 
 def main() -> None:

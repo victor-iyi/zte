@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.evaluation import metrics as M
@@ -42,9 +43,8 @@ def parse_arguments() -> argparse.Namespace:
         description='Reproducible ZTE benchmark sweep (objective x pos-encoding x eye-tracking).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--root', type=str, help='Directory of extracted ZuCo `.mat` files.')
-    source.add_argument('--synthetic', action='store_true', help='Use a synthetic tree.')
+    add_data_source_args(parser, include_synthetic=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--tasks', type=str, default='SR,NR')
     parser.add_argument('--subjects', type=str, default=None)
@@ -62,12 +62,13 @@ def parse_arguments() -> argparse.Namespace:
 
 def _dataset_for(args: argparse.Namespace, include_et: bool) -> ZuCoDataset:
     """Builds (and caches) the band-power dataset for an eye-tracking setting."""
-    root = args.root
     if args.synthetic:
         from zte.data.synthetic import generate_synthetic_zuco
 
         root = 'res/data/synthetic_zuco'
         generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
+    else:
+        root = resolve_data_root(args)
     cfg = DatasetConfig(
         root=root,
         tasks=tuple(args.tasks.split(',')),

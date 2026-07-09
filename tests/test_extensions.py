@@ -1,6 +1,7 @@
 """Tests for the new ZTE capabilities: regions, analogy, positional encodings,
 eye-tracking toggle, categories, sources, interactive viz and TensorBoard."""
 
+# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import shutil
@@ -231,6 +232,55 @@ def test_resolve_source_dir_and_zip(synthetic_dir: Path, tmp_path: Path) -> None
     extract_dir = tmp_path / 'extracted'
     resolved = resolve_source(archive, extract_dir=extract_dir)
     assert any(resolved.rglob('*.mat'))
+
+
+def test_resolve_source_zip_dir_prefers_extract_dir(synthetic_dir: Path, tmp_path: Path) -> None:
+    """A staging dir of zips extracts to extract_dir even when mats exist only inside archives."""
+    from zte.data.sources import resolve_source
+
+    archive = shutil.make_archive(str(tmp_path / 'task1'), 'zip', root_dir=str(synthetic_dir))
+    staging = tmp_path / 'downloads'
+    staging.mkdir()
+    shutil.copy(archive, staging / 'task1.zip')
+    extract_dir = tmp_path / 'zuco_extracted'
+    resolved = resolve_source(staging, extract_dir=extract_dir)
+    assert resolved == extract_dir
+    assert any(extract_dir.rglob('*.mat'))
+
+
+def test_drive_manifest_skips_complete(tmp_path: Path) -> None:
+    """Completed manifest entries are skipped on resume."""
+    from zte.data.drive_download import DriveFileEntry, DriveManifest
+
+    dest = tmp_path / 'downloads'
+    dest.mkdir()
+    entry = DriveFileEntry(id='abc123', name='task1.zip', local_path=Path('task1.zip'))
+    (dest / 'task1.zip').write_bytes(b'0' * 128)
+    manifest = DriveManifest('folder1')
+    manifest.mark_done(entry, dest)
+    manifest.save(dest)
+
+    reloaded = DriveManifest.load(dest, 'folder1')
+    assert reloaded.is_done(entry, dest)
+
+
+def test_parse_drive_spec_normalizes_shell_escaped_urls() -> None:
+    """Shell-escaped share URLs still resolve to the correct folder id."""
+    from zte.data.remote import parse_drive_spec
+
+    escaped = (
+        r'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL\?usp\=share_link'
+    )
+    assert parse_drive_spec(escaped) == ('folder', '1Rd3vZq404sykxhCfkIJERz6qT5csWARL')
+    assert parse_drive_spec('1Rd3vZq404sykxhCfkIJERz6qT5csWARL') == (
+        'folder',
+        '1Rd3vZq404sykxhCfkIJERz6qT5csWARL',
+    )
+    assert parse_drive_spec('https://drive.google.com/file/d/abc123XYZ/view') == (
+        'file',
+        'abc123XYZ',
+    )
+    assert parse_drive_spec('/local/path') is None
 
 
 # --------------------------------------------------------------------------- #

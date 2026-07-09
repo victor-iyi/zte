@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.synthetic import generate_synthetic_zuco
@@ -29,18 +30,13 @@ def parse_arguments() -> argparse.Namespace:
         description='Prepare a processed ZuCo dataset bundle.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--root', type=str, help='Directory of extracted ZuCo .mat files.')
-    source.add_argument(
-        '--synthetic',
-        action='store_true',
-        help='Generate a small schema-faithful synthetic ZuCo tree instead.',
-    )
+    add_data_source_args(parser, include_synthetic=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--synthetic-out', type=str, default='res/data/synthetic_zuco')
     parser.add_argument('--synthetic-subjects', type=str, default='ZAB,ZDM,ZJN')
     parser.add_argument('--synthetic-sentences', type=int, default=12)
-    parser.add_argument('--tasks', type=str, default='SR,NR', help='Comma-separated tasks.')
+    parser.add_argument('--tasks', type=str, default='SR,NR,TSR', help='Comma-separated tasks.')
     parser.add_argument('--subjects', type=str, default=None, help='Comma-separated subjects.')
     parser.add_argument(
         '--representation',
@@ -83,7 +79,7 @@ def main() -> None:
     args = parse_arguments()
     configure_logging(args.log_level)
 
-    root = args.root
+    root = resolve_data_root(args) if not args.synthetic else None
     if args.synthetic:
         subjects = tuple(args.synthetic_subjects.split(','))
         tasks = tuple(args.tasks.split(','))

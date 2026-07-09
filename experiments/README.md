@@ -9,7 +9,12 @@ uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/z
 uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
 ```
 
-Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
+`--drive` works on every CLI that loads raw ZuCo data (`zte-prepare`, `zte-train`,
+`zte-evaluate`, `zte-explore`, `zte-benchmark`, …) — not just `zte-run`. Install
+Drive support once: `uv sync --group drive`. Zips download to `res/data/_downloads`
+and extract into `--extract-dir` (default `res/data/zuco_extracted`).
+
+Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--extract-dir`, `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
 ## The five configs
 
@@ -34,6 +39,7 @@ Every config fixes `train.seed` and sets `train.deterministic: true`. `zte-run` 
 
 ```sh
 uv run zte-run --config res/experiments/<run_name>/config.yaml --root <data> --name <run_name>
+# or: --drive <folder-id-or-url>
 ```
 
 ## Sweeping the grid
@@ -44,6 +50,8 @@ To compare objectives × positional encodings × eye-tracking under fixed seeds 
 uv run zte-benchmark --root res/data/zuco_extracted \
     --objectives skipgram,masked,cpc --pos-encodings rope,learned --eye-tracking both \
     --seeds 42,43 --out res/benchmark
+# Or benchmark straight from Drive:
+uv run zte-benchmark --drive <folder-id-or-url> --objectives skipgram,masked --out res/benchmark
 ```
 
 ## Catalogue

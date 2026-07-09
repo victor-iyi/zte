@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.inference.embed import ZTEEmbedder
@@ -38,7 +39,7 @@ def load_dataset(args: argparse.Namespace) -> ZuCoDataset:
     payload = CheckpointManager.load(args.ckpt)
     cfg = ZTEConfig.from_dict(payload['config'])
     ds_config = DatasetConfig(
-        root=args.root,
+        root=resolve_data_root(args),
         representation=cfg.dataset.representation,
         band_power_measures=cfg.dataset.band_power_measures,
         bands=cfg.dataset.bands,
@@ -62,9 +63,8 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--ckpt', type=str, required=True, help='Checkpoint (best.pt/last.pt).')
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--bundle', type=str, help='Saved ZuCoDataset bundle directory.')
-    source.add_argument('--root', type=str, help='Directory of extracted ZuCo `.mat` files.')
+    add_data_source_args(parser, include_bundle=True)
+    add_extract_dir(parser)
 
     parser.add_argument('--level', choices=['word', 'sentence'], default='word')
     parser.add_argument('--out', type=str, default='res/embeddings/embeddings.npz')

@@ -2,7 +2,7 @@
 
 How ZTE proves — without training a decoder — that its encoder turns EEG into a **structured, re-purposable** space rather than memorising noise. This is the project's defence against the "BLEU-trap": every headline number is checked against a raw-feature reference **and** a noise-matched control.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) · [TRAINING.md](TRAINING.md) · [RESULTS.md](RESULTS.md) (validated numbers from a real run).
+> Related: [ARCHITECTURE.md] · [TRAINING.md] · [RESULTS.md] (validated numbers from a real run).
 > The figures below come from the synthetic smoke run (`examples/evaluate_zte.py`); on real ZuCo the same commands produce the same artifacts at scale.
 
 ## How to run it
@@ -21,11 +21,13 @@ tensorboard --logdir res/evaluation/tb        # then open the PROJECTOR tab
 # Evaluate straight from .mat files instead of a bundle; skip the HTML explorer.
 uv run zte-evaluate --ckpt res/checkpoints/best.pt --root res/data/zuco_extracted \
     --out res/evaluation --no-interactive
+# Or download + evaluate in one step (needs `uv sync --group drive`):
+uv run zte-evaluate --ckpt res/checkpoints/best.pt \
+    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --out res/evaluation
 ```
 
-Flags: `--ckpt` (required), one of `--bundle` / `--root`, `--out`
-(`res/evaluation`), `--device`, `--run-name`, `--tensorboard`, `--no-interactive`.
-`zte-run` performs this automatically for each experiment.
+Flags: `--ckpt` (required), one of `--bundle` / `--root` / `--drive`, `--extract-dir` (default `res/data/zuco_extracted`), `--out` (`res/evaluation`), `--device`, `--run-name`, `--tensorboard`, `--no-interactive`.  `zte-run` performs this automatically for each experiment.
 
 ### Self-contained demo (no data)
 
@@ -145,13 +147,14 @@ Which parts of the cortex encode *thought* vs *reading*, and how much does gaze 
 
 ```sh
 uv run zte-explore --root res/data/zuco_extracted --out res/exploration
+uv run zte-explore --drive <folder-id-or-url> --out res/exploration
 # Supply an exact montage instead of the approximate default map:
 uv run zte-explore --bundle res/bundle --montage-csv my_montage.csv --out res/exploration
 ```
 
 ![Scalp-region importance](figures/eval/region_importance.png)
 
-Flags: one of `--bundle` / `--root` / `--synthetic`, `--tasks`, `--out`, `--montage-csv`, `--method mutual_info|f_score`.
+Flags: one of `--bundle` / `--root` / `--drive` / `--synthetic`, `--extract-dir`, `--tasks`, `--out`, `--montage-csv`, `--method mutual_info|f_score`.
 
 ## The verdict
 
@@ -162,7 +165,7 @@ Flags: one of `--bundle` / `--root` / `--synthetic`, `--tasks`, `--out`, `--mont
 - **cross-subject retrieval above chance**,
 - **subject arithmetic above chance**.
 
-These are intentionally strict: on tiny synthetic data some will legitimately fail (there is little real cross-subject signal to find), which is exactly why the same commands must be run on real ZuCo to make claims. See [RESULTS.md](RESULTS.md).
+These are intentionally strict: on tiny synthetic data some will legitimately fail (there is little real cross-subject signal to find), which is exactly why the same commands must be run on real ZuCo to make claims. See [RESULTS.md].
 
 ## Reproducible benchmarks (`zte-benchmark`)
 
@@ -172,6 +175,8 @@ To claim ZTE's *choices* are good (not just asserted), sweep them under fixed se
 uv run zte-benchmark --root res/data/zuco_extracted \
     --objectives skipgram,masked,cpc --pos-encodings rope,learned --eye-tracking both \
     --seeds 42,43 --out res/benchmark
+uv run zte-benchmark --drive <folder-id-or-url> \
+    --objectives skipgram,masked --pos-encodings rope,learned --out res/benchmark
 # Quick, no-data version:
 uv run zte-benchmark --synthetic --objectives skipgram --pos-encodings rope,none --out res/benchmark
 ```
@@ -190,3 +195,7 @@ Rows are sorted by **subject-transfer lift** (higher = more subject-agnostic), t
 | `zte.evaluation.tensorboard`                   | projector + HParams + scalars + histograms + figures |
 | `zte.inference.retrieval.NearestNeighborIndex` | kNN decoder/probe over a labelled bank               |
 | `zte.training.metrics.noise_matched`           | the Gaussian control a real encoder must beat        |
+
+[ARCHITECTURE.md]: ./ARCHITECTURE.md
+[RESULTS.md]: ./RESULTS.md
+[TRAINING.md]: ./TRAINING.md

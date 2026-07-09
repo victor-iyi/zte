@@ -40,6 +40,7 @@ zte-evaluate = 'zte.cli.evaluate:main'
 zte-explore = 'zte.cli.explore:main'
 zte-benchmark = 'zte.cli.benchmark:main'
 zte-run = 'zte.cli.run:main'
+zte-download = 'zte.cli.download:main'
 
 [build-system]
 requires = ['hatchling']

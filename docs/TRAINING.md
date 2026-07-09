@@ -2,7 +2,7 @@
 
 Pretrain a self-supervised EEG **thought embedding**, then use the checkpoint to embed words, sentences, or brand-new signals. This guide covers the one-command path, the individual steps, every config knob, and inference.
 
-> Related: [ARCHITECTURE.md](ARCHITECTURE.md) (model & objectives), [DATASET.md](DATASET.md) (building a bundle), [EVALUATION.md](EVALUATION.md) (proving the embedding is good), [RESULTS.md](RESULTS.md) (validated numbers).
+> Related: [ARCHITECTURE.md] (model & objectives), [DATASET.md] (building a bundle), [EVALUATION.md] (proving the embedding is good), [RESULTS.md] (validated numbers).
 
 ## One command: `zte-run`
 
@@ -17,9 +17,10 @@ uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/z
 
 # Real data straight from Google Drive (folder id or shareable URL; needs the `drive` group).
 uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
+# Same flag on any individual step: zte-prepare, zte-train, zte-evaluate, zte-explore, …
 ```
 
-Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir`, `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
+Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir` (default `res/data/zuco_extracted`), `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
 Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. See [`experiments/README.md`](../experiments/README.md) for the five flagship configs and their rationale.
 
@@ -37,16 +38,19 @@ uv run zte-train --bundle res/bundle --objective masked \
 uv run zte-train --bundle res/bundle --objective cpc --tensorboard \
     --drive-backup-dir /content/drive/MyDrive/ZTE/ckpts
 
-# No bundle yet? Train straight from .mat files or synthetic data.
+# No bundle yet? Train straight from .mat files, Google Drive, or synthetic data.
 uv run zte-train --root res/data/zuco_extracted --objective skipgram
+uv run zte-train --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --objective skipgram
 uv run zte-train --synthetic --objective masked --epochs 5
 ```
 
-`zte-train` flags (a data source — `--bundle` / `--root` / `--synthetic` — is required; everything else overrides the YAML/defaults):
+`zte-train` flags (a data source — `--bundle` / `--root` / `--drive` / `--synthetic` — is required; everything else overrides the YAML/defaults):
 
 | Flag                                               | Choices / type                                     | Overrides                                          |
 | -------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
 | `--config`                                         | path                                               | base YAML (`ZTEConfig`)                            |
+| `--root` / `--drive`                               | path / Drive id or URL                             | local `.mat` dir, zip(s), or Drive folder          |
+| `--extract-dir`                                    | path (`res/data/zuco_extracted`)                   | where Drive/zips are unzipped                      |
 | `--objective`                                      | `skipgram`,`cbow`,`masked`,`cpc`                   | `objective.name`                                   |
 | `--frontend`                                       | `band_power_mlp`,`raw_conformer`                   | `model.frontend`                                   |
 | `--representation`                                 | `band_power`,`raw`,`both`                          | `dataset.representation` (ignored with `--bundle`) |
@@ -165,7 +169,7 @@ Each checkpoint embeds the model, optimiser, scheduler, AMP scaler, the full con
 
 ## Reproducibility
 
-Every config fixes `train.seed`; set `train.deterministic: true` for deterministic cuDNN kernels on CUDA. Checkpoints embed the config, fitted normaliser and subject vocabulary, so inference is exact. `zte-benchmark` runs a fixed-seed grid over objective × positional-encoding × eye-tracking and writes each cell's `config.yaml` (see [EVALUATION.md](EVALUATION.md)).
+Every config fixes `train.seed`; set `train.deterministic: true` for deterministic cuDNN kernels on CUDA. Checkpoints embed the config, fitted normaliser and subject vocabulary, so inference is exact. `zte-benchmark` runs a fixed-seed grid over objective × positional-encoding × eye-tracking and writes each cell's `config.yaml` (see [EVALUATION.md]).
 
 ## Inference
 
@@ -189,6 +193,9 @@ Or from the CLI, with an optional linear-probe sanity check + Drive upload:
 ```sh
 uv run zte-extract --ckpt res/checkpoints/best.pt --bundle res/bundle \
     --level word --probe-target log_freq --out res/embeddings/embeddings.npz
+# Or embed straight from Drive / local .mat files:
+uv run zte-extract --ckpt res/checkpoints/best.pt --drive <folder-id-or-url> \
+    --level word --out res/embeddings/embeddings.npz
 ```
 
 ### Embedding brand-new EEG signals
@@ -228,3 +235,8 @@ uv run python examples/embed_new_signals.py --ckpt res/checkpoints/best.pt
 - **Large data**: cache once (`zte-prepare`/`build()` writes a bundle), then train from the bundle repeatedly.
 - **Contrastive objectives** benefit from larger batches (more in-batch negatives)
   — `skipgram`/`cbow`/`cpc` drop the last short batch automatically.
+
+[ARCHITECTURE.md]: ./ARCHITECTURE.md
+[DATASET.md]: ./DATASET.md
+[EVALUATION.md]: ./EVALUATION.md
+[RESULTS.md]: ./RESULTS.md
