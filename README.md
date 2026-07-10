@@ -77,10 +77,7 @@ uv sync --no-default-groups  # core only, without the `dev` group
 
 ## Quickstart: one command, end to end
 
-`zte-run` takes an **experiment config** and a **data source**, then runs the whole
-pipeline — resolve/unzip → prepare + cache → train → evaluate → explore — and files
-every artifact under `res/experiments/<run_name>/` so each experiment is
-self-contained and reproducible.
+`zte-run` takes an **experiment config** and a **data source**, then runs the whole pipeline — resolve/unzip → prepare + cache → train → evaluate → explore — and files every artifact under `res/experiments/<run_name>/` so each experiment is self-contained and reproducible.
 
 ```sh
 # No data needed: full pipeline on a synthetic ZuCo tree (great smoke test).
@@ -160,8 +157,7 @@ embeddings, meta = embedder.embed(ds, level='word')            # (M, 768), align
 new_emb = embedder.embed_signals(band_power=my_array)          # (N, in_dim) -> (N, 768)
 ```
 
-Embedding new EEG with a trained checkpoint -- both from new `.mat` files and from
-in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
+Embedding new EEG with a trained checkpoint -- both from new `.mat` files and from in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
 
 ---
 
@@ -169,26 +165,18 @@ in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
 
 ### Eye-tracking: include or exclude (default include)
 
-ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`,
-pupil size) is richly informative — for reading. But an imagined-thought BCI has no
-gaze. `include_eye_tracking` makes this a first-class switch:
+ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`, pupil size) is richly informative — for reading. But an imagined-thought BCI has no gaze. `include_eye_tracking` makes this a first-class switch:
 
 ```python
 DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to each token
 DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
 ```
 
-The EEG band-power is always kept; the toggle only governs the extra gaze dimensions.
-`zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a
-*cognitive* target, so the choice is evidence-based, not a guess.
+The EEG band-power is always kept; the toggle only governs the extra gaze dimensions.  `zte-explore` quantifies exactly how much eye-tracking helps a *reading* target vs a *cognitive* target, so the choice is evidence-based, not a guess.
 
 ### Brain-region exploration (`zte-explore`)
 
-Which parts of the cortex encode thought vs reading? `zte-explore` groups the 105
-channels into anterior→posterior scalp regions and scores each region's share of the
-decodable information for reading targets (word length, frequency) and cognitive
-targets (task, subject). Supply an exact montage with `RegionMap.from_csv(...)`; the
-default map is documented and approximate.
+Which parts of the cortex encode thought vs reading? `zte-explore` groups the 105 channels into anterior→posterior scalp regions and scores each region's share of the decodable information for reading targets (word length, frequency) and cognitive targets (task, subject). Supply an exact montage with `RegionMap.from_csv(...)`; the default map is documented and approximate.
 
 ```sh
 uv run zte-explore --root res/data/zuco_extracted --out res/exploration
@@ -196,26 +184,15 @@ uv run zte-explore --root res/data/zuco_extracted --out res/exploration
 
 ### Thought arithmetic (`king − man + woman` for EEG)
 
-If ZTE is a real thought code, *who* produced a thought should be a translation in the
-space. For a stimulus token `t`, `emb(t, subject A) − centroid(A) + centroid(B)` should
-retrieve `emb(t, subject B)`. The evaluation reports this **subject-transfer** (and
-task-transfer) analogy accuracy vs chance, with a raw-feature control — a direct,
-falsifiable test of subject-agnosticism.
+If ZTE is a real thought code, *who* produced a thought should be a translation in the space. For a stimulus token `t`, `emb(t, subject A) − centroid(A) + centroid(B)` should retrieve `emb(t, subject B)`. The evaluation reports this **subject-transfer** (and task-transfer) analogy accuracy vs chance, with a raw-feature control — a direct, falsifiable test of subject-agnosticism.
 
 ### State-of-the-art positional encoding
 
-`model.pos_encoding` selects the sequence encoding for the context transformer:
-`rope` (rotary, default — relative, length-generalising, SOTA), `sinusoidal`, `learned`,
-`alibi`, or `none` (ablation). RoPE and ALiBi act inside attention; the encoder is a
-pre-norm, GELU Transformer honouring padding and causal (CPC) masks.
+`model.pos_encoding` selects the sequence encoding for the context transformer: `rope` (rotary, default — relative, length-generalising, SOTA), `sinusoidal`, `learned`, `alibi`, or `none` (ablation). RoPE and ALiBi act inside attention; the encoder is a pre-norm, GELU Transformer honouring padding and causal (CPC) masks.
 
 ### Stratified evaluation + interactive reporting
 
-`zte-evaluate` (and `zte-run`) produce per-subject / per-task / per-sentence-category
-breakdowns, a `report.md`, a `metrics.json`, figures, a **self-contained interactive
-HTML explorer** (rotate the 3-D embedding cloud, hover a point for its word, recolour by
-subject/task/category), and a **TensorBoard** log that uses the embedding projector,
-HParams, scalars, histograms, images and text. Add `--tensorboard`:
+`zte-evaluate` (and `zte-run`) produce per-subject / per-task / per-sentence-category breakdowns, a `report.md`, a `metrics.json`, figures, a **self-contained interactive HTML explorer** (rotate the 3-D embedding cloud, hover a point for its word, recolour by subject/task/category), and a **TensorBoard** log that uses the embedding projector, HParams, scalars, histograms, images and text. Add `--tensorboard`:
 
 ```sh
 uv run zte-evaluate --ckpt <best.pt> --bundle res/bundle --out res/evaluation --tensorboard
@@ -224,9 +201,7 @@ tensorboard --logdir res/evaluation/tb        # then open the PROJECTOR tab
 
 ### Reproducible benchmarks (`zte-benchmark`)
 
-Fixed-seed sweep over **objective × positional-encoding × eye-tracking × seed**,
-aggregated into a sortable `benchmark.csv` / `benchmark.md`; every cell writes its own
-`config.yaml` so any row reproduces exactly.
+Fixed-seed sweep over **objective × positional-encoding × eye-tracking × seed**, aggregated into a sortable `benchmark.csv` / `benchmark.md`; every cell writes its own `config.yaml` so any row reproduces exactly.
 
 ## The dataset class, end to end
 
@@ -363,9 +338,7 @@ cfg.train.precision = 'auto'   # or 'bf16' | 'fp16' | 'fp32'
 
 ### Downloading raw ZuCo (any CLI)
 
-Install Drive support once (`uv sync --group drive`), then pass `--drive` to any
-command that accepts a data source — `zte-prepare`, `zte-train`, `zte-extract`,
-`zte-evaluate`, `zte-explore`, `zte-benchmark`, or `zte-run`:
+Install Drive support once (`uv sync --group drive`), then pass `--drive` to any command that accepts a data source — `zte-prepare`, `zte-train`, `zte-extract`, `zte-evaluate`, `zte-explore`, `zte-benchmark`, or `zte-run`:
 
 ```sh
 uv run zte-prepare \
@@ -379,13 +352,9 @@ uv run zte-prepare \
 | `--root`        | —                         | Local extracted `.mat` dir, a `.zip`, or a folder of task `.zip` archives |
 | `--extract-dir` | `res/data/zuco_extracted` | Where task archives are unzipped (idempotent)                             |
 
-Zips are downloaded to `res/data/_downloads` first; extraction is skipped for
-archives already marked done. A folder id alone (e.g. `1Rd3vZq404sykxhCfkIJERz6qT5csWARL`)
-works the same as the full URL.
+Zips are downloaded to `res/data/_downloads` first; extraction is skipped for archives already marked done. A folder id alone (e.g. `1Rd3vZq404sykxhCfkIJERz6qT5csWARL`) works the same as the full URL.
 
-**Interrupt & resume:** Downloads are safe to stop (Ctrl+C). Each zip is fetched
-separately with per-file byte progress (`tqdm`). Finished files are recorded in
-`.zte_drive_manifest.json`; re-run the same command to continue. For download-only:
+**Interrupt & resume:** Downloads are safe to stop (Ctrl+C). Each zip is fetched separately with per-file byte progress (`tqdm`). Finished files are recorded in `.zte_drive_manifest.json`; re-run the same command to continue. For download-only:
 
 ```sh
 uv run zte-download --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --out res/data/_downloads
@@ -402,12 +371,44 @@ Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` 
 
 ---
 
+## Performance-review response (turning the honest negative result into levers)
+
+The *Honest Performance & Accuracy Review* found ZTE well-instrumented but dimensionally collapsed and subject-dominated. Every "Areas for improvement" item is now implemented and tested — see **[`CHANGELOG.md`](CHANGELOG.md)** for the full mapping. The load-bearing changes:
+
+- **Anti-collapse (VICReg).** `objective.variance_weight` / `objective.covariance_weight` add a variance-hinge + covariance penalty to every objective — the single biggest fix for the ~15-of-768 collapse.
+- **Learn "what", not "who".** `objective.cross_subject_positives` (same stimulus, different subject, via a stimulus-grouped batch sampler), `objective.subject_adversary_weight` (gradient-reversal subject adversary), and `dataset.normalize='zscore_subject'` (per-subject whitening) attack subject dominance directly.
+- **Masked objective repaired.** The exported 768-d head is now trained; the data2vec teacher is normalised across tokens with a variance floor and its EMA decay is ramped — no more exp2 cone.
+- **Honest evaluation.** `train.test_fraction` defaults to `0.1` (held-out), a new `by_stimulus` split keeps a sentence's text on one side, and the normaliser is fit on train only. Verdicts use bootstrap CIs + effect-size floors; retrieval chance is query-weighted; probes are shuffled and scaled; the `task_transfer` id bug is fixed; a real electrode montage can be supplied via `dataset.montage_csv`.
+- **Correction to the review:** its "P0 SyntaxError blocker" is not real on this tree — Python 3.14 (PEP 758) accepts `except A, B:` as a tuple that catches both types, so the package imports fine and the tests pass on a clean checkout (the project's own `ruff` formatter even keeps that unparenthesised form). It was a false-positive static-analysis finding.
+
+The new **`exp6_skipgram_eegonly_invariant`** preset is the fairest test: EEG-only, `by_stimulus` held-out, and every subject-invariance lever on.
+
+### Interactive Thought-Space Explorer
+
+```sh
+# Build a self-contained, offline interactive HTML explorer (Plotly).
+uv run zte-visualize --run res/experiments/exp1_skipgram_rope_et --out res/explorer.html
+uv run zte-visualize --synthetic --out res/explorer.html   # no data needed
+```
+
+Live, on-page controls let you see: one subject / many words; **many subjects / one word** (with the cross-subject cosine stat that shows the word does *not* cluster across people); **thought arithmetic** `emb(t,A) − centroid(A) + centroid(B) ≈ emb(t,B)` drawn as an arrow with its nearest-neighbour hit; and an **eye-tracking with/without** toggle — all switchable in real time.
+
+### Neuron Atlas — which dimensions fire, and what they encode
+
+```sh
+uv run zte-visualize --atlas --run res/experiments/exp1_skipgram_rope_et --out res/atlas.html
+```
+
+Every evaluation also writes `evaluation/interactive/neuron_atlas.html` (and `neurons.json`). It ranks all 768 dimensions by how much they *fire* (variance share), colours each by what it **encodes** (amber for *who* = subject, cool hues for *what* = word length / frequency / task / category, grey for the negligible dead tail past the active-threshold line), and — on click — shows a neuron's selectivity, activation histogram, top-firing words, and scalp band × region attribution. The header reports the **who-vs-what variance budget**: the share of the space spent on identity versus content. This is the "encodes who, not what" story made legible at neuron resolution.
+
+### Reproducible experiment suite
+
+**[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)** lays out a bias-controlled study set (eye-tracking confound, a LOSO subject-invariance A/B, an anti-collapse VICReg ablation, an objective sweep) that uses all 12 subjects, leakage-aware `by_stimulus` / LOSO splits, train-only normalisation, and multiple seeds so differences carry bootstrap CIs — with exact commands and a "how to read every output" guide.
+Run it with `bash scripts/run_suite.sh` (or `SMOKE=1 bash scripts/run_suite.sh` for a synthetic dry run).
+
 ## Rigorous evaluation (built in)
 
-A full representation-evaluation suite (`zte.evaluation`, CLI `zte-evaluate`) shows
-through figures, tables and numbers that the encoder produces a re-purposable space —
-transfer probes (vs raw features and a noise control), cross-subject content retrieval,
-and geometry/collapse checks. See **`docs/EVALUATION.md`** for methodology and results.
+A full representation-evaluation suite (`zte.evaluation`, CLI `zte-evaluate`) shows through figures, tables and numbers that the encoder produces a re-purposable space — transfer probes (vs raw features and a noise control), cross-subject content retrieval, and geometry/collapse checks. See **`docs/EVALUATION.md`** for methodology and results.
 
 ```sh
 uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation

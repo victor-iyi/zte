@@ -149,8 +149,12 @@ def knn_probe(
     task: ProbeTask,
     k: int = 10,
     n_splits: int = 3,
-) -> dict[str, float]:
-    """Cross-validated kNN probe of an embedding's predictiveness for a target.
+    seed: int = 0,
+) -> dict[str, float | list[float]]:
+    """Cross-validated kNN (cosine) probe of an embedding's predictiveness.
+
+    Folds are shuffled with a fixed seed (`KFold`/`StratifiedKFold`) so the split is
+    reproducible and independent of row order; the cosine neighbour metric is kept.
 
     Args:
         embeddings (np.ndarray): Array `(n_samples, embed_dim)`.
@@ -158,33 +162,52 @@ def knn_probe(
         task (ProbeTask): `classification` (accuracy) or `regression` (R^2).
         k (int): Neighbour count.
         n_splits (int): Cross-validation folds.
+        seed (int): Seed for the shuffled fold splitter.
 
     Returns:
-        dict[str, float]: `score` and chance/mean `baseline`.
+        dict[str, float | list[float]]: `score`, chance/mean `baseline`, the per-fold
+            `scores` list and `score_std`.
 
     """
     embeddings = np.asarray(embeddings, dtype=np.float32)
     targets = np.asarray(targets)
+    nan_out: dict[str, float | list[float]] = {
+        'score': float('nan'),
+        'baseline': float('nan'),
+        'scores': [],
+        'score_std': float('nan'),
+    }
     if len(embeddings) < n_splits * 2:
-        return {'score': float('nan'), 'baseline': float('nan')}
+        return nan_out
     try:
-        from sklearn.model_selection import cross_val_score
+        from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
         from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
     except ImportError:  # pragma: no cover
-        return {'score': float('nan'), 'baseline': float('nan')}
+        return nan_out
 
     k = min(k, len(embeddings) - 1)
     if task == 'classification':
         if len(np.unique(targets)) < 2:
-            return {'score': float('nan'), 'baseline': 1.0}
+            return {**nan_out, 'baseline': 1.0}
+        min_class = int(np.unique(targets, return_counts=True)[1].min())
+        n_eff = min(n_splits, min_class)
+        if n_eff < 2:
+            return {**nan_out, 'baseline': 1.0}
+        splitter: Any = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
         model: Any = KNeighborsClassifier(n_neighbors=k, metric='cosine')
-        scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='accuracy')
+        scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='accuracy')
         baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
     else:
+        splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
         model = KNeighborsRegressor(n_neighbors=k, metric='cosine')
-        scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='r2')
+        scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='r2')
         baseline = 0.0
-    return {'score': float(np.mean(scores)), 'baseline': baseline}
+    return {
+        'score': float(np.mean(scores)),
+        'baseline': baseline,
+        'scores': [float(s) for s in scores],
+        'score_std': float(np.std(scores)),
+    }
 
 
 def representation_comparison(
@@ -205,7 +228,8 @@ def representation_comparison(
 
     Returns:
         list[dict[str, Any]]: One row per (target, representation) with
-        `linear_score`, `knn_score`, `baseline` and `metric`.
+        `linear_score`, `knn_score`, `baseline`, `metric` and `linear_scores` (the
+        per-fold linear-probe scores, used by the bootstrap effect-size verdict).
     """
     rows: list[dict[str, Any]] = []
     for target_name, (values, task) in targets.items():
@@ -221,6 +245,7 @@ def representation_comparison(
                     'linear_score': round(float(lin['score']), 4),
                     'knn_score': round(float(knn['score']), 4),
                     'baseline': round(float(lin['baseline']), 4),
+                    'linear_scores': [float(s) for s in lin.get('scores', [])],  # type: ignore[union-attr]
                 }
             )
     return rows
@@ -235,19 +260,31 @@ def content_retrieval(
     embeddings: np.ndarray,
     group_ids: np.ndarray,
     ks: tuple[int, ...] = (1, 5, 10),
+    return_hits: bool = False,
 ) -> dict[str, float]:
     """Leave-one-out retrieval: do same-content items retrieve each other?
 
     Each item queries the bank (excluding itself); a hit is a neighbour sharing its `group_id` (e.g. the
     same stimulus sentence read by another subject).  Reported against a random-chance Top-1 baseline.
 
+    The Top-1 chance baseline is **query-weighted**: a query in a group of size `g`
+    has probability `(g - 1) / (n - 1)` of drawing a same-group neighbour uniformly at
+    random, so averaging over *queries* (each group contributes `g` of them) gives
+    `sum_g g*(g - 1) / (sum_g g) / (n - 1)`. This matches the hit rate, which is also a
+    per-query (per-occurrence) mean -- unlike the older type-weighted average over
+    distinct groups, which under-counts large groups and inflates the "x chance" lift.
+    The legacy value is retained as `chance_top1_typeweighted`.
+
     Args:
         embeddings (np.ndarray): Array `(n_samples, embed_dim)`.
         group_ids (np.ndarray): Integer content/group id per row `(n_samples,)`.
         ks (tuple[int, ...]): Top-K cut-offs.
+        return_hits (bool): When `True`, also return `top1_hits`, the per-query Top-1
+            hit vector (0/1 floats) used for bootstrap confidence intervals.
 
     Returns:
-        dict[str, float]: `top{k}` for each `k`, `mrr`, `n_queries` and `chance_top1`.
+        dict[str, float]: `top{k}` for each `k`, `mrr`, `n_queries`, `chance_top1`
+            (query-weighted) and `chance_top1_typeweighted`.
 
     """
     group_ids = np.asarray(group_ids)
@@ -260,7 +297,8 @@ def content_retrieval(
     count_by_id = dict(zip(*np.unique(group_ids, return_counts=True), strict=True))
     valid = np.array([count_by_id[g] > 1 for g in group_ids])
     if not valid.any():
-        return {f'top{k}': float('nan') for k in ks} | {'mrr': float('nan'), 'n_queries': 0.0}
+        empty = {f'top{k}': float('nan') for k in ks} | {'mrr': float('nan'), 'n_queries': 0.0}
+        return {**empty, 'top1_hits': []} if return_hits else empty  # type: ignore[dict-item]
 
     max_k = min(max(ks), n - 1)
     idx, _ = index.query(embeddings[valid], k=max_k, self_indices=np.where(valid)[0])
@@ -276,8 +314,61 @@ def content_retrieval(
     ranks = np.where(has_hit, 1.0 / (first_hit + 1), 0.0)
     out['mrr'] = float(np.mean(ranks))
     out['n_queries'] = float(valid.sum())
-    out['chance_top1'] = float(np.mean((counts - 1) / (n - 1)))
+    # Query-weighted chance (matches the per-occurrence hit rate); large groups
+    # contribute proportionally to the queries they generate.
+    multi = counts[counts > 1]
+    numer = float(np.sum(multi * (multi - 1)))
+    denom = float(np.sum(multi)) * (n - 1)
+    out['chance_top1'] = numer / denom if denom > 0 else float('nan')
+    # Legacy type-weighted average over distinct groups (kept for comparison).
+    out['chance_top1_typeweighted'] = float(np.mean((counts - 1) / (n - 1)))
+    if return_hits:
+        out['top1_hits'] = hits[:, 0].astype(float).tolist()  # type: ignore[assignment]
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Uncertainty
+# --------------------------------------------------------------------------- #
+
+
+def bootstrap_ci(
+    values: np.ndarray,
+    statistic: Any = np.mean,
+    n_boot: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> tuple[float, float, float]:
+    """Percentile bootstrap confidence interval for a statistic of `values`.
+
+    Resamples `values` with replacement `n_boot` times, applies `statistic` to each
+    resample, and returns the point estimate together with the central
+    `(1 - alpha)` percentile interval. Used to replace sign-only ("beat the baseline
+    by an epsilon") verdicts with an effect-size interval that honestly reflects the
+    sampling noise of small evaluation sets.
+
+    Args:
+        values (np.ndarray): 1-D sample (e.g. per-query hits or per-fold score diffs).
+        statistic (Any): Callable reducing a 1-D array to a scalar (default mean).
+        n_boot (int): Number of bootstrap resamples.
+        alpha (float): Two-sided miscoverage (0.05 -> a 95% interval).
+        seed (int): RNG seed for reproducibility.
+
+    Returns:
+        tuple[float, float, float]: `(point, lo, hi)`. All `nan` when `values` is empty.
+    """
+    values = np.asarray(values, dtype=np.float64).ravel()
+    if values.size == 0:
+        return (float('nan'), float('nan'), float('nan'))
+    point = float(statistic(values))
+    if values.size == 1:
+        return (point, point, point)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, values.size, size=(n_boot, values.size))
+    boot = np.array([statistic(values[row]) for row in idx], dtype=np.float64)
+    lo = float(np.quantile(boot, alpha / 2.0))
+    hi = float(np.quantile(boot, 1.0 - alpha / 2.0))
+    return (point, lo, hi)
 
 
 # --------------------------------------------------------------------------- #

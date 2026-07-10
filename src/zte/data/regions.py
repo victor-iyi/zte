@@ -259,6 +259,12 @@ def region_importance(
 
     """
     region_map = region_map or default_region_map(band_power.shape[-1])
+    if region_map.approximate:
+        _LOG.info(
+            'Region importance uses an APPROXIMATE coordinate-free region proxy '
+            '(no montage); region labels are indicative. Supply RegionMap.from_csv '
+            'for exact per-channel regions.'
+        )
     region_bp = region_map.reduce(band_power, method='mean')  # (n_words, n_bp_features, n_regions)
     n, _, r = region_bp.shape
     flat = region_bp.reshape(n, -1)  # (n_words, n_bp_features * n_regions), band-major

@@ -1,14 +1,87 @@
-"""Small reusable network blocks: projection head, predictor and EMA teacher.
+"""Small reusable network blocks: projection head, predictor, EMA teacher and subject adversary.
 
-These are shared across the self-supervised objectives so the projection geometry and the data2vec teacher/predictor machinery live in one place.
+These are shared across the self-supervised objectives so the projection geometry, the data2vec teacher/predictor
+machinery, and the subject-invariance tools (gradient reversal + adversary) live in one place.
 """
 
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import torch
 from torch import nn
+
+
+class _GradientReversal(torch.autograd.Function):
+    """Identity forward; sign-flipped, scaled gradient backward (DANN)."""
+
+    @staticmethod
+    def forward(ctx: Any, x: torch.Tensor, lambda_: float) -> torch.Tensor:
+        """Passes `x` through unchanged, stashing the reversal strength `lambda_`."""
+        ctx.lambda_ = lambda_
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:  # type: ignore[override]
+        """Returns the negated, `lambda_`-scaled gradient for the input."""
+        return grad_output.neg() * ctx.lambda_, None
+
+
+def gradient_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
+    """Applies a gradient-reversal layer to `x`.
+
+    Forward is the identity; in the backward pass the gradient is negated and scaled by `lambda_`. Placing this before an
+    adversary head makes the upstream encoder train to *fool* the adversary -- e.g. to become subject-invariant.
+
+    Args:
+        x (torch.Tensor): Any tensor on the encoder's gradient path.
+        lambda_ (float): Reversal strength (0 disables the reversal effect).
+
+    Returns:
+        torch.Tensor: `x`, unchanged in the forward pass.
+    """
+    return _GradientReversal.apply(x, lambda_)  # type: ignore[no-any-return]
+
+
+class SubjectAdversary(nn.Module):
+    """A subject classifier trained through a gradient-reversal layer (DANN).
+
+    The head learns to predict the subject from token hiddens; because its input passes through
+    :func:`gradient_reverse`, the *encoder* receives the negated gradient and is pushed to remove subject
+    identity from its representation -- directly attacking the "encodes who, not what" failure mode.
+
+    Attributes:
+        net (nn.Sequential): The subject-classification MLP.
+    """
+
+    def __init__(self, in_dim: int, n_subjects: int, hidden_dim: int | None = None) -> None:
+        """Initialises the adversary.
+
+        Args:
+            in_dim (int): Dimensionality of the hidden representation it reads (the encoder's `hidden_dim`).
+            n_subjects (int): Number of subject classes.
+            hidden_dim (int | None): Width of the adversary's hidden layer (defaults to `in_dim`).
+        """
+        super().__init__()
+        hidden_dim = hidden_dim or in_dim
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, n_subjects),
+        )
+
+    def forward(self, hidden: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
+        """Predicts subject logits from `hidden` behind a gradient-reversal layer.
+
+        Args:
+            hidden (torch.Tensor): Encoder hiddens `(n_tokens, in_dim)`.
+            lambda_ (float): Gradient-reversal strength for this step.
+
+        Returns:
+            torch.Tensor: Subject logits `(n_tokens, n_subjects)`.
+        """
+        return self.net(gradient_reverse(hidden, lambda_))
 
 
 class ProjectionHead(nn.Module):
@@ -100,16 +173,19 @@ class EMATeacher:
         self.module.eval()
 
     @torch.no_grad()
-    def update(self, student: nn.Module) -> None:
+    def update(self, student: nn.Module, decay: float | None = None) -> None:
         """Moves teacher weights a step toward the student weights.
 
         Args:
             student (nn.Module): The current student module.
+            decay (float | None): Override for this step's EMA decay (used to ramp the decay across training
+                per the data2vec schedule). Falls back to `self.decay` when `None`.
         """
+        d = self.decay if decay is None else decay
         for teacher_param, student_param in zip(
             self.module.parameters(), student.parameters(), strict=True
         ):
-            teacher_param.mul_(self.decay).add_(student_param.detach(), alpha=1 - self.decay)
+            teacher_param.mul_(d).add_(student_param.detach(), alpha=1 - d)
         for teacher_buf, student_buf in zip(self.module.buffers(), student.buffers(), strict=True):
             teacher_buf.copy_(student_buf)
 

@@ -143,15 +143,25 @@ class ZTEEmbedder:
             dev_batch = {
                 k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()
             }
+            objective = self.config.objective.name
             if level == 'sentence':
-                emb = self.model.embed_sentence(dev_batch).cpu().numpy()
+                emb = self.model.embed_sentence(dev_batch, objective=objective).cpu().numpy()
                 for b in range(emb.shape[0]):
                     rows = torch_ds.sequences[seq_ptr]
                     embeddings.append(emb[b])
                     meta_rows.append(self._sentence_meta(dataset, rows))
                     seq_ptr += 1
             else:
-                token_emb = self.model(dev_batch, contextual=False).cpu().numpy()
+                # Word-level routing mirrors each objective's trained representation:
+                # skipgram/cbow are non-contextual (per-token frontend -> project),
+                # while cpc/masked are contextual (causal/bidirectional transformer).
+                contextual = objective in {'cpc', 'masked'}
+                causal = objective == 'cpc'
+                token_emb = (
+                    self.model.forward(dev_batch, contextual=contextual, causal=causal)
+                    .cpu()
+                    .numpy()
+                )
                 lengths = batch['lengths'].tolist()
                 presence = batch['presence'].cpu().numpy()
                 for b, length in enumerate(lengths):
@@ -184,6 +194,12 @@ class ZTEEmbedder:
         Each input row is one word's neural response and yields one embedding.  Pass `band_power` for a band-power checkpoint or
         `raw` for a raw-Conformer checkpoint -- the one matching the model's frontend is used. Band-power inputs are passed through
         the checkpoint's fitted normaliser by default so they are scaled exactly as during training.
+
+        Limitation: this streams tokens with no surrounding sentence context, so it always
+        uses the non-contextual per-token path (`project(token_hidden(...))`). For
+        `cpc`/`masked` checkpoints, whose trained word representation is contextual, this
+        is an approximation -- use :meth:`embed` on a `ZuCoDataset` to obtain the correct
+        objective-aware (contextual) word embeddings.
 
         Args:
             band_power (np.ndarray | None): `(n_tokens, n_features)` *un-normalised* band-power tokens; the last dim must equal the model's input size.

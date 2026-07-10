@@ -215,9 +215,11 @@ class ZuCoDataset:
             names = flat_feature_names(self.bp_feature_names, N_CHANNELS)
             combined, names = self._maybe_add_eye_tracking(imputed, names, presence)
             self.normalizer = FeatureNormalizer(self.config.normalize)
+            subjects = self.words['subject'].to_numpy()
             # Fit normaliser on present tokens only to avoid omission contamination.
-            self.normalizer.fit(combined[presence] if presence.any() else combined)
-            self.features = self.normalizer.transform(combined)
+            fit_mask = presence if presence.any() else np.ones(len(combined), dtype=bool)
+            self.normalizer.fit(combined[fit_mask], subjects=subjects[fit_mask])
+            self.features = self.normalizer.transform(combined, subjects=subjects)
             self.feature_names = names
             self._attach_channel_mean_columns()
         else:
@@ -230,6 +232,63 @@ class ZuCoDataset:
         # or when the caller opts out of keeping them as masked tokens.
         if self.config.missing.method == 'drop' or not self.config.include_omitted:
             self._drop_missing_rows()
+
+    def refit_normalizer(self, train_indices: np.ndarray) -> None:
+        """Re-fits the feature normaliser (and eye-tracking fill) on train rows only.
+
+        :meth:`_process` fits the normaliser on *every* present token, which leaks val/test (and
+        held-out-subject) statistics into the training features. The training pipeline calls this
+        method **after** computing the split so the normaliser is honest: it re-fits using only the
+        given train word-row indices (intersected with present tokens), then re-transforms
+        :attr:`features` for *all* rows with those train-only statistics and updates
+        :attr:`normalizer` so the checkpoint contract (`dataset.normalizer.state`) reflects them.
+
+        The pre-normalisation matrix is recovered by inverting the current normaliser, so this works
+        equally on a freshly built dataset and one loaded from cache. The call is a **no-op** when
+        ``config.normalizer_fit == 'all'`` (legacy whole-dataset fit) or when there are no band-power
+        features, and is idempotent: the raw matrix is always re-derived from the original stats.
+
+        Args:
+            train_indices (np.ndarray): Word-row indices belonging to the training split.
+        """
+        if self.config.normalizer_fit == 'all':
+            return
+        if self.features is None or self.normalizer is None:
+            return
+
+        subjects = self.words['subject'].to_numpy()
+        presence = (
+            self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
+        )
+        # Recover the raw (pre-normalisation) matrix from the currently-stored features.
+        combined = self.normalizer.inverse_transform(self.features, subjects=subjects).copy()
+
+        train_mask = np.zeros(len(self.words), dtype=bool)
+        keep = np.asarray(train_indices, dtype=int)
+        keep = keep[(keep >= 0) & (keep < len(self.words))]
+        train_mask[keep] = True
+        fit_mask = train_mask & presence
+        if not fit_mask.any():  # degenerate split; keep the existing (all-data) fit.
+            _LOG.warning('refit_normalizer: no present train rows; keeping existing statistics.')
+            return
+
+        # Re-fit the eye-tracking column-mean fill on train-present rows only. This only affects
+        # absent (masked) rows -- present rows keep their real gaze scalars.
+        et_cols = [i for i, name in enumerate(self.feature_names) if name.startswith('ET::')]
+        absent = ~presence
+        if et_cols and absent.any():
+            col_mean = np.nan_to_num(np.nanmean(combined[fit_mask][:, et_cols], axis=0))
+            combined[np.ix_(absent, et_cols)] = col_mean[None, :]
+
+        normalizer = FeatureNormalizer(self.config.normalize, eps=self.normalizer.eps)
+        normalizer.fit(combined[fit_mask], subjects=subjects[fit_mask])
+        self.features = normalizer.transform(combined, subjects=subjects)
+        self.normalizer = normalizer
+        _LOG.info(
+            'Refit normaliser on %d train-present rows (of %d).',
+            int(fit_mask.sum()),
+            len(self.words),
+        )
 
     def _add_linguistic_features(self) -> None:
         """Adds word length, frequency, relative position and omission flags."""
@@ -255,11 +314,27 @@ class ZuCoDataset:
         w['rel_pos'] = (w['word_idx'] / (max_idx + 1)).astype(float)
 
     def _attach_categories(self) -> None:
-        """Labels sentences with a category + length band and propagates to words."""
-        from zte.data.categories import sentence_categories
+        """Labels sentences with a category + length band and propagates to words.
+
+        Also attaches a subject-agnostic ``stimulus_key`` -- the normalised sentence text -- onto
+        every word row. Because the key is the sentence *text* (not ``subject|task|sentence_idx``),
+        the same sentence read by different subjects shares one key, which is what lets the
+        ``by_stimulus`` split keep a stimulus wholly on one side (train XOR test) and what the torch
+        bridge hashes into a cross-subject ``content_id``.
+        """
+        from zte.data.categories import normalise_text, sentence_categories
 
         self.sentences = sentence_categories(self.sentences, root=self.config.root)
-        cols = ['subject', 'task', 'sentence_idx', 'category', 'category_scheme', 'length_band']
+        self.sentences['stimulus_key'] = self.sentences['text'].map(normalise_text)
+        cols = [
+            'subject',
+            'task',
+            'sentence_idx',
+            'category',
+            'category_scheme',
+            'length_band',
+            'stimulus_key',
+        ]
         self.words = self.words.merge(
             self.sentences[cols], on=['subject', 'task', 'sentence_idx'], how='left'
         )
@@ -369,7 +444,8 @@ class ZuCoDataset:
 
     def split(
         self,
-        strategy: Literal['random', 'by_sentence', 'by_subject_loso', 'by_task'] | None = None,
+        strategy: Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
+        | None = None,
         val_fraction: float = 0.1,
         test_fraction: float = 0.0,
         holdout_subject: str | None = None,
@@ -381,7 +457,11 @@ class ZuCoDataset:
         Args:
             strategy: Leakage-aware split strategy.
                 - `random`: Per-word random split.
-                - `by_sentence`: Whole sentences kept together.
+                - `by_sentence`: Whole sentences kept together (keyed on `subject|task|sentence_idx`,
+                  so the *same text* read by different subjects can still land on both sides).
+                - `by_stimulus`: Whole *stimuli* kept together, keyed on the normalised sentence
+                  text (`stimulus_key`). The same sentence read by any subject always lands on the
+                  same side (train XOR test), closing the cross-subject text leak `by_sentence` allows.
                 - `by_subject_loso`: Hold out one subject (that subject becomes `val`).
                 - `by_task`: Hold out one task. Defaults to `by_sentence`.
             val_fraction (float): Validation fraction for `random`/`by_sentence`.
@@ -411,6 +491,18 @@ class ZuCoDataset:
             for name, positions in buckets.items():
                 keep = set(perm_uids[positions].tolist())
                 out[name] = idx[self.words['sentence_uid'].isin(keep).to_numpy()]
+            return out
+
+        if strategy == 'by_stimulus':
+            # Group by normalised sentence text so a stimulus is indivisible across subjects/tasks.
+            keys = self.words['stimulus_key'].fillna('').to_numpy()
+            unique = np.array(sorted(set(keys.tolist())), dtype=object)
+            perm_keys = unique[rng.permutation(len(unique))]
+            buckets = _partition(np.arange(len(perm_keys)), val_fraction, test_fraction)
+            out = {}
+            for name, positions in buckets.items():
+                keep = set(perm_keys[positions].tolist())
+                out[name] = idx[self.words['stimulus_key'].fillna('').isin(keep).to_numpy()]
             return out
 
         if strategy == 'by_subject_loso':

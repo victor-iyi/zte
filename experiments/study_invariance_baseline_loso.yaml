@@ -1,6 +1,9 @@
-# Flagship general reading-evoked embedding: skip-gram (word2vec) over word-EEG tokens, RoPE,
-# eye-tracking included. Now with a VICReg variance+covariance anti-collapse term -- the single
-# biggest fix from the performance review (stops the ~15-of-768 dimensional collapse).
+# STUDY 2 (A) -- subject-invariance BASELINE, leave-one-subject-out.
+# Skip-gram, EEG-only, split=by_subject_loso, holdout=ZAB, NO invariance levers
+# (variance/covariance=0, no cross-subject positives, no adversary, zscore_channel).
+# A/B partner: study_invariance_full_loso.yaml. Compare held-out cross-subject
+# retrieval and subject-decodability (should stay near baseline / above chance here).
+# Rotate train.loso_holdout_subject across all 12 subjects for a full LOSO sweep.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -11,7 +14,7 @@ dataset:
   representation: band_power
   band_power_measures:
   - TRT
-  include_eye_tracking: true
+  include_eye_tracking: false
   eye_tracking_measures:
   - FFD
   - GD
@@ -70,8 +73,8 @@ objective:
   ema_decay_end: 0.9999
   teacher_variance_floor: 0.0001
   cpc_steps: 4
-  variance_weight: 1.0
-  covariance_weight: 1.0
+  variance_weight: 0.0
+  covariance_weight: 0.0
   variance_target: 1.0
   cross_subject_positives: false
   subject_adversary_weight: 0.0
@@ -87,10 +90,10 @@ train:
   device: auto
   precision: auto
   num_workers: 0
-  split: by_sentence
+  split: by_subject_loso
   val_fraction: 0.1
   test_fraction: 0.1
-  loso_holdout_subject: null
+  loso_holdout_subject: ZAB
   seed: 42
   deterministic: true
   log_every: 10
@@ -100,4 +103,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: exp1_skipgram_rope_et
+run_name: study_invariance_baseline_loso

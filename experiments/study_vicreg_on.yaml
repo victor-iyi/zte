@@ -1,6 +1,7 @@
-# Flagship general reading-evoked embedding: skip-gram (word2vec) over word-EEG tokens, RoPE,
-# eye-tracking included. Now with a VICReg variance+covariance anti-collapse term -- the single
-# biggest fix from the performance review (stops the ~15-of-768 dimensional collapse).
+# STUDY 3 (B) -- anti-collapse ablation, VICReg ON.
+# Identical to study_vicreg_off.yaml EXCEPT variance_weight=1, covariance_weight=1.
+# Discovery question: how many neurons "come alive" (effective rank, n_active) and does
+# lexical content (word length / frequency) become decodable once collapse is prevented?
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -11,7 +12,7 @@ dataset:
   representation: band_power
   band_power_measures:
   - TRT
-  include_eye_tracking: true
+  include_eye_tracking: false
   eye_tracking_measures:
   - FFD
   - GD
@@ -87,7 +88,7 @@ train:
   device: auto
   precision: auto
   num_workers: 0
-  split: by_sentence
+  split: by_stimulus
   val_fraction: 0.1
   test_fraction: 0.1
   loso_holdout_subject: null
@@ -100,4 +101,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: exp1_skipgram_rope_et
+run_name: study_vicreg_on

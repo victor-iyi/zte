@@ -1,5 +1,6 @@
-# Subject-invariance benchmark: leave-one-subject-out (hold out ZPH). The evaluation
-# validation set is an unseen person -- the honest test for a subject-agnostic code.
+# Subject-invariance flagship (leave-one-subject-out, hold out ZPH). Attacks "learns who, not what"
+# on every front: cross-subject positives, a gradient-reversal subject adversary, per-subject
+# normalisation, and VICReg. Train-only normaliser fit means the held-out subject never leaks.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -13,7 +14,6 @@ dataset:
   include_eye_tracking: true
   eye_tracking_measures:
   - FFD
-  - SFD
   - GD
   - GPT
   - TRT
@@ -30,7 +30,9 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
-  normalize: zscore_channel
+  normalize: zscore_subject
+  normalizer_fit: train
+  montage_csv: null
   bandpass: null
   missing:
     method: mask_only
@@ -62,12 +64,17 @@ objective:
   name: skipgram
   temperature: 0.07
   context_window: 2
-  n_negatives: 20
   mask_ratio: 0.5
   masked_target: latent
   ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
   cpc_steps: 4
-  reduce_omitted_weight: 0.0
+  variance_weight: 1.0
+  covariance_weight: 1.0
+  variance_target: 1.0
+  cross_subject_positives: true
+  subject_adversary_weight: 0.3
 train:
   epochs: 40
   batch_size: 128
@@ -82,6 +89,7 @@ train:
   num_workers: 0
   split: by_subject_loso
   val_fraction: 0.1
+  test_fraction: 0.1
   loso_holdout_subject: ZPH
   seed: 42
   deterministic: true

@@ -109,9 +109,22 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
     if word_meta['subject'].nunique() > 1:
         tgts['subject'] = (pd.factorize(word_meta['subject'])[0], 'classification')
     comparison = M.representation_comparison(reps, tgts)
-    zte = {r['target']: r['linear_score'] for r in comparison if r['representation'] == 'ZTE'}
-    noise = {r['target']: r['linear_score'] for r in comparison if r['representation'] == 'noise'}
-    beats = sum(1 for t in zte if zte[t] > noise.get(t, -1) + 1e-3)
+    # A target "beats noise" only if the per-fold ZTE-minus-noise linear-probe gap has
+    # a bootstrap 95% CI lower bound above an effect-size floor (folds are paired via a
+    # shared seed) -- not merely a positive point difference.
+    zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
+    noise = {r['target']: r for r in comparison if r['representation'] == 'noise'}
+    effect_floor = 0.01
+    beats = 0
+    for t, z_row in zte.items():
+        z_scores = np.asarray(z_row.get('linear_scores', []), dtype=np.float64)
+        n_scores = np.asarray(noise.get(t, {}).get('linear_scores', []), dtype=np.float64)
+        if z_scores.size and z_scores.size == n_scores.size:
+            _, lo, _ = M.bootstrap_ci(z_scores - n_scores)
+        else:  # No per-fold scores (tiny target) -> fall back to the point difference.
+            lo = float(z_row['linear_score'] - noise.get(t, {}).get('linear_score', 0.0))
+        if lo > effect_floor:
+            beats += 1
 
     return {
         'sent_retrieval_top1': round(float(sent_ret.get('top1', float('nan'))), 4),

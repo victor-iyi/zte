@@ -150,7 +150,10 @@ def evaluate_representation(
     health = M.embedding_health(word_emb, pairs=pairs)
 
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
-    sent_ret = M.content_retrieval(sent_emb, np.asarray(sent_content_ids))
+    #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then
+    #    strip it so it never bloats the persisted metrics.
+    sent_ret = M.content_retrieval(sent_emb, np.asarray(sent_content_ids), return_hits=True)
+    sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
     word_ret = M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()))
 
     # 4) Stratified breakdowns, vector arithmetic, and scalp-region importance.
@@ -160,8 +163,19 @@ def evaluate_representation(
         if sent_meta is not None
         else []
     )
-    analogy = analogy_report(word_emb, word_meta, raw_word_feats)
-    region_rows = _region_importance(word_band_power, word_meta)
+    analogy = analogy_report(word_emb, word_meta, raw_word_feats, return_hits=True)
+    st = analogy.get('subject_transfer', {})
+    subj_top1_hits = st.pop('top1_hits', []) if isinstance(st, dict) else []
+    subj_chances = st.pop('chances', []) if isinstance(st, dict) else []
+    region_map = _load_region_map(config)
+    region_rows = _region_importance(word_band_power, word_meta, region_map)
+    region_approximate = region_map is None or region_map.approximate
+
+    # 4b) Neuron-level interpretability: which dimensions fire, what they encode, who-vs-what budget.
+    neurons = _neuron_report(word_emb, word_meta, word_band_power, region_map, config)
+
+    # 4c) Emergent properties: do the same / related thoughts cluster ACROSS subjects (the north star)?
+    emergence = _emergence_report(word_emb, word_meta, analogy)
 
     metrics: dict[str, Any] = {
         'run_name': run_name,
@@ -175,7 +189,18 @@ def evaluate_representation(
         'retrieval_by_category': breakdown_categories,
         'analogy': analogy,
         'region_importance': region_rows,
-        'verdict': _verdict(comparison, health, sent_ret, analogy),
+        'region_map_approximate': region_approximate,
+        'neurons': _neuron_summary(neurons),
+        'emergence': emergence,
+        'verdict': _verdict(
+            comparison,
+            health,
+            sent_ret,
+            analogy,
+            sent_top1_hits=sent_top1_hits,
+            subj_top1_hits=subj_top1_hits,
+            subj_chances=subj_chances,
+        ),
     }
 
     # 5) Figures (each guarded so tiny inputs never abort the run).
@@ -185,9 +210,16 @@ def evaluate_representation(
     figures += _render_extended_figures(analogy, breakdown_words, region_rows, fig_dir)
     metrics['figures'] = [str(p.relative_to(out)) for p in figures]
 
-    # 6) Interactive HTML explorer (self-contained; static PNG fallback).
+    # 6) Interactive HTML explorers (self-contained; static PNG fallback).
     if interactive:
-        metrics['interactive'] = _write_interactive(word_emb, word_meta, out)
+        metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
+        metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
+
+    # 6b) Persist the full neuron report (the per-dimension arrays are large, so they live in
+    #     their own file; only the compact summary is embedded in metrics.json).
+    (out / 'neurons.json').write_text(
+        json.dumps(neurons, indent=2, default=float), encoding='utf-8'
+    )
 
     # 7) TensorBoard (projector + hparams + scalars + histograms + figures + text).
     if tensorboard:
@@ -200,7 +232,11 @@ def evaluate_representation(
     (out / 'metrics.json').write_text(
         json.dumps(metrics, indent=2, default=float), encoding='utf-8'
     )
-    pd.DataFrame(comparison).to_csv(out / 'comparison.csv', index=False)
+    # `linear_scores` (per-fold provenance for the CIs) stays in metrics.json but is
+    # dropped from the flat CSV so the table keeps one scalar per cell.
+    pd.DataFrame([{k: v for k, v in r.items() if k != 'linear_scores'} for r in comparison]).to_csv(
+        out / 'comparison.csv', index=False
+    )
     if breakdown_words:
         pd.DataFrame(breakdown_words).to_csv(out / 'breakdown.csv', index=False)
     if region_rows:
@@ -212,10 +248,49 @@ def evaluate_representation(
     return metrics
 
 
+def _load_region_map(config: Any | None) -> Any | None:
+    """Loads an exact `RegionMap` from `config.dataset.montage_csv` when available.
+
+    Returns `None` when no config, no montage path, or the file cannot be read -- the
+    caller then falls back to the approximate coordinate-free default and softens all
+    region-importance wording accordingly.
+
+    Args:
+        config (Any | None): The run config; only `dataset.montage_csv` is consulted.
+
+    Returns:
+        Any | None: An exact `RegionMap`, or `None` to signal the approximate fallback.
+    """
+    montage = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
+    if not montage or not Path(montage).is_file():
+        return None
+    from zte.data.regions import RegionMap
+
+    try:
+        region_map = RegionMap.from_csv(montage)
+    except (OSError, ValueError, KeyError) as exc:  # pragma: no cover - defensive
+        _LOG.warning('Could not load montage %s: %r; using approximate regions.', montage, exc)
+        return None
+    _LOG.info('Loaded exact scalp montage from %s (%d regions).', montage, region_map.n_regions)
+    return region_map
+
+
 def _region_importance(
-    word_band_power: np.ndarray | None, word_meta: pd.DataFrame
+    word_band_power: np.ndarray | None,
+    word_meta: pd.DataFrame,
+    region_map: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Scalp-region importance for reading vs cognitive targets (empty if no band power)."""
+    """Scalp-region importance for reading vs cognitive targets (empty if no band power).
+
+    Args:
+        word_band_power (np.ndarray | None): Per-word band power `(n_words, n_bands, n_channels)`.
+        word_meta (pd.DataFrame): Aligned word metadata.
+        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the
+            approximate coordinate-free default is used inside `region_importance`.
+
+    Returns:
+        list[dict[str, Any]]: Tidy region-importance rows (empty when no band power).
+    """
     if word_band_power is None:
         return []
     from zte.data.regions import region_importance
@@ -232,20 +307,167 @@ def _region_importance(
         targets['subject (identity)'] = (_encode(word_meta['subject'].to_numpy()), 'classification')
     if not targets:
         return []
-    return region_importance(word_band_power, targets)  # type: ignore[arg-type]
+    return region_importance(word_band_power, targets, region_map=region_map)  # type: ignore[arg-type]
 
 
-def _write_interactive(word_emb: np.ndarray, word_meta: pd.DataFrame, out: Path) -> str | None:
-    """Writes the interactive explorer, returning its path relative to `out`."""
-    from zte.evaluation.interactive import embedding_explorer_html
+def _write_interactive(
+    word_emb: np.ndarray,
+    word_meta: pd.DataFrame,
+    out: Path,
+    emergence: dict[str, Any] | None = None,
+) -> str | None:
+    """Writes the interactive explorers, returning the flagship explorer path relative to `out`.
 
+    Emits both the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`
+    (one-subject/many-words, many-subjects/one-word with the cross-subject cosine stat, thought
+    arithmetic, auto-analogy leaderboard, and real-time controls). Passing `emergence` lets the
+    explorer show the authoritative full-space clustering numbers in its verdict banners. The
+    flagship path is returned when available.
+    """
+    from zte.evaluation.interactive import embedding_explorer_html, thought_space_explorer_html
+
+    flagship: str | None = None
+    try:
+        path = thought_space_explorer_html(
+            word_emb,
+            word_meta,
+            out / 'interactive' / 'thought_space_explorer.html',
+            emergence=emergence,
+        )
+        flagship = str(path.relative_to(out))
+    except (ValueError, OSError, np.linalg.LinAlgError) as exc:  # pragma: no cover
+        _LOG.warning('Thought-space explorer failed: %r', exc)
     try:
         path = embedding_explorer_html(
             word_emb, word_meta, out / 'interactive' / 'word_explorer.html'
         )
-        return str(path.relative_to(out))
+        classic = str(path.relative_to(out))
     except (ValueError, OSError, np.linalg.LinAlgError) as exc:  # pragma: no cover
         _LOG.warning('Interactive explorer failed: %r', exc)
+        classic = None
+    return flagship or classic
+
+
+def _neuron_report(
+    word_emb: np.ndarray,
+    word_meta: pd.DataFrame,
+    word_band_power: np.ndarray | None,
+    region_map: Any | None,
+    config: Any | None,
+) -> dict[str, Any]:
+    """Computes the neuron-level interpretability report, degrading gracefully on failure."""
+    from zte.evaluation.neurons import neuron_report
+
+    band_names = None
+    if config is not None and word_band_power is not None:
+        bands = tuple(config.dataset.bands)
+        if word_band_power.ndim == 3 and word_band_power.shape[1] == len(bands):
+            band_names = bands
+    try:
+        return neuron_report(
+            word_emb,
+            word_meta,
+            band_power=word_band_power,
+            band_names=band_names,
+            region_map=region_map,
+        )
+    except (ValueError, KeyError, np.linalg.LinAlgError) as exc:  # pragma: no cover
+        _LOG.warning('Neuron report failed: %r', exc)
+        return {'summary': {}, 'top_neurons': []}
+
+
+def _emergence_section(emergence: dict[str, Any]) -> list[str]:
+    """Markdown for the emergent-property (cross-subject clustering) metrics."""
+    if not emergence:
+        return []
+    lines = [
+        '## Emergent properties -- do similar thoughts cluster across people?',
+        '',
+        'The north-star property: the *same or related meaning read by different subjects* should sit '
+        'together (as in word embeddings). Each number below is a same-pair mean cosine vs a random '
+        'baseline; the **gap** is the honest signal (a collapsed/anisotropic space makes all raw '
+        'cosines high, so only the gap matters).',
+        '',
+        f'**{emergence.get("headline", "")}**',
+        '',
+    ]
+    cross = emergence.get('cross_subject', {})
+    if cross.get('applicable'):
+        lines += [
+            '| test | same-pair cosine | random | gap | verdict |',
+            '| --- | --- | --- | --- | --- |',
+        ]
+        for key, label in [
+            ('same_word', 'same word, diff subject'),
+            ('same_meaning', 'same category, diff subject'),
+        ]:
+            blk = cross.get(key)
+            if blk:
+                lines.append(
+                    f'| {label} | {blk.get("mean_cosine", float("nan")):.3f} | '
+                    f'{blk.get("random_baseline", float("nan")):.3f} | '
+                    f'{blk.get("gap", float("nan")):+.3f} | {blk.get("verdict", "n/a")} |'
+                )
+        lines.append('')
+    neigh = emergence.get('neighbourhood', {})
+    if neigh.get('applicable'):
+        lines += [
+            f'- Nearest-neighbour coherence (k={neigh.get("k")}): '
+            f'{neigh.get("same_word_purity", float("nan")):.1%} of neighbours are the same word; '
+            f'category coherence {neigh.get("category_coherence", float("nan")):+.1%} '
+            f'(vs {neigh.get("category_chance", float("nan")):.1%} chance); '
+            f'{neigh.get("cross_subject_neighbour_fraction", float("nan")):.1%} of neighbours come from a '
+            'different subject.',
+            '',
+            '_A working thought code wants a positive category coherence **and** a high cross-subject '
+            'neighbour fraction: related meanings near each other, regardless of who read them. See the '
+            'interactive `thought_space_explorer.html` (auto-analogy leaderboard + neighbourhood view)._',
+            '',
+        ]
+    return lines
+
+
+def _emergence_report(
+    word_emb: np.ndarray, word_meta: pd.DataFrame, analogy: dict[str, Any]
+) -> dict[str, Any]:
+    """Computes the cross-subject clustering / semantic-coherence metrics, degrading gracefully."""
+    from zte.evaluation.emergence import emergence_report
+
+    try:
+        return emergence_report(word_emb, word_meta, analogy=analogy)
+    except (ValueError, KeyError, np.linalg.LinAlgError) as exc:  # pragma: no cover
+        _LOG.warning('Emergence report failed: %r', exc)
+        return {}
+
+
+def _neuron_summary(neurons: dict[str, Any]) -> dict[str, Any]:
+    """Builds the compact neuron block embedded in `metrics.json` (full report is in `neurons.json`)."""
+    summary = dict(neurons.get('summary', {}))
+    summary['top'] = [
+        {
+            'dim': t['dim'],
+            'rank': t['rank'],
+            'dominant': t['dominant'],
+            'dominant_score': round(float(t['dominant_score']), 3),
+            'var_share': round(float(t['var_share']), 4),
+            'top_words': [w['word'] for w in t.get('top_words', [])[:3]],
+        }
+        for t in neurons.get('top_neurons', [])[:10]
+    ]
+    return summary
+
+
+def _write_neuron_atlas(neurons: dict[str, Any], out: Path) -> str | None:
+    """Writes the interactive Neuron Atlas HTML, returning its path relative to `out`."""
+    try:
+        from zte.evaluation.interactive import neuron_atlas_html
+    except ImportError:  # pragma: no cover - atlas viz optional
+        return None
+    try:
+        path = neuron_atlas_html(neurons, out / 'interactive' / 'neuron_atlas.html')
+        return str(path.relative_to(out))
+    except (ValueError, OSError, KeyError) as exc:  # pragma: no cover
+        _LOG.warning('Neuron atlas failed: %r', exc)
         return None
 
 
@@ -441,39 +663,100 @@ def _verdict(
     health: dict[str, float],
     sent_ret: dict[str, float],
     analogy: dict[str, Any] | None = None,
+    *,
+    sent_top1_hits: list[float] | None = None,
+    subj_top1_hits: list[float] | None = None,
+    subj_chances: list[float] | None = None,
+    effect_floor: float = 0.01,
+    seed: int = 0,
 ) -> dict[str, Any]:
-    """Derives simple pass/fail-style headline checks from the metrics.
+    """Derives headline checks backed by bootstrap effect-size confidence intervals.
+
+    Sign-only tests (``score > baseline + epsilon``) call any positive fluctuation a
+    pass; here each check must clear a bootstrap 95% CI lower bound:
+
+    - *beats noise*: the per-fold ZTE-minus-noise linear-probe difference (folds are
+      paired via a shared seed) must have a CI lower bound above `effect_floor`.
+    - *retrieval / subject-arithmetic above chance*: the per-query Top-1 hit vector,
+      minus its random-chance rate, must have a CI lower bound above 0.
 
     Args:
-        comparison (list[dict[str, Any]]): Probe comparison rows.
+        comparison (list[dict[str, Any]]): Probe comparison rows (with `linear_scores`).
         health (dict[str, float]): Geometry/health metrics.
         sent_ret (dict[str, float]): Sentence retrieval metrics.
         analogy (dict[str, Any] | None): Vector-arithmetic transfer report.
+        sent_top1_hits (list[float] | None): Per-query sentence-retrieval Top-1 hits.
+        subj_top1_hits (list[float] | None): Per-query subject-arithmetic Top-1 hits.
+        subj_chances (list[float] | None): Per-query subject-arithmetic chance rates.
+        effect_floor (float): Minimum ZTE-minus-noise effect the CI must clear.
+        seed (int): Bootstrap seed.
 
     Returns:
-        dict[str, Any]: Named boolean checks plus the figures-of-merit behind them.
+        dict[str, Any]: Named boolean checks, the CIs behind them (`beats_noise_ci`,
+            `retrieval_ci`, `subject_arithmetic_ci`) and the `effect_size_floor` used.
     """
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise (matched)'}
-    beats_noise = [
-        t for t in zte if zte[t]['linear_score'] > noise.get(t, {}).get('linear_score', -1) + 1e-3
-    ]
-    verdict = {
+
+    beats_noise: list[str] = []
+    beats_noise_ci: dict[str, list[float]] = {}
+    for t, z_row in zte.items():
+        z_scores = np.asarray(z_row.get('linear_scores', []), dtype=np.float64)
+        n_scores = np.asarray(noise.get(t, {}).get('linear_scores', []), dtype=np.float64)
+        if z_scores.size and z_scores.size == n_scores.size:
+            point, lo, hi = M.bootstrap_ci(z_scores - n_scores, seed=seed)
+        else:  # No per-fold scores (tiny target) -> fall back to the point difference.
+            point = float(z_row['linear_score'] - noise.get(t, {}).get('linear_score', 0.0))
+            lo = hi = point
+        beats_noise_ci[t] = [round(point, 4), round(lo, 4), round(hi, 4)]
+        if lo > effect_floor:
+            beats_noise.append(t)
+
+    ret_chance = float(sent_ret.get('chance_top1', float('nan')))
+    ret_point, ret_lo, ret_hi = _diff_ci(sent_top1_hits, ret_chance, seed=seed)
+    retrieval_pass = bool(np.isfinite(ret_lo) and ret_lo > 0.0)
+
+    verdict: dict[str, Any] = {
         'beats_noise_on': beats_noise,
         'beats_noise_all_targets': len(beats_noise) == len(zte) and len(zte) > 0,
+        'beats_noise_ci': beats_noise_ci,
+        'effect_size_floor': effect_floor,
         'no_collapse': bool(
             health.get('effective_rank_ratio', 0) > 0.1 and health.get('dead_dim_fraction', 1) < 0.5
         ),
-        'retrieval_above_chance': bool(
-            sent_ret.get('top1', 0) > sent_ret.get('chance_top1', 1) + 1e-6
-        ),
+        'retrieval_above_chance': retrieval_pass,
+        'retrieval_ci': [round(ret_point, 4), round(ret_lo, 4), round(ret_hi, 4)],
     }
     if analogy:
         st = analogy.get('subject_transfer', {})
-        verdict['subject_arithmetic_above_chance'] = bool(
-            st.get('top1', 0) > st.get('chance_top1', 1) + 1e-6
+        subj_chance = (
+            float(np.mean(subj_chances))
+            if subj_chances
+            else float(st.get('chance_top1', float('nan')))
         )
+        subj_point, subj_lo, subj_hi = _diff_ci(subj_top1_hits, subj_chance, seed=seed)
+        verdict['subject_arithmetic_above_chance'] = bool(np.isfinite(subj_lo) and subj_lo > 0.0)
+        verdict['subject_arithmetic_ci'] = [
+            round(subj_point, 4),
+            round(subj_lo, 4),
+            round(subj_hi, 4),
+        ]
     return verdict
+
+
+def _diff_ci(hits: list[float] | None, chance: float, seed: int = 0) -> tuple[float, float, float]:
+    """Bootstrap CI of `mean(hits) - chance` (all `nan` when hits/chance are absent)."""
+    if not hits or not np.isfinite(chance):
+        return (float('nan'), float('nan'), float('nan'))
+    point, lo, hi = M.bootstrap_ci(np.asarray(hits, dtype=np.float64), seed=seed)
+    return (point - chance, lo - chance, hi - chance)
+
+
+def _fmt_ci(ci: list[float] | None) -> str:
+    """Formats a `[point, lo, hi]` CI triple as `point [lo, hi]` (or `n/a`)."""
+    if not ci or not np.isfinite(ci[0]):
+        return 'n/a'
+    return f'{ci[0]:+.3f} [{ci[1]:+.3f}, {ci[2]:+.3f}]'
 
 
 def _render_report(
@@ -504,14 +787,20 @@ def _render_report(
         '',
         '## Verdict',
         '',
+        'Checks are backed by bootstrap 95% confidence intervals (CI), not sign-only '
+        f'comparisons: *beats noise* needs the ZTE-minus-noise probe gap CI lower bound '
+        f'above the effect floor ({verdict.get("effect_size_floor", 0.01):.2g}); '
+        '*above chance* needs the (Top-1 - chance) CI lower bound above 0.',
+        '',
         f'- Beats noise control on: **{", ".join(verdict["beats_noise_on"]) or "none"}** '
         f'(all targets: {verdict["beats_noise_all_targets"]})',
         f'- No representation collapse: **{verdict["no_collapse"]}** '
         f'(effective-rank ratio {health["effective_rank_ratio"]:.2f}, '
         f'dead dims {health["dead_dim_fraction"]:.0%})',
         f'- Cross-subject retrieval above chance: **{verdict["retrieval_above_chance"]}** '
-        f'(Top-1 {sent.get("top1", float("nan")):.3f} vs chance '
-        f'{sent.get("chance_top1", float("nan")):.3f})',
+        f'(Top-1 {sent.get("top1", float("nan")):.3f} vs query-weighted chance '
+        f'{sent.get("chance_top1", float("nan")):.3f}; '
+        f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))})',
         '',
         '## Transfer probes (frozen embeddings)',
         '',
@@ -534,9 +823,12 @@ def _render_report(
         '',
         f'- Sentence (cross-subject): Top-1 {sent.get("top1", float("nan")):.3f}, '
         f'Top-5 {sent.get("top5", float("nan")):.3f}, MRR {sent.get("mrr", float("nan")):.3f}, '
-        f'chance {sent.get("chance_top1", float("nan")):.3f}',
+        f'query-weighted chance {sent.get("chance_top1", float("nan")):.3f}',
         f'- Word (same token): Top-1 {metrics["word_retrieval"].get("top1", float("nan")):.3f}, '
-        f'chance {metrics["word_retrieval"].get("chance_top1", float("nan")):.3f}',
+        f'query-weighted chance {metrics["word_retrieval"].get("chance_top1", float("nan")):.3f}',
+        '',
+        '_Chance is query-weighted (matches the per-occurrence hit rate); the legacy '
+        'type-weighted value is kept as `chance_top1_typeweighted` in `metrics.json`._',
         '',
     ]
     lines += _extended_report_sections(metrics)
@@ -549,6 +841,7 @@ def _render_report(
 def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     """Markdown for the arithmetic, breakdown, per-category and region analyses."""
     lines: list[str] = []
+    lines += _emergence_section(metrics.get('emergence', {}))
     analogy = metrics.get('analogy', {})
     st = analogy.get('subject_transfer', {})
     if st:
@@ -561,7 +854,8 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
             f'- Subject transfer: Top-1 **{st.get("top1", float("nan")):.3f}**, '
             f'Top-5 {st.get("top5", float("nan")):.3f}, MRR {st.get("mrr", float("nan")):.3f} '
             f'(chance {st.get("chance_top1", float("nan")):.3f}, '
-            f'{int(st.get("n_queries", 0))} analogies)',
+            f'{int(st.get("n_queries", 0))} analogies; '
+            f'lift CI {_fmt_ci(metrics.get("verdict", {}).get("subject_arithmetic_ci"))})',
         ]
         raw = analogy.get('subject_transfer_raw', {})
         if raw:
@@ -570,7 +864,13 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
                 '(ZTE should beat it -- arithmetic is a property of the learned space)'
             )
         tt = analogy.get('task_transfer', {})
-        if tt:
+        if tt and tt.get('reason') == 'disjoint_stimuli':
+            lines.append(
+                '- Task transfer: **not applicable** -- the tasks read disjoint stimuli '
+                '(no stimulus token is shared across tasks), so the cross-task '
+                'arithmetic is undefined rather than failed.'
+            )
+        elif tt:
             lines.append(
                 f'- Task transfer: Top-1 {tt.get("top1", float("nan")):.3f} '
                 f'(chance {tt.get("chance_top1", float("nan")):.3f})'
@@ -588,7 +888,19 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     region = metrics.get('region_importance', [])
     if region:
         frame = pd.DataFrame(region).pivot(index='region', columns='target', values='importance')
-        lines += ['## Scalp-region importance (which areas encode what)', '']
+        approximate = metrics.get('region_map_approximate', True)
+        if approximate:
+            lines += [
+                '## Scalp-region importance (approximate region proxy, no montage)',
+                '',
+                '_No electrode montage was supplied, so channels are grouped by an '
+                '**approximate** coordinate-free anterior->posterior proxy. Region '
+                'labels are indicative only; supply `dataset.montage_csv` for exact '
+                'per-channel regions._',
+                '',
+            ]
+        else:
+            lines += ['## Scalp-region importance (exact montage)', '']
         lines.append('| region | ' + ' | '.join(str(c) for c in frame.columns) + ' |')
         lines.append('| --- |' + ' --- |' * len(frame.columns))
         for region_name, row in frame.iterrows():
@@ -596,6 +908,48 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
                 f'| {region_name} | ' + ' | '.join(f'{v:.2f}' for v in row.to_numpy()) + ' |'
             )
         lines.append('')
+
+    neurons = metrics.get('neurons', {})
+    if neurons:
+        budget = neurons.get('variance_budget', {})
+        who = neurons.get('who_variance', 0.0)
+        what = neurons.get('what_variance', 0.0)
+        ratio = neurons.get('who_vs_what_ratio', float('nan'))
+        lines += [
+            '## Neurons -- what the dimensions encode',
+            '',
+            f'Of {neurons.get("embed_dim", 0)} dimensions, **{neurons.get("n_active", 0)} are active** '
+            f'and {neurons.get("n_dead", 0)} are dead (near-constant). Each active neuron is scored for '
+            'what it tracks (variance explained: r^2 for word length / log-frequency, eta^2 for '
+            'subject / task / category); '
+            'its *dominant* attribute is the argmax. The **variance budget** below is the share of the '
+            "space's total variance whose dominant attribute is each target -- i.e. how much of the "
+            'representation is spent encoding *who* vs *what*.',
+            '',
+            '| dominant attribute | variance share |',
+            '| --- | --- |',
+        ]
+        for attr, share in sorted(budget.items(), key=lambda kv: -kv[1]):
+            lines.append(f'| {attr} | {share:.1%} |')
+        lines += [
+            '',
+            f'**Who (subject) vs what (content): {who:.1%} vs {what:.1%}** '
+            f'(ratio {ratio:.2f}; > 1 means the space encodes identity more than content -- the ZTE v1 '
+            'failure mode). See `neurons.json` and the interactive `neuron_atlas.html` for per-neuron detail.',
+            '',
+        ]
+        top = neurons.get('top', [])
+        if top:
+            lines += [
+                '| neuron | dominant | score | var share | top-firing words |',
+                '| --- | --- | --- | --- | --- |',
+            ]
+            lines += [
+                f'| #{t["dim"]} (rank {t["rank"]}) | {t["dominant"]} | {t["dominant_score"]} | '
+                f'{t["var_share"]:.3f} | {", ".join(t["top_words"])} |'
+                for t in top
+            ]
+            lines.append('')
 
     by_cat = metrics.get('retrieval_by_category', [])
     if by_cat:

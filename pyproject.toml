@@ -1,6 +1,6 @@
 [project]
 name = 'zte'
-version = '0.1.0'
+version = "0.2.0"
 description = 'ZuCo Thought Embedding (ZTE): a tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG embedding pipeline for the Cross-Modal Transfer Learning project.'
 readme = 'README.md'
 requires-python = '>=3.14'
@@ -17,15 +17,27 @@ dependencies = [
   'rich>=15.0.0',
   'scikit-learn>=1.9.0',
   'scipy>=1.18.0',
-  'torch>=2.12.1',
+  'torch>=2.13.0',
   'tqdm>=4.68.4',
 ]
 
 [dependency-groups]
-drive = ['gdown>=6.1.0']
-logging = ['tensorboard>=2.21.0']
-viz = ['seaborn>=0.13.2', 'plotly>=5.24.0']
-dev = ['ruff>=0.15.20', 'pytest>=9.1.1', 'mypy>=2.1.0']
+drive = [
+  'gdown>=6.1.0',
+]
+logging = [
+  'tensorboard>=2.21.0',
+]
+viz = [
+  'seaborn>=0.13.2',
+  'plotly>=6.9.0',
+]
+dev = [
+  'ruff>=0.15.21',
+  'pytest>=9.1.1',
+  'mypy>=2.2.0',
+]
+
 all = [
   { include-group = 'drive' },
   { include-group = 'logging' },
@@ -41,6 +53,7 @@ zte-explore = 'zte.cli.explore:main'
 zte-benchmark = 'zte.cli.benchmark:main'
 zte-run = 'zte.cli.run:main'
 zte-download = 'zte.cli.download:main'
+zte-visualize = 'zte.cli.visualize:main'
 
 [build-system]
 requires = ['hatchling']
@@ -72,11 +85,6 @@ select = [
   # Isort
   'I',
 ]
-# The synthetic generator and trainer legitimately carry many local variables
-# and arguments; relax the PyLint heuristics that fight scientific code.
-# PLC0415 is intentional: optional dependencies (sklearn, gdown, tensorboard,
-# seaborn, h5py, pydrive2, google.colab) and a few cycle-breaking package
-# imports are loaded lazily inside functions on purpose.
 ignore = [
   'PLR0913',  # too-many-arguments
   'PLR0914',  # too-many-locals

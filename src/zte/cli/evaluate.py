@@ -42,6 +42,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--run-name', type=str, default='zte-eval')
     parser.add_argument(
+        '--montage-csv',
+        type=str,
+        default=None,
+        help='Electrode-montage CSV (channel,region) for exact scalp-region importance; '
+        'overrides the checkpoint config. Without it, an approximate region proxy is used.',
+    )
+    parser.add_argument(
         '--tensorboard',
         action='store_true',
         help='Write the full TensorBoard log (projector, hparams, scalars, figures).',
@@ -126,6 +133,10 @@ def main() -> None:
 
     dataset = load_dataset(args)
     embedder = ZTEEmbedder.from_checkpoint(args.ckpt, dataset, device=resolve_device(args.device))
+    # A CLI montage overrides whatever the checkpoint carried, so exact scalp-region
+    # importance can be requested at evaluation time (report.py loads it from config).
+    if args.montage_csv is not None and getattr(embedder.config, 'dataset', None) is not None:
+        embedder.config.dataset.montage_csv = args.montage_csv
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )

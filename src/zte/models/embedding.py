@@ -15,7 +15,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from zte.config import ModelConfig
+from zte.config import ModelConfig, ObjectiveName
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
 from zte.models.transformer import ZTETransformerEncoder, sinusoidal_encoding
@@ -61,6 +61,7 @@ class ZTEModel(nn.Module):
         hidden_dim (int): Frontend hidden width.
         embed_dim (int): Output embedding dimensionality.
         uses_raw (bool): Whether the frontend consumes raw EEG (vs band power).
+
     """
 
     def __init__(
@@ -121,11 +122,11 @@ class ZTEModel(nn.Module):
             batch: A batch dict from `~zte.data.torch_dataset.collate_sentences`.
 
         Returns:
-            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or
-                `(batch_size, seq_len, n_features)` band-power tensor.
+            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len, n_features)` band-power tensor.
 
         Raises:
             ValueError: If the required representation is missing from `batch`.
+
         """
         key = 'raw' if self.uses_raw else 'features'
         value = batch.get(key)
@@ -172,8 +173,8 @@ class ZTEModel(nn.Module):
         elif self.pos_encoding == 'sinusoidal':
             table = self.sinusoidal
             pe = (
-                table[:, :length]
-                if length <= table.shape[1]
+                table[:, :length]  # type: ignore[index]
+                if length <= table.shape[1]  # type: ignore[index]
                 else sinusoidal_encoding(  # type: ignore[attr-defined]
                     length, self.hidden_dim, hidden.device
                 )
@@ -205,22 +206,48 @@ class ZTEModel(nn.Module):
             causal: Use a causal mask when `contextual` (CPC).
 
         Returns:
-            Token embeddings `(batch_size, seq_len, embed_dim)`.
+            torch.Tensor: Token embeddings `(batch_size, seq_len, embed_dim)`.
         """
         hidden = self.token_hidden(batch)
         if contextual:
             hidden = self.contextualize(hidden, batch['pad_mask'], causal=causal)
         return self.project(hidden)
 
-    @torch.no_grad()
-    def embed_sentence(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Produces one pooled embedding per sentence (for retrieval/inference).
+    def _pool_tokens(self, hidden: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        """Pools per-token hiddens to one vector per sequence over `valid` positions.
 
         Args:
-            batch: A collated batch dict.
+            hidden (torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
+            valid (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at poolable positions.
 
         Returns:
-            Sentence embeddings `(batch_size, embed_dim)`.
+            torch.Tensor: Pooled `(batch_size, hidden_dim)` via attention pooling when configured, else a masked mean.
+
+        """
+        if self.pool is not None:
+            return self.pool(hidden, valid)
+        mask = valid.unsqueeze(-1).float()
+        return (hidden * mask).sum(1) / mask.sum(1).clamp_min(1.0)
+
+    @torch.no_grad()
+    def embed_sentence(
+        self, batch: dict[str, Any], objective: ObjectiveName | None = None
+    ) -> torch.Tensor:
+        """Produces one pooled embedding per sentence (for retrieval/inference).
+
+        Routing is objective-aware so the exported sentence embedding matches the path the objective actually trained:
+
+        - `skipgram`/`cbow`: per-token frontend -> pool -> project (no transformer, since their contextual path was never in the gradient path).
+        - `cpc`: causal-contextual -> pool -> project (CPC trains with a causal mask).
+        - `masked` or `None` (back-compat default): bidirectional-contextual -> pool -> project.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+            objective (str | None): Trained objective name (`skipgram`|`cbow`|`masked`|`cpc`); `None` keeps the legacy bidirectional-contextual behaviour.
+
+        Returns:
+            torch.Tensor: Sentence embeddings `(batch_size, embed_dim)`.
+
         """
         # Treat omitted words as non-tokens for both attention and pooling, with a
         # fallback so a sentence with no present words is never fully masked.
@@ -230,12 +257,15 @@ class ZTEModel(nn.Module):
             valid = valid.clone()
             valid[empty] = batch['pad_mask'][empty]
         hidden = self.token_hidden(batch)
-        hidden = self.contextualize(hidden, valid)
-        if self.pool is not None:
-            pooled = self.pool(hidden, valid)
-        else:
-            mask = valid.unsqueeze(-1).float()
-            pooled = (hidden * mask).sum(1) / mask.sum(1).clamp_min(1.0)
+        if objective in {'skipgram', 'cbow'}:
+            # Non-contextual path: pool the per-token frontend hiddens directly.
+            pooled = self._pool_tokens(hidden, valid)
+        elif objective == 'cpc':
+            hidden = self.contextualize(hidden, valid, causal=True)
+            pooled = self._pool_tokens(hidden, valid)
+        else:  # 'masked' or None -> bidirectional-contextual (back-compat default).
+            hidden = self.contextualize(hidden, valid, causal=False)
+            pooled = self._pool_tokens(hidden, valid)
         return self.project(pooled)
 
 
@@ -249,8 +279,7 @@ def build_model(
     Args:
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (band-power frontend).
-        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
-            (raw frontend).
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
 
     Returns:
         ZTEModel: An initialised `ZTEModel`.

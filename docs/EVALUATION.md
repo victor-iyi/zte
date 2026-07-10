@@ -165,6 +165,17 @@ Flags: one of `--bundle` / `--root` / `--drive` / `--synthetic`, `--extract-dir`
 - **cross-subject retrieval above chance**,
 - **subject arithmetic above chance**.
 
+Each check is now backed by a **statistic, not a sign**. "Beats noise" requires the paired
+per-fold (ZTE − noise) probe-score difference's bootstrap 95% CI lower bound to clear an
+**effect-size floor** (0.01), not merely be positive by 1e-3; retrieval- and arithmetic-above-chance
+require the bootstrap CI on `(Top-1 − chance)` over the per-query hit vector to exclude zero. The CIs
+are stored in the verdict (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`,
+`effect_size_floor`). Two further honesty fixes: retrieval **chance is query-weighted** (matching how
+hits are scored — the old type-weighted value is kept as `chance_top1_typeweighted` and typically
+understated chance by ~30×), and probes use **shuffled, scaled** cross-validation so R² magnitudes are
+trustworthy (direction was always correct). Evaluation now defaults to a **held-out** split
+(`train.test_fraction = 0.1`, or a `by_stimulus` split) rather than in-sample.
+
 These are intentionally strict: on tiny synthetic data some will legitimately fail (there is little real cross-subject signal to find), which is exactly why the same commands must be run on real ZuCo to make claims. See [RESULTS.md].
 
 ## Reproducible benchmarks (`zte-benchmark`)

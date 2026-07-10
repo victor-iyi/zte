@@ -47,6 +47,7 @@ def transfer_analogy(
     ks: tuple[int, ...] = (1, 5, 10),
     max_pairs: int = 40000,
     seed: int = 0,
+    return_hits: bool = False,
 ) -> dict[str, float]:
     """Cross-group translation analogy: `emb(t,A) - c(A) + c(B) -> emb(t,B)`.
 
@@ -54,14 +55,23 @@ def transfer_analogy(
     the source embedding is translated by the group-centroid offset and matched
     against `B`'s bank; a hit is retrieving the *same stimulus* under `B`.
 
+    Note:
+        The `contents` id must **exclude** whatever field `groups` encodes -- otherwise
+        every group's stimuli carry a group-specific tag and can never overlap (0
+        queries -> all-`nan`). For task-transfer, group by `task` and identify stimuli
+        by `subject|sentence_idx|word_idx`; for subject-transfer, group by `subject`
+        and identify stimuli by `task|sentence_idx|word_idx`.
+
     Args:
         emb: Embeddings `(n_samples, embed_dim)`.
         groups: Group label per row `(n_samples,)` (e.g. subject or task).
         contents: Stimulus id per row `(n_samples,)` (same content shares an id
-            across groups -- e.g. `task|sentence|word_idx`).
+            across groups -- and must exclude the `groups` field).
         ks: Top-K cut-offs.
         max_pairs: Cap on evaluated source items (sampled) to bound cost.
         seed: Sampling seed.
+        return_hits: When `True`, also return `top1_hits` (per-query Top-1 hit vector,
+            0/1 floats) and `chances` (per-query random-chance Top-1) for bootstrap CIs.
 
     Returns:
         `top{k}` for each `k`, `mrr`, `n_queries`, `chance_top1` and `n_groups`.
@@ -114,17 +124,24 @@ def transfer_analogy(
             n_queries += len(overlap)
 
     if n_queries == 0:
-        return {f'top{k}': float('nan') for k in ks} | {
+        empty = {f'top{k}': float('nan') for k in ks} | {
             'mrr': float('nan'),
             'n_queries': 0.0,
             'chance_top1': float('nan'),
             'n_groups': float(len(uniq_groups)),
         }
+        if return_hits:
+            empty['top1_hits'] = []  # type: ignore[assignment]
+            empty['chances'] = []  # type: ignore[assignment]
+        return empty
     out = {f'top{k}': float(np.mean(hits_at[k])) for k in ks}
     out['mrr'] = float(np.mean(recip_ranks))
     out['n_queries'] = float(n_queries)
     out['chance_top1'] = float(np.nanmean(chances))
     out['n_groups'] = float(len(uniq_groups))
+    if return_hits:
+        out['top1_hits'] = [float(h) for h in hits_at.get(1, [])]  # type: ignore[assignment]
+        out['chances'] = [float(c) for c in chances]  # type: ignore[assignment]
     return out
 
 
@@ -193,20 +210,32 @@ def analogy_report(
     emb: np.ndarray,
     meta: pd.DataFrame,
     raw_feats: np.ndarray | None = None,
+    return_hits: bool = False,
 ) -> dict[str, Any]:
     """Runs subject- and task-transfer analogies (+ a raw-feature control).
+
+    The stimulus content id is chosen so it **excludes the field being cancelled**:
+    subject-transfer groups by subject and identifies stimuli by
+    `task|sentence_idx|word_idx` (subject-agnostic); task-transfer groups by task and
+    identifies stimuli by `subject|sentence_idx|word_idx` (task-agnostic). If the tasks
+    read genuinely disjoint stimuli (the usual ZuCo case -- SR and NR are different
+    sentences), no stimulus is shared across tasks and `task_transfer` is reported as a
+    structured not-applicable block (`reason='disjoint_stimuli'`), not a bare `nan`.
 
     Args:
         emb: Word-level ZTE embeddings `(n_words, embed_dim)`.
         meta: Aligned word metadata with `subject`, `task`, `sentence_idx`, `word_idx` and `word`.
         raw_feats: Optional aligned raw features `(n_words, n_features)` for a control
             showing the arithmetic is a property of the *learned* space, not the inputs.
+        return_hits: When `True`, `subject_transfer` also carries `top1_hits`/`chances`
+            for bootstrap CIs (the caller should strip them before serialising).
 
     Returns:
         A dict with `subject_transfer` / `task_transfer` metric blocks, matched
         raw-feature controls, and human-readable `examples`.
     """
     meta = meta.reset_index(drop=True)
+    # Subject-transfer id excludes subject; task-transfer id excludes task.
     stimulus = (
         meta['task'].astype(str)
         + '|'
@@ -214,11 +243,31 @@ def analogy_report(
         + '|'
         + meta['word_idx'].astype(str)
     ).to_numpy()
+    stimulus_task_agnostic = (
+        meta['subject'].astype(str)
+        + '|'
+        + meta['sentence_idx'].astype(str)
+        + '|'
+        + meta['word_idx'].astype(str)
+    ).to_numpy()
 
     report: dict[str, Any] = {}
-    report['subject_transfer'] = transfer_analogy(emb, meta['subject'].to_numpy(), stimulus)
+    report['subject_transfer'] = transfer_analogy(
+        emb, meta['subject'].to_numpy(), stimulus, return_hits=return_hits
+    )
     if meta['task'].nunique() > 1:
-        report['task_transfer'] = transfer_analogy(emb, meta['task'].to_numpy(), stimulus)
+        tt = transfer_analogy(emb, meta['task'].to_numpy(), stimulus_task_agnostic)
+        if tt.get('n_queries', 0.0) == 0.0:
+            # No stimulus is read under more than one task -> arithmetic is undefined,
+            # not failed. Flag it so the verdict treats it as not-applicable.
+            tt = {
+                **tt,
+                'reason': 'disjoint_stimuli',
+                'applicable': False,
+            }
+        else:
+            tt = {**tt, 'applicable': True}
+        report['task_transfer'] = tt
     if raw_feats is not None:
         report['subject_transfer_raw'] = transfer_analogy(
             np.asarray(raw_feats, dtype=np.float32), meta['subject'].to_numpy(), stimulus

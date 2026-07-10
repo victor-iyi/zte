@@ -42,7 +42,10 @@ class TrainingArtifacts:
 
 
 def run_training(
-    config: ZTEConfig, dataset: ZuCoDataset, device: DeviceSpec | None = None
+    config: ZTEConfig,
+    dataset: ZuCoDataset,
+    device: DeviceSpec | None = None,
+    resume: bool = False,
 ) -> TrainingArtifacts:
     """Builds and runs a full ZTE pretraining job over `dataset`.
 
@@ -50,6 +53,7 @@ def run_training(
         config (ZTEConfig): The complete run configuration.
         dataset (ZuCoDataset): A built `ZuCoDataset`.
         device (DeviceSpec | None): Optional pre-resolved device spec.
+        resume (bool): Continue an interrupted run from its `last.pt` checkpoint (see `Trainer`).
 
     Returns:
         TrainingArtifacts: A `TrainingArtifacts` with the trainer, history and device.
@@ -66,11 +70,18 @@ def run_training(
         seed=config.train.seed,
     )
 
+    # Fit the normaliser (and imputer) on the TRAIN split only, so val/test/held-out-subject
+    # statistics never leak in. A no-op when `dataset.normalizer_fit == 'all'` (legacy behaviour).
+    dataset.refit_normalizer(splits['train'])
+
     in_dim, raw_shape, feature_dim = _shapes(dataset, config)
     model = build_model(config.model, in_dim=in_dim, raw_shape=raw_shape)
     objective = build_objective(config.objective, model, feature_dim=feature_dim)
 
     vocab = build_subject_vocab(dataset)
+    # Cross-subject positives need the same stimulus (read by different subjects) to co-occur in a
+    # batch, so route the train loader through the stimulus-grouped sampler when enabled.
+    group_by_stimulus = bool(config.objective.cross_subject_positives)
     train_loader = make_dataloader(
         dataset.to_torch(split=splits['train'], subject_vocab=vocab),
         batch_size=config.train.batch_size,
@@ -78,6 +89,8 @@ def run_training(
         num_workers=config.train.num_workers,
         pin_memory=device.supports_pin_memory,
         drop_last=config.objective.name in {'skipgram', 'cbow', 'cpc'},
+        group_by_stimulus=group_by_stimulus,
+        seed=config.train.seed,
     )
     val_loader = None
     if len(splits['val']) > 0:
@@ -104,6 +117,7 @@ def run_training(
         val_loader=val_loader,
         device=device,
         extra_state=extra,
+        resume=resume,
     )
     history = trainer.train()
     _LOG.info(

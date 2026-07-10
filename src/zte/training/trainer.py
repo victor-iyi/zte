@@ -66,6 +66,7 @@ class Trainer:
         val_loader: DataLoader[Any] | None = None,
         device: DeviceSpec | None = None,
         extra_state: dict[str, Any] | None = None,
+        resume: bool = False,
     ) -> None:
         """Wires up the model, optimiser, scheduler, AMP and checkpointing.
 
@@ -77,6 +78,9 @@ class Trainer:
             val_loader (DataLoader[Any] | None): Optional validation DataLoader.
             device (DeviceSpec | None): Pre-resolved device spec; auto-resolved when `None`.
             extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
+            resume (bool): If `True` and a `last.pt` exists in the checkpoint dir, restore the model,
+                optimiser, scheduler, AMP scaler, objective/EMA-teacher, best metric, history and step,
+                and continue from the next epoch. Enables pause/resume of long runs.
         """
         seed_everything(config.train.seed, deterministic=config.train.deterministic)
         self.config = config
@@ -112,6 +116,9 @@ class Trainer:
         self.history: dict[str, list[float]] = defaultdict(list)
         self._global_step = 0
         self._last_grad_norm: float | None = None
+        self._start_epoch = 1
+        if resume:
+            self._resume_from_last()
         self._maybe_compile()
         _LOG.info(
             'Trainer ready | device=%s | objective=%s | steps=%d | params=%.2fM',
@@ -126,33 +133,63 @@ class Trainer:
     def train(self) -> dict[str, list[float]]:
         """Runs the full training loop and returns the metric history.
 
+        Supports pause/resume: a SIGINT (Ctrl-C) or SIGTERM (`kill`) finishes cleanly, leaving a
+        `last.pt` from the last completed epoch. Re-running with `resume=True` continues from the next
+        epoch. Raises `KeyboardInterrupt` on a pause so the caller can skip downstream stages.
+
         Returns:
             The `history` dict (`train_loss`, `val_loss`, `lr` lists).
+
+        Raises:
+            KeyboardInterrupt: When the run is paused by a signal before all epochs complete.
         """
-        for epoch in range(1, self.config.train.epochs + 1):
-            train_loss = self._train_one_epoch(epoch)
-            self.history['train_loss'].append(train_loss)
-            self.history['lr'].append(self.optimizer.param_groups[0]['lr'])
+        total = self.config.train.epochs
+        if self._start_epoch > total:
+            _LOG.info('Training already complete (%d/%d epochs); nothing to do.', total, total)
+            return dict(self.history)
+        if self._start_epoch > 1:
+            _LOG.info('Resuming training from epoch %d/%d.', self._start_epoch, total)
 
-            val_loss = float('nan')
-            if self.val_loader is not None and epoch % self.config.train.eval_every == 0:
-                val_loss = self.evaluate()
-                self.history['val_loss'].append(val_loss)
+        previous = self._install_signal_handlers()
+        try:
+            for epoch in range(self._start_epoch, total + 1):
+                train_loss = self._train_one_epoch(epoch)
+                self.history['train_loss'].append(train_loss)
+                self.history['lr'].append(self.optimizer.param_groups[0]['lr'])
 
-            monitor = val_loss if not _isnan(val_loss) else train_loss
-            self.ckpt.save(self._checkpoint_state(epoch), epoch=epoch, metric=monitor)
-            _LOG.info(
-                '[epoch %d/%d] train_loss=%.4f val_loss=%.4f lr=%.2e',
-                epoch,
-                self.config.train.epochs,
-                train_loss,
-                val_loss,
-                self.optimizer.param_groups[0]['lr'],
+                val_loss = float('nan')
+                if self.val_loader is not None and epoch % self.config.train.eval_every == 0:
+                    val_loss = self.evaluate()
+                    self.history['val_loss'].append(val_loss)
+
+                monitor = val_loss if not _isnan(val_loss) else train_loss
+                self.ckpt.save(self._checkpoint_state(epoch), epoch=epoch, metric=monitor)
+                _LOG.info(
+                    '[epoch %d/%d] train_loss=%.4f val_loss=%.4f lr=%.2e',
+                    epoch,
+                    total,
+                    train_loss,
+                    val_loss,
+                    self.optimizer.param_groups[0]['lr'],
+                )
+                if self.writer is not None:
+                    self.writer.add_scalar('loss/train', train_loss, epoch)
+                    if not _isnan(val_loss):
+                        self.writer.add_scalar('loss/val', val_loss, epoch)
+        except KeyboardInterrupt:
+            done = len(self.history['train_loss']) + self._start_epoch - 1
+            _LOG.warning(
+                'Paused at epoch %d/%d. Progress saved to %s. Resume with --resume.',
+                done,
+                total,
+                self.ckpt.ckpt_dir / 'last.pt',
             )
             if self.writer is not None:
-                self.writer.add_scalar('loss/train', train_loss, epoch)
-                if not _isnan(val_loss):
-                    self.writer.add_scalar('loss/val', val_loss, epoch)
+                self.writer.close()
+            raise
+        finally:
+            self._restore_signal_handlers(previous)
+
         self._log_hparams()
         if self.writer is not None:
             self.writer.close()
@@ -279,12 +316,22 @@ class Trainer:
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
         if getattr(self.objective, 'needs_teacher', False) and hasattr(self.objective, 'post_step'):
-            self.objective.post_step(self.model)
+            # Pass the global step so the objective can ramp its EMA teacher decay across training.
+            self.objective.post_step(
+                self.model, step=self._global_step, total_steps=self.total_steps
+            )
 
     def _checkpoint_state(self, epoch: int) -> dict[str, Any]:
-        """Builds the checkpoint payload, including objective state and extras."""
+        """Builds the checkpoint payload, including objective/teacher/resume state and extras."""
         extra = dict(self.extra_state)
         extra['objective_state'] = self.objective.state_dict()
+        # Resume bookkeeping: the EMA teacher is a plain object (not in state_dict), and best/history
+        # live on the manager/trainer -- persist them so a resumed run is byte-consistent.
+        teacher = getattr(self.objective, 'teacher', None)
+        if teacher is not None:
+            extra['teacher_state'] = teacher.module.state_dict()
+        extra['best_metric'] = self.ckpt.best_metric
+        extra['history'] = {k: list(v) for k, v in self.history.items()}
         return CheckpointManager.build_state(
             self.model,
             self.config,
@@ -295,6 +342,70 @@ class Trainer:
             scaler=self.scaler,
             extra=extra,
         )
+
+    def _resume_from_last(self) -> None:
+        """Restores model/optimiser/scheduler/scaler/objective/teacher/best/history from `last.pt`."""
+        last = self.ckpt.ckpt_dir / 'last.pt'
+        if not last.exists():
+            _LOG.info('resume requested but no last.pt in %s; starting fresh.', self.ckpt.ckpt_dir)
+            return
+        ckpt = CheckpointManager.load(last, map_location=self.device.device)
+        self.model.load_state_dict(ckpt['model'])
+        if 'optimizer' in ckpt:
+            self.optimizer.load_state_dict(ckpt['optimizer'])
+        if 'scheduler' in ckpt:
+            self.scheduler.load_state_dict(ckpt['scheduler'])
+        if 'scaler' in ckpt and self.scaler is not None:
+            self.scaler.load_state_dict(ckpt['scaler'])
+        extra = ckpt.get('extra', {})
+        if 'objective_state' in extra:
+            self.objective.load_state_dict(extra['objective_state'])
+        teacher = getattr(self.objective, 'teacher', None)
+        if teacher is not None and 'teacher_state' in extra:
+            teacher.module.load_state_dict(extra['teacher_state'])
+        self.ckpt.best_metric = extra.get('best_metric', self.ckpt.best_metric)
+        for key, values in extra.get('history', {}).items():
+            self.history[key] = list(values)
+        self._global_step = int(ckpt.get('step', 0))
+        self._start_epoch = int(ckpt.get('epoch', 0)) + 1
+        # Keep checkpoint rotation aware of the epoch files already on disk.
+        self.ckpt._last_paths = sorted(self.ckpt.ckpt_dir.glob('ckpt_epoch*.pt'))  # noqa: SLF001
+        _LOG.info(
+            'Restored from %s (epoch %d, step %d, best=%.4f).',
+            last,
+            self._start_epoch - 1,
+            self._global_step,
+            self.ckpt.best_metric,
+        )
+
+    def _install_signal_handlers(self) -> dict[int, Any]:
+        """Installs SIGINT/SIGTERM handlers that raise KeyboardInterrupt for a clean pause.
+
+        Returns:
+            dict[int, Any]: The previous handlers, keyed by signal number, for later restoration.
+        """
+        import signal
+
+        def _raise(signum: int, frame: Any) -> None:  # noqa: ARG001
+            raise KeyboardInterrupt
+
+        previous: dict[int, Any] = {}
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous[sig] = signal.signal(sig, _raise)
+            except ValueError, OSError:  # pragma: no cover - not on the main thread
+                pass
+        return previous
+
+    def _restore_signal_handlers(self, previous: dict[int, Any]) -> None:
+        """Restores signal handlers saved by :meth:`_install_signal_handlers`."""
+        import signal
+
+        for sig, handler in previous.items():
+            try:
+                signal.signal(sig, handler)
+            except ValueError, OSError:  # pragma: no cover
+                pass
 
     def _build_scaler(self) -> Any | None:
         """Creates an AMP grad scaler only when CUDA fp16 is in use."""

@@ -17,7 +17,7 @@ from zte.data.schema import BANDS, Band, EyeTrackingMeasure, Task
 
 type Granularity = Literal['word', 'sentence']
 type Representation = Literal['band_power', 'raw', 'both']
-type Normalization = Literal['zscore_channel', 'zscore_global', 'minmax', 'none']
+type Normalization = Literal['zscore_channel', 'zscore_global', 'zscore_subject', 'minmax', 'none']
 type MissingMethod = Literal[
     'zero',
     'row_mean',
@@ -31,7 +31,7 @@ type MissingMethod = Literal[
     'drop',
     'mask_only',
 ]
-type SplitStrategy = Literal['random', 'by_sentence', 'by_subject_loso', 'by_task']
+type SplitStrategy = Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
 type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc']
 type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 type PoolName = Literal['mean', 'attention', 'cls']
@@ -79,7 +79,16 @@ class DatasetConfig:
         bands (tuple[Band, ...]): Frequency bands used for the band-power representation.
         raw_field (str): Which raw EEG field to read (`rawEEG` per word or `rawData` per sentence).
         raw_window (int): Fixed time length (samples) raw EEG is padded/truncated to.
-        normalize (Normalization): Per-channel/global normalisation applied to features.
+        normalize (Normalization): Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std
+            across the whole cohort; `zscore_subject` fits and applies a **per-subject** mean/std, which removes the
+            constant per-subject offset that otherwise makes subject identity the cheapest thing to encode
+            (a direct attack on the "learns who, not what" failure mode). `minmax`/`none` as named.
+        normalizer_fit (Literal['train', 'all']): Whether the normaliser (and imputer) statistics are fit on the
+            training split only (`train`, default -- no leakage into val/test/held-out subject) or on the whole
+            dataset before splitting (`all`, the legacy behaviour). `train` is required for honest held-out and LOSO numbers.
+        montage_csv (str | None): Optional path to an electrode-montage CSV (`channel,region` or `channel,x,y,z`) used for
+            scalp-region importance. When `None`, an *approximate* rostro-caudal channel partition is used and every
+            region claim is flagged `approximate=True`.
         bandpass (tuple[float, float] | None): Optional `(low, high)` Hz Butterworth band-pass for raw EEG.
         missing (MissingConfig): Missing-value handling configuration.
         include_omitted (bool): Keep omitted words as masked tokens (preserves sentence sequence integrity).
@@ -98,8 +107,10 @@ class DatasetConfig:
     band_power_measures: tuple[EyeTrackingMeasure, ...] = ('TRT',)
     include_eye_tracking: bool = True
     eye_tracking_measures: tuple[str, ...] = (
+        # SFD is dropped by default: it is ~60% missing and equals FFD wherever it is
+        # present, so it adds a redundant, mostly-imputed column (see the performance
+        # review). Re-add it explicitly if a run needs single-fixation duration.
         'FFD',
-        'SFD',
         'GD',
         'GPT',
         'TRT',
@@ -110,6 +121,8 @@ class DatasetConfig:
     raw_field: str = 'rawEEG'
     raw_window: int = 128
     normalize: Normalization = 'zscore_channel'
+    normalizer_fit: Literal['train', 'all'] = 'train'
+    montage_csv: str | None = None
     bandpass: tuple[float, float] | None = None
     missing: MissingConfig = field(default_factory=MissingConfig)
     include_omitted: bool = True
@@ -169,23 +182,45 @@ class ObjectiveConfig:
             `cpc` (wav2vec/BENDR style).
         temperature (float): Softmax temperature for contrastive (InfoNCE) losses.
         context_window (int): Number of neighbouring words on each side used as context.
-        n_negatives (int): Negative samples per positive for contrastive losses.
         mask_ratio (float): Fraction of tokens masked for the `'masked'` objective.
         masked_target (Literal['reconstruct', 'latent']): Reconstruct raw features (`reconstruct`) or predict an EMA-teacher latent (`latent`, the data2vec variant).
-        ema_decay (float): Teacher EMA decay for `masked_target='latent'`.
+        ema_decay (float): Starting teacher EMA decay for `masked_target='latent'`.
+        ema_decay_end (float): Final teacher EMA decay. The decay is ramped linearly from `ema_decay` to `ema_decay_end`
+            over training (data2vec schedule): a fast-moving teacher early (more signal) that stabilises late. Set equal to
+            `ema_decay` for a flat schedule.
+        teacher_variance_floor (float): Minimum per-dimension std enforced when normalising the data2vec teacher target
+            **across tokens** (not per-token). This is the anti-collapse fix for the masked objective -- a per-token
+            LayerNorm target leaves between-token variance unconstrained and lets teacher and student co-collapse to a constant.
         cpc_steps (int): How many future steps CPC predicts.
-        reduce_omitted_weight (float): Down-weight (0..1) contribution of omitted-word tokens so zero-vector leakage cannot inflate the loss.
+        variance_weight (float): Weight of the VICReg variance-hinge term (0 disables). Penalises any embedding dimension
+            whose batch std falls below `variance_target`, which is what prevents the InfoNCE/L1 objectives from collapsing
+            into ~15 of 768 dimensions. The single biggest metric mover in the performance review.
+        covariance_weight (float): Weight of the VICReg covariance term (0 disables). Pushes off-diagonal feature
+            covariances toward zero so dimensions carry decorrelated information (higher effective rank).
+        variance_target (float): Target per-dimension std (`gamma`) for the variance-hinge term.
+        cross_subject_positives (bool): For skip-gram/CBOW, build contrastive positives from the **same stimulus read by
+            different subjects** (using the batch's `content_id`) instead of same-subject neighbours. This turns subject
+            identity from a shortcut into a nuisance the loss must remove. Requires a stimulus-grouped batch sampler to be
+            effective; falls back to within-sentence neighbours when no cross-subject positive is present in the batch.
+        subject_adversary_weight (float): Weight of a gradient-reversal subject-adversary loss (0 disables). An auxiliary
+            head tries to classify the subject from the token hiddens; the reversed gradient trains the encoder to *hide*
+            subject identity, directly lowering subject decodability toward chance.
     """
 
     name: ObjectiveName = 'skipgram'
     temperature: float = 0.07
     context_window: int = 2
-    n_negatives: int = 20
     mask_ratio: float = 0.5
     masked_target: Literal['reconstruct', 'latent'] = 'latent'
     ema_decay: float = 0.999
+    ema_decay_end: float = 0.9999
+    teacher_variance_floor: float = 1e-4
     cpc_steps: int = 4
-    reduce_omitted_weight: float = 0.0
+    variance_weight: float = 0.0
+    covariance_weight: float = 0.0
+    variance_target: float = 1.0
+    cross_subject_positives: bool = False
+    subject_adversary_weight: float = 0.0
 
 
 @dataclass
@@ -206,8 +241,9 @@ class TrainConfig:
         num_workers (int): DataLoader worker processes.
         split (SplitStrategy): Train/val split strategy.
         val_fraction (float): Validation fraction for random/by_sentence splits.
-        test_fraction (float): Held-out test fraction (`0` disables). For `random`/`by_sentence` a disjoint test set is carved out;
-            evaluation then runs on this untouched split. For `by_subject_loso` the held-out subject is always the test set regardless of this value.
+        test_fraction (float): Held-out test fraction (`0` disables). Defaults to `0.1` so evaluation reports on data the
+            encoder never trained on (the review found the shipped runs were scored in-sample). For `random`/`by_sentence`/`by_stimulus`
+            a disjoint test set is carved out and evaluation runs on it; for `by_subject_loso` the held-out subject is always the test set regardless of this value.
         loso_holdout_subject (str | None): Held-out subject for `by_subject_loso`.
         seed (int): Global RNG seed.
         deterministic (bool): Request deterministic cuDNN kernels for byte-for-byte reproducible CUDA runs (slower). Always seeds Python/NumPy/Torch.
@@ -234,7 +270,7 @@ class TrainConfig:
     num_workers: int = 0
     split: SplitStrategy = 'by_sentence'
     val_fraction: float = 0.1
-    test_fraction: float = 0.0
+    test_fraction: float = 0.1
     loso_holdout_subject: str | None = None
     seed: int = 42
     deterministic: bool = False

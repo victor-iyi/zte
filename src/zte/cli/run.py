@@ -62,6 +62,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
     parser.add_argument('--epochs', type=int, default=None, help='Override config epochs.')
     parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Override config seed (for multi-seed sweeps; also appended to the run name if --name is unset).',
+    )
+    parser.add_argument(
         '--subjects',
         type=str,
         default=None,
@@ -69,6 +75,18 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         '--tasks', type=str, default=None, help='Comma-separated task subset (overrides config).'
+    )
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume an interrupted run: reuse the cached bundle, continue training from the last '
+        'checkpoint, and skip stages (prepare / eval / explore) whose outputs already exist. Safe to '
+        'pass on a first run (nothing to resume) and to re-run repeatedly.',
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='With --resume, redo already-completed stages instead of skipping them.',
     )
     parser.add_argument('--skip-eval', action='store_true')
     parser.add_argument('--skip-explore', action='store_true')
@@ -90,13 +108,28 @@ def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
 
 
 def main() -> None:
-    """Runs the whole pipeline and catalogues it under the run directory."""
+    """Runs the whole pipeline, catalogues it, and supports pause/resume via `--resume`."""
     args = parse_arguments()
     configure_logging(args.log_level)
+    try:
+        _run(args)
+    except KeyboardInterrupt:
+        _LOG.warning(
+            '\n⏸  Paused. Re-run the exact same command with --resume to continue where you left off.'
+        )
+        raise SystemExit(130) from None
+
+
+def _run(args: argparse.Namespace) -> None:
+    """The pipeline body (separated so `main` can wrap it for clean pause/resume)."""
 
     config = ZTEConfig.from_yaml(args.config)
+    if args.seed is not None:
+        config.train.seed = args.seed
     if args.name:
         config.run_name = args.name
+    elif args.seed is not None:
+        config.run_name = f'{config.run_name}_s{args.seed}'
     if args.epochs is not None:
         config.train.epochs = args.epochs
     if args.device is not None:
@@ -108,6 +141,12 @@ def main() -> None:
 
     run_dir = Path(args.out_root) / config.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fast resume: a fully-complete run is skipped instantly, without reloading the (large) bundle.
+    if args.resume and not args.force and _run_is_complete(run_dir, config, args):
+        _LOG.info('Resume: %r already complete (all stages done); skipping.', config.run_name)
+        return
+
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
     # Point every output at the run directory so the experiment is self-contained.
@@ -118,41 +157,62 @@ def main() -> None:
 
     manifest: dict[str, Any] = {'run_name': config.run_name, 'data_root': config.dataset.root}
 
-    # 1) Prepare (build + cache + save bundle + overview figures).
-    _LOG.info('[1/4] Preparing dataset ...')
-    dataset = ZuCoDataset(config.dataset).build()
-    dataset.save(run_dir / 'bundle')
+    bundle_dir = run_dir / 'bundle'
+
+    # 1) Prepare (build + cache + save bundle + overview figures). On --resume, reuse the bundle.
+    if args.resume and (bundle_dir / 'meta.json').exists() and not args.force:
+        _LOG.info('[1/4] Resume: loading cached dataset bundle (skipping prepare) ...')
+        dataset = ZuCoDataset.load(bundle_dir)
+    else:
+        _LOG.info('[1/4] Preparing dataset ...')
+        dataset = ZuCoDataset(config.dataset).build()
+        dataset.save(bundle_dir)
     manifest['dataset'] = dataset.analyze()
     _save_overview(dataset, run_dir / 'figures')
 
-    # 2) Train.
+    # 2) Train (resumes from the last checkpoint when --resume).
     _LOG.info(
-        '[2/4] Training (%s / %s / pos=%s) ...',
+        '[2/4] Training (%s / %s / pos=%s)%s ...',
         config.objective.name,
         config.model.frontend,
         config.model.pos_encoding,
+        ' [resume]' if args.resume else '',
     )
     from zte.training.pipeline import run_training
 
-    artifacts = run_training(config, dataset)
+    artifacts = run_training(config, dataset, resume=args.resume)
     config.to_yaml(run_dir / 'config.yaml')
     manifest['final_train_loss'] = (
         artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
     )
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
 
-    # 3) Evaluate.
+    # 3) Evaluate (skipped on --resume only if metrics are at least as new as the checkpoint, so a
+    #    run whose training advanced this invocation is always re-evaluated on the fresh model).
+    metrics_path = run_dir / 'evaluation' / 'metrics.json'
+    best_ckpt = run_dir / 'checkpoints' / 'best.pt'
+    eval_fresh = metrics_path.exists() and (
+        not best_ckpt.exists() or metrics_path.stat().st_mtime >= best_ckpt.stat().st_mtime
+    )
     if not args.skip_eval:
-        _LOG.info('[3/4] Evaluating ...')
-        manifest['evaluation'] = _evaluate(config, dataset, run_dir, args)
+        if args.resume and eval_fresh and not args.force:
+            _LOG.info('[3/4] Resume: evaluation already up to date, skipping.')
+            manifest['evaluation'] = _eval_summary_from_disk(metrics_path)
+        else:
+            _LOG.info('[3/4] Evaluating ...')
+            manifest['evaluation'] = _evaluate(config, dataset, run_dir, args)
 
     # 4) Explore (brain regions + eye-tracking) when band power is available.
+    explore_done = (run_dir / 'exploration' / 'report.md').exists()
     if not args.skip_explore and dataset.band_power_raw is not None:
-        _LOG.info('[4/4] Exploring brain regions + eye-tracking ...')
-        from zte.cli.explore import run_exploration
+        if args.resume and explore_done and not args.force:
+            _LOG.info('[4/4] Resume: exploration already done, skipping.')
+        else:
+            _LOG.info('[4/4] Exploring brain regions + eye-tracking ...')
+            from zte.cli.explore import run_exploration
 
-        summary = run_exploration(dataset, run_dir / 'exploration')
-        manifest['region_map_approximate'] = summary['region_map_approximate']
+            summary = run_exploration(dataset, run_dir / 'exploration')
+            manifest['region_map_approximate'] = summary['region_map_approximate']
 
     (run_dir / 'manifest.json').write_text(
         json.dumps(manifest, indent=2, default=str), encoding='utf-8'
@@ -162,6 +222,54 @@ def main() -> None:
     )
     _catalogue(Path(args.out_root), config.run_name, manifest)
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
+
+
+def _last_completed_epoch(ckpt_dir: Path) -> int:
+    """Returns the highest completed epoch from the `ckpt_epoch*.pt` filenames (no torch.load)."""
+    epochs = [int(p.stem.removeprefix('ckpt_epoch')) for p in ckpt_dir.glob('ckpt_epoch*.pt')]
+    return max(epochs) if epochs else 0
+
+
+def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace) -> bool:
+    """Whether a run has finished every stage, so `--resume` can skip it without loading anything.
+
+    Checks training (last checkpoint at the final epoch) and, unless skipped, evaluation
+    (`metrics.json`) and exploration (`exploration/report.md`) outputs.
+
+    Args:
+        run_dir (Path): The run directory.
+        config (ZTEConfig): The (resolved) run config, for the target epoch count.
+        args (argparse.Namespace): Parsed CLI args (for `--skip-eval` / `--skip-explore`).
+
+    Returns:
+        bool: `True` when nothing remains to do.
+    """
+    if not (run_dir / 'checkpoints' / 'last.pt').exists():
+        return False
+    if _last_completed_epoch(run_dir / 'checkpoints') < config.train.epochs:
+        return False
+    if not args.skip_eval and not (run_dir / 'evaluation' / 'metrics.json').exists():
+        return False
+    if not args.skip_explore and not (run_dir / 'exploration' / 'report.md').exists():
+        # Exploration only runs when band power is available; absence of the marker is only
+        # decisive when the run could have produced it. A prior manifest confirms it did/should.
+        if (run_dir / 'manifest.json').exists():
+            manifest = json.loads((run_dir / 'manifest.json').read_text(encoding='utf-8'))
+            if 'region_map_approximate' not in manifest:
+                return True  # this run legitimately has no exploration stage
+        return False
+    return True
+
+
+def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
+    """Rebuilds the manifest evaluation summary from an existing `metrics.json` (resume path)."""
+    metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
+    return {
+        'verdict': metrics.get('verdict'),
+        'sentence_retrieval_top1': metrics.get('sentence_retrieval', {}).get('top1'),
+        'subject_transfer_top1': metrics.get('analogy', {}).get('subject_transfer', {}).get('top1'),
+        'effective_rank_ratio': metrics.get('embedding_health', {}).get('effective_rank_ratio'),
+    }
 
 
 def _evaluate(

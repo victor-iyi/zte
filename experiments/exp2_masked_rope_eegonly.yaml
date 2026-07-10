@@ -1,6 +1,6 @@
-# Imagined-thought / device-agnostic path: data2vec-style masked latent prediction on
-# EEG only (eye-tracking EXCLUDED), so the code does not lean on gaze behaviour that
-# an imagined-thought BCI cannot provide.
+# EEG-only imagined-thought path: masked/data2vec. Fixes the exp2 cone -- the exported projection
+# head is now trained, the teacher target is normalised ACROSS tokens with a variance floor, the
+# EMA decay is ramped, and a VICReg variance term guards against collapse.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -14,7 +14,6 @@ dataset:
   include_eye_tracking: false
   eye_tracking_measures:
   - FFD
-  - SFD
   - GD
   - GPT
   - TRT
@@ -32,6 +31,8 @@ dataset:
   raw_field: rawEEG
   raw_window: 128
   normalize: zscore_channel
+  normalizer_fit: train
+  montage_csv: null
   bandpass: null
   missing:
     method: mask_only
@@ -63,12 +64,17 @@ objective:
   name: masked
   temperature: 0.07
   context_window: 2
-  n_negatives: 20
   mask_ratio: 0.5
   masked_target: latent
   ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
   cpc_steps: 4
-  reduce_omitted_weight: 0.0
+  variance_weight: 1.0
+  covariance_weight: 0.0
+  variance_target: 1.0
+  cross_subject_positives: false
+  subject_adversary_weight: 0.0
 train:
   epochs: 60
   batch_size: 128
@@ -83,6 +89,7 @@ train:
   num_workers: 0
   split: by_sentence
   val_fraction: 0.1
+  test_fraction: 0.1
   loso_holdout_subject: null
   seed: 42
   deterministic: true

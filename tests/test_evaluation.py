@@ -85,6 +85,67 @@ def test_content_retrieval_above_chance() -> None:
     assert res['top1'] > res['chance_top1']
 
 
+def test_bootstrap_ci_brackets_mean() -> None:
+    """Bootstrap CI returns the mean as point and a lo <= point <= hi interval."""
+    rng = np.random.default_rng(0)
+    values = rng.normal(loc=1.5, scale=0.3, size=400)
+    point, lo, hi = M.bootstrap_ci(values, n_boot=500, seed=0)
+    assert abs(point - float(values.mean())) < 1e-9
+    assert lo <= point <= hi
+    # A tight interval around the true mean for a large, low-variance sample.
+    assert lo < 1.5 < hi
+    # Degenerate inputs are handled: constant -> zero-width, empty -> nan.
+    p, clo, chi = M.bootstrap_ci(np.full(20, 2.0))
+    assert p == clo == chi == 2.0
+    assert all(np.isnan(v) for v in M.bootstrap_ci(np.array([])))
+
+
+def test_query_weighted_chance() -> None:
+    """Retrieval chance is query-weighted, differing from the type-weighted legacy."""
+    rng = np.random.default_rng(0)
+    # Group sizes 3, 2, 1 over n = 6 rows (the singleton cannot be a query).
+    group_ids = np.array([0, 0, 0, 1, 1, 2])
+    emb = rng.normal(size=(6, 4)).astype(np.float32)
+    res = M.content_retrieval(emb, group_ids, return_hits=True)
+    # sum_g g(g-1) / sum_g g / (n-1) over groups with g > 1 = (6 + 2) / 5 / 5 = 0.32.
+    assert abs(res['chance_top1'] - 0.32) < 1e-9
+    # Legacy mean((counts-1)/(n-1)) over all groups = mean(0.4, 0.2, 0.0) = 0.2.
+    assert abs(res['chance_top1_typeweighted'] - 0.2) < 1e-9
+    assert res['chance_top1'] != res['chance_top1_typeweighted']
+    assert len(res['top1_hits']) == int(res['n_queries']) == 5
+
+
+def test_task_transfer_disjoint_is_not_applicable() -> None:
+    """Disjoint per-task stimuli make task-transfer not-applicable, not a bare NaN."""
+    from zte.evaluation.analogy import analogy_report
+
+    rng = np.random.default_rng(0)
+    # Two subjects, two tasks; each task reads its own sentence indices (disjoint).
+    rows = []
+    for subject in ('A', 'B'):
+        for task, sent_ids in (('SR', (0, 1)), ('NR', (2, 3))):
+            for s in sent_ids:
+                for w in range(3):
+                    rows.append(
+                        {
+                            'subject': subject,
+                            'task': task,
+                            'sentence_idx': s,
+                            'word_idx': w,
+                            'word': f'{task}{s}{w}',
+                        }
+                    )
+    meta = pd.DataFrame(rows)
+    emb = rng.normal(size=(len(meta), 8)).astype(np.float32)
+    report = analogy_report(emb, meta)
+    tt = report['task_transfer']
+    assert tt['reason'] == 'disjoint_stimuli'
+    assert tt['applicable'] is False
+    assert np.isnan(tt['top1'])
+    # Subject transfer, by contrast, shares stimuli across subjects and runs.
+    assert report['subject_transfer']['n_queries'] > 0
+
+
 def test_representation_comparison_rows() -> None:
     """Comparison yields one row per (target, representation) with scores."""
     rng = np.random.default_rng(0)

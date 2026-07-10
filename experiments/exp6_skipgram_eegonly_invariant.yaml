@@ -1,6 +1,7 @@
-# Flagship general reading-evoked embedding: skip-gram (word2vec) over word-EEG tokens, RoPE,
-# eye-tracking included. Now with a VICReg variance+covariance anti-collapse term -- the single
-# biggest fix from the performance review (stops the ~15-of-768 dimensional collapse).
+# The honest EEG-only headline run: skip-gram, eye-tracking EXCLUDED (so no gaze artefact), a
+# by_stimulus split (same sentence text never spans train/test), per-subject normalisation, VICReg,
+# a subject adversary, and cross-subject positives. This is the "everything the review recommends"
+# configuration -- the fairest test of whether ZTE learns WHAT, not WHO.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -11,7 +12,7 @@ dataset:
   representation: band_power
   band_power_measures:
   - TRT
-  include_eye_tracking: true
+  include_eye_tracking: false
   eye_tracking_measures:
   - FFD
   - GD
@@ -30,7 +31,7 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
-  normalize: zscore_channel
+  normalize: zscore_subject
   normalizer_fit: train
   montage_csv: null
   bandpass: null
@@ -73,8 +74,8 @@ objective:
   variance_weight: 1.0
   covariance_weight: 1.0
   variance_target: 1.0
-  cross_subject_positives: false
-  subject_adversary_weight: 0.0
+  cross_subject_positives: true
+  subject_adversary_weight: 0.3
 train:
   epochs: 40
   batch_size: 128
@@ -87,7 +88,7 @@ train:
   device: auto
   precision: auto
   num_workers: 0
-  split: by_sentence
+  split: by_stimulus
   val_fraction: 0.1
   test_fraction: 0.1
   loso_holdout_subject: null
@@ -100,4 +101,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: exp1_skipgram_rope_et
+run_name: exp6_skipgram_eegonly_invariant
