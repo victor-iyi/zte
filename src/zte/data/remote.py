@@ -27,16 +27,15 @@ _DRIVE_ID_RE: Final[re.Pattern[str]] = re.compile(r'^[-\w]{10,}$')
 
 
 def parse_drive_spec(spec: str) -> tuple[DriveKind, str] | None:
-    """Parses a Google Drive folder/file id or share URL into ``(kind, id)``.
+    """Parses a Google Drive folder/file id or share URL into `(kind, id)`.
 
-    Strips common shell-escape artifacts (e.g. trailing ``\\`` before ``?usp=``) so
-    pasted terminal URLs work even when over-escaped.
+    Strips common shell-escape artifacts (e.g. trailing `\\` before `?usp=`) so pasted terminal URLs work even when over-escaped.
 
     Args:
-        spec (str): A Drive id, share link, or ``uc?id=`` URL.
+        spec (str): A Drive id, share link, or `uc?id=` URL.
 
     Returns:
-        ``('folder' | 'file', id)`` when `spec` looks like Drive, else ``None``.
+        `('folder' | 'file', id)` when `spec` looks like Drive, else `None`.
     """
     cleaned = spec.strip().replace('\\', '')
     if not cleaned:

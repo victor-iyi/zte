@@ -12,6 +12,8 @@ well above chance means the embedding captured linguistic structure *without* th
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 
@@ -40,10 +42,15 @@ def linear_probe(
         task = 'classification' if len(np.unique(targets)) <= 2 else 'regression'
 
     try:
+        from sklearn.exceptions import ConvergenceWarning
         from sklearn.linear_model import LogisticRegression, Ridge
         from sklearn.model_selection import cross_val_score
     except ImportError:  # pragma: no cover
         return {'score': float('nan'), 'baseline': float('nan'), 'task': task}
+    try:
+        from scipy.linalg import LinAlgWarning
+    except ImportError:  # pragma: no cover
+        LinAlgWarning = RuntimeWarning  # type: ignore[assignment,misc]
 
     if len(embeddings) < n_splits * 2:
         return {'score': float('nan'), 'baseline': float('nan'), 'task': task}
@@ -51,14 +58,21 @@ def linear_probe(
         # Degenerate (single-class) target -- nothing to discriminate.
         return {'score': float('nan'), 'baseline': 1.0, 'task': task}
 
-    if task == 'classification':
-        model: object = LogisticRegression(max_iter=500)
-        scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='accuracy')
-        baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
-    else:
-        model = Ridge(alpha=1.0)
-        scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='r2')
-        baseline = 0.0
+    with warnings.catch_warnings():
+        # Raw band-power / noise controls (and any collapsed embedding) yield an
+        # ill-conditioned Gram matrix, so Ridge/LogisticRegression warn once per
+        # fold. That is expected here and separately quantified by embedding_health's
+        # effective-rank ratio -- suppress the per-fold spam rather than flood stderr.
+        warnings.simplefilter('ignore', LinAlgWarning)
+        warnings.simplefilter('ignore', ConvergenceWarning)
+        if task == 'classification':
+            model: object = LogisticRegression(max_iter=500)
+            scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='accuracy')
+            baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
+        else:
+            model = Ridge(alpha=1.0)
+            scores = cross_val_score(model, embeddings, targets, cv=n_splits, scoring='r2')
+            baseline = 0.0
     return {'score': float(np.mean(scores)), 'baseline': baseline, 'task': task}
 
 

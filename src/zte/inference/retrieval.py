@@ -30,6 +30,26 @@ def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)
 
 
+# Cap the transient (block x n_items) cosine-similarity tile so a large bank never
+# forces one giant (n_queries x n_items) allocation -- at ZuCo word scale that matrix
+# is 160k x 160k float32 (~96 GiB) and swaps the box to death.
+_QUERY_SIM_BUDGET_BYTES = 128 * 1024 * 1024
+
+
+def _query_block_rows(n_items: int) -> int:
+    """Number of queries to score at once so the similarity tile stays under budget.
+
+    Args:
+        n_items (int): Bank size (columns of the similarity tile).
+
+    Returns:
+        int: Query-block height in `[1, 4096]`, bounding the tile to ~128 MiB.
+    """
+    if n_items <= 0:
+        return 1
+    return max(1, min(4096, _QUERY_SIM_BUDGET_BYTES // (n_items * 4)))
+
+
 class NearestNeighborIndex:
     """Cosine kNN over a fixed bank of embeddings with aligned metadata.
 
@@ -79,17 +99,28 @@ class NearestNeighborIndex:
 
         """
         q = _l2_normalize(queries)
-        sims = q @ self.bank.T  # (n_queries, n_items)
-        if self_indices is not None:
-            rows = np.arange(len(q))
-            sims[rows, self_indices] = -np.inf
-        k = min(k, sims.shape[1])
-        idx = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
-        # Sort the top-k slice by similarity.
-        order = np.argsort(-np.take_along_axis(sims, idx, axis=1), axis=1)
-        idx = np.take_along_axis(idx, order, axis=1)
-        top_sims = np.take_along_axis(sims, idx, axis=1)
-        return idx, top_sims
+        n_items = self.bank.shape[0]
+        k = min(k, n_items)
+        n_queries = q.shape[0]
+        idx_out = np.empty((n_queries, k), dtype=np.int64)
+        sim_out = np.empty((n_queries, k), dtype=np.float32)
+
+        # Score the bank in query-blocks so the full (n_queries x n_items) similarity
+        # matrix is never materialised; peak memory stays flat as the bank grows.
+        block = _query_block_rows(n_items)
+        for start in range(0, n_queries, block):
+            stop = min(start + block, n_queries)
+            sims = q[start:stop] @ self.bank.T  # (b, n_items)
+            if self_indices is not None:
+                rows = np.arange(stop - start)
+                sims[rows, self_indices[start:stop]] = -np.inf
+            part = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
+            # Sort each block's top-k slice by similarity.
+            order = np.argsort(-np.take_along_axis(sims, part, axis=1), axis=1)
+            part = np.take_along_axis(part, order, axis=1)
+            idx_out[start:stop] = part
+            sim_out[start:stop] = np.take_along_axis(sims, part, axis=1)
+        return idx_out, sim_out
 
     def retrieve(self, queries: np.ndarray, k: int = 5) -> list[pd.DataFrame]:
         """Returns the metadata rows of the top-`k` neighbours per query.
