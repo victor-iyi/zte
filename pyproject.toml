@@ -25,11 +25,17 @@ dependencies = [
 drive = ['gdown>=6.1.0']
 logging = ['tensorboard>=2.21.0']
 viz = ['seaborn>=0.13.2', 'plotly>=5.24.0']
+decode = [
+  'transformers>=4.46.0',
+  'accelerate>=1.0.0',
+  'safetensors>=0.4.0',
+]
 dev = ['ruff>=0.15.20', 'pytest>=9.1.1', 'mypy>=2.1.0']
 all = [
   { include-group = 'drive' },
   { include-group = 'logging' },
   { include-group = 'viz' },
+  { include-group = 'decode' },
 ]
 
 [project.scripts]
@@ -41,6 +47,10 @@ zte-explore = 'zte.cli.explore:main'
 zte-benchmark = 'zte.cli.benchmark:main'
 zte-run = 'zte.cli.run:main'
 zte-download = 'zte.cli.download:main'
+zte-align = 'zte.cli.align:main'
+zte-decode = 'zte.cli.decode:main'
+zte-decode-eval = 'zte.cli.decode_eval:main'
+zte-decode-run = 'zte.cli.decode_run:main'
 
 [build-system]
 requires = ['hatchling']
