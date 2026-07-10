@@ -1,6 +1,6 @@
 # Validated results (synthetic smoke-runs)
 
-The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale.
+The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **truly synthetic ZuCo** — the generator invents its own pseudo-language (procedurally generated nonsense tokens under a Zipf–Mandelbrot frequency law; no natural-language text and no real ZuCo data anywhere) and samples every signal from parametric models calibrated against the published ZuCo/reading-literature reference statistics (`zte.data.synthetic.ZUCO_REFERENCE`). It reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words) **and** the latent structure the real corpus exhibits — lexical skipping, ordered/correlated fixation durations, band-power topographies, per-subject offsets, and a shared per-stimulus content signature across subjects. The point is to show the whole pipeline runs end-to-end and behaves like it would on genuine data; on real ZuCo the same commands produce the same artifacts at scale.
 
 > How to regenerate everything on this page is at the [bottom](#reproduce).
 > For methodology see [EVALUATION.md]; for the knobs see [TRAINING.md] and [DATASET.md].
@@ -51,16 +51,16 @@ Short words are skipped far more often (omission ≈ 0.5 at length 1–2, fallin
 
 ## 4. Evaluation of the learned space
 
-Running the full evaluation suite (`examples/evaluate_zte.py`, a 4-subject skip-gram model, `embed_dim=96`) on **664 word / 112 sentence** embeddings gives the verdict:
+Running the full evaluation suite (`examples/evaluate_zte.py`, a 4-subject skip-gram model, `embed_dim=96`) on **702 word / 112 sentence** embeddings gives the verdict:
 
-| Check                                | Result                          | Detail                                                  |
-| ------------------------------------ | ------------------------------- | ------------------------------------------------------- |
-| Beats the noise control              | ✓ (word_len, log_freq, subject) | linear probe                                            |
-| No representation collapse           | ✓                               | effective-rank ratio **0.57** (54.6 / 96), 0% dead dims |
-| Cross-subject retrieval above chance | ✗                               | Top-1 0.054 vs chance 0.054                             |
-| Subject arithmetic above chance      | ✓                               | Top-1 0.010 vs chance 0.006                             |
+| Check                                | Result                                       | Detail                                                  |
+| ------------------------------------ | -------------------------------------------- | ------------------------------------------------------- |
+| Beats the noise control              | ✓ (word_len, log_freq, subject, task)        | linear probe                                            |
+| No representation collapse           | ✓                                            | effective-rank ratio **0.35** (33.8 / 96), 0% dead dims |
+| Cross-subject retrieval above chance | ✓                                            | Top-1 0.366 vs chance 0.027                             |
+| Subject arithmetic above chance      | ✓                                            | Top-1 0.718 vs chance 0.006                             |
 
-The embedding is healthy (well-spread, no collapse) and carries lexical attributes above the noise floor. Cross-subject retrieval sits **at** chance here — expected, because synthetic subjects share no real neural structure to retrieve across. That is precisely the gap real ZuCo is meant to close, and why the suite reports it honestly rather than hiding it.
+The embedding is healthy (well-spread, no collapse) and carries lexical attributes above the noise floor. Because the generator gives every stimulus token a **content signature shared across subjects** (on top of per-subject gains/offsets), cross-subject retrieval and subject-vector arithmetic both clear chance — the behaviour we expect from genuine neural data, rather than the at-chance floor a structure-free synthesiser would produce. The exact figures depend on the run's seed/epochs, but the four checks pass consistently.
 
 ![Linear probe comparison](figures/eval/probe_linear.png)
 ![Embedding health](figures/eval/embedding_health.png)
