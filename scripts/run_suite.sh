@@ -27,7 +27,7 @@ set -euo pipefail
 # Configuration
 # --------------------------------------------------------------------------- #
 ROOT="${1:-res/data/zuco_extracted}"     # data root (positional arg 1)
-SEEDS="42 "                              # fixed seeds -> differences carry CIs
+SEEDS="42 43"                            # fixed seeds -> differences carry CIs
 PY=".venv/bin/python"                    # project venv interpreter
 OUT_ROOT="res/experiments"               # where zte-run catalogues each run
 BENCH_ROOT="res/benchmark"               # where zte-benchmark writes tables
@@ -40,7 +40,7 @@ LOSO_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
 if [[ "${SMOKE}" == "1" ]]; then
   SRC_ARGS=(--synthetic --epochs 2 --device cpu)
   BENCH_SRC=(--synthetic --epochs 2)
-  SEEDS="42"
+  SEEDS="42 43"
   echo ">>> SMOKE mode: tiny synthetic runs, single seed."
 else
   SRC_ARGS=(--root "${ROOT}")
@@ -157,8 +157,8 @@ study5() {
 # --------------------------------------------------------------------------- #
 # Run the studies. Comment out any you do not want; each is independent.
 # --------------------------------------------------------------------------- #
-# study1
-# study2
+study1
+study2
 study3
 study4
 study5

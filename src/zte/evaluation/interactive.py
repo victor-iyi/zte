@@ -89,6 +89,8 @@ def embedding_explorer_html(
     Returns:
         The written path (`.html` when Plotly is available, else `.png`).
     """
+    import json
+
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     meta = meta.reset_index(drop=True)
@@ -104,6 +106,52 @@ def embedding_explorer_html(
     except ImportError:
         return _static_fallback(coords, meta, color_cols, title, out)
 
+    # Flagship colorway (light) plus tasteful brightened dark variants.
+    way_light = [
+        '#5a4bff',
+        '#0f9d6b',
+        '#e29008',
+        '#008300',
+        '#ff4d8d',
+        '#e5484d',
+        '#e87ba4',
+        '#eb6834',
+    ]
+    way_dark = [
+        '#9a86ff',
+        '#3ddc97',
+        '#f5b642',
+        '#3fc46a',
+        '#ff77a9',
+        '#ff6b6f',
+        '#f2a3c0',
+        '#ff9a5c',
+    ]
+    tokens = {
+        'light': {
+            'panel': '#ffffff',
+            'ink': '#131720',
+            'ink2': '#495264',
+            'border': '#e3e7ef',
+            'grid': '#e3e7ef',
+            'plane': '#eef1f6',
+        },
+        'dark': {
+            'panel': '#161b26',
+            'ink': '#eef2f9',
+            'ink2': '#aab4c6',
+            'border': '#232a37',
+            'grid': '#232a37',
+            'plane': '#0b0e14',
+        },
+    }
+
+    # Precompute discrete category codes per colour column (JSON-serialisable).
+    colorby: dict[str, dict[str, list]] = {}
+    for c in color_cols:
+        codes, uniques = pd.factorize(meta[c].astype(str))
+        colorby[c] = {'codes': [int(k) for k in codes], 'cats': [str(u) for u in uniques]}
+
     hover = _hover_text(meta, list(hover_cols))
     scatter = go.Scatter3d if dims == 3 else go.Scatter
     axis_kw = dict(x=coords[:, 0], y=coords[:, 1])
@@ -111,33 +159,195 @@ def embedding_explorer_html(
         axis_kw['z'] = coords[:, 2]
 
     first = color_cols[0] if color_cols else None
-    marker = dict(size=3 if dims == 3 else 6, opacity=0.75)
+    marker: dict[str, Any] = dict(size=3 if dims == 3 else 6, opacity=0.82)
     if first is not None:
-        marker['color'] = _codes(meta[first])
-        marker['colorscale'] = 'Turbo'
+        cds = colorby[first]['codes']
+        marker['color'] = [way_light[k % len(way_light)] for k in cds]
+    else:
+        marker['color'] = way_light[0]
     fig = go.Figure(scatter(**axis_kw, mode='markers', marker=marker, text=hover, hoverinfo='text'))
 
-    buttons = []
-    for col in color_cols:
-        buttons.append(
-            dict(
-                label=f'colour: {col}',
-                method='restyle',
-                args=[{'marker.color': [_codes(meta[col])]}],
-            )
-        )
-    updatemenus = [dict(buttons=buttons, x=0.0, y=1.12, xanchor='left')] if buttons else None
+    # Bake the light theme into the figure so the first paint needs no reflow.
+    lt = tokens['light']
     fig.update_layout(
-        title=f'{title}  (PCA of {len(emb)} embeddings; colour = {first})',
-        updatemenus=updatemenus,
-        margin=dict(l=0, r=0, t=60, b=0),
-        template='plotly_white',
+        paper_bgcolor=lt['panel'],
+        plot_bgcolor=lt['panel'],
+        font=dict(color=lt['ink'], family='system-ui,-apple-system,"Segoe UI",sans-serif', size=12),
+        margin=dict(l=0, r=0, t=8, b=0),
+        showlegend=False,
+        hoverlabel=dict(bgcolor='#161b26', font=dict(color='#fff', family='system-ui,sans-serif')),
+    )
+    if dims == 3:
+        ax = dict(
+            gridcolor=lt['grid'],
+            zerolinecolor=lt['border'],
+            backgroundcolor=lt['plane'],
+            showbackground=True,
+            color=lt['ink2'],
+            title='',
+        )
+        fig.update_layout(scene=dict(xaxis=dict(ax), yaxis=dict(ax), zaxis=dict(ax)))
+    else:
+        ax = dict(
+            gridcolor=lt['grid'],
+            zerolinecolor=lt['border'],
+            linecolor=lt['border'],
+            color=lt['ink2'],
+            title='',
+        )
+        fig.update_layout(xaxis=dict(ax), yaxis=dict(ax))
+
+    fig_html = fig.to_html(
+        include_plotlyjs=True,
+        full_html=False,
+        div_id='plot',
+        config={'displaylogo': False, 'responsive': True},
+    )
+
+    cfg = {
+        'dims': dims,
+        'palette': {'light': way_light, 'dark': way_dark},
+        'colorby': colorby,
+        'tokens': tokens,
+        'columns': list(color_cols),
+    }
+    caption = (
+        f'PCA projection of <b>{len(emb)}</b> word embeddings, {dims}-D. Rotate, zoom and hover a '
+        'point; recolour to test whether the space clusters by <b>content</b> (good) or by '
+        'subject / task nuisance (bad).'
+    )
+    title_html = title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    data_json = json.dumps(cfg).replace('<', '\\u003c')
+    html = (
+        _CLASSIC_TEMPLATE.replace('__TITLE__', title_html)
+        .replace('__CAPTION__', caption)
+        .replace('__FIGURE__', fig_html)
+        .replace('__DATA__', data_json)
     )
     if out.suffix != '.html':
         out = out.with_suffix('.html')
-    fig.write_html(str(out), include_plotlyjs=True, full_html=True)
+    out.write_text(html, encoding='utf-8')
     _LOG.info('Wrote interactive embedding explorer to %s', out)
     return out
+
+
+_CLASSIC_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{--plane:#eef1f6;--panel:#fff;--ink:#131720;--ink2:#495264;--muted:#8a93a6;
+  --border:#e3e7ef;--accent:#5a4bff;--accent2:#ff4d8d;}
+:root[data-theme="dark"]{--plane:#0b0e14;--panel:#161b26;--ink:#eef2f9;--ink2:#aab4c6;
+  --muted:#78829a;--border:#232a37;--accent:#9a86ff;--accent2:#ff77a9;}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{min-height:100vh;background:var(--plane);color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;
+  background-image:radial-gradient(920px 520px at 84% -10%,
+    color-mix(in srgb,var(--accent) 15%,transparent), transparent 70%);
+  background-attachment:fixed;}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 22px 34px}
+header.hd{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:11px;min-width:0}
+.brand .dot{width:13px;height:13px;border-radius:50%;flex:none;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 16%,transparent)}
+.brand h1{margin:0;font-size:17px;font-weight:660;letter-spacing:.2px}
+.spacer{flex:1;min-width:8px}
+.ctl{display:flex;align-items:center;gap:8px}
+.ctl label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:650}
+select{padding:7px 10px;border-radius:9px;border:1px solid var(--border);
+  background:var(--panel);color:var(--ink);font-size:13px;font-family:inherit;cursor:pointer}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--panel)}
+.seg button{border:none;background:transparent;color:var(--ink2);padding:7px 13px;
+  font-size:12.5px;cursor:pointer;font-family:inherit;transition:color .12s}
+.seg button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  box-shadow:0 14px 38px -20px rgba(9,11,20,.55),0 2px 8px -4px rgba(9,11,20,.22);
+  padding:8px;overflow:hidden}
+.plotcard{height:600px}
+#plot{width:100%;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:7px 16px;margin:13px 4px 0}
+.lg{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ink2)}
+.lg .sw{width:11px;height:11px;border-radius:50%;flex:none}
+.cap{color:var(--ink2);font-size:12.5px;line-height:1.55;margin:12px 4px 0;max-width:900px}
+.cap b{color:var(--ink);font-weight:640}
+@media (max-width:640px){.plotcard{height:460px}.brand h1{font-size:15px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hd">
+    <div class="brand"><span class="dot"></span><h1>__TITLE__</h1></div>
+    <span class="spacer"></span>
+    <div class="ctl" id="colorbyctl"><label>Colour by</label><select id="colorby"></select></div>
+    <div class="seg" id="themeseg">
+      <button type="button" data-t="light" class="on">Light</button>
+      <button type="button" data-t="dark">Dark</button>
+    </div>
+  </header>
+  <div class="card"><div class="plotcard">__FIGURE__</div></div>
+  <div class="legend" id="legend"></div>
+  <p class="cap">__CAPTION__</p>
+</div>
+<script id="cfg" type="application/json">__DATA__</script>
+<script>
+(function(){
+  var CFG=JSON.parse(document.getElementById('cfg').textContent);
+  var DIMS=CFG.dims, PAL=CFG.palette, COLORBY=CFG.colorby, TOK=CFG.tokens, COLS=CFG.columns;
+  var theme='light';
+  var col=COLS.length?COLS[0]:null;
+
+  function colorsFor(c,th){var cb=COLORBY[c]; if(!cb) return null;
+    var p=PAL[th]; return cb.codes.map(function(k){return p[k%p.length];});}
+  function plotLayout(th){var t=TOK[th];
+    var L={paper_bgcolor:t.panel, plot_bgcolor:t.panel, 'font.color':t.ink};
+    if(DIMS===3){['xaxis','yaxis','zaxis'].forEach(function(a){
+      L['scene.'+a+'.gridcolor']=t.grid; L['scene.'+a+'.zerolinecolor']=t.border;
+      L['scene.'+a+'.backgroundcolor']=t.plane; L['scene.'+a+'.showbackground']=true;
+      L['scene.'+a+'.color']=t.ink2;});}
+    else{['xaxis','yaxis'].forEach(function(a){
+      L[a+'.gridcolor']=t.grid; L[a+'.zerolinecolor']=t.border;
+      L[a+'.linecolor']=t.border; L[a+'.color']=t.ink2;});}
+    return L;}
+  function renderLegend(){var el=document.getElementById('legend');
+    if(!col||!COLORBY[col]){el.innerHTML=''; return;}
+    var cb=COLORBY[col], p=PAL[theme];
+    el.innerHTML=cb.cats.map(function(c,i){
+      return '<span class="lg"><span class="sw" style="background:'+p[i%p.length]+'"></span>'+
+        String(c).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span>';}).join('');}
+  function applyTheme(){
+    document.documentElement.setAttribute('data-theme',theme);
+    var btns=document.querySelectorAll('#themeseg button');
+    for(var i=0;i<btns.length;i++){btns[i].classList.toggle('on',btns[i].dataset.t===theme);}
+    if(window.Plotly){
+      Plotly.relayout('plot',plotLayout(theme));
+      var cs=colorsFor(col,theme); if(cs) Plotly.restyle('plot',{'marker.color':[cs]});
+    }
+    renderLegend();}
+  function setCol(c){col=c;
+    if(window.Plotly){var cs=colorsFor(col,theme); if(cs) Plotly.restyle('plot',{'marker.color':[cs]});}
+    renderLegend();}
+
+  var sel=document.getElementById('colorby');
+  if(COLS.length){
+    COLS.forEach(function(c){var o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o);});
+    sel.value=col;
+    sel.addEventListener('change',function(e){setCol(e.target.value);});
+  }else{document.getElementById('colorbyctl').style.display='none';}
+
+  document.getElementById('themeseg').addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b) return; theme=b.dataset.t; applyTheme();});
+
+  applyTheme();
+})();
+</script>
+</body>
+</html>
+"""
 
 
 def _codes(series: pd.Series) -> list[int]:
@@ -201,10 +411,8 @@ def _word_cross_subject_stats(
 ) -> dict[str, dict[str, float]]:
     """Per-word mean pairwise cosine of its per-subject centroids.
 
-    For each surface word read by at least `min_subjects` subjects, the mean
-    embedding per subject is computed and the mean of the upper-triangular
-    pairwise cosine similarities across those subjects is returned -- the core
-    "does this word mean the same thing in different brains?" statistic.
+    For each surface word read by at least `min_subjects` subjects, the mean embedding per subject is computed and the mean of the upper-triangular
+    pairwise cosine similarities across those subjects is returned -- the core "does this word mean the same thing in different brains?" statistic.
 
     Args:
         emb (np.ndarray): Embeddings `(n, d)`.
@@ -253,23 +461,18 @@ def _analogy_candidates(
 ) -> list[dict]:
     """Enumerates subject-transfer analogy candidates the browser scores as hit/miss.
 
-    A candidate is a surface word `t` read by at least two subjects, together with
-    an ordered source/target pair `A -> B` that both read it. In the browser each
-    becomes the analogy `v = emb(t, A) - centroid(A) + centroid(B)`, scored a HIT
-    when `v`'s nearest neighbour (cosine, over the reduced vectors) is `t` as read
-    by `B`. This removes all manual "which word / which person" guessing: every
-    viable analogy is pre-listed and the leaderboard ranks them.
+    A candidate is a surface word `t` read by at least two subjects, together with an ordered source/target pair `A -> B` that both read it. In the browser each
+    becomes the analogy `v = emb(t, A) - centroid(A) + centroid(B)`, scored a HIT when `v`'s nearest neighbour (cosine, over the reduced vectors) is `t` as read
+    by `B`. This removes all manual "which word / which person" guessing: every viable analogy is pre-listed and the leaderboard ranks them.
 
     Args:
         words (np.ndarray): Surface word per row `(n,)` (already subsampled).
         subjects (np.ndarray): Subject id per row `(n,)`.
-        cap (int): Maximum number of candidates (random subset if exceeded), to
-            keep the in-browser scan fast and the file small.
+        cap (int): Maximum number of candidates (random subset if exceeded), to keep the in-browser scan fast and the file small.
         seed (int): Sampling seed.
 
     Returns:
-        list[dict]: `{t, A, B, ai, bi}` rows where `ai`/`bi` are the first-occurrence
-            row indices of `(t, A)` and `(t, B)` in the subsampled arrays.
+        list[dict]: `{t, A, B, ai, bi}` rows where `ai`/`bi` are the first-occurrence row indices of `(t, A)` and `(t, B)` in the subsampled arrays.
     """
     words = np.asarray(words).astype(str)
     subjects = np.asarray(subjects).astype(str)
@@ -324,6 +527,57 @@ def _centroid_blocks(
         reduced[str(s)] = _round(_project(vec, mean, vt, _REDUCED_DIMS)[0], 5)
         proj[str(s)] = _round(_project(vec, mean, vt, 3)[0], 4)
     return reduced, proj
+
+
+def _sentence_index(meta: pd.DataFrame, max_sentences: int = 160) -> list[dict]:
+    """Per-sentence, per-subject ordered token positions for the sentence view.
+
+    Groups tokens into `(subject, sentence_idx)` readings, orders each by `word_idx`, then aggregates readings of the *same sentence text* across subjects.
+    The result lets the explorer draw one path per reader through the space for a single shared sentence, so you can see whether different people traverse
+    the same sentence the same way.
+
+    Args:
+        meta (pd.DataFrame): Aligned token metadata (row order matches the embedding).
+        max_sentences (int): Cap on returned sentences (multi-subject, longer ones preferred).
+
+    Returns:
+        list[dict]: `[{id, label, n_subj, by_subj: {subject: [row positions in reading order]}}]`.
+
+    """
+    needed = {'subject', 'sentence_idx', 'word_idx', 'word'}
+    if not needed.issubset(meta.columns):
+        return []
+    subj = meta['subject'].astype(str).to_numpy()
+    sidx = meta['sentence_idx'].fillna(-1).astype(int).to_numpy()
+    widx = meta['word_idx'].fillna(-1).astype(int).to_numpy()
+    words = meta['word'].astype(str).to_numpy()
+
+    groups: dict[tuple[str, int], list[int]] = {}
+    for i in range(len(meta)):
+        if sidx[i] < 0:
+            continue
+        groups.setdefault((subj[i], int(sidx[i])), []).append(i)
+
+    by_text: dict[str, dict] = {}
+    for (s, _si), idxs in groups.items():
+        idxs.sort(key=lambda i: widx[i])
+        text = ' '.join(w for w in words[idxs] if w).strip()
+        if len(idxs) < 2 or not text:
+            continue
+        rec = by_text.setdefault(text.lower(), {'label': text, 'by_subj': {}})
+        rec['by_subj'][str(s)] = [int(i) for i in idxs]
+
+    out = list(by_text.values())
+    out.sort(
+        key=lambda r: (len(r['by_subj']), sum(len(v) for v in r['by_subj'].values())), reverse=True
+    )
+    out = out[:max_sentences]
+    for j, rec in enumerate(out):
+        rec['id'] = j
+        rec['n_subj'] = len(rec['by_subj'])
+        label = rec['label']
+        rec['label'] = (label[:52] + '…') if len(label) > 53 else label
+    return out
 
 
 def _build_payload(
@@ -401,6 +655,7 @@ def _build_payload(
         'word_stats': _word_cross_subject_stats(emb, words, subjects),
         'random_baseline': _random_baseline_cos(emb, seed=seed),
         'analogy_candidates': _analogy_candidates(words, subjects, seed=seed),
+        'sentences': _sentence_index(meta),
         'probe': probe_scores or None,
         'emergence': _json_safe(emergence) if emergence else None,
         'has_eeg_only': has_eeg,
@@ -423,48 +678,33 @@ def thought_space_explorer_html(
 ) -> Path:
     """Writes the flagship self-contained interactive "Thought-Space Explorer".
 
-    One offline `.html` file (Plotly embedded) designed to be interpretable in
-    seconds. A plain-language "What am I looking at?" guide and two always-on
-    verdict banners -- "Same word across subjects" and "Do meanings cluster across
-    people?" -- answer the headline question up front (both computed in-browser
-    from the embedded reduced vectors, honestly reporting *clustered / weakly /
-    not*). Below sit five wired-up views: (1) one subject / many words, (2) one
-    word across many brains (with a cross-subject cosine statistic), (3) thought
-    arithmetic `emb(t,A) - centroid(A) + centroid(B)` fronted by an auto-computed,
-    sortable analogy *leaderboard* (so the viewer never has to guess which word or
-    person), (4) a semantic-neighbourhood view (k nearest neighbours of a chosen
-    word + a coherence stat), and (5) an eye-tracking vs EEG-only toggle. Live
-    controls (colour-by, visible subjects, word filter, 2-D/3-D, theme) drive
-    everything via `Plotly.react`. Falls back to a static PCA PNG (mirroring
-    :func:`embedding_explorer_html`) when Plotly is unavailable.
+    One offline `.html` file (Plotly embedded) designed to be interpretable in seconds. A plain-language "What am I looking at?" guide and two always-on
+    verdict banners -- "Same word across subjects" and "Do meanings cluster across people?" -- answer the headline question up front (both computed in-browser
+    from the embedded reduced vectors, honestly reporting *clustered / weakly / not*). Below sit five wired-up views: (1) one subject / many words, (2) one
+    word across many brains (with a cross-subject cosine statistic), (3) thought arithmetic `emb(t,A) - centroid(A) + centroid(B)` fronted by an auto-computed,
+    sortable analogy *leaderboard* (so the viewer never has to guess which word or person), (4) a semantic-neighbourhood view (k nearest neighbours of a chosen
+    word + a coherence stat), and (5) an eye-tracking vs EEG-only toggle. Live controls (colour-by, visible subjects, word filter, 2-D/3-D, theme) drive
+    everything via `Plotly.react`. Falls back to a static PCA PNG (mirroring `embedding_explorer_html`) when Plotly is unavailable.
 
     Args:
-        emb (np.ndarray): Word-level embeddings `(n_samples, embed_dim)` (EEG +
-            eye-tracking, the primary set).
-        meta (pd.DataFrame): Aligned metadata; recognises `subject, task, word,
-            sentence_idx, word_idx, category, length_band` and optional `word_len,
-            log_freq`. Missing columns degrade gracefully.
+        emb (np.ndarray): Word-level embeddings `(n_samples, embed_dim)` (EEG + eye-tracking, the primary set).
+        meta (pd.DataFrame): Aligned metadata; recognises `subject, task, word, sentence_idx, word_idx, category, length_band` and optional `word_len, log_freq`.
+            Missing columns degrade gracefully.
         out_path (str | Path): Output path (`.html`, or `.png` on fallback).
-        eeg_only_emb (np.ndarray | None): Optional EEG-only embeddings aligned
-            row-for-row with `emb`, enabling the view-4 toggle.
-        centroids (dict | None): Optional `{subject: vector}` full-dim centroid
-            override for the arithmetic offset (else computed from `emb`).
-        probe_scores (dict | None): Optional `word_len` linear-probe scores, e.g.
-            `{'EEG + eye-tracking': 0.72, 'EEG-only': 0.41}`, rendered as a small bar.
+        eeg_only_emb (np.ndarray | None): Optional EEG-only embeddings aligned row-for-row with `emb`, enabling the view-4 toggle.
+        centroids (dict | None): Optional `{subject: vector}` full-dim centroid override for the arithmetic offset (else computed from `emb`).
+        probe_scores (dict | None): Optional `word_len` linear-probe scores, e.g.  `{'EEG + eye-tracking': 0.72, 'EEG-only': 0.41}`, rendered as a small bar.
         dims (int): Default projection (3 for 3-D, 2 for 2-D).
         max_points (int): Subsample cap for responsiveness.
         seed (int): Sampling / baseline seed.
         title (str): Page + figure title.
-        emergence (dict | None): Optional canonical, full-embedding-space emergence
-            report from :func:`zte.evaluation.emergence.emergence_report` (the same
-            numbers that land in ``metrics.json``). When supplied, the three verdict
-            banners show these authoritative figures and their ``verdict`` strings as
-            the headline, and label the in-browser reduced-space number a secondary
-            "live estimate (PCA space)". When ``None``, the banners keep today's
-            in-browser estimate as the headline (unchanged behaviour).
+        emergence (dict | None): Optional canonical, full-embedding-space emergence report from `zte.evaluation.emergence.emergence_report` (the same numbers that land in `metrics.json`).
+            When supplied, the three verdict banners show these authoritative figures and their `verdict` strings as the headline, and label the in-browser reduced-space number a secondary
+            "live estimate (PCA space)". When `None`, the banners keep today's in-browser estimate as the headline (unchanged behaviour).
 
     Returns:
         Path: The written path (`.html` when Plotly is available, else `.png`).
+
     """
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -543,218 +783,328 @@ _EXPLORER_TEMPLATE = r"""<!doctype html>
 <script>/*__PLOTLY_JS__*/</script>
 <style>
 :root{
-  --surface:#fcfcfb; --plane:#f4f4f1; --panel:#ffffff;
-  --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
-  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
-  --accent:#2a78d6; --good:#0ca30c; --warn:#eda100; --bad:#e34948;
+  --surface:#ffffff; --plane:#eef1f6; --panel:#ffffff; --panel2:#f7f9fc;
+  --ink:#131720; --ink2:#495264; --muted:#8a93a6;
+  --grid:#e6eaf1; --axis:#c7cdd9; --border:#e3e7ef; --border2:#eef1f6;
+  --accent:#5a4bff; --accent2:#ff4d8d;
+  --good:#0f9d6b; --warn:#e29008; --bad:#e5484d;
+  --shadow-sm:0 1px 2px rgba(19,23,32,.06),0 1px 3px rgba(19,23,32,.04);
+  --shadow:0 2px 6px rgba(19,23,32,.06),0 12px 34px rgba(19,23,32,.09);
+  --ring:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);
 }
 :root[data-theme="dark"]{
-  --surface:#1a1a19; --plane:#0d0d0d; --panel:#202020;
-  --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
-  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.12);
-  --accent:#3987e5; --good:#0ca30c; --warn:#c98500; --bad:#e66767;
+  --surface:#141924; --plane:#0b0e14; --panel:#161b26; --panel2:#1b212e;
+  --ink:#eef2f9; --ink2:#aab4c6; --muted:#78829a;
+  --grid:#232b39; --axis:#333c4d; --border:#232a37; --border2:#1c222e;
+  --accent:#9a86ff; --accent2:#ff77a9;
+  --good:#3ddc97; --warn:#f0b95e; --bad:#ff6b6f;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+  --shadow:0 2px 8px rgba(0,0,0,.4),0 16px 40px rgba(0,0,0,.4);
+  --ring:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{
-  background:var(--plane); color:var(--ink);
-  font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:14px;
-  display:grid; grid-template-columns:340px 1fr; grid-template-rows:100vh;
+  background:
+    radial-gradient(1100px 460px at 12% -8%, color-mix(in srgb,var(--accent) 8%,transparent), transparent 70%),
+    radial-gradient(900px 420px at 108% 4%, color-mix(in srgb,var(--accent2) 7%,transparent), transparent 70%),
+    var(--plane);
+  color:var(--ink);
+  font-family:system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif; font-size:14px;
+  -webkit-font-smoothing:antialiased;
+  display:grid; grid-template-columns:312px 1fr; grid-template-rows:100vh;
 }
-a{color:var(--accent)}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--axis);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+
+/* ---------- left rail ---------- */
 .rail{
-  background:var(--panel); border-right:1px solid var(--border);
-  padding:18px 18px 28px; overflow-y:auto; height:100vh;
+  background:linear-gradient(180deg,var(--panel),var(--panel));
+  border-right:1px solid var(--border);
+  padding:16px 14px 30px; overflow-y:auto; height:100vh;
 }
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:4px}
-.brand h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
-.brand .dot{width:11px;height:11px;border-radius:50%;
-  background:conic-gradient(from 210deg,#2a78d6,#1baf7a,#eda100,#e34948,#4a3aa7,#2a78d6)}
-.sub{color:var(--ink2);font-size:12px;line-height:1.5;margin:6px 0 16px}
-.tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:10px;margin:2px 4px 3px}
+.brand h1{font-size:15px;margin:0;font-weight:700;letter-spacing:-.01em}
+.brand .dot{width:22px;height:22px;border-radius:7px;flex:none;
+  background:conic-gradient(from 210deg,var(--accent),#1baf7a,var(--warn),var(--accent2),var(--accent));
+  box-shadow:var(--shadow-sm)}
+.sub{color:var(--muted);font-size:11.5px;line-height:1.5;margin:0 4px 14px}
+.eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);
+  font-weight:700;margin:0 4px 8px}
+
+/* mode cards (was .tabs/.tab) */
+.tabs{display:flex;flex-direction:column;gap:7px;margin-bottom:14px}
 .tab{
-  border:1px solid var(--border); background:transparent; color:var(--ink2);
-  border-radius:9px; padding:9px 8px; font-size:12px; cursor:pointer; text-align:left;
-  line-height:1.25; transition:all .12s;
+  display:flex;align-items:center;gap:11px;
+  border:1px solid var(--border); background:var(--panel2); color:var(--ink);
+  border-radius:12px; padding:10px 11px; cursor:pointer; text-align:left;
+  transition:transform .12s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease;
 }
-.tab b{display:block;color:var(--ink);font-size:12.5px;font-weight:600}
-.tab:hover{border-color:var(--axis)}
-.tab.on{border-color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,transparent)}
-.tab.on b{color:var(--accent)}
-.group{border-top:1px solid var(--border);padding:14px 0}
+.tab .ico{width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;
+  font-size:15px;background:var(--panel);border:1px solid var(--border);color:var(--ink2);
+  transition:all .15s}
+.tab b{display:block;font-size:12.5px;font-weight:650;line-height:1.2}
+.tab .d{display:block;font-size:11px;color:var(--muted);line-height:1.25;margin-top:1px}
+.tab:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm);border-color:var(--axis)}
+.tab.on{border-color:transparent;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,var(--panel)),
+    color-mix(in srgb,var(--accent2) 12%,var(--panel)));
+  box-shadow:var(--shadow-sm),var(--ring)}
+.tab.on .ico{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent}
+.tab.on b{color:var(--ink)}
+
+.group{border-top:1px dashed var(--border);padding:13px 2px}
 .group:first-of-type{border-top:none}
-.group h3{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);
-  margin:0 0 10px;font-weight:650}
-.row{margin-bottom:11px}
-label.lab{display:block;font-size:12px;color:var(--ink2);margin-bottom:5px}
+.group h3{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+  margin:0 0 10px;font-weight:700;display:flex;align-items:center;gap:7px}
+.group.ctx h3::before{content:"";width:7px;height:7px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.row{margin-bottom:10px}
+label.lab{display:block;font-size:11.5px;color:var(--ink2);margin-bottom:5px;font-weight:550}
 select,input[type=text],input[type=number]{
-  width:100%; padding:7px 9px; border-radius:8px; border:1px solid var(--border);
+  width:100%; padding:8px 10px; border-radius:9px; border:1px solid var(--border);
   background:var(--surface); color:var(--ink); font-size:13px; font-family:inherit;
+  transition:border-color .12s,box-shadow .12s;
 }
-.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.seg button{border:none;background:transparent;color:var(--ink2);padding:6px 14px;
-  font-size:12.5px;cursor:pointer;font-family:inherit}
-.seg button.on{background:var(--accent);color:#fff}
+select:focus,input:focus{outline:none;border-color:var(--accent);box-shadow:var(--ring)}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--surface)}
+.seg button{border:none;background:transparent;color:var(--ink2);padding:7px 15px;
+  font-size:12.5px;cursor:pointer;font-family:inherit;font-weight:550;transition:all .12s}
+.seg button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
 .seg button:disabled{opacity:.4;cursor:not-allowed}
 .checks{display:flex;flex-wrap:wrap;gap:6px}
 .chk{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
-  border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;user-select:none}
+  border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;user-select:none;
+  background:var(--surface);transition:border-color .12s}
+.chk:hover{border-color:var(--axis)}
 .chk input{accent-color:var(--accent)}
-.chk .sw{width:9px;height:9px;border-radius:50%}
+.chk .sw{width:10px;height:10px;border-radius:50%}
+.hint{display:flex;gap:8px;align-items:flex-start;font-size:11px;color:var(--muted);
+  line-height:1.45;margin-top:8px;background:var(--panel2);border:1px solid var(--border2);
+  border-radius:9px;padding:8px 10px}
+.hint b{color:var(--ink2)} .hint .i{flex:none;opacity:.8}
 .hide{display:none!important}
+.mini{width:100%;margin-top:2px;border:1px dashed var(--border);background:transparent;
+  color:var(--ink2);border-radius:9px;padding:7px;font-size:12px;font-weight:600;cursor:pointer;
+  font-family:inherit;transition:all .12s}
+.mini:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ---------- main ---------- */
 .main{display:flex;flex-direction:column;height:100vh;min-width:0}
-.topbar{display:flex;align-items:center;gap:12px;padding:10px 20px;
-  border-bottom:1px solid var(--border);background:var(--panel)}
-.topbar .story{font-size:12.5px;color:var(--ink2);line-height:1.45;flex:1;min-width:0}
-.topbar .story b{color:var(--ink)}
-.stat{display:flex;gap:16px;align-items:center}
-.stat .cell{text-align:right}
-.stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
-.stat .v{font-size:18px;font-weight:650;font-variant-numeric:tabular-nums}
+.topbar{display:flex;align-items:center;gap:12px;padding:12px 18px;
+  border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--panel) 82%,transparent);
+  backdrop-filter:saturate(1.2) blur(6px)}
+.topbar .brandmini{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px}
+.topbar .spacer{flex:1}
+.chipbtn{border:1px solid var(--border);background:var(--panel);color:var(--ink2);
+  border-radius:9px;padding:7px 12px;font-size:12px;cursor:pointer;font-family:inherit;
+  white-space:nowrap;font-weight:550;transition:all .12s;box-shadow:var(--shadow-sm)}
+.chipbtn:hover{border-color:var(--axis);color:var(--ink)}
+.theme-btn{border:1px solid var(--border);background:var(--panel);color:var(--ink2);
+  border-radius:9px;padding:7px 11px;font-size:12px;cursor:pointer;font-family:inherit;
+  box-shadow:var(--shadow-sm)}
+
+/* capability strip (was .banners/.banner) */
+.banners{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;padding:13px 18px 3px}
+.banner{position:relative;background:var(--panel);border:1px solid var(--border);
+  border-radius:13px;padding:12px 14px;box-shadow:var(--shadow-sm);overflow:hidden;
+  transition:transform .12s,box-shadow .15s}
+.banner::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--muted)}
+.banner.good::before{background:linear-gradient(var(--good),color-mix(in srgb,var(--good) 60%,#000))}
+.banner.warn::before{background:var(--warn)} .banner.bad::before{background:var(--bad)}
+.banner:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+.banner .bt{font-size:11.5px;color:var(--ink2);font-weight:650;margin-bottom:7px;
+  display:flex;align-items:center;gap:6px}
+.banner .brow{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.banner .bnum{font-size:24px;font-weight:720;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.banner .bsub{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.banner .bcap{font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:7px;
+  max-height:0;opacity:0;overflow:hidden;transition:max-height .2s,opacity .2s,margin .2s;margin-top:0}
+.banner:hover .bcap{max-height:120px;opacity:1;margin-top:7px}
+.bsrc{display:none}
+.verdict{display:inline-flex;align-items:center;gap:5px;padding:2px 9px 2px 7px;border-radius:999px;
+  font-size:11px;font-weight:700;letter-spacing:.01em}
+.verdict::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.verdict.good{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+.verdict.warn{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.verdict.bad{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+.verdict.na{background:color-mix(in srgb,var(--muted) 16%,transparent);color:var(--muted)}
+
+/* insight card (story + stats) */
+.insight{display:flex;align-items:center;gap:16px;margin:12px 18px 2px;padding:12px 16px;
+  background:var(--panel);border:1px solid var(--border);border-radius:13px;box-shadow:var(--shadow-sm)}
+.insight .story{font-size:12.5px;color:var(--ink2);line-height:1.5;flex:1;min-width:0}
+.insight .story b{color:var(--ink);font-weight:650}
+.stat{display:flex;gap:14px;align-items:center;flex:none}
+.stat .cell{text-align:right;padding-left:14px;border-left:1px solid var(--border)}
+.stat .cell:first-child{border-left:none;padding-left:0}
+.stat .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.stat .v{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
 .stat .v.good{color:var(--good)} .stat .v.warn{color:var(--warn)} .stat .v.bad{color:var(--bad)}
-.chipbtn{border:1px solid var(--border);background:transparent;color:var(--ink2);
-  border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}
-.chipbtn:hover{border-color:var(--axis)}
-.guide{margin:10px 20px 0;background:var(--panel);border:1px solid var(--border);
-  border-radius:12px;padding:13px 16px;font-size:12.5px;color:var(--ink2);line-height:1.55}
+
+.guide{margin:11px 18px 0;background:var(--panel);border:1px solid var(--border);
+  border-radius:13px;padding:14px 17px;font-size:12.5px;color:var(--ink2);line-height:1.6;box-shadow:var(--shadow-sm)}
 .guide b{color:var(--ink)}
-.guide .lgd{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px;font-size:12px}
+.guide .lgd{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:11px;font-size:12px}
 .guide .lg{display:inline-flex;align-items:center;gap:6px}
 .guide .lg .sw{width:11px;height:11px;border-radius:50%}
-.banners{display:flex;gap:12px;padding:12px 20px 4px;flex-wrap:wrap}
-.banner{flex:1;min-width:250px;background:var(--panel);border:1px solid var(--border);
-  border-radius:12px;padding:12px 14px}
-.banner .bt{font-size:12px;color:var(--ink);font-weight:640;margin-bottom:7px}
-.banner .brow{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.banner .bnum{font-size:21px;font-weight:660;font-variant-numeric:tabular-nums}
-.banner .bsub{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
-.banner .bcap{font-size:11px;color:var(--muted);line-height:1.5;margin-top:7px}
-.bsrc{flex-basis:100%;font-size:10.5px;color:var(--muted);line-height:1.45;padding:0 4px}
-.verdict{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:650}
-.verdict.good{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
-.verdict.warn{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
-.verdict.bad{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
-.verdict.na{background:color-mix(in srgb,var(--muted) 18%,transparent);color:var(--muted)}
-.plotwrap{position:relative;flex:1;min-height:120px}
+
+.plotwrap{position:relative;flex:1;min-height:140px;margin:12px 12px 0;
+  background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  box-shadow:var(--shadow);overflow:hidden}
 #plot{width:100%;height:100%}
+
 .bottom{border-top:1px solid var(--border);background:var(--panel);
-  max-height:38vh;overflow:auto;padding:9px 16px 12px}
-.lbhead{display:flex;align-items:center;gap:14px;margin:1px 0 8px;flex-wrap:wrap}
-.lbhead .hh{font-size:12.5px;font-weight:650;color:var(--ink)}
-.lbhead .cap{font-size:11px;color:var(--muted);flex:1;min-width:180px;line-height:1.4}
-.lbhead .big{font-size:12.5px;font-weight:650;font-variant-numeric:tabular-nums}
-.lbhead .big.good{color:var(--good)} .lbhead .big.warn{color:var(--warn)} .lbhead .big.bad{color:var(--bad)}
+  max-height:38vh;overflow:auto;padding:11px 18px 14px;margin:12px 0 0}
+.lbhead{display:flex;align-items:center;gap:13px;margin:1px 0 9px;flex-wrap:wrap}
+.lbhead .hh{font-size:12.5px;font-weight:700;color:var(--ink)}
+.lbhead .cap{font-size:11px;color:var(--muted);flex:1;min-width:180px;line-height:1.45}
+.lbhead .big{font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums;
+  padding:3px 10px;border-radius:999px;background:var(--panel2)}
+.lbhead .big.good{color:var(--good);background:color-mix(in srgb,var(--good) 12%,transparent)}
+.lbhead .big.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.lbhead .big.bad{color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
 table.tbl{width:100%;border-collapse:collapse;font-size:12px}
-table.tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:10.5px;
-  text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);
-  padding:4px 8px;cursor:pointer;user-select:none;white-space:nowrap}
+table.tbl th{text-align:left;color:var(--muted);font-weight:650;font-size:10px;
+  text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border);
+  padding:5px 8px;cursor:pointer;user-select:none;white-space:nowrap}
 table.tbl th.up::after{content:" \25B2";color:var(--accent)}
 table.tbl th.down::after{content:" \25BC";color:var(--accent)}
-table.tbl td{padding:4px 8px;border-bottom:1px solid var(--border);color:var(--ink2)}
+table.tbl td{padding:5px 8px;border-bottom:1px solid var(--border2);color:var(--ink2)}
 table.tbl td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
 table.tbl tr.clk{cursor:pointer}
-table.tbl tr.clk:hover{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+table.tbl tr.clk:hover{background:color-mix(in srgb,var(--accent) 8%,transparent)}
 .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;
-  font-weight:650;font-variant-numeric:tabular-nums}
-.pill.hit{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
-.pill.miss{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
-.theme-btn{border:1px solid var(--border);background:transparent;color:var(--ink2);
-  border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+  font-weight:700;font-variant-numeric:tabular-nums}
+.pill.hit{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+.pill.miss{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
 .note{font-size:11.5px;color:var(--muted);line-height:1.5;margin-top:6px}
-#barwrap .cap{font-size:11px;color:var(--muted);padding:2px 4px 4px}
+#barwrap .cap{font-size:11px;color:var(--muted);padding:2px 4px 6px}
 #bar{height:120px}
-@media (max-width:860px){
+@media (max-width:900px){
   body{grid-template-columns:1fr;grid-template-rows:auto 1fr}
-  .rail{height:auto;max-height:46vh}
+  .rail{height:auto;max-height:48vh}
+  .banners{grid-template-columns:1fr}
+  .insight{flex-wrap:wrap}
 }
 </style>
 </head>
 <body>
 <aside class="rail">
   <div class="brand"><span class="dot"></span><h1>Thought-Space Explorer</h1></div>
-  <div class="sub">Word-level ZTE embeddings, projected with PCA. The question throughout:
-    does this neural space organise by <b>what was read</b> (good) or by
-    <b>who read it</b> (a nuisance)?</div>
+  <div class="sub">Every point is one <b>word</b> read by one <b>person</b>, placed by their EEG.
+    Does the space organise by <b>what</b> was read, or by <b>who</b> read it?</div>
 
+  <div class="eyebrow">Explore</div>
   <div class="tabs" id="tabs"></div>
 
+  <div class="group ctx v-ctrl v1">
+    <h3>Spotlight a reader</h3>
+    <div class="row"><label class="lab">Reader</label><select id="subj1"></select></div>
+    <div class="row"><label class="lab">Shade by</label><select id="metric1"></select></div>
+    <div class="hint"><span class="i">◔</span><span>Everyone else fades to grey so one reader's
+      cloud stands out.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v2 hide">
+    <h3>One word, many brains</h3>
+    <div class="row"><label class="lab">Word</label>
+      <input type="text" id="word2" list="wordlist" autocomplete="off" placeholder="type a word…"></div>
+    <button class="mini" id="rand2">&#127922; Try a random word</button>
+    <div class="hint"><span class="i">◎</span><span>Every occurrence lights up by reader. The stats
+      show how alike it is <b>across brains</b> vs unrelated thoughts.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v3 hide">
+    <h3>Thought arithmetic</h3>
+    <div class="row"><label class="lab">Word <i>t</i></label>
+      <input type="text" id="wordT" list="wordlist" autocomplete="off"></div>
+    <div class="row"><label class="lab">From brain A</label><select id="subjA"></select></div>
+    <div class="row"><label class="lab">To brain B</label><select id="subjB"></select></div>
+    <div class="hint"><span class="i">➜</span><span><b>emb(t,A) &minus; A + B</b>. A hit means the
+      result's nearest neighbour is <i>t</i> as read by B &mdash; or click a leaderboard row below.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v4 hide">
+    <h3>Nearest thoughts</h3>
+    <div class="row"><label class="lab">Word</label>
+      <input type="text" id="wordN" list="wordlist" autocomplete="off"></div>
+    <div class="row"><label class="lab">Read by</label><select id="subjN"></select></div>
+    <div class="row"><label class="lab">Neighbours (k)</label>
+      <input type="number" id="kN" min="3" max="50" step="1"></div>
+    <button class="mini" id="rand4">&#127922; Try a random word</button>
+    <div class="hint"><span class="i">◈</span><span>The k closest points by cosine. Coherence =
+      how many share the <b>same word / category</b> vs chance.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v5 hide">
+    <h3>EEG vs gaze</h3>
+    <div class="row"><label class="lab">Signal set</label>
+      <span class="seg" id="embset">
+        <button data-s="et">EEG + gaze</button><button data-s="eeg">EEG-only</button>
+      </span>
+    </div>
+    <div class="hint"><span class="i">&#128065;</span><span id="v5note"></span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v6 hide">
+    <h3>Sentence journeys</h3>
+    <div class="row"><label class="lab">Sentence</label><select id="sent6"></select></div>
+    <button class="mini" id="rand6">&#127922; Try a random sentence</button>
+    <div class="hint"><span class="i">✎</span><span>Each coloured path is one reader's route through
+      the space, word by word. Overlapping paths = readers agree.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v7 hide">
+    <h3>Same meaning, everyone</h3>
+    <div class="row"><label class="lab">Meaning (category)</label><select id="cat7"></select></div>
+    <div class="hint"><span class="i">◇</span><span>Every word of this meaning lights up by reader.
+      Subject-invariant means they cluster <b>no matter who read them</b> &mdash; the north star.</span></div>
+  </div>
+
+  <div class="group ctx v-ctrl v8 hide">
+    <h3>Calibrate a new brain</h3>
+    <div class="row"><label class="lab">Held-out reader</label><select id="subjH"></select></div>
+    <div class="row"><label class="lab">Anchor words</label>
+      <input type="number" id="kAnchor" min="3" max="30" step="1"></div>
+    <button class="mini" id="calbtn">Calibrate ▶</button>
+    <div class="hint"><span class="i">⌖</span><span>A few shared <b>anchor</b> words fit an alignment that
+      snaps this reader into the shared frame &mdash; no retraining. Proof-of-concept in the projected space.</span></div>
+  </div>
+
   <div class="group">
-    <h3>Projection &amp; colour</h3>
+    <h3>Display</h3>
     <div class="row"><label class="lab">Colour points by</label><select id="colorby"></select></div>
     <div class="row"><label class="lab">Dimensions</label>
       <span class="seg" id="dims">
         <button data-d="2">2-D</button><button data-d="3">3-D</button>
       </span>
     </div>
-  </div>
-
-  <div class="group">
-    <h3>Visible subjects</h3>
-    <div class="checks" id="subjchecks"></div>
-  </div>
-
-  <div class="group v-ctrl v1">
-    <h3>View 1 &middot; one subject</h3>
-    <div class="row"><label class="lab">Highlight subject</label><select id="subj1"></select></div>
-    <div class="row"><label class="lab">Shade highlighted by</label><select id="metric1"></select></div>
-    <div class="note">Everyone else fades to grey so one reader's cloud stands out.</div>
-  </div>
-
-  <div class="group v-ctrl v2 hide">
-    <h3>View 2 &middot; one word, many brains</h3>
-    <div class="row"><label class="lab">Word</label>
-      <input type="text" id="word2" list="wordlist" autocomplete="off"></div>
-    <div class="note">Every occurrence of this word lights up, coloured by reader. The stat bar
-      compares how alike the word is <b>across brains</b> vs unrelated thoughts.</div>
-  </div>
-
-  <div class="group v-ctrl v3 hide">
-    <h3>View 3 &middot; thought arithmetic</h3>
-    <div class="row"><label class="lab">Word <i>t</i></label>
-      <input type="text" id="wordT" list="wordlist" autocomplete="off"></div>
-    <div class="row"><label class="lab">Source brain A</label><select id="subjA"></select></div>
-    <div class="row"><label class="lab">Target brain B</label><select id="subjB"></select></div>
-    <div class="note"><b>v = emb(t,A) &minus; centroid(A) + centroid(B)</b>. The arrow re-aims
-      A's thought at B. A hit means v's nearest neighbour is <i>t</i> as read by B. The
-      <b>leaderboard below</b> ranks every viable analogy for you &mdash; click a row.</div>
-  </div>
-
-  <div class="group v-ctrl v4 hide">
-    <h3>View 4 &middot; nearest thoughts</h3>
-    <div class="row"><label class="lab">Word</label>
-      <input type="text" id="wordN" list="wordlist" autocomplete="off"></div>
-    <div class="row"><label class="lab">Read by</label><select id="subjN"></select></div>
-    <div class="row"><label class="lab">Neighbours (k)</label>
-      <input type="number" id="kN" min="3" max="50" step="1"></div>
-    <div class="note">The k closest points in ZTE space (cosine). Coherence = how many are the
-      <b>same word or category</b> vs chance &mdash; the concrete "are similar thoughts near
-      each other?" test.</div>
-  </div>
-
-  <div class="group v-ctrl v5 hide">
-    <h3>View 5 &middot; eye-tracking's role</h3>
-    <div class="row"><label class="lab">Signal set</label>
-      <span class="seg" id="embset">
-        <button data-s="et">EEG + eye-tracking</button><button data-s="eeg">EEG-only</button>
-      </span>
-    </div>
-    <div class="note" id="v5note"></div>
-  </div>
-
-  <div class="group">
-    <button class="theme-btn" id="themebtn">Toggle light / dark</button>
+    <div class="row"><label class="lab">Visible readers</label>
+      <div class="checks" id="subjchecks"></div></div>
+    <button class="mini" id="deidentbtn" style="margin-top:9px">▶ Remove reader identity</button>
+    <div class="hint"><span class="i">✦</span><span>Animate the space with each reader&rsquo;s signature
+      subtracted &mdash; watch the clouds merge (works in By reader / One word / Meaning).</span></div>
   </div>
 </aside>
 
 <main class="main">
   <div class="topbar">
-    <button class="chipbtn" id="guidebtn">Hide guide</button>
+    <span class="brandmini"><span class="dot" style="width:17px;height:17px;border-radius:5px"></span>&nbsp;ZTE space</span>
+    <div class="spacer"></div>
+    <button class="chipbtn" id="guidebtn">What am I looking at?</button>
+    <button class="theme-btn" id="themebtn">&#9680; Theme</button>
+  </div>
+
+  <div class="banners" id="banners"></div>
+
+  <div class="insight">
     <div class="story" id="story"></div>
     <div class="stat" id="statbox"></div>
   </div>
 
-  <div class="guide" id="guide"></div>
-  <div class="banners" id="banners"></div>
+  <div class="guide hide" id="guide"></div>
 
   <div class="plotwrap"><div id="plot"></div></div>
 
@@ -764,10 +1114,8 @@ table.tbl tr.clk:hover{background:color-mix(in srgb,var(--accent) 9%,transparent
         <span class="hh">Auto-analogy leaderboard</span>
         <span class="big" id="hitrate"></span>
         <button class="chipbtn" id="surprise">Surprise me &rarr;</button>
-        <span class="cap">Every word read by &ge;2 people, transferred A&rarr;B via
-          <b>v = emb(t,A) &minus; centroid(A) + centroid(B)</b>. <b>Hit</b> = v's nearest neighbour
-          is <i>t</i> read by B. <b>rank</b> = position of the true target among B's points.
-          Click a row to draw it.</span>
+        <span class="cap">Every word read by &ge;2 people, transferred A&rarr;B.
+          <b>Hit</b> = the result's nearest neighbour is <i>t</i> read by B. Click a row to draw it.</span>
       </div>
       <table class="tbl" id="leaderboard"></table>
     </div>
@@ -775,15 +1123,14 @@ table.tbl tr.clk:hover{background:color-mix(in srgb,var(--accent) 9%,transparent
       <div class="lbhead">
         <span class="hh">Nearest thoughts</span>
         <span class="big" id="coherence"></span>
-        <span class="cap">k nearest points to the chosen token by cosine over the reduced ZTE
-          vectors. <b>same-word / same-category</b> shares are compared to their chance rates
-          (how common that word / category is overall).</span>
+        <span class="cap">k nearest points by cosine. <b>same-word / same-category</b> shares are
+          compared to how common that word / category is overall (chance).</span>
       </div>
       <table class="tbl" id="neightable"></table>
     </div>
     <div id="barwrap" class="hide">
       <div class="cap">Linear-probe accuracy / R&sup2; on <b>word length</b> &mdash; a decodable
-        content attribute, higher = more content carried.</div>
+        content attribute; higher = more content carried.</div>
       <div id="bar"></div>
     </div>
   </div>
@@ -854,7 +1201,13 @@ const state = {
   subjN: 'any',
   kN: 12,
   embSet:'et',
-  guide:true,
+  sent6:0,
+  cat7:(DOMAINS['category']&&DOMAINS['category'][0])||'',
+  deident:0,
+  subjH:P.subjects[0],
+  kAnchor:8,
+  calT:0,
+  guide:false,
   theme: (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light',
   lbSort:'default', lbDir:-1,
 };
@@ -1142,6 +1495,103 @@ function segment(a,b,o){
   if(is3) t.z=[a[2],b[2]];
   return t;
 }
+function avg(a){let s=0;for(const x of a)s+=x;return a.length?s/a.length:0;}
+function pathTrace(seq,o){
+  const is3=state.dims===3;
+  const t={type:is3?'scatter3d':'scatter',mode:'lines+markers',
+    x:pick(CUR.x,seq),y:pick(CUR.y,seq),text:seq.map(hover),hoverinfo:'text',
+    line:{width:is3?4:3,color:o.color,shape:'linear'},
+    marker:{size:is3?4.6:9,color:o.color,line:{width:1.4,color:INK[state.theme].paper}},
+    name:o.name,showlegend:o.showlegend!==false};
+  if(is3) t.z=pick(CUR.z,seq);
+  return t;
+}
+function polyline(pts,o){
+  const is3=state.dims===3;
+  const t={type:is3?'scatter3d':'scatter',mode:'lines',
+    x:pts.map(p=>p[0]),y:pts.map(p=>p[1]),hoverinfo:'skip',showlegend:false,
+    line:{width:o.width||2,color:o.color,dash:o.dash||'dot'}};
+  if(is3) t.z=pts.map(p=>p[2]);
+  return t;
+}
+function categoryCohesion(cat){
+  const pool=[]; for(let i=0;i<N;i++) if(M.category[i]===cat && state.visible.has(M.subject[i])) pool.push(i);
+  const subs=new Set(pool.map(i=>M.subject[i]));
+  let s=0,c=0;
+  for(let t=0;t<3000 && pool.length>1;t++){
+    const i=pool[(Math.random()*pool.length)|0], j=pool[(Math.random()*pool.length)|0];
+    if(i!==j && M.subject[i]!==M.subject[j]){ s+=dot(RN[i],RN[j]); c++; } }
+  return {cos:c?s/c:null, nsubj:subs.size, n:pool.length};
+}
+// ---- anchor-calibration (3-D Procrustes / Kabsch) for the "new brain" demo ----
+function _t3(M){return [[M[0][0],M[1][0],M[2][0]],[M[0][1],M[1][1],M[2][1]],[M[0][2],M[1][2],M[2][2]]];}
+function _m3(A,B){const R=[[0,0,0],[0,0,0],[0,0,0]];for(let i=0;i<3;i++)for(let j=0;j<3;j++){let s=0;for(let k=0;k<3;k++)s+=A[i][k]*B[k][j];R[i][j]=s;}return R;}
+function _det3(M){return M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])-M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])+M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);}
+function _jac3(A0){const A=A0.map(r=>r.slice());let V=[[1,0,0],[0,1,0],[0,0,1]];
+  for(let it=0;it<60;it++){let p=0,q=1,mx=Math.abs(A[0][1]);
+    if(Math.abs(A[0][2])>mx){mx=Math.abs(A[0][2]);p=0;q=2;}
+    if(Math.abs(A[1][2])>mx){mx=Math.abs(A[1][2]);p=1;q=2;}
+    if(mx<1e-14)break;
+    const phi=0.5*Math.atan2(2*A[p][q],A[q][q]-A[p][p]),c=Math.cos(phi),s=Math.sin(phi);
+    for(let i=0;i<3;i++){const a=A[i][p],b=A[i][q];A[i][p]=c*a-s*b;A[i][q]=s*a+c*b;}
+    for(let i=0;i<3;i++){const a=A[p][i],b=A[q][i];A[p][i]=c*a-s*b;A[q][i]=s*a+c*b;}
+    for(let i=0;i<3;i++){const a=V[i][p],b=V[i][q];V[i][p]=c*a-s*b;V[i][q]=s*a+c*b;}}
+  return {vals:[A[0][0],A[1][1],A[2][2]],V};}
+function _svd3(H){const {vals,V}=_jac3(_m3(_t3(H),H));
+  const idx=[0,1,2].sort((a,b)=>vals[b]-vals[a]);
+  const S=idx.map(i=>Math.sqrt(Math.max(0,vals[i])));
+  const Vs=[[0,0,0],[0,0,0],[0,0,0]];for(let r=0;r<3;r++)for(let c=0;c<3;c++)Vs[r][c]=V[r][idx[c]];
+  const U=[[0,0,0],[0,0,0],[0,0,0]];
+  for(let c=0;c<3;c++){const sv=S[c]||1e-9;for(let r=0;r<3;r++){let s=0;for(let k=0;k<3;k++)s+=H[r][k]*Vs[k][c];U[r][c]=s/sv;}}
+  return {U,S,V:Vs};}
+function kabsch(src,tgt){const n=src.length; if(n<3) return null;
+  const cen=a=>{const m=[0,0,0];a.forEach(p=>{m[0]+=p[0];m[1]+=p[1];m[2]+=p[2];});return [m[0]/a.length,m[1]/a.length,m[2]/a.length];};
+  const ms=cen(src),mt=cen(tgt);
+  const P=src.map(p=>[p[0]-ms[0],p[1]-ms[1],p[2]-ms[2]]), Q=tgt.map(p=>[p[0]-mt[0],p[1]-mt[1],p[2]-mt[2]]);
+  const H=[[0,0,0],[0,0,0],[0,0,0]];
+  for(let i=0;i<n;i++)for(let a=0;a<3;a++)for(let b=0;b<3;b++)H[a][b]+=P[i][a]*Q[i][b];
+  const {U,S,V}=_svd3(H); let Rm=_m3(V,_t3(U));
+  if(_det3(Rm)<0){const V2=V.map(r=>r.slice());for(let a=0;a<3;a++)V2[a][2]=-V2[a][2];Rm=_m3(V2,_t3(U));}
+  let vp=0;P.forEach(p=>vp+=p[0]*p[0]+p[1]*p[1]+p[2]*p[2]);
+  return {R:Rm,s:(S[0]+S[1]+S[2])/(vp||1),ms,mt};}
+function applyKabsch(k,p){const d=[p[0]-k.ms[0],p[1]-k.ms[1],p[2]-k.ms[2]];
+  const r=[k.R[0][0]*d[0]+k.R[0][1]*d[1]+k.R[0][2]*d[2],k.R[1][0]*d[0]+k.R[1][1]*d[1]+k.R[1][2]*d[2],k.R[2][0]*d[0]+k.R[2][1]*d[1]+k.R[2][2]*d[2]];
+  return [k.s*r[0]+k.mt[0],k.s*r[1]+k.mt[1],k.s*r[2]+k.mt[2]];}
+function centroidOf(ids){let x=0,y=0,z=0;ids.forEach(i=>{x+=CUR.x[i];y+=CUR.y[i];z+=CUR.z?CUR.z[i]:0;});const n=ids.length||1;return [x/n,y/n,z/n];}
+function calibrationTransform(H,K){
+  const wH={}, wO={};
+  for(let i=0;i<N;i++){ const w=M.word[i]; if(!w)continue;
+    if(M.subject[i]===H){(wH[w]=wH[w]||[]).push(i);} else {(wO[w]=wO[w]||[]).push(i);} }
+  const shared=Object.keys(wH).filter(w=>wO[w]&&wO[w].length);
+  if(shared.length<3) return null;
+  shared.sort((a,b)=>Math.min(wH[b].length,wO[b].length)-Math.min(wH[a].length,wO[a].length));
+  const K2=Math.max(3,Math.min(K|0||8, shared.length-1));
+  const anchors=shared.slice(0,K2), testW=shared.slice(K2);
+  const cal=kabsch(anchors.map(w=>centroidOf(wH[w])), anchors.map(w=>centroidOf(wO[w])));
+  if(!cal) return null;
+  const dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],(a[2]||0)-(b[2]||0));
+  const tw=testW.length?testW:anchors; let gb=0,ga=0;
+  tw.forEach(w=>{const hc=centroidOf(wH[w]),oc=centroidOf(wO[w]);gb+=dist(hc,oc);ga+=dist(applyKabsch(cal,hc),oc);});
+  cal.k=anchors.length; cal.gapBefore=gb/tw.length; cal.gapAfter=ga/tw.length;
+  cal.anchors=anchors; cal.wH=wH; cal.wO=wO; return cal;
+}
+function rawScatter(xs,ys,zs,ids,o){
+  const is3=state.dims===3;
+  const t={type:is3?'scatter3d':'scattergl',mode:'markers',x:xs,y:ys,
+    text:ids.map(hover),hoverinfo:'text',name:o.name,showlegend:o.showlegend!==false,
+    marker:{size:o.size||(is3?4:8),color:o.color,opacity:o.opacity==null?0.92:o.opacity,line:{width:0}}};
+  if(is3)t.z=zs; return t;
+}
+let animRAF=null;
+function animate(setFn, from, to, ms){
+  if(animRAF) cancelAnimationFrame(animRAF);
+  const start=performance.now();
+  function step(now){ let p=Math.min(1,(now-start)/ms);
+    const e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+    setFn(from+(to-from)*e); render();
+    if(p<1) animRAF=requestAnimationFrame(step); else animRAF=null; }
+  animRAF=requestAnimationFrame(step);
+}
 function colouredTraces(idx, field, opt){
   opt=opt||{};
   const traces=[];
@@ -1192,6 +1642,14 @@ function render(){
   const ink=INK[state.theme];
   let traces=[], story='', stat=[];
 
+  // "remove reader identity" morph: slide each point toward its subject-centred position
+  if(state.deident>0 && (state.view===1||state.view===2||state.view===7)){
+    const t=state.deident, nx=new Array(N),ny=new Array(N),nz=new Array(N);
+    for(let i=0;i<N;i++){ const c=CENTP[M.subject[i]]||[0,0,0];
+      nx[i]=CUR.x[i]-t*c[0]; ny[i]=CUR.y[i]-t*c[1]; nz[i]=(CUR.z?CUR.z[i]:0)-t*(c[2]||0); }
+    CUR={x:nx,y:ny,z:nz};
+  }
+
   if(state.view===1){
     const sel=state.subj1;
     const bg=idxVisible().filter(i=>M.subject[i]!==sel);
@@ -1209,6 +1667,12 @@ function render(){
     traces.push(mk(base,{color:ink.faint,opacity:0.28,showlegend:false,size:state.dims===3?2.4:5}));
     const hit=idxWord(w);
     traces=traces.concat(colouredTraces(hit,'subject',{legend:true,size:state.dims===3?5.5:12}));
+    // dotted loop through each reader's mean position for this word -> the cross-subject spread
+    const wcps=[];
+    P.subjects.forEach(s=>{ if(!state.visible.has(s))return;
+      const ids=hit.filter(i=>M.subject[i]===s); if(!ids.length)return;
+      wcps.push([avg(pick(CUR.x,ids)),avg(pick(CUR.y,ids)),state.dims===3?avg(pick(CUR.z,ids)):0]); });
+    if(wcps.length>1) traces.push(polyline(wcps.concat([wcps[0]]),{color:ink.muted,width:1.6,dash:'dot'}));
     const st=P.word_stats[w];
     const bl=P.random_baseline;
     story=`The word <b>"${w}"</b> read across brains (${hit.length} occurrences). If a thought code were `
@@ -1293,7 +1757,7 @@ function render(){
     renderNeighTable(qi,nn);
   }
 
-  else { // view 5
+  else if(state.view===5){
     const field=state.colorBy;
     traces=colouredTraces(idxVisible(),field,{legend:true});
     const label = set==='et'?'EEG + eye-tracking':'EEG-only';
@@ -1302,6 +1766,74 @@ function render(){
           +`but the imagined-thought (EEG-only) space must stand on neural signal alone.`
           :`. No EEG-only set was supplied, so the toggle is disabled.`);
     stat=[['signal set',label],['coloured by',field]];
+  }
+
+  else if(state.view===6){
+    const S=(P.sentences||[])[state.sent6];
+    traces.push(mk(idxVisible(),{color:ink.faint,opacity:0.13,showlegend:false,size:state.dims===3?2:4}));
+    if(!S){ story=`No multi-word sentences are available in this run.`; stat=[['status','—']]; }
+    else{
+      let drawn=0, wc=0;
+      P.subjects.forEach(s=>{
+        if(!state.visible.has(s)) return;
+        const seq=(S.by_subj[s]||[]).filter(i=>i<N);
+        if(seq.length<2) return;
+        drawn++; wc=Math.max(wc,seq.length);
+        traces.push(pathTrace(seq,{color:catColor('subject',s),name:s}));
+      });
+      story=`Sentence: <b>&ldquo;${esc(S.label)}&rdquo;</b> &mdash; each coloured path is one `
+          +`reader&rsquo;s route through the space, word by word. Overlapping paths mean readers place `
+          +`the sentence alike; divergent paths mean the code still depends on <b>who</b> read it.`;
+      stat=[['readers shown',drawn],['read by',S.n_subj],['words',wc]];
+    }
+  }
+
+  else if(state.view===7){
+    const cat=state.cat7;
+    traces.push(mk(idxVisible(),{color:ink.faint,opacity:0.16,showlegend:false,size:state.dims===3?2.2:4.5}));
+    const hits=idxVisible().filter(i=>M.category[i]===cat);
+    traces=traces.concat(colouredTraces(hits,'subject',{legend:true,size:state.dims===3?5:11}));
+    const cps=[];
+    P.subjects.forEach(s=>{ if(!state.visible.has(s))return;
+      const ids=hits.filter(i=>M.subject[i]===s); if(!ids.length)return;
+      cps.push([avg(pick(CUR.x,ids)),avg(pick(CUR.y,ids)),state.dims===3?avg(pick(CUR.z,ids)):0]); });
+    if(cps.length>1) traces.push(polyline(cps.concat([cps[0]]),{color:ink.muted,width:2,dash:'dot'}));
+    const coh=categoryCohesion(cat);
+    story=`Meaning <b>&ldquo;${esc(cat)||'(none)'}&rdquo;</b> read across people (${hits.length} words), `
+        +`coloured by reader. If the code were subject-invariant, the same meaning would cluster tightly `
+        +`<b>no matter who read it</b> &mdash; the project&rsquo;s north star.`;
+    stat=[['cos across people',fmt(coh.cos,3)],['random',fmt(RAND_BL,3)],['readers',coh.nsubj]];
+    stat._flag=(coh.cos!=null && RAND_BL!=null && coh.cos>RAND_BL+0.1)?'good':'warn';
+  }
+
+  else if(state.view===8){
+    const H=state.subjH;
+    const others=idxVisible().filter(i=>M.subject[i]!==H);
+    traces.push(mk(others,{color:ink.faint,opacity:0.28,showlegend:false,size:state.dims===3?2.6:5.5}));
+    const hIdx=[]; for(let i=0;i<N;i++) if(M.subject[i]===H) hIdx.push(i);
+    const cal=calibrationTransform(H,state.kAnchor);
+    const t=state.calT, hx=[],hy=[],hz=[];
+    hIdx.forEach(i=>{ const raw=[CUR.x[i],CUR.y[i],state.dims===3?CUR.z[i]:0];
+      let pos=raw;
+      if(cal){ const al=applyKabsch(cal,raw);
+        pos=[raw[0]+t*(al[0]-raw[0]),raw[1]+t*(al[1]-raw[1]),raw[2]+t*(al[2]-raw[2])]; }
+      hx.push(pos[0]);hy.push(pos[1]);hz.push(pos[2]); });
+    traces.push(rawScatter(hx,hy,hz,hIdx,{color:catColor('subject',H),
+      name:H+' (new brain)',size:state.dims===3?4.6:10}));
+    if(cal){ cal.anchors.forEach(w=>{ const tc=centroidOf(cal.wO[w]);
+        traces.push(markerAt([tc[0],tc[1],state.dims===3?tc[2]:0],
+          {color:ink.muted,symbol:'diamond-open',size:state.dims===3?7:12,showlegend:false,
+           hover:`anchor "${w}" — shared target`})); }); }
+    if(!cal){ story=`<b>${H}</b> shares too few words with the others to calibrate.`; stat=[['status','—']]; }
+    else{
+      const drop = cal.gapBefore>0 ? (1-cal.gapAfter/cal.gapBefore) : 0;
+      story=`Treat <b>${H}</b> as a brand-new brain. From <b>${cal.k}</b> shared <b>anchor</b> words we fit `
+          +`an alignment (Procrustes) and slide <b>${H}</b>&rsquo;s whole space into the shared frame &mdash; `
+          +`no retraining. Gap to the others&rsquo; words falls <b>${(drop*100).toFixed(0)}%</b> on held-out words. `
+          +`<span style="color:var(--muted)">Illustration in the projected space, not the trained model.</span>`;
+      stat=[['anchors',cal.k],['gap before',fmt(cal.gapBefore,3)],['gap after',fmt(cal.gapAfter,3)]];
+      stat._flag=(cal.gapAfter<cal.gapBefore)?'good':'warn';
+    }
   }
 
   Plotly.react('plot', traces, baseLayout(), {responsive:true,displaylogo:false,
@@ -1355,12 +1887,21 @@ function drawBar(){
 
 // ---- controls ------------------------------------------------------------
 function buildControls(){
-  const tabsMeta=[['1','one subject'],['2','one word, many brains'],
-    ['3','thought arithmetic'],['4','nearest thoughts'],['5','eye-tracking']];
+  const tabsMeta=[
+    ['1','◉','By reader','Spotlight one person'],
+    ['2','⁂','One word','The same word, many brains'],
+    ['3','±','Arithmetic','Translate a thought A→B'],
+    ['4','◈','Neighbours','The k closest thoughts'],
+    ['5','◐','EEG vs gaze','Does gaze drive the space?'],
+    ['6','↝','Sentence','A path per reader, word by word'],
+    ['7','◇','Meaning','Same meaning, across people'],
+    ['8','⌖','Calibrate','Snap a new brain into the frame'],
+  ];
   const tabs=document.getElementById('tabs');
-  tabsMeta.forEach(([n,d])=>{
+  tabsMeta.forEach(([n,ico,title,sub])=>{
     const b=document.createElement('button'); b.className='tab'+(n==='1'?' on':'');
-    b.dataset.v=n; b.innerHTML=`<b>${n} - ${d}</b>`;
+    b.dataset.v=n;
+    b.innerHTML=`<span class="ico">${ico}</span><span><b>${title}</b><span class="d">${sub}</span></span>`;
     b.onclick=()=>setView(+n); tabs.appendChild(b);
   });
 
@@ -1401,6 +1942,38 @@ function buildControls(){
   const kn=document.getElementById('kN'); kn.value=state.kN;
   kn.onchange=e=>{state.kN=+e.target.value||12;render();};
 
+  const sent6=document.getElementById('sent6');
+  if(sent6){
+    const ss=P.sentences||[];
+    ss.forEach(s=>{const o=document.createElement('option');o.value=s.id;
+      o.textContent=(s.n_subj>1?'['+s.n_subj+'×] ':'')+s.label; sent6.appendChild(o);});
+    if(!ss.length){const o=document.createElement('option');o.textContent='(none available)';sent6.appendChild(o);}
+    sent6.value=state.sent6; sent6.onchange=e=>{state.sent6=+e.target.value;render();};
+  }
+  const rand6=document.getElementById('rand6');
+  if(rand6) rand6.onclick=()=>{const ss=P.sentences||[]; if(!ss.length)return;
+    state.sent6=(Math.random()*ss.length)|0;
+    const el=document.getElementById('sent6'); if(el)el.value=state.sent6; render();};
+  const cat7=document.getElementById('cat7');
+  if(cat7){
+    const cs=DOMAINS['category']||[];
+    cs.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;cat7.appendChild(o);});
+    if(!cs.length){const o=document.createElement('option');o.textContent='(no category labels)';cat7.appendChild(o);}
+    cat7.value=state.cat7; cat7.onchange=e=>{state.cat7=e.target.value;render();};
+  }
+  fillSel('subjH',P.subjects,state.subjH,v=>{state.subjH=v;state.calT=0;
+    const b=document.getElementById('calbtn');if(b)b.textContent='Calibrate ▶';});
+  const ka=document.getElementById('kAnchor');
+  if(ka){ ka.value=state.kAnchor; ka.onchange=e=>{state.kAnchor=+e.target.value||8;state.calT=0;render();}; }
+  const calbtn=document.getElementById('calbtn');
+  if(calbtn) calbtn.onclick=()=>{ const to=state.calT<0.5?1:0;
+    calbtn.textContent = to>0.5?'↺ Reset':'Calibrate ▶';
+    animate(v=>state.calT=v, state.calT, to, 1100); };
+  const debtn=document.getElementById('deidentbtn');
+  if(debtn) debtn.onclick=()=>{ const to=state.deident<0.5?1:0;
+    debtn.textContent = to>0.5?'↺ Restore identity':'▶ Remove reader identity';
+    animate(v=>state.deident=v, state.deident, to, 950); };
+
   document.querySelectorAll('#embset button').forEach(b=>{
     if(b.dataset.s===state.embSet) b.classList.add('on');
     b.disabled=!P.has_eeg_only;
@@ -1410,6 +1983,17 @@ function buildControls(){
   document.getElementById('v5note').innerHTML = P.has_eeg_only
     ? 'Both spaces are trained independently and PCA-projected. The bar below shows a word-length linear probe for each.'
     : 'Supply <code>eeg_only_emb</code> (and <code>probe_scores</code>) to enable the toggle and the probe bar.';
+
+  const randWord=()=>{
+    const list=P.words.length?P.words:[''];
+    return list[(Math.random()*list.length)|0];
+  };
+  const r2=document.getElementById('rand2');
+  if(r2) r2.onclick=()=>{const w=randWord(); state.word2=w;
+    const el=document.getElementById('word2'); if(el) el.value=w; render();};
+  const r4=document.getElementById('rand4');
+  if(r4) r4.onclick=()=>{const w=randWord(); state.wordN=w;
+    const el=document.getElementById('wordN'); if(el) el.value=w; render();};
 
   document.getElementById('surprise').onclick=()=>{
     if(!LB.length) return;
@@ -1469,9 +2053,9 @@ window.addEventListener('resize',()=>{Plotly.Plots.resize('plot'); if(barMade)Pl
 def _json_safe(obj: Any) -> Any:
     """Converts a report dict to strict-JSON / valid-JS-literal types.
 
-    numpy scalars and arrays become builtins, and non-finite floats
-    (``inf``/``nan`` -- e.g. an infinite ``who_vs_what_ratio``) become ``None``
-    so the injected payload parses cleanly in the browser.
+    Note:
+        Numpy scalars and arrays become builtins, and non-finite floats (`inf`/`nan` -- e.g. an infinite `who_vs_what_ratio`)
+        become `None` so the injected payload parses cleanly in the browser.
 
     Args:
         obj (Any): Any nested combination of dicts, lists, numpy or builtin scalars.
@@ -1507,27 +2091,22 @@ def neuron_atlas_html(
 ) -> Path:
     """Writes a self-contained interactive "Neuron Atlas" from a `neuron_report` dict.
 
-    The atlas visualises -- without recomputing anything -- which embedding
-    dimensions fire and what each represents, through four wired views in one
-    offline HTML: (1) a summary header with headline tiles and a dominant-attribute
-    colour legend, (2) a ranked-importance bar of *every* dimension coloured by its
-    dominant attribute with the ``active_threshold`` drawn so the negligible tail is
-    visible, (3) a per-neuron detail panel (selectivity bar, activation histogram,
-    top/bottom activating words and scalp/band attribution) that updates on click,
-    and (4) live controls (sort by importance or by selectivity for a target,
+    The atlas visualises -- without recomputing anything -- which embedding dimensions fire and what each represents, through four wired views in one
+    offline HTML: (1) a summary header with headline tiles and a dominant-attribute colour legend, (2) a ranked-importance bar of *every* dimension coloured by its
+    dominant attribute with the ``active_threshold`` drawn so the negligible tail is visible, (3) a per-neuron detail panel (selectivity bar, activation histogram,
+    top/bottom activating words and scalp/band attribution) that updates on click, and (4) live controls (sort by importance or by selectivity for a target,
     recolour, hide negligible neurons, neuron search, light/dark toggle).
 
     Args:
-        neurons (dict): The report produced by :func:`zte.evaluation.neurons.neuron_report`
-            (its ``meta``/``importance``/``selectivity``/``summary``/``top_neurons`` blocks).
-            Robust to missing keys (no ``attribution``, empty ``top_neurons``, ``targets=[]``).
+        neurons (dict): The report produced by `zte.evaluation.neurons.neuron_report` (its `meta`/`importance`/`selectivity`/`summary`/`top_neurons` blocks).
+            Robust to missing keys (no `attribution`, empty `top_neurons`, `targets=[]`).
         out_path (str | Path): Output path (``.html``, or ``.png`` on the Plotly fallback).
         title (str): Page and figure title.
-        max_bars (int | None): Optional cap on how many neurons the ranked chart draws
-            (most-important first); ``None`` draws all ``D``. Detail/search still cover all.
+        max_bars (int | None): Optional cap on how many neurons the ranked chart draws (most-important first); `None` draws all `D`. Detail/search still cover all.
 
     Returns:
-        Path: The written path (``.html`` when Plotly is available, else a static ``.png``).
+        Path: The written path (`.html` when Plotly is available, else a static `.png`).
+
     """
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1678,6 +2257,16 @@ select,input[type=text],input[type=number]{
 #selbar{width:100%;height:150px}
 #acthist{width:100%;height:170px}
 #attrbar{width:100%;height:180px}
+#headwrap{display:flex;align-items:center;gap:14px;margin:2px 0 10px;flex-wrap:wrap}
+#headmap{width:150px;height:auto;flex:0 0 auto;overflow:visible}
+#headmap .hm-outline{fill:none;stroke:var(--axis);stroke-width:1.6;stroke-linejoin:round}
+#headmap .hzone{fill:var(--axis);fill-opacity:.14;stroke:var(--panel);stroke-width:1;
+  transition:fill-opacity .15s ease;cursor:default}
+#headmap .hzone:hover{stroke:var(--ink2);stroke-width:1.4}
+#headmap .hlab{fill:var(--ink2);font-size:8px;font-weight:600;font-family:inherit;
+  text-anchor:middle;pointer-events:none;letter-spacing:.2px}
+.headcap{flex:1 1 130px;min-width:130px;font-size:11.5px;color:var(--muted);line-height:1.5}
+.headcap b{color:var(--ink2);font-weight:640}
 .words{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
 table.wt{width:100%;border-collapse:collapse;font-size:12px}
 table.wt th{text-align:left;color:var(--muted);font-weight:600;font-size:10.5px;
@@ -1748,6 +2337,37 @@ table.wt td.num{text-align:right;font-variant-numeric:tabular-nums;color:var(--i
       </div>
       <div class="panel" id="attrwrap">
         <h3>Scalp / band attribution (correlational)</h3>
+        <div id="headwrap">
+          <svg id="headmap" viewBox="0 0 220 250" role="img" aria-label="Scalp head map">
+            <defs><clipPath id="headclip"><ellipse cx="110" cy="128" rx="86" ry="108"/></clipPath></defs>
+            <g clip-path="url(#headclip)">
+              <rect class="hzone" id="hz-frontopolar" x="0" y="20" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-frontal" x="0" y="47" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-frontocentral" x="0" y="74" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-central" x="0" y="101" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-centroparietal" x="0" y="128" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-parietal" x="0" y="155" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-parieto_occipital" x="0" y="182" width="220" height="27"><title></title></rect>
+              <rect class="hzone" id="hz-occipital" x="0" y="209" width="220" height="27"><title></title></rect>
+            </g>
+            <path class="hm-outline" d="M110 6 l11 19 l-22 0 z"/>
+            <ellipse class="hm-outline" cx="20" cy="126" rx="9" ry="19"/>
+            <ellipse class="hm-outline" cx="200" cy="126" rx="9" ry="19"/>
+            <ellipse class="hm-outline" cx="110" cy="128" rx="86" ry="108"/>
+            <g aria-hidden="true">
+              <text class="hlab" x="110" y="37">FP</text>
+              <text class="hlab" x="110" y="64">F</text>
+              <text class="hlab" x="110" y="91">FC</text>
+              <text class="hlab" x="110" y="118">C</text>
+              <text class="hlab" x="110" y="145">CP</text>
+              <text class="hlab" x="110" y="172">P</text>
+              <text class="hlab" x="110" y="199">PO</text>
+              <text class="hlab" x="110" y="226">O</text>
+            </g>
+          </svg>
+          <div class="headcap"><b>Where on the scalp this neuron reads from</b> (correlational).
+            Anterior (nose) at top; each zone shaded by aggregated |r|. Hover a zone for its score.</div>
+        </div>
         <div id="attrbar"></div>
       </div>
     </div>
@@ -1918,6 +2538,41 @@ function selectNeuron(dim){
   if(dim==null || isNaN(dim) || dim<0 || dim>=D) return;
   state.sel = dim; renderDetail();
 }
+const HEAD_REGIONS = ['frontopolar','frontal','frontocentral','central',
+  'centroparietal','parietal','parieto_occipital','occipital'];
+const HEAD_LABEL = {frontopolar:'Frontopolar', frontal:'Frontal', frontocentral:'Frontocentral',
+  central:'Central', centroparietal:'Centroparietal', parietal:'Parietal',
+  parieto_occipital:'Parieto-occipital', occipital:'Occipital'};
+function renderHeadMap(at){
+  const scores = {}, topBand = {};
+  HEAD_REGIONS.forEach(r=>{ scores[r]=0; });
+  (at||[]).forEach(o=>{
+    const parts = String(o.feature||'').split('·');
+    const region = (parts[parts.length-1]||'').trim();
+    const band = (parts.length>1?parts[0]:'').trim();
+    if(region in scores){
+      const m = Math.abs(+o.corr||0);
+      scores[region]+=m;
+      if(!topBand[region] || m>topBand[region].v) topBand[region]={band:band, v:m};
+    }
+  });
+  const max = Math.max.apply(null, HEAD_REGIONS.map(r=>scores[r]).concat([0]));
+  HEAD_REGIONS.forEach(r=>{
+    const rect = document.getElementById('hz-'+r);
+    if(!rect) return;
+    const s = scores[r], norm = max>0? s/max : 0;
+    if(s>1e-9){
+      rect.style.fill = 'var(--accent)';
+      rect.style.fillOpacity = (0.12 + 0.82*norm).toFixed(3);
+    } else {
+      rect.style.fill = 'var(--axis)';
+      rect.style.fillOpacity = '0.14';
+    }
+    const tb = topBand[r] ? (', top band ' + topBand[r].band) : '';
+    const t = rect.querySelector('title');
+    if(t) t.textContent = HEAD_LABEL[r] + ' — score ' + s.toFixed(2) + tb;
+  });
+}
 function fillWords(id, rows){
   const t = document.getElementById(id);
   t.innerHTML = '<tr><th>word</th><th>subject</th><th>act</th></tr>' + (rows||[]).map(r=>
@@ -1970,6 +2625,7 @@ function renderDetail(){
     const at = entry.attribution;
     if(at && at.length){
       attrWrap.classList.remove('hide');
+      renderHeadMap(at);
       const rev = at.slice().reverse();
       Plotly.react('attrbar', [{type:'bar', orientation:'h',
         x:rev.map(o=>o.corr), y:rev.map(o=>o.feature),
