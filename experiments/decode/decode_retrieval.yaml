@@ -1,0 +1,35 @@
+# Zero-shot retrieval decoder over an aligned EEG–text bank.
+text:
+  model_name: hash
+  embed_dim: 768
+  pooling: mean
+  normalize: true
+  backend: hash
+  freeze: true
+  device: auto
+align:
+  eeg_dim: 768
+  text_dim: 768
+  proj_dim: 768
+  proj_hidden: 512
+  temperature: 0.07
+  lambda_infonce: 1.0
+  lambda_ot: 0.1
+  freeze_eeg_encoder: true
+  level: sentence
+  epochs: 20
+  batch_size: 64
+  lr: 0.0001
+  split: by_subject_loso
+  loso_holdout_subject: ZPH
+  ckpt_dir: res/decode/alignment
+  run_name: align_otclip_loso
+generative:
+  backend: toy
+  prefix_dim: 768
+  epochs: 0
+  ckpt_dir: res/decode/generative
+mode: retrieval
+zte_ckpt: res/checkpoints/best.pt
+out_dir: res/decode/predictions
+run_name: decode_retrieval

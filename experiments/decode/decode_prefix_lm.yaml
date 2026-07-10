@@ -1,0 +1,44 @@
+# Prefix-LM generative decoder (gpt2 when transformers installed; toy otherwise).
+text:
+  model_name: hash
+  embed_dim: 768
+  backend: hash
+  normalize: true
+  freeze: true
+  device: auto
+align:
+  eeg_dim: 768
+  text_dim: 768
+  proj_dim: 768
+  proj_hidden: 512
+  freeze_eeg_encoder: true
+  level: sentence
+  epochs: 20
+  batch_size: 64
+  lr: 0.0001
+  split: by_sentence
+  ckpt_dir: res/decode/alignment
+  run_name: align_for_prefix
+generative:
+  lm_name: gpt2
+  backend: auto
+  prefix_len: 8
+  prefix_dim: 768
+  freeze_lm: true
+  max_new_tokens: 64
+  temperature: 1.0
+  top_p: 0.9
+  epochs: 10
+  batch_size: 16
+  lr: 5.0e-05
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  device: auto
+  precision: auto
+  seed: 42
+  ckpt_dir: res/decode/generative
+  run_name: decode_prefix_lm
+mode: prefix_lm
+zte_ckpt: res/checkpoints/best.pt
+out_dir: res/decode/generative
+run_name: decode_prefix_lm

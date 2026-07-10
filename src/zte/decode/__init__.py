@@ -1,21 +1,16 @@
 """EEG→language decode package: text encoders, EEG-OT-CLIP alignment, decoders.
 
-This is the planned downstream stage after ZTE pretraining. Typical flow::
+Typical flow::
 
-    from zte.decode import (
-        DecoderConfig,
-        build_text_encoder,
-        OTCLIPAligner,
-        run_alignment,
-        RetrievalDecoder,
-        evaluate_decoding,
-    )
+    from zte.decode import DecoderConfig, build_text_encoder, run_alignment
+    from zte.decode.evaluate import evaluate_decoding
 
     cfg = DecoderConfig()
-    text_enc = build_text_encoder(cfg.text)          # hash backend in CI
-    # ... build EEG/text pairs via zte.decode.pairing ...
-    arts = run_alignment(eeg, text_emb, texts, cfg)
-    metrics = evaluate_decoding(eeg, text_emb, texts, aligner=arts.aligner)
+    arts = run_alignment(eeg, text_emb, texts, cfg)  # precomputed embeddings
+    # Dataset path: zte.decode.train_align.run_alignment(dataset=..., zte_ckpt=..., ...)
+    metrics = evaluate_decoding(
+        eeg_emb=eeg, text_emb=text_emb, texts=texts, out_dir='res/decode/eval',
+    )
 """
 
 # pylint: disable=undefined-all-variable,import-outside-toplevel
@@ -36,6 +31,8 @@ __all__ = [
     'TextEncoderConfig',
     'GenerativeConfig',
     'TextEncoder',
+    'HashTextEncoder',
+    'TextEmbeddingCache',
     'build_text_encoder',
     'EEGProjector',
     'OTCLIPAligner',
@@ -44,9 +41,21 @@ __all__ = [
     'RetrievalDecoder',
     'PrefixLanguageDecoder',
     'LanguageDecoder',
+    'build_sentence_pairs',
+    'build_word_pairs',
+    'PairedEmbeddingDataset',
+    'make_paired_loader',
+    'AlignmentArtifacts',
     'run_alignment',
+    'run_alignment_from_embeddings',
     'run_decode_training',
     'evaluate_decoding',
+    'bleu_score',
+    'exact_match',
+    'token_f1',
+    'wer_score',
+    'cross_modal_retrieval',
+    'noise_anchored_retrieval',
     '__version__',
 ]
 
@@ -63,10 +72,10 @@ def __getattr__(name: str) -> object:
     Raises:
         AttributeError: If ``name`` is not a known lazy export.
     """
-    if name in {'TextEncoder', 'build_text_encoder'}:
-        from zte.decode.text_encoder import TextEncoder, build_text_encoder
+    if name in {'TextEncoder', 'HashTextEncoder', 'TextEmbeddingCache', 'build_text_encoder'}:
+        from zte.decode import text_encoder as _te
 
-        return {'TextEncoder': TextEncoder, 'build_text_encoder': build_text_encoder}[name]
+        return getattr(_te, name)
     if name in {'EEGProjector', 'OTCLIPAligner', 'info_nce_loss', 'sinkhorn_ot_loss'}:
         from zte.decode import alignment as _alignment
 
@@ -75,14 +84,28 @@ def __getattr__(name: str) -> object:
         from zte.decode import decoders as _decoders
 
         return getattr(_decoders, name)
+    if name in {
+        'build_sentence_pairs',
+        'build_word_pairs',
+        'PairedEmbeddingDataset',
+        'make_paired_loader',
+    }:
+        from zte.decode import pairing as _pairing
+
+        return getattr(_pairing, name)
+    if name == 'AlignmentArtifacts':
+        from zte.decode.train_align import AlignmentArtifacts
+
+        return AlignmentArtifacts
+    if name == 'run_alignment_from_embeddings':
+        from zte.decode.train_align import run_alignment_from_embeddings
+
+        return run_alignment_from_embeddings
     if name == 'run_alignment':
-        # Embedding-level trainer (positional arrays). Dataset-aware path:
-        # ``zte.decode.train_align.run_alignment``.
         from zte.decode.train import run_alignment
 
         return run_alignment
     if name == 'run_decode_training':
-        # High-level retrieval / prefix-LM trainer (keyword API).
         from zte.decode.train_decode import run_decode_training
 
         return run_decode_training
@@ -90,4 +113,15 @@ def __getattr__(name: str) -> object:
         from zte.decode.evaluate import evaluate_decoding
 
         return evaluate_decoding
+    if name in {
+        'bleu_score',
+        'exact_match',
+        'token_f1',
+        'wer_score',
+        'cross_modal_retrieval',
+        'noise_anchored_retrieval',
+    }:
+        from zte.decode import metrics as _metrics
+
+        return getattr(_metrics, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

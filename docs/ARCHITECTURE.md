@@ -197,9 +197,12 @@ flowchart LR
 
 ## 7. Where ZTE stops and EEG-OT-CLIP begins
 
-ZTE outputs `(M, 768)` embeddings + aligned metadata. The downstream aligner adds a frozen LLM text encoder and the composite loss $\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}$ (Sinkhorn-regularised Wasserstein, optionally Gromov-Wasserstein for distinct metric spaces), evaluated by **noise-anchored zero-shot retrieval** under LOSO.  ZTE ships the building blocks for that evaluation in `training/metrics.py` and `evaluation/`. Because the default `embed_dim` is **768**, ZTE embeddings are plug-compatible with that downstream space.
+ZTE outputs `(M, 768)` embeddings + aligned metadata. The downstream aligner adds a frozen LLM text encoder and the composite loss $\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}$ (Sinkhorn-regularised Wasserstein, optionally Gromov-Wasserstein for distinct metric spaces), evaluated by **noise-anchored zero-shot retrieval** under LOSO. Because the default `embed_dim` is **768**, ZTE embeddings are plug-compatible with that downstream space.
+
+**EEG-OT-CLIP is implemented** under [`zte.decode`](../src/zte/decode/) (`OTCLIPAligner`, hash/transformers text encoders, retrieval + prefix-LM decoders, `zte-align` / `zte-decode` / `zte-decode-eval` / `zte-decode-run`). See [DECODING](./DECODING.md) for the full guide, CLI, and evaluation protocol. ZTE still ships the shared retrieval / noise-floor primitives in `training/metrics.py` and `evaluation/`.
 
 [top-level README]: ../README.md
 [EVALUATION]: ./EVALUATION.md
 [RESULTS]: ./RESULTS.md
 [TRAINING]: ./TRAINING.md
+[DECODING]: ./DECODING.md

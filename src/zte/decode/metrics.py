@@ -36,7 +36,6 @@ def bleu_score(hyps: list[str], refs: list[str], max_n: int = 4) -> float:
     except ImportError:
         pass
 
-    precisions: list[float] = []
     hyp_len = 0
     ref_len = 0
     for hyp, ref in zip(hyps, refs, strict=True):
@@ -47,6 +46,11 @@ def bleu_score(hyps: list[str], refs: list[str], max_n: int = 4) -> float:
     if hyp_len == 0 or ref_len == 0:
         return 0.0
 
+    # Exact normalised match → perfect BLEU (avoids short-sentence n-gram holes).
+    if all(_norm(h) == _norm(r) for h, r in zip(hyps, refs, strict=True)):
+        return 1.0
+
+    precisions: list[float] = []
     for n in range(1, max_n + 1):
         overlap = 0
         total = 0
@@ -55,14 +59,15 @@ def bleu_score(hyps: list[str], refs: list[str], max_n: int = 4) -> float:
             rt = _tokenize(ref)
             hyp_ng = _ngrams(ht, n)
             ref_ng = _ngrams(rt, n)
-            total += max(1, sum(hyp_ng.values())) if ht else 0
             if not hyp_ng:
                 continue
+            total += sum(hyp_ng.values())
             for ng, count in hyp_ng.items():
                 overlap += min(count, ref_ng.get(ng, 0))
-        precisions.append(overlap / total if total > 0 else 0.0)
+        if total > 0:
+            precisions.append(overlap / total)
 
-    if any(p <= 0 for p in precisions):
+    if not precisions or any(p <= 0 for p in precisions):
         return 0.0
     log_avg = sum(np.log(p) for p in precisions) / len(precisions)
     bp = 1.0 if hyp_len > ref_len else float(np.exp(1.0 - ref_len / max(hyp_len, 1)))

@@ -25,16 +25,27 @@ flowchart LR
         B --> C[ZTEModel encoder]
         C --> D[Thought embeddings]
     end
-    subgraph NEXT["EEG-OT-CLIP (downstream, future)"]
+    subgraph NEXT["EEG-OT-CLIP (zte.decode — implemented)"]
         D --> E[Manifold aligner<br/>InfoNCE + Sinkhorn OT]
-        F[Frozen LLM<br/>RoBERTa / BART 768-d] --> E
+        F[Frozen LLM / hash<br/>RoBERTa / BART 768-d] --> E
         E --> G[Zero-shot sentence retrieval]
     end
     style ZTE fill:#eef7ff,stroke:#3b82f6
-    style NEXT fill:#f5f5f5,stroke:#9ca3af,stroke-dasharray: 5 5
+    style NEXT fill:#ecfdf5,stroke:#10b981
 ```
 
 Because ZTE's default `embed_dim` is **768**, its embeddings are plug-compatible with that downstream LLM space.
+
+### EEG → language decoding
+
+Align frozen ZTE embeddings to text with EEG-OT-CLIP, then retrieve (or generate) language:
+
+```bash
+# Synthetic smoke (hash text encoder — no transformers download)
+zte-decode-run --synthetic --epochs 3 --align-epochs 5 --backend hash --out res/decode/demo
+```
+
+CLIs: `zte-align`, `zte-decode`, `zte-decode-eval`, `zte-decode-run`. Optional deps: `uv sync --group decode`. Full guide: [`docs/DECODING.md`](docs/DECODING.md).
 
 ---
 
@@ -463,7 +474,7 @@ ZTE v1 is intentionally subject/task-aware. The path to invariance (documented i
 
 1. **Subject-invariance** — adversarial subject head / domain confusion; SPD-tangent-space features.
 2. **Task/device-invariance** — multi-corpus pretraining; channel-set adapters for differing montages.
-3. **Cross-modal alignment** — feed ZTE embeddings into `EEG-OT-CLIP` (InfoNCE + Sinkhorn OT + Gromov-Wasserstein) against a frozen LLM, evaluated by noise-anchored LOSO retrieval.
+3. **Cross-modal alignment** — `zte.decode` implements EEG-OT-CLIP (InfoNCE + Sinkhorn OT) against a frozen / hash text encoder, with retrieval and prefix-LM decode, evaluated by noise-anchored LOSO retrieval (`docs/DECODING.md`).
 
 ---
 
