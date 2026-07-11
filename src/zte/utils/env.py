@@ -63,6 +63,12 @@ def set_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     if overrides:
         defaults.update(overrides)
     applied: dict[str, str] = {}
+    # An inherited interactive/inline MPLBACKEND (Colab sets `module://…`) crashes a headless
+    # subprocess, so replace it rather than treating it as "already set".
+    current_mpl = os.environ.get('MPLBACKEND', '')
+    if current_mpl.startswith('module://'):
+        os.environ['MPLBACKEND'] = 'Agg'
+        applied['MPLBACKEND'] = 'Agg'
     for key, value in defaults.items():
         if not os.environ.get(key):
             os.environ[key] = value
