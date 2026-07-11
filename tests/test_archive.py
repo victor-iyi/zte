@@ -1,0 +1,102 @@
+"""Tests for the run-archive utilities (zip / list / unpack / delete) and env bootstrap."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from zte.utils import (
+    accelerator_info,
+    delete_run,
+    ensure_dirs,
+    list_runs,
+    unpack,
+    zip_experiments,
+    zip_run,
+)
+
+
+def _make_run(root: Path, name: str) -> Path:
+    """Fabricates a minimal run directory resembling a real one."""
+    run = root / name
+    (run / 'checkpoints').mkdir(parents=True)
+    (run / 'evaluation').mkdir()
+    (run / 'cache' / 'x').mkdir(parents=True)  # heavy dir, should be excluded by default
+    (run / 'checkpoints' / 'best.pt').write_bytes(b'0' * 2048)
+    (run / 'checkpoints' / 'last.pt').write_bytes(b'0' * 2048)
+    (run / 'checkpoints' / 'ckpt_epoch0001.pt').write_bytes(b'0' * 2048)
+    (run / 'checkpoints' / 'tb').mkdir()
+    (run / 'checkpoints' / 'tb' / 'events').write_bytes(b'1' * 4096)  # tb, excluded by default
+    (run / 'evaluation' / 'metrics.json').write_text(json.dumps({'ok': True}))
+    (run / 'config.yaml').write_text('run_name: ' + name)
+    (run / 'cache' / 'x' / 'big.npz').write_bytes(b'2' * 8192)
+    return run
+
+
+def test_best_only_keeps_just_best_checkpoint(tmp_path: Path):
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    _make_run(exp, 'runA')
+    archive = zip_run(exp / 'runA', out=tmp_path / 'runA.zip', best_only=True)
+    dest = tmp_path / 'out'
+    unpack(archive, dest)
+    ckpts = dest / 'runA' / 'checkpoints'
+    assert (ckpts / 'best.pt').exists()
+    assert not (ckpts / 'last.pt').exists()
+    assert not (ckpts / 'ckpt_epoch0001.pt').exists()
+
+
+def test_move_removes_local_run_after_zip(tmp_path: Path):
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    run = _make_run(exp, 'runA')
+    zip_run(run, out=tmp_path / 'runA.zip', move=True)
+    assert not run.exists()  # local run freed after archiving
+
+
+def test_zip_excludes_heavy_dirs_and_unpacks_inference_ready(tmp_path: Path):
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    _make_run(exp, 'runA')
+
+    rows = list_runs(exp)
+    assert len(rows) == 1 and rows[0]['name'] == 'runA' and rows[0]['has_checkpoint']
+
+    archive = zip_run(exp / 'runA', out=tmp_path / 'runA.zip')
+    assert archive.exists()
+
+    dest = tmp_path / 'unpacked'
+    tops = unpack(archive, dest)
+    assert tops == ['runA']
+    # inference needs the checkpoint + config; heavy cache / tb are excluded.
+    assert (dest / 'runA' / 'checkpoints' / 'best.pt').exists()
+    assert (dest / 'runA' / 'config.yaml').exists()
+    assert not (dest / 'runA' / 'cache').exists()
+    assert not (dest / 'runA' / 'checkpoints' / 'tb').exists()
+
+
+def test_zip_experiments_bundles_multiple_runs(tmp_path: Path):
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    _make_run(exp, 'runA')
+    _make_run(exp, 'runB')
+    archive = zip_experiments(exp, out=tmp_path / 'all.zip')
+    tops = unpack(archive, tmp_path / 'out')
+    assert set(tops) == {'runA', 'runB'}
+
+
+def test_delete_run_is_guarded(tmp_path: Path):
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    run = _make_run(exp, 'runA')
+    assert delete_run(run) is False  # dry run by default
+    assert run.exists()
+    assert delete_run(run, yes=True) is True
+    assert not run.exists()
+
+
+def test_ensure_dirs_and_accelerator_info(tmp_path: Path):
+    made = ensure_dirs(tmp_path)
+    assert all(p.is_dir() for p in made)
+    info = accelerator_info()
+    assert info['kind'] in {'cuda', 'mps', 'xla', 'cpu'} and 'torch_version' in info

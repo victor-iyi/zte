@@ -1398,14 +1398,14 @@ function renderLeaderboard(){
   const cls=hr<0.15?'bad':hr<0.4?'warn':'good';
   hd.className='big '+cls;
   hd.innerHTML=`hit-rate ${(hr*100).toFixed(0)}% <span style="color:var(--muted);font-weight:500">(${LB.filter(x=>x.hit).length}/${LB.length})</span>`;
-  const cols=[['word','word t'],['ab','A → B'],['hit','hit'],['nn','v’s NN'],
+  const cols=[['word','word t'],['ab','A -> B'],['hit','hit'],['nn','v’s NN'],
     ['rank','true rank'],['sim','cos(v,NN)']];
   let h='<tr>'+cols.map(([k,l])=>{
     const arrow=state.lbSort===k?(state.lbDir<0?'up':'down'):''; // note: default not on a col
     return `<th data-k="${k}" class="${arrow}">${l}</th>`; }).join('')+'</tr>';
   const rows=LB.slice(0,120).map((x,i)=>
     `<tr class="clk" data-i="${LB.indexOf(x)}">
-       <td>${esc(x.t)}</td><td>${esc(x.A)} → ${esc(x.B)}</td>
+       <td>${esc(x.t)}</td><td>${esc(x.A)} -> ${esc(x.B)}</td>
        <td><span class="pill ${x.hit?'hit':'miss'}">${x.hit?'✓':'✗'}</span></td>
        <td>${esc(x.nn)}</td><td class="num">${x.rank}</td><td class="num">${x.sim.toFixed(3)}</td>
      </tr>`).join('');
@@ -1890,7 +1890,7 @@ function buildControls(){
   const tabsMeta=[
     ['1','◉','By reader','Spotlight one person'],
     ['2','⁂','One word','The same word, many brains'],
-    ['3','±','Arithmetic','Translate a thought A→B'],
+    ['3','±','Arithmetic','Translate a thought A->B'],
     ['4','◈','Neighbours','The k closest thoughts'],
     ['5','◐','EEG vs gaze','Does gaze drive the space?'],
     ['6','↝','Sentence','A path per reader, word by word'],
@@ -2519,8 +2519,8 @@ function renderRanked(){
     margin:{l:58, r:16, t:8, b:36}, uirevision:'ranked',
     legend:{orientation:'h', y:1.1, x:0, font:{color:ink.text, size:11}, bgcolor:'rgba(0,0,0,0)'},
     hoverlabel:{bgcolor:ink.paper, bordercolor:ink.axis, font:{color:ink.text, size:12}},
-    xaxis:{title:{text:(state.sort==='importance'?'importance rank (0 = most important) →'
-        :'rank by |sel| '+state.sort+' →'), font:{size:11, color:ink.muted}},
+    xaxis:{title:{text:(state.sort==='importance'?'importance rank (0 = most important) ->'
+        :'rank by |sel| '+state.sort+' ->'), font:{size:11, color:ink.muted}},
       gridcolor:ink.grid, zeroline:false, color:ink.muted, range:[-0.5, Math.max(0.5,n-0.5)]},
     yaxis:{title:{text:(state.metric==='std'?'std (spread)':'variance share'),
         font:{size:11, color:ink.muted}},

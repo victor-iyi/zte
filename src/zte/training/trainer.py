@@ -315,6 +315,14 @@ class Trainer:
             self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
+        if self.device.kind == 'xla':
+            # On a Cloud TPU, materialise the accumulated XLA graph for this step.
+            try:
+                import torch_xla.core.xla_model as xm  # type: ignore[import-untyped]
+
+                xm.mark_step()
+            except Exception:  # noqa: BLE001 — never let an XLA hiccup abort a step.
+                pass
         if getattr(self.objective, 'needs_teacher', False) and hasattr(self.objective, 'post_step'):
             # Pass the global step so the objective can ramp its EMA teacher decay across training.
             self.objective.post_step(

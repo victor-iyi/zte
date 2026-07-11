@@ -14,7 +14,7 @@ uv run zte-prepare --root res/data/zuco_extracted --representation band_power --
 
 # Or download + extract straight from Google Drive (needs `uv sync --group drive`).
 uv run zte-prepare \
-    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --drive 'https://drive.google.com/drive/folders/13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ' \
     --representation band_power --out res/bundle
 
 # No data: synthesise a schema-faithful tree, then build (great smoke test).
@@ -77,7 +77,7 @@ sequenceDiagram
     participant I as MissingValueImputer
     participant N as FeatureNormalizer
     U->>D: ZuCoDataset(config).build()
-    D->>D: cache hit? → load() and return
+    D->>D: cache hit? -> load() and return
     D->>M: extract_file() per .mat (progress bar)
     M-->>D: rows + band-power (N,F,C) + raw (N,C,T)
     D->>D: join corpus frequency + sentence category
@@ -211,7 +211,7 @@ Every CLI that loads `.mat` files (`zte-prepare`, `zte-train`, `zte-extract`, `z
 
 ```sh
 uv sync --group drive
-uv run zte-prepare --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --out res/bundle
+uv run zte-prepare --drive 13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ --out res/bundle
 ```
 
 `--drive` downloads the folder to `res/data/_downloads`, unzips task archives into `--extract-dir` (default `res/data/zuco_extracted`), then proceeds. Re-runs skip archives already extracted. `--root` still works for a local extracted dir, a single `.zip`, or a folder of task `.zip` files.

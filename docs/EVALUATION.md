@@ -23,7 +23,7 @@ uv run zte-evaluate --ckpt res/checkpoints/best.pt --root res/data/zuco_extracte
     --out res/evaluation --no-interactive
 # Or download + evaluate in one step (needs `uv sync --group drive`):
 uv run zte-evaluate --ckpt res/checkpoints/best.pt \
-    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --drive 'https://drive.google.com/drive/folders/13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ' \
     --out res/evaluation
 ```
 

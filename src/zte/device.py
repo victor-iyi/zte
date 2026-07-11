@@ -15,8 +15,22 @@ from typing import Literal
 
 import torch
 
-type DeviceKind = Literal['cpu', 'cuda', 'mps']
+type DeviceKind = Literal['cpu', 'cuda', 'mps', 'xla']
 type PrecisionPreference = Literal['auto', 'fp32', 'fp16', 'bf16']
+
+
+def _xla_device() -> torch.device | None:
+    """Returns a Cloud-TPU XLA device if `torch_xla` is installed and a TPU is present, else `None`.
+
+    Kept import-guarded so the package runs unchanged on machines without `torch_xla` (Mac, plain GPU
+    boxes). On a Colab/Cloud **TPU** runtime with `torch_xla` installed this returns the XLA device.
+    """
+    try:
+        import torch_xla.core.xla_model as xm  # type: ignore[import-untyped]
+
+        return xm.xla_device()
+    except Exception:  # noqa: BLE001 — any import/runtime failure just means "no TPU here".
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +81,8 @@ def resolve_device(
 ) -> DeviceSpec:
     """Selects the best available device and a safe autocast configuration.
 
-    Selection order for `prefer='auto'` is CUDA, then MPS, then CPU. Mixed
-    precision defaults are chosen conservatively: bfloat16 on capable CUDA
-    devices, float16 on older CUDA devices, and full precision on MPS/CPU where
-    autocast support is partial or unhelpful.
+    Selection order for `prefer='auto'` is CUDA, then MPS, then CPU. Mixed precision defaults are chosen conservatively: bfloat16 on
+    capable CUDA devices, float16 on older CUDA devices, and full precision on MPS/CPU where autocast support is partial or unhelpful.
 
     Args:
         prefer (DeviceKind | Literal['auto']): Force a backend, or 'auto' to pick the best available.
@@ -88,7 +100,13 @@ def resolve_device(
         True
     """
     kind = _select_kind(prefer)
-    device = torch.device(kind if kind != 'cuda' else 'cuda:0')
+    if kind == 'xla':
+        xla = _xla_device()
+        if xla is None:
+            raise RuntimeError('XLA/TPU requested but torch_xla is unavailable.')
+        device = xla
+    else:
+        device = torch.device(kind if kind != 'cuda' else 'cuda:0')
     autocast_dtype, use_amp = _resolve_precision(kind, precision)
     name = _device_name(kind, device)
     return DeviceSpec(
@@ -114,12 +132,18 @@ def _select_kind(prefer: DeviceKind | Literal['auto']) -> DeviceKind:
         if not mps_ok:
             raise RuntimeError('MPS requested but the MPS backend is unavailable.')
         return 'mps'
+    if prefer in ('xla', 'tpu'):
+        if _xla_device() is None:
+            raise RuntimeError('XLA/TPU requested but torch_xla is unavailable.')
+        return 'xla'
     if prefer == 'cpu':
         return 'cpu'
 
-    # auto
+    # auto: prefer a discrete accelerator, then a Cloud TPU, then Apple MPS, then CPU.
     if cuda_ok:
         return 'cuda'
+    if not cuda_ok and not mps_ok and _xla_device() is not None:
+        return 'xla'
     if mps_ok:
         return 'mps'
     return 'cpu'
@@ -152,6 +176,8 @@ def _device_name(kind: DeviceKind, device: torch.device) -> str:
             return 'cuda'
     if kind == 'mps':
         return 'mps (Apple Silicon)'
+    if kind == 'xla':
+        return f'xla / TPU ({device})'
     return f'cpu ({os.cpu_count() or 1} cores)'
 
 

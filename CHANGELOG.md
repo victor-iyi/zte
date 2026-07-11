@@ -19,7 +19,7 @@ Any run is now interruptible and continuable:
 
 - `Trainer` gains `resume=True`: on a pause it restores model / optimiser / scheduler / AMP-scaler / objective + EMA-teacher / best-metric / history / step from `last.pt` and continues at the next epoch.
 - `Ctrl-C` (SIGINT) or `kill` (SIGTERM) pauses cleanly — the last completed epoch is already checkpointed — instead of crashing.
-- `zte-run --resume` makes the whole pipeline idempotent: it reuses the cached dataset bundle (skips the slow prepare), resumes training from `last.pt`, and skips evaluation / exploration that are already up to date (re-evaluating automatically if training advanced). `--force` redoes completed stages. `scripts/run_suite.sh` now passes `--resume` on every run, so stopping and re-running the suite continues where it left off. Covered by `tests/test_resume.py` (continuation, no-op, and a real SIGTERM interrupt→resume).
+- `zte-run --resume` makes the whole pipeline idempotent: it reuses the cached dataset bundle (skips the slow prepare), resumes training from `last.pt`, and skips evaluation / exploration that are already up to date (re-evaluating automatically if training advanced). `--force` redoes completed stages. `scripts/run_suite.sh` now passes `--resume` on every run, so stopping and re-running the suite continues where it left off. Covered by `tests/test_resume.py` (continuation, no-op, and a real SIGTERM interrupt->resume).
 
 ## Interpretability & experiment suite — peering inside ZTE
 
@@ -40,7 +40,7 @@ Every evaluation now emits a per-dimension "neuron" report — which dimensions 
 Answering "do similar thoughts cluster across people?" — the north-star property — as a measured number, not a picture:
 
 - Every run reports `metrics.emergence`: cross-subject **same-word** and **same-meaning** (category) clustering (same-pair cosine vs random baseline, with the honest *gap* since collapsed spaces make all cosines high), and **neighbourhood coherence** (are a token's nearest neighbours the same word / category, and how many come from a different subject). A plain-language verdict (`clustered` / `weakly` / `not`) plus a `report.md` section.
-- The **Thought-Space Explorer** was rebuilt for interpretability: a "What am I looking at?" guide, three headline **verdict banners** (now showing the authoritative full-space emergence numbers with the in-browser PCA figure as a live estimate), an **auto-analogy leaderboard** that finds the working `A→B` analogies for you (no more guessing a word/subject), and a **semantic-neighbourhood** view.
+- The **Thought-Space Explorer** was rebuilt for interpretability: a "What am I looking at?" guide, three headline **verdict banners** (now showing the authoritative full-space emergence numbers with the in-browser PCA figure as a live estimate), an **auto-analogy leaderboard** that finds the working `A->B` analogies for you (no more guessing a word/subject), and a **semantic-neighbourhood** view.
 - Neuron importance is now explicit and adjustable: `neurons.json` documents the exact formula (`var_share[d] = std[d]² / Σstd²`) and adds per-target `importance.rankings` (`variance`, `selectivity:subject`, `selectivity:word_len`, …) so you can rank neurons by importance *to a chosen attribute*, not just by how much they fire.
 
 ### Rigorous experiment suite (`docs/EXPERIMENTS.md`, `scripts/run_suite.sh`)

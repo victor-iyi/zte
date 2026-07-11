@@ -19,6 +19,7 @@
 #   CONTROL=1 bash scripts/run_loso.sh            # also run the no-recipe control arm (A/B)
 #   DEVICE=cuda bash scripts/run_loso.sh          # force a device (else auto)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh   # restrict the held-out set
+#   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write runs to Google Drive (persist)
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -26,7 +27,7 @@ cd "$(dirname "$0")/.."
 ROOT="${1:-res/data/zuco_extracted}"
 PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
-OUT_ROOT="res/experiments/loso"
+OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive path to persist runs
 FULL_CFG="experiments/study_invariance_full_loso.yaml"       # the invariance recipe
 CTRL_CFG="experiments/study_invariance_baseline_loso.yaml"   # no-recipe control
 

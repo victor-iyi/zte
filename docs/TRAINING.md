@@ -40,7 +40,7 @@ uv run zte-train --bundle res/bundle --objective cpc --tensorboard \
 
 # No bundle yet? Train straight from .mat files, Google Drive, or synthetic data.
 uv run zte-train --root res/data/zuco_extracted --objective skipgram
-uv run zte-train --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --objective skipgram
+uv run zte-train --drive 13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ --objective skipgram
 uv run zte-train --synthetic --objective masked --epochs 5
 ```
 
@@ -118,7 +118,7 @@ CLI flags override YAML, so you can pin a base config and sweep one knob: `uv ru
 
 ### Model knobs (`ModelConfig`)
 
-`frontend`, `embed_dim` (768 by default → LLM-compatible), `hidden_dim`, `n_layers`, `n_heads`, `dropout`, `pos_encoding`, `max_positions`, `pool` (`mean`/`attention`/`cls`), `subject_conditioning`, `n_subjects`. Raw-Conformer adds `conformer_filters` and `conformer_temporal_kernel`.
+`frontend`, `embed_dim` (768 by default -> LLM-compatible), `hidden_dim`, `n_layers`, `n_heads`, `dropout`, `pos_encoding`, `max_positions`, `pool` (`mean`/`attention`/`cls`), `subject_conditioning`, `n_subjects`. Raw-Conformer adds `conformer_filters` and `conformer_temporal_kernel`.
 
 ## Device & precision
 
@@ -139,13 +139,13 @@ cfg.train.precision = 'auto'   # or 'bf16' | 'fp16' | 'fp32'
 
 ```mermaid
 flowchart TD
-    start([epoch loop]) --> batch[next batch → device]
+    start([epoch loop]) --> batch[next batch -> device]
     batch --> ac[autocast if AMP-safe]
     ac --> loss[objective.compute]
     loss --> bw[backward · grad-accum]
     bw --> step{accum step?}
     step -->|no| batch
-    step -->|yes| clip[grad clip → optim → sched]
+    step -->|yes| clip[grad clip -> optim -> sched]
     clip --> ema[EMA teacher update<br/>data2vec only]
     ema --> log[log: rich progress + file + TensorBoard]
     log --> batch

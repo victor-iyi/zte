@@ -25,7 +25,7 @@ Train loss decreases steadily; on this tiny synthetic split the validation curve
 
 ## 2. All four objectives train
 
-Each objective was trained for 3 quick epochs on the same synthetic tree (10 sentences × 3 subjects → 504 words); all converge without error on both frontends.  Loss scales are not comparable *across* objectives (different losses), only the fact that each optimises cleanly:
+Each objective was trained for 3 quick epochs on the same synthetic tree (10 sentences × 3 subjects -> 504 words); all converge without error on both frontends.  Loss scales are not comparable *across* objectives (different losses), only the fact that each optimises cleanly:
 
 | Objective         | Frontend       | Final train loss (3 epochs) |
 | ----------------- | -------------- | --------------------------- |

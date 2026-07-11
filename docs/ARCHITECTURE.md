@@ -7,7 +7,7 @@ How the pieces fit together, why the design choices were made, and how ZTE feeds
 
 ## 1. Component overview
 
-Everything is driven by one typed config (`ZTEConfig`) and flows left-to-right: data → model → training → inference → evaluation.
+Everything is driven by one typed config (`ZTEConfig`) and flows left-to-right: data -> model -> training -> inference -> evaluation.
 
 ```mermaid
 flowchart TB
@@ -89,11 +89,11 @@ ZuCo's verified structure is encoded once in `schema.py`:
 | -------------------------------- | ------------------------------------------------------ |
 | Channels (post-artefact-removal) | 105 (from a 128-channel EGI system)                    |
 | Sampling rate                    | 500 Hz                                                 |
-| Frequency bands                  | `t1 t2 a1 a2 b1 b2 g1 g2` (theta→gamma)                |
+| Frequency bands                  | `t1 t2 a1 a2 b1 b2 g1 g2` (theta->gamma)               |
 | Eye-tracking measures            | `FFD SFD GD GPT TRT` (+ `nFixations`, `meanPupilSize`) |
 | Word EEG fields                  | `<measure>_<band>` (e.g. `TRT_t1`), each a 105-vector  |
 | Sentence EEG fields              | `mean_<band>`, `rawData`                               |
-| Omission                         | skipped words → **empty arrays**                       |
+| Omission                         | skipped words -> **empty arrays**                      |
 
 A `ZuCoDataset` flattens files into a **word table** + a **sentence table** + an aligned band-power tensor `(N, F, C)` and/or raw tensor `(N, C, T)`, plus a **presence mask** `(N,)`. Everything is row-aligned, so a single boolean filter (length cap, `drop`, or a split) stays consistent across every store. Real corpus word-frequencies and sentence categories (SR sentiment, TSR relations) are joined in automatically by `categories.py`.
 
@@ -137,7 +137,7 @@ classDiagram
     ZTEModel --> AttentionPool
 ```
 
-**Design rationale.** Skip-gram/CBOW use the *non-contextual* path so a word's embedding depends only on its own EEG — the literal word2vec analogue. Masked and CPC use the transformer because their premise is contextual prediction. The raw frontend follows the project's EEG-Conformer recipe (temporal conv as a learnable band-pass → spatial mixing → self-attention → pooling).
+**Design rationale.** Skip-gram/CBOW use the *non-contextual* path so a word's embedding depends only on its own EEG — the literal word2vec analogue. Masked and CPC use the transformer because their premise is contextual prediction. The raw frontend follows the project's EEG-Conformer recipe (temporal conv as a learnable band-pass -> spatial mixing -> self-attention -> pooling).
 
 ### Positional encoding is pluggable
 

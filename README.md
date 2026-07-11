@@ -77,7 +77,7 @@ uv sync --no-default-groups  # core only, without the `dev` group
 
 ## Quickstart: one command, end to end
 
-`zte-run` takes an **experiment config** and a **data source**, then runs the whole pipeline — resolve/unzip → prepare + cache → train → evaluate → explore — and files every artifact under `res/experiments/<run_name>/` so each experiment is self-contained and reproducible.
+`zte-run` takes an **experiment config** and a **data source**, then runs the whole pipeline — resolve/unzip -> prepare + cache -> train -> evaluate -> explore — and files every artifact under `res/experiments/<run_name>/` so each experiment is self-contained and reproducible.
 
 ```sh
 # No data needed: full pipeline on a synthetic ZuCo tree (great smoke test).
@@ -123,7 +123,7 @@ See [`experiments/README.md`](experiments/README.md) for the full rationale.
 ```sh
 uv run zte-prepare  --root res/data/zuco_extracted --representation band_power --out res/bundle
 # Or download + prepare straight from the public ZuCo Drive folder (needs `uv sync --group drive`):
-uv run zte-prepare --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+uv run zte-prepare --drive 'https://drive.google.com/drive/folders/13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ' \
     --representation band_power --out res/bundle
 uv run zte-train    --bundle res/bundle --objective skipgram --tensorboard --run-name demo
 uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation --tensorboard
@@ -176,7 +176,7 @@ The EEG band-power is always kept; the toggle only governs the extra gaze dimens
 
 ### Brain-region exploration (`zte-explore`)
 
-Which parts of the cortex encode thought vs reading? `zte-explore` groups the 105 channels into anterior→posterior scalp regions and scores each region's share of the decodable information for reading targets (word length, frequency) and cognitive targets (task, subject). Supply an exact montage with `RegionMap.from_csv(...)`; the default map is documented and approximate.
+Which parts of the cortex encode thought vs reading? `zte-explore` groups the 105 channels into anterior->posterior scalp regions and scores each region's share of the decodable information for reading targets (word length, frequency) and cognitive targets (task, subject). Supply an exact montage with `RegionMap.from_csv(...)`; the default map is documented and approximate.
 
 ```sh
 uv run zte-explore --root res/data/zuco_extracted --out res/exploration
@@ -270,11 +270,11 @@ flowchart TD
 flowchart LR
     in[token: band-power F·C<br/>or raw C×T] --> fe{frontend}
     fe -->|band_power_mlp| mlp[LayerNorm + MLP]
-    fe -->|raw_conformer| cf[temporal conv → spatial conv<br/>→ self-attn → temporal pool]
+    fe -->|raw_conformer| cf[temporal conv -> spatial conv<br/>-> self-attn -> temporal pool]
     mlp --> h[hidden h]
     cf --> h
     subj[subject id] -.optional.-> h
-    h -->|skip-gram / CBOW| proj[projection head → embed_dim]
+    h -->|skip-gram / CBOW| proj[projection head -> embed_dim]
     h -->|masked / CPC| ctx[transformer<br/>bi-dir or causal] --> proj
     proj --> e[L2-normalised embedding<br/>embed_dim = 768]
 ```
@@ -298,13 +298,13 @@ All objectives gate on the presence mask: omitted words are never anchors, posit
 
 ```mermaid
 flowchart TD
-    start([epoch loop]) --> batch[next batch → device]
+    start([epoch loop]) --> batch[next batch -> device]
     batch --> ac[autocast if AMP-safe]
     ac --> loss[objective.compute]
     loss --> bw[backward · grad-accum]
     bw --> step{accum step?}
     step -->|no| batch
-    step -->|yes| clip[grad clip → optim → sched]
+    step -->|yes| clip[grad clip -> optim -> sched]
     clip --> ema[EMA teacher update<br/>data2vec only]
     ema --> log[log: rich progress + file + TensorBoard]
     log --> batch
@@ -342,7 +342,7 @@ Install Drive support once (`uv sync --group drive`), then pass `--drive` to any
 
 ```sh
 uv run zte-prepare \
-    --drive 'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL' \
+    --drive 'https://drive.google.com/drive/folders/13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ' \
     --representation band_power --out res/bundle
 ```
 
@@ -357,7 +357,7 @@ Zips are downloaded to `res/data/_downloads` first; extraction is skipped for ar
 **Interrupt & resume:** Downloads are safe to stop (Ctrl+C). Each zip is fetched separately with per-file byte progress (`tqdm`). Finished files are recorded in `.zte_drive_manifest.json`; re-run the same command to continue. For download-only:
 
 ```sh
-uv run zte-download --drive 1Rd3vZq404sykxhCfkIJERz6qT5csWARL --out res/data/_downloads
+uv run zte-download --drive 13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ --out res/data/_downloads
 ```
 
 ### Bundles & uploads (Python API)
