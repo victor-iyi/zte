@@ -27,7 +27,7 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
-  normalize: zscore_subject
+  normalize: zscore_channel
   normalizer_fit: train
   montage_csv: null
   bandpass: null
@@ -71,7 +71,7 @@ objective:
   variance_weight: 1.0
   covariance_weight: 1.0
   variance_target: 1.0
-  anisotropy_weight: 1.0
+  anisotropy_weight: 2.0
   whiten: true
   cross_subject_positives: true
   meaning_positives: true
@@ -102,4 +102,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: exp6_skipgram_eegonly_invariant
+run_name: study_all_levers

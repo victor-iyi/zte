@@ -136,6 +136,16 @@ def evaluate_representation(
     fig_dir = out / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
+    # 0) Optional ZCA whitening of the ZTE embeddings — the anti-cone / anti-collapse fix. It is
+    #    label-free, so every metric below is honestly recomputed on the whitened space (we get to see
+    #    whether content survives the geometry fix, not just that anisotropy dropped).
+    if config is not None and getattr(getattr(config, 'objective', None), 'whiten', False):
+        word_emb = M.whiten_features(word_emb)
+        sent_emb = M.whiten_features(sent_emb)
+        _LOG.info(
+            'Applied ZCA whitening to the exported embeddings (config.objective.whiten=True).'
+        )
+
     # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control.
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),

@@ -102,6 +102,8 @@ class SentenceSample:
     subject: int
     length: int
     content: torch.Tensor | None = None
+    word_id: torch.Tensor | None = None
+    task_id: int = 0
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -143,21 +145,46 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         skey_arr, widx_arr = _content_key_arrays(dataset)
         presence = dataset.presence
 
+        # Subject-agnostic *word identity* (for meaning positives: same word in different sentences)
+        # and a *passage/task id* per sentence (for the passage adversary).
+        word_arr = (
+            dataset.words['word'].fillna('').astype(str).to_numpy()
+            if 'word' in dataset.words.columns
+            else None
+        )
+        self._word_vocab: dict[str, int] = (
+            {w: i for i, w in enumerate(sorted(set(word_arr.tolist())))}
+            if word_arr is not None
+            else {}
+        )
+        self._task_vocab: dict[str, int] = (
+            {t: i for i, t in enumerate(sorted(set(dataset.words['task'].astype(str).tolist())))}
+            if 'task' in dataset.words.columns
+            else {}
+        )
+
         self._sequences: list[np.ndarray] = []
         self._subjects: list[int] = []
         self._content: list[np.ndarray] = []
+        self._word_id: list[np.ndarray] = []
+        self._task_id: list[int] = []
         self._stimulus_keys: list[str] = []
-        for (subject, _task, _s_idx), rows in dataset.groups:
+        for (subject, task, _s_idx), rows in dataset.groups:
             kept = rows if allowed is None else np.array([r for r in rows if r in allowed])
             if len(kept) < min_length:
                 continue
             self._sequences.append(kept)
             self._subjects.append(self.subject_vocab.get(subject, 0))
             content = np.full(len(kept), -1, dtype=np.int64)
+            word_id = np.full(len(kept), -1, dtype=np.int64)
             for j, r in enumerate(kept):
                 if presence is None or bool(presence[r]):
                     content[j] = self._content_vocab[(skey_arr[r], int(widx_arr[r]))]
+                    if word_arr is not None:
+                        word_id[j] = self._word_vocab.get(word_arr[r], -1)
             self._content.append(content)
+            self._word_id.append(word_id)
+            self._task_id.append(self._task_vocab.get(str(task), 0))
             self._stimulus_keys.append(str(skey_arr[kept[0]]) if len(kept) else '')
 
     @property
@@ -220,6 +247,8 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             subject=self._subjects[idx],
             length=len(rows),
             content=torch.from_numpy(np.ascontiguousarray(self._content[idx])).long(),
+            word_id=torch.from_numpy(np.ascontiguousarray(self._word_id[idx])).long(),
+            task_id=self._task_id[idx],
         )
 
 
@@ -249,11 +278,14 @@ def collate_sentences(batch: list[SentenceSample]) -> dict[str, Any]:
     pad_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
     presence = torch.zeros(batch_size, max_len, dtype=torch.bool)
     content_id = torch.full((batch_size, max_len), -1, dtype=torch.long)
+    word_id = torch.full((batch_size, max_len), -1, dtype=torch.long)
     for i, sample in enumerate(batch):
         pad_mask[i, : sample.length] = True
         presence[i, : sample.length] = sample.presence
         if sample.content is not None:
             content_id[i, : sample.length] = sample.content
+        if sample.word_id is not None:
+            word_id[i, : sample.length] = sample.word_id
 
     features = None
     if batch[0].features is not None:
@@ -277,6 +309,8 @@ def collate_sentences(batch: list[SentenceSample]) -> dict[str, Any]:
         'subject': torch.tensor([s.subject for s in batch], dtype=torch.long),
         'lengths': lengths,
         'content_id': content_id,
+        'word_id': word_id,
+        'task_id': torch.tensor([s.task_id for s in batch], dtype=torch.long),
     }
 
 

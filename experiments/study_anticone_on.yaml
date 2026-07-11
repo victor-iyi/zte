@@ -27,7 +27,7 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
-  normalize: zscore_subject
+  normalize: zscore_channel
   normalizer_fit: train
   montage_csv: null
   bandpass: null
@@ -56,7 +56,6 @@ model:
   pool: attention
   subject_conditioning: false
   n_subjects: 12
-  n_tasks: 3
   projection_hidden: 512
 objective:
   name: skipgram
@@ -71,12 +70,12 @@ objective:
   variance_weight: 1.0
   covariance_weight: 1.0
   variance_target: 1.0
-  anisotropy_weight: 1.0
+  anisotropy_weight: 2.0
   whiten: true
-  cross_subject_positives: true
-  meaning_positives: true
-  subject_adversary_weight: 0.3
-  stimulus_adversary_weight: 0.3
+  cross_subject_positives: false
+  meaning_positives: false
+  subject_adversary_weight: 0.0
+  stimulus_adversary_weight: 0.0
 train:
   epochs: 40
   batch_size: 128
@@ -102,4 +101,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: exp6_skipgram_eegonly_invariant
+run_name: study_anticone_on

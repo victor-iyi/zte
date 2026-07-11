@@ -168,6 +168,7 @@ class ModelConfig:
     pool: PoolName = 'attention'
     subject_conditioning: bool = False
     n_subjects: int = 12
+    n_tasks: int = 3
     projection_hidden: int = 512
 
 
@@ -186,8 +187,7 @@ class ObjectiveConfig:
         masked_target (Literal['reconstruct', 'latent']): Reconstruct raw features (`reconstruct`) or predict an EMA-teacher latent (`latent`, the data2vec variant).
         ema_decay (float): Starting teacher EMA decay for `masked_target='latent'`.
         ema_decay_end (float): Final teacher EMA decay. The decay is ramped linearly from `ema_decay` to `ema_decay_end`
-            over training (data2vec schedule): a fast-moving teacher early (more signal) that stabilises late. Set equal to
-            `ema_decay` for a flat schedule.
+            over training (data2vec schedule): a fast-moving teacher early (more signal) that stabilises late. Set equal to `ema_decay` for a flat schedule.
         teacher_variance_floor (float): Minimum per-dimension std enforced when normalising the data2vec teacher target
             **across tokens** (not per-token). This is the anti-collapse fix for the masked objective -- a per-token
             LayerNorm target leaves between-token variance unconstrained and lets teacher and student co-collapse to a constant.
@@ -205,6 +205,19 @@ class ObjectiveConfig:
         subject_adversary_weight (float): Weight of a gradient-reversal subject-adversary loss (0 disables). An auxiliary
             head tries to classify the subject from the token hiddens; the reversed gradient trains the encoder to *hide*
             subject identity, directly lowering subject decodability toward chance.
+        anisotropy_weight (float): Weight of an anti-cone *uniformity* penalty (0 disables). A Wang & Isola uniformity term spreads the
+            L2-normalised embeddings over the sphere so their angular arrangement cannot degenerate. It complements `whiten`
+            (which removes the shared-mean cone) by keeping directions well spread; pair both with VICReg (variance + covariance).
+        whiten (bool): If `True`, the exported embeddings are ZCA-whitened at evaluation (centre + decorrelate + equalise variance). This is the
+            direct fix for the "cone" (anisotropy ~0.997) and dimensional collapse the review found: centring removes the dominant shared direction
+            (anisotropy -> ~0) and whitening spreads variance across all dimensions (effective rank -> full).  Because it is label-free, all downstream
+            metrics are recomputed on the whitened space, so the report honestly shows whether content (retrieval, clustering) survives the fix.
+        meaning_positives (bool): If `True` (skip-gram), also draw positive pairs from the *same content word occurring in
+            different sentences* (subject-agnostic word identity), not only the same stimulus token. This gives the
+            "same meaning across contexts" structure room to grow instead of memorising which passage a word came from.
+        stimulus_adversary_weight (float): Weight of a second gradient-reversal adversary that tries to predict *which
+            stimulus/passage* a token came from (0 disables). It removes the "which of the sentence-sets" shortcut so the
+            model must encode content rather than passage identity. Requires `content_id` in the batch.
     """
 
     name: ObjectiveName = 'skipgram'
@@ -219,8 +232,12 @@ class ObjectiveConfig:
     variance_weight: float = 0.0
     covariance_weight: float = 0.0
     variance_target: float = 1.0
+    anisotropy_weight: float = 0.0
+    whiten: bool = False
     cross_subject_positives: bool = False
+    meaning_positives: bool = False
     subject_adversary_weight: float = 0.0
+    stimulus_adversary_weight: float = 0.0
 
 
 @dataclass

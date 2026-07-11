@@ -49,7 +49,7 @@ All four share: `subjects: null` (all 12 subjects), `tasks: [SR, NR]`, `represen
 
 All commands assume the repo root and the project venv (`.venv/bin/...`). The console scripts (`zte-run`, `zte-benchmark`, `zte-visualize`) are installed in the venv; you can equally call `.venv/bin/python -m zte.cli.run` etc.
 
-The fixed, documented driver is **`scripts/run_suite.sh`** (seeds `42 43 44`):
+The fixed, documented driver is `scripts/run_suite.sh` (seeds `42 43 44`):
 
 ```sh
 bash scripts/run_suite.sh                       # real data at res/data/zuco_extracted
@@ -70,7 +70,7 @@ nohup zte-run --config experiments/study_vicreg_on.yaml --root res/data/zuco_ext
 zte-run --config experiments/study_vicreg_on.yaml --root res/data/zuco_extracted --seed 42 --resume
 ```
 
-`--resume` is idempotent and safe to always pass: it reuses the cached dataset bundle (skips the slow prepare), continues training from the last checkpoint, and skips evaluation / exploration that are already up to date (a `--force` flag redoes them). Because **`scripts/run_suite.sh` already passes `--resume` on every run**, you can stop the whole suite at any point and just re-run `bash scripts/run_suite.sh` to pick up where it stopped — completed runs are skipped, the interrupted one resumes. (`zte-benchmark` sweeps are not individually resumable; re-running restarts that sweep.)
+`--resume` is idempotent and safe to always pass: it reuses the cached dataset bundle (skips the slow prepare), continues training from the last checkpoint, and skips evaluation / exploration that are already up to date (a `--force` flag redoes them). Because `scripts/run_suite.sh` **already passes** `--resume` **on every run**, you can stop the whole suite at any point and just re-run `bash scripts/run_suite.sh` to pick up where it stopped — completed runs are skipped, the interrupted one resumes. (`zte-benchmark` sweeps are not individually resumable; re-running restarts that sweep.)
 
 ### Fast synthetic smoke (no data — proves a config trains + evaluates)
 
@@ -149,16 +149,16 @@ Every `zte-run` catalogues one self-contained directory under `res/experiments/<
 
 The full metric dump (also returned by `evaluate_representation`). Key blocks:
 
-- **`verdict`** — the pass/fail booleans and their statistics. Each check is
-  backed by a **bootstrap 95% CI, not a sign**:
+- `verdict` — the pass/fail booleans and their statistics. Each check is
+backed by a **bootstrap 95% CI, not a sign**:
   - `beats_noise` + `beats_noise_ci` — the paired per-fold (ZTE − noise) probe gap must clear an **effect-size floor** (`effect_size_floor = 0.01`), not merely be positive.
   - `retrieval_above_chance` + `retrieval_ci` — CI on `(Top-1 − chance)` over the per-query hit vector must exclude zero. **Chance is query-weighted** (matches how hits are scored); the old type-weighted value is kept as `chance_top1_typeweighted` and typically *understated* chance by ~30×.
   - `subject_arithmetic_above_chance` + `subject_arithmetic_ci` — same idea for the subject vector-arithmetic test.
-- **`embedding_health`** — geometry / collapse metrics: `effective_rank_ratio` (high ≈ healthy, near 1.0; low ≈ collapsed), `anisotropy` (low is good), uniformity, alignment, dead-dim fraction. **The headline for Study 3.**
-- **`sentence_retrieval` / `word_retrieval`** — leave-one-out cross-subject retrieval: does the *same stimulus read by a different person* retrieve its counterparts? `top1`, `mrr`, and `chance_top1` (query-weighted). **The honest cross-subject test — headline for Studies 1 & 2.**
-- **`analogy`** — vector arithmetic `emb(t, A) − centroid(A) + centroid(B)` should retrieve `emb(t, B)`. `subject_transfer` / `task_transfer` Top-1 vs chance. **The falsifiable subject-agnosticism test — headline for Study 2.**
-- **`probe_comparison`** — the ZTE-vs-raw-vs-noise probe rows (mirrored to `comparison.csv`).
-- **`neurons`** — the compact neuron-interpretability block (full detail in `neurons.json`); see the who-vs-what budget below.
+- `embedding_health` — geometry / collapse metrics: `effective_rank_ratio` (high ≈ healthy, near 1.0; low ≈ collapsed), `anisotropy` (low is good), uniformity, alignment, dead-dim fraction. **The headline for Study 3.**
+- `sentence_retrieval` **/** `word_retrieval` — leave-one-out cross-subject retrieval: does the *same stimulus read by a different person* retrieve its counterparts? `top1`, `mrr`, and `chance_top1` (query-weighted). **The honest cross-subject test — headline for Studies 1 & 2.**
+- `analogy` — vector arithmetic `emb(t, A) − centroid(A) + centroid(B)` should retrieve `emb(t, B)`. `subject_transfer` / `task_transfer` Top-1 vs chance. **The falsifiable subject-agnosticism test — headline for Study 2.**
+- `probe_comparison` — the ZTE-vs-raw-vs-noise probe rows (mirrored to `comparison.csv`).
+- `neurons` — the compact neuron-interpretability block (full detail in `neurons.json`); see the who-vs-what budget below.
 
 ### `report.md` — the human-readable version
 
@@ -183,11 +183,11 @@ This is where Study 1's "EEG vs eye-tracking share" is quantified.
 
 `neurons.json` holds the full per-dimension interpretability report; the compact summary is embedded in `metrics.json` under `neurons`. This is how you see *which* of the 768 neurons fire, *what* they encode, and which are negligible:
 
-- **`variance_budget`** — how the embedding's total variance is split across what each active neuron is *most selective for* (`subject`, `task`, `word_len`, `log_freq`, `category`, or `none`). This is the **"budget" framing**: the space has a fixed variance budget and the budget tells you what it spent it on.
-- **`who_vs_what_ratio`** (with `who_variance` / `what_variance`) — variance spent on **identity** (subject/task = *who*) divided by variance spent on **content** (word length/frequency/category = *what*). **Lower is better** — the north-star number in one scalar. Watch it fall from Study 2 baseline → full.
-- **`n_active` / `n_dead`** (and `embed_dim`, `active_variance_share`) — how many neurons carry real spread vs are effectively constant. **The headline pair for Study 3:** VICReg should raise `n_active` and shrink `n_dead`.
-- **`neuron_budget`** — the same split counted in *neurons* rather than variance.
-- **`top`** (in the metrics block) / `top_neurons` (full, in `neurons.json`) — the most-important dimensions with their dominant attribute, variance share, and top-activating words, plus per-neuron activation histograms and (with band power) scalp/band attribution. Read these to name what a neuron "means".
+- `variance_budget` — how the embedding's total variance is split across what each active neuron is *most selective for* (`subject`, `task`, `word_len`, `log_freq`, `category`, or `none`). This is the **"budget" framing**: the space has a fixed variance budget and the budget tells you what it spent it on.
+- `who_vs_what_ratio` (with `who_variance` / `what_variance`) — variance spent on **identity** (subject/task = *who*) divided by variance spent on **content** (word length/frequency/category = *what*). **Lower is better** — the north-star number in one scalar. Watch it fall from Study 2 baseline → full.
+- `n_active` **/** `n_dead` (and `embed_dim`, `active_variance_share`) — how many neurons carry real spread vs are effectively constant. **The headline pair for Study 3:** VICReg should raise `n_active` and shrink `n_dead`.
+- `neuron_budget` — the same split counted in *neurons* rather than variance.
+- `top` (in the metrics block) / `top_neurons` (full, in `neurons.json`) — the most-important dimensions with their dominant attribute, variance share, and top-activating words, plus per-neuron activation histograms and (with band power) scalp/band attribution. Read these to name what a neuron "means".
 
 #### What makes a neuron "fire", and *importance to what*?
 
@@ -203,12 +203,12 @@ var_share[d] = std[d]² / Σⱼ std[j]²          # importance(d), sums to 1 ove
 
 ### The interactive explorers (`evaluation/interactive/`)
 
-- **`thought_space_explorer.html`** — the flagship, fully-offline 3-D explorer over word embeddings: one subject / many words, one word across many brains (with a cross-subject cosine statistic), thought arithmetic `emb(t,A) − centroid(A) + centroid(B)`, an EEG-only-vs-eye-tracking toggle, and live colour / subject / word / dimension controls. Open in any browser — no server. Rebuild a standalone copy over a catalogued run with `zte-visualize --run res/experiments/<name>`.
-- **`word_explorer.html`** — the simpler PCA explorer (a lightweight fallback view of the same embeddings).
+- `thought_space_explorer.html` — the flagship, fully-offline 3-D explorer over word embeddings: one subject / many words, one word across many brains (with a cross-subject cosine statistic), thought arithmetic `emb(t,A) − centroid(A) + centroid(B)`, an EEG-only-vs-eye-tracking toggle, and live colour / subject / word / dimension controls. Open in any browser — no server. Rebuild a standalone copy over a catalogued run with `zte-visualize --run res/experiments/<name>`.
+- `word_explorer.html` — the simpler PCA explorer (a lightweight fallback view of the same embeddings).
 
 ### The neuron atlas — which neurons fire, and what they encode
 
-Every evaluation writes an interactive **`interactive/neuron_atlas.html`** (path recorded under `metrics.neuron_atlas`), and you can regenerate it standalone:
+Every evaluation writes an interactive `interactive/neuron_atlas.html` (path recorded under `metrics.neuron_atlas`), and you can regenerate it standalone:
 
 ```sh
 .venv/bin/zte-visualize --atlas --run res/experiments/<name> --out res/atlas/<name>.html
@@ -220,11 +220,11 @@ Read it as: a **ranked-importance chart of every dimension** (the tall bars on t
 
 ### Emergent properties — do similar thoughts cluster across people?
 
-This is the north-star property (the thing that would make ZTE "like word embeddings for brains"): the **same or related meaning read by different subjects should sit together**, and higher-order arithmetic (`emb(t,A) − centroid(A) + centroid(B) ≈ emb(t,B)`) should work. Every run measures it honestly under `metrics.json` → **`emergence`** (and a "Emergent properties" section in `report.md`):
+This is the north-star property (the thing that would make ZTE "like word embeddings for brains"): the **same or related meaning read by different subjects should sit together**, and higher-order arithmetic (`emb(t,A) − centroid(A) + centroid(B) ≈ emb(t,B)`) should work. Every run measures it honestly under `metrics.json` → `emergence` (and a "Emergent properties" section in `report.md`):
 
-- **`cross_subject.same_word`** — mean cosine of the *same word read by different subjects* vs a random cross-subject baseline. The **`gap`** (same − random) is the real signal; a collapsed/anisotropic space makes all raw cosines high, so ignore the absolute number and read the gap and `verdict`.
-- **`cross_subject.same_meaning`** — the same test using the sentence **category** as a meaning proxy: are same-category cross-subject pairs closer than random? This is the "cat near dog because both are animals, across people" test, grounded in the labels the corpus actually has.
-- **`neighbourhood`** — for a sample of tokens, the fraction of nearest neighbours that are the same word / same category (vs chance), and the fraction drawn from a **different subject**. A working thought code wants **positive category coherence and a high cross-subject neighbour fraction**.
+- `cross_subject.same_word` — mean cosine of the *same word read by different subjects* vs a random cross-subject baseline. The `gap` (same − random) is the real signal; a collapsed/anisotropic space makes all raw cosines high, so ignore the absolute number and read the gap and `verdict`.
+- `cross_subject.same_meaning` — the same test using the sentence **category** as a meaning proxy: are same-category cross-subject pairs closer than random? This is the "cat near dog because both are animals, across people" test, grounded in the labels the corpus actually has.
+- `neighbourhood` — for a sample of tokens, the fraction of nearest neighbours that are the same word / same category (vs chance), and the fraction drawn from a **different subject**. A working thought code wants **positive category coherence and a high cross-subject neighbour fraction**.
 
 **How to *see* it, without guessing:** open `thought_space_explorer.html`. Its landing banners state, in plain language, whether same/related thoughts cluster; its **auto-analogy leaderboard** finds the working `A→B` analogies for you (no need to pick a word or a person); and its **neighbourhood view** shows a word's nearest thoughts across subjects.
 
@@ -250,14 +250,37 @@ bash scripts/run_loso.sh res/data/zuco_extracted # real sweep (auto-GPU, multi-h
 CONTROL=1 bash scripts/run_loso.sh <root>        # add the no-recipe control arm (clean A/B per subject)
 ```
 
-- **Portable & auto-GPU.** Runs unchanged on macOS (MPS), Linux (CUDA), and Google Colab; `--device auto` picks the accelerator. See [RUNNING.md](./RUNNING.md) and [`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb).
+- **Portable & auto-GPU.** Runs unchanged on macOS (MPS), Linux (CUDA), and Google Colab; `--device auto` picks the accelerator. See [RUNNING.md](./RUNNING.md) and `[notebooks/zte_colab.ipynb](../notebooks/zte_colab.ipynb)`.
 - **Fully resumable.** Every per-subject run carries `--resume`; stop with `Ctrl-C` and re-run the identical command to continue exactly where it stopped (finished subjects skipped, the interrupted one resumed from its last checkpoint).
 - **One combined view.** The sweep ends by building `res/experiments/loso/COMPARE.html` (`zte-compare`) so every held-out subject sits side by side, scored against the same pass/fail rubric.
 
 ### The honesty layer (what each run now proves, not just claims)
 
-Every run's `metrics.json` and `report.md` gain a **`honesty`** block whenever the embedding set spans ≥ 2 subjects (so it is populated for `by_stimulus` runs and, for a LOSO run, for the held-out subject specifically):
+Every run's `metrics.json` and `report.md` gain a `honesty` block whenever the embedding set spans ≥ 2 subjects (so it is populated for `by_stimulus` runs and, for a LOSO run, for the held-out subject specifically):
 
-- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* → a p-value, not merely an analytic chance line. Feeds `verdict.retrieval_above_chance_perm`.
+- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* -> a p-value, not merely an analytic chance line. Feeds `verdict.retrieval_above_chance_perm`.
 - **Held-out cross-subject decoding** (`honesty.cross_subject_decode`) — a linear probe trained on N−1 subjects and scored on the held-out one, one fold per subject, per target (category / length band / word length / log-frequency), with a bootstrap CI vs an honest chance baseline. Content that decodes on an unseen brain is the real generalization signal.
 - **Anchor calibration lift** (`honesty.calibration`) — fits an orthogonal Procrustes alignment from a few shared **anchor** words to snap a held-out subject into the shared frame, then measures whether same-word cross-subject cohesion improves on *held-out* words. A metrics-side preview of "can a stranger be calibrated in without retraining?", mirroring the explorer's **Calibrate** mode.
+
+## §10 roadmap — implemented improvements
+
+The report's §10 "what to fix next" is now wired into the config and objectives (all off by default; enabled in the flagship recipe configs `exp6_skipgram_eegonly_invariant.yaml` and `study_invariance_full_loso.yaml`).
+
+### Fix the dimensional collapse / the "cone" (§10.1)
+
+The LOSO space became a near-degenerate **cone** (anisotropy ~0.997): rank looked high but no dimension separated content. Two complementary levers:
+
+- `objective.whiten` — ZCA-whitens the exported embeddings at evaluation (centre + decorrelate + equalise variance). Centring removes the shared direction that *is* the cone, so **anisotropy drops from ~0.998 to ~0.00**; because it is label-free, every downstream metric is recomputed on the whitened space, so the report honestly shows whether content survives (on synthetic, un-saturating the cosines lifts the same-word cross-subject gap from ~0 to positive).
+- `objective.anisotropy_weight` — a Wang & Isola **uniformity** term that spreads the normalised embeddings over the sphere during training (a mean-direction penalty is a saddle at a perfect cone and cannot break it; pairwise repulsion can).
+- Turn **VICReg** up (`variance_weight`, `covariance_weight`) to keep every dimension alive and decorrelated — the effective-rank half of collapse is a *training* matter and only shows on real data (synthetic already uses ~126/768 dims).
+
+A ready-made A/B ablation: `study_anticone_off.yaml` (VICReg only) vs `study_anticone_on.yaml` (VICReg + whitening + uniformity). Compare `embedding_health.anisotropy` and `effective_rank_ratio`.
+
+### Kill the stimulus shortcut, chase meaning (§10.2)
+
+- `objective.meaning_positives` (skip-gram) — also draws positive pairs from the **same content word occurring in different sentences** (subject- and context-agnostic word identity), not only the same stimulus token, so same-*meaning* clustering has room to grow instead of memorising which passage a word came from.
+- `objective.stimulus_adversary_weight` — a **second gradient-reversal referee** that predicts *which passage/task* a token came from; the reversed gradient removes the "which of the sentence-sets" shortcut. (Sized by `model.n_tasks`.)
+
+### Report on truly held-out data (§10.3)
+
+- The **LOSO sweep** (`scripts/run_loso.sh`) evaluates every held-out subject; the **honesty block** adds a permutation null, a held-out cross-subject decoder, and the anchor-calibration lift for the held-out subject (see above). The **raw-waveform path** for richer signal already exists as `exp5_raw_conformer_masked.yaml` (`frontend: raw_conformer`).

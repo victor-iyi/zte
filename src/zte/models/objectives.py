@@ -73,20 +73,29 @@ def _context_key_mask(batch: dict[str, Any]) -> torch.Tensor:
 
 
 def vicreg_terms(
-    emb: torch.Tensor, gamma: float, var_weight: float, cov_weight: float, eps: float = 1e-4
+    emb: torch.Tensor,
+    gamma: float,
+    var_weight: float,
+    cov_weight: float,
+    aniso_weight: float = 0.0,
+    eps: float = 1e-4,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Computes the VICReg variance-hinge and covariance penalties on a batch of embeddings.
+    """Computes the VICReg variance/covariance penalties plus an anti-cone anisotropy penalty.
 
     The variance term hinges each embedding dimension's batch std up toward `gamma`, so no dimension is
     allowed to go silent -- this is what prevents the ~15-of-768 dimensional collapse the review found.
     The covariance term drives off-diagonal feature covariances toward zero so the dimensions carry
-    decorrelated information (raising effective rank).
+    decorrelated information (raising effective rank). The **anisotropy** term penalises the squared norm
+    of the mean L2-normalised embedding -- which equals the population mean off-diagonal cosine -- so the
+    space cannot degenerate into a cone (every vector pointing the same way, the LOSO failure mode where
+    rank looks high but no dimension separates content).
 
     Args:
         emb (torch.Tensor): Embeddings `(n_tokens, embed_dim)` (un-normalised).
         gamma (float): Target per-dimension standard deviation for the variance hinge.
         var_weight (float): Weight of the variance term (0 disables).
         cov_weight (float): Weight of the covariance term (0 disables).
+        aniso_weight (float): Weight of the anti-cone anisotropy term (0 disables).
         eps (float): Numerical floor inside the std.
 
     Returns:
@@ -95,7 +104,7 @@ def vicreg_terms(
     loss = emb.new_zeros(())
     metrics: dict[str, float] = {}
     n, e = emb.shape
-    if n < 2 or (var_weight == 0.0 and cov_weight == 0.0):
+    if n < 2 or (var_weight == 0.0 and cov_weight == 0.0 and aniso_weight == 0.0):
         return loss, metrics
     if var_weight > 0.0:
         std = torch.sqrt(emb.var(dim=0, unbiased=False) + eps)
@@ -110,6 +119,18 @@ def vicreg_terms(
         cov_loss = off_diag_sq / e
         loss = loss + cov_weight * cov_loss
         metrics['vicreg_cov'] = float(cov_loss.detach())
+    if aniso_weight > 0.0 and n >= 2:
+        # Anti-cone via a Wang & Isola uniformity term: spread the L2-normalised embeddings over the
+        # sphere. Unlike a mean-direction penalty (which is a saddle at a perfect cone and cannot break
+        # it), pairwise repulsion genuinely lowers anisotropy. Subsample for O(n^2) safety on big batches.
+        unit = F.normalize(emb, dim=-1)
+        if n > 1024:
+            idx = torch.randperm(n, device=unit.device)[:1024]
+            unit = unit[idx]
+        sq_dist = torch.pdist(unit).pow(2)
+        uniform_loss = sq_dist.mul(-2.0).exp().mean().clamp_min(1e-12).log()
+        loss = loss + aniso_weight * uniform_loss
+        metrics['uniformity_loss'] = float(uniform_loss.detach())
     return loss, metrics
 
 
@@ -139,6 +160,14 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         self.subject_adversary: SubjectAdversary | None = (
             SubjectAdversary(model.hidden_dim, model.config.n_subjects)
             if config.subject_adversary_weight > 0.0
+            else None
+        )
+        # A second gradient-reversal referee that predicts *which passage/task* a token came from,
+        # so the encoder cannot lean on the "which of the sentence-sets" shortcut (the stimulus crutch).
+        self._n_tasks = getattr(model.config, 'n_tasks', 3)
+        self.stimulus_adversary: SubjectAdversary | None = (
+            SubjectAdversary(model.hidden_dim, self._n_tasks)
+            if config.stimulus_adversary_weight > 0.0
             else None
         )
 
@@ -171,18 +200,31 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             self.config.variance_target,
             self.config.variance_weight,
             self.config.covariance_weight,
+            self.config.anisotropy_weight,
         )
         loss = loss + vc_loss
         metrics.update(vc_metrics)
 
+        need_hidden = (self.subject_adversary is not None and self._n_subjects > 1) or (
+            self.stimulus_adversary is not None and batch.get('task_id') is not None
+        )
+        hid_u = adv_hidden.reshape(-1, adv_hidden.shape[-1])[flat] if need_hidden else None
         if self.subject_adversary is not None and self._n_subjects > 1:
-            hid_u = adv_hidden.reshape(-1, adv_hidden.shape[-1])[flat]
             subj = batch['subject'][:, None].expand(usable.shape).reshape(-1)[flat]
             logits = self.subject_adversary(hid_u, lambda_=1.0)
             adv_loss = F.cross_entropy(logits, subj)
             loss = loss + self.config.subject_adversary_weight * adv_loss
             metrics['adv_loss'] = float(adv_loss.detach())
             metrics['adv_acc'] = float((logits.argmax(dim=-1) == subj).float().mean().detach())
+        if self.stimulus_adversary is not None and batch.get('task_id') is not None:
+            task = batch['task_id'][:, None].expand(usable.shape).reshape(-1)[flat].clamp(min=0)
+            t_logits = self.stimulus_adversary(hid_u, lambda_=1.0)
+            stim_loss = F.cross_entropy(t_logits, task)
+            loss = loss + self.config.stimulus_adversary_weight * stim_loss
+            metrics['stim_adv_loss'] = float(stim_loss.detach())
+            metrics['stim_adv_acc'] = float(
+                (t_logits.argmax(dim=-1) == task).float().mean().detach()
+            )
         return loss, metrics
 
 
@@ -247,6 +289,17 @@ class SkipGramObjective(_ObjectiveBase):
             same_sent = sent_id[:, None] == sent_id[None, :]
             within = (pos[:, None] - pos[None, :]).abs() <= self.config.context_window
             pos_mask = same_sent & within & not_self & valid_pair
+
+        # Meaning positives: also pull together the *same content word in different sentences*
+        # (subject-agnostic word identity), so the space can cluster by meaning rather than by which
+        # passage a word came from -- the "chase meaning, not the stimulus shortcut" lever.
+        if self.config.meaning_positives and batch.get('word_id') is not None:
+            wid = batch['word_id'].reshape(-1)
+            has_w = wid >= 0
+            same_word = (wid[:, None] == wid[None, :]) & has_w[None, :] & has_w[:, None]
+            sent_ids = torch.arange(b, device=center.device).repeat_interleave(length)
+            diff_sent = sent_ids[:, None] != sent_ids[None, :]
+            pos_mask = pos_mask | (same_word & diff_sent & not_self & valid_pair)
 
         logits = center_flat @ context_flat.t() / self.config.temperature
         neg_inf = torch.finfo(logits.dtype).min

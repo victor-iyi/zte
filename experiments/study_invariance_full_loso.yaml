@@ -1,10 +1,3 @@
-# STUDY 2 (B) -- subject-invariance FULL stack, leave-one-subject-out.
-# Skip-gram, EEG-only, split=by_subject_loso, holdout=ZAB, WITH the invariance stack:
-# VICReg variance+covariance, per-subject normalisation (zscore_subject),
-# cross-subject positives, and a gradient-reversal subject adversary (0.3).
-# A/B partner: study_invariance_baseline_loso.yaml. Discovery question: does the stack
-# push subject-decodability toward chance AND lift held-out cross-subject retrieval?
-# Rotate train.loso_holdout_subject across all 12 subjects for a full LOSO sweep.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -63,6 +56,7 @@ model:
   pool: attention
   subject_conditioning: false
   n_subjects: 12
+  n_tasks: 3
   projection_hidden: 512
 objective:
   name: skipgram
@@ -77,8 +71,12 @@ objective:
   variance_weight: 1.0
   covariance_weight: 1.0
   variance_target: 1.0
+  anisotropy_weight: 1.0
+  whiten: true
   cross_subject_positives: true
+  meaning_positives: true
   subject_adversary_weight: 0.3
+  stimulus_adversary_weight: 0.3
 train:
   epochs: 40
   batch_size: 128

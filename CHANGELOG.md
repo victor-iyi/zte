@@ -1,5 +1,18 @@
 # Changelog
 
+## §10 roadmap: fix the collapse/cone, chase meaning, and measure it honestly
+
+Implements the report's §10 "what to fix next", plus the interactive/experiment infrastructure to run and read it. All new knobs default off; the flagship recipe configs (`exp6_skipgram_eegonly_invariant`, `study_invariance_full_loso`) turn them on.
+
+- **Dimensional collapse / the "cone" (§10.1).** `objective.whiten` ZCA-whitens the exported embeddings at evaluation — centring removes the shared direction that *is* the cone, dropping anisotropy from ~0.998 to ~0.00, and every downstream metric is honestly recomputed on the whitened space. `objective.anisotropy_weight` adds a Wang & Isola uniformity term (a mean-direction penalty is a saddle at a perfect cone and can't break it — pairwise repulsion can). New A/B: `study_anticone_off/on.yaml`. Covered by `tests/test_collapse.py`.
+- **Kill the stimulus shortcut, chase meaning (§10.2).** `objective.meaning_positives` draws skip-gram positives from the *same content word in different sentences* (subject/context-agnostic word identity), not only the same stimulus token. `objective.stimulus_adversary_weight` adds a second gradient-reversal referee that predicts *which passage/task* a token came from (sized by `model.n_tasks`). The data layer gained per-token `word_id` and per-sentence `task_id`.
+- **Report on truly held-out data (§10.3).** The LOSO sweep (`scripts/run_loso.sh`, `zte-run --loso-holdout`) evaluates every held-out subject; the evaluation `honesty` block adds a permutation null, a held-out cross-subject decoder, and an anchor-calibration lift for the held-out subject (`zte.evaluation.honesty`, `tests/test_honesty.py`). Portable + auto-GPU + resumable, with `docs/RUNNING.md` and `notebooks/zte_colab.ipynb` (Colab via `uv`).
+
+## Interactive views: comparison dashboard + explorer overhaul
+
+- **`zte-compare`** builds one offline HTML comparing every catalogued run (scorecard matrix, sortable CI table, per-run cards, transparent best-run rubric).
+- The **Thought-Space Explorer** was redesigned (icon mode cards, capability strip, insight card, progressive disclosure) and gained **Sentence** (per-reader word-by-word path), **Meaning** (same meaning across everyone), and **Calibrate** (snap a new brain in from anchor words, live Procrustes) modes plus a "remove reader identity" morph; the **Neuron Atlas** gained a scalp head-map; the classic word explorer was restyled to match.
+
 ## Pause & resume for long runs
 
 Any run is now interruptible and continuable:

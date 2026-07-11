@@ -27,6 +27,44 @@ type ProbeTask = Literal['classification', 'regression']
 # --------------------------------------------------------------------------- #
 
 
+def whiten_features(
+    emb: np.ndarray, fit_on: np.ndarray | None = None, eps: float = 1e-3, shrink: float = 0.0
+) -> np.ndarray:
+    """ZCA-whitens embeddings: centre, then decorrelate + equalise variance across dimensions.
+
+    This is the standard, label-free fix for the "cone" (anisotropy near 1) and dimensional collapse:
+    subtracting the shared mean removes the dominant common direction (dropping anisotropy toward 0),
+    and rotating by the inverse square-root of the covariance spreads variance evenly across dimensions
+    (raising effective rank toward full). ZCA (as opposed to PCA) whitening keeps the axes aligned with
+    the originals, so the transform is a minimal, content-preserving normalisation of the geometry.
+
+    Args:
+        emb (np.ndarray): Embeddings to transform `(n, d)`.
+        fit_on (np.ndarray | None): Optional separate set to estimate the mean/covariance from (e.g. the
+            training split, to avoid fitting the whitening on the same data it is scored on). Defaults to
+            ``emb`` itself.
+        eps (float): Floor added to eigenvalues for numerical stability.
+        shrink (float): Optional shrinkage in ``[0, 1]`` blending the covariance toward the identity
+            (Ledoit-Wolf style), for stability when ``n`` is not much larger than ``d``.
+
+    Returns:
+        np.ndarray: The whitened embeddings `(n, d)` (float32).
+    """
+    x = np.asarray(emb, dtype=np.float64)
+    base = x if fit_on is None else np.asarray(fit_on, dtype=np.float64)
+    if len(base) < 2:
+        return x.astype(np.float32)
+    mean = base.mean(axis=0, keepdims=True)
+    bc = base - mean
+    cov = (bc.T @ bc) / (len(bc) - 1)
+    if shrink > 0.0:
+        d = cov.shape[0]
+        cov = (1.0 - shrink) * cov + shrink * np.trace(cov) / d * np.eye(d)
+    vals, vecs = np.linalg.eigh(cov)
+    inv_sqrt = vecs @ np.diag(1.0 / np.sqrt(np.clip(vals, eps, None))) @ vecs.T
+    return ((x - mean) @ inv_sqrt).astype(np.float32)
+
+
 def effective_rank(embeddings: np.ndarray) -> float:
     """Computes the effective rank (Roy & Vetterli) of an embedding matrix.
 
