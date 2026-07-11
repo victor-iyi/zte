@@ -203,6 +203,14 @@ def evaluate_representation(
         ),
     }
 
+    # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
+    honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
+    metrics['honesty'] = honesty
+    perm = honesty.get('retrieval_permutation') or {}
+    if perm.get('applicable'):
+        metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
+        metrics['verdict']['retrieval_above_chance_perm'] = perm['above_chance']
+
     # 5) Figures (each guarded so tiny inputs never abort the run).
     figures = _render_figures(
         word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir
@@ -246,6 +254,49 @@ def evaluate_representation(
     )
     _LOG.info('Evaluation written to %s (%d figures)', out, len(figures))
     return metrics
+
+
+def _honesty_block(
+    word_emb: np.ndarray,
+    word_meta: pd.DataFrame,
+    sent_emb: np.ndarray,
+    sent_content_ids: np.ndarray,
+    config: Any | None,
+) -> dict[str, Any]:
+    """Computes the permutation / held-out-decode / calibration add-ons (guarded, best-effort).
+
+    Runs only when the embedding set spans >= 2 subjects (cross-subject work is undefined
+    otherwise). Each add-on degrades to ``{'applicable': False, ...}`` on too-little data, so this
+    never aborts a run.
+    """
+    from zte.evaluation.honesty import (
+        anchor_calibration_lift,
+        cross_subject_decode,
+        retrieval_permutation_test,
+    )
+
+    if 'subject' not in word_meta.columns or word_meta['subject'].nunique() < 2:
+        return {
+            'applicable': False,
+            'reason': 'need >= 2 subjects for cross-subject honesty checks',
+        }
+    holdout = None
+    if config is not None:
+        holdout = getattr(getattr(config, 'train', None), 'loso_holdout_subject', None)
+    block: dict[str, Any] = {'applicable': True, 'loso_holdout': holdout}
+    try:
+        block['retrieval_permutation'] = retrieval_permutation_test(sent_emb, sent_content_ids)
+    except Exception as exc:  # noqa: BLE001 — honesty add-ons never abort the run.
+        block['retrieval_permutation'] = {'applicable': False, 'reason': f'{type(exc).__name__}'}
+    try:
+        block['cross_subject_decode'] = cross_subject_decode(word_emb, word_meta)
+    except Exception as exc:  # noqa: BLE001
+        block['cross_subject_decode'] = {'applicable': False, 'reason': f'{type(exc).__name__}'}
+    try:
+        block['calibration'] = anchor_calibration_lift(word_emb, word_meta, holdout=holdout)
+    except Exception as exc:  # noqa: BLE001
+        block['calibration'] = {'applicable': False, 'reason': f'{type(exc).__name__}'}
+    return block
 
 
 def _load_region_map(config: Any | None) -> Any | None:
@@ -838,10 +889,60 @@ def _render_report(
     return '\n'.join(lines)
 
 
+def _honesty_section(honesty: dict[str, Any]) -> list[str]:
+    """Markdown for the permutation null, held-out cross-subject decode and calibration lift."""
+    if not honesty or not honesty.get('applicable'):
+        return []
+    lines = ['## Honesty checks (permutation null · held-out decode · calibration)', '']
+
+    perm = honesty.get('retrieval_permutation', {})
+    if perm.get('applicable'):
+        verdict = 'above chance' if perm['above_chance'] else 'not above chance'
+        lines += [
+            f'- **Permutation null (cross-subject retrieval):** observed Top-1 '
+            f'{perm["observed_top1"]:.3f} vs a label-shuffled null of '
+            f'{perm["null_mean"]:.3f}±{perm["null_std"]:.3f} over {perm["n_perm"]} permutations '
+            f'-> p = **{perm["p_value"]:.3f}** ({verdict}). An empirical null, not an analytic one.',
+        ]
+
+    xd = honesty.get('cross_subject_decode', {})
+    if xd.get('applicable') and xd.get('targets'):
+        lines += [
+            '',
+            f'- **Held-out cross-subject decoding** (train on {xd["n_subjects"] - 1} subjects, '
+            'test on the held-out one, one fold per subject) — the honest generalization test:',
+            '',
+            '| target | task | held-out score | chance | beats chance |',
+            '| --- | --- | --- | --- | --- |',
+        ]
+        for name, t in xd['targets'].items():
+            lo = t['ci'][1]
+            lines.append(
+                f'| {name} | {t["task"]} | {t["mean"]:.3f} (CI lo {lo:.3f}) | '
+                f'{t["chance"]:.3f} | {"✓" if t["above_chance"] else "·"} |'
+            )
+
+    cal = honesty.get('calibration', {})
+    if cal.get('applicable'):
+        who = cal.get('holdout') or 'each subject in turn'
+        lines += [
+            '',
+            f'- **Anchor calibration** (align {who} into the shared frame from '
+            f'{cal["n_anchors"]} shared anchor words, then measure same-word cross-subject '
+            f'cohesion on held-out words): before **{cal["mean_cohesion_before"]:.3f}** -> after '
+            f'**{cal["mean_cohesion_after"]:.3f}** (lift {cal["mean_lift"]:+.3f}, '
+            f'{"helps" if cal["helps"] else "no help"}). A metrics-side preview of whether a new '
+            'brain can be snapped into the space without retraining.',
+        ]
+    lines.append('')
+    return lines
+
+
 def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     """Markdown for the arithmetic, breakdown, per-category and region analyses."""
     lines: list[str] = []
     lines += _emergence_section(metrics.get('emergence', {}))
+    lines += _honesty_section(metrics.get('honesty', {}))
     analogy = metrics.get('analogy', {})
     st = analogy.get('subject_transfer', {})
     if st:

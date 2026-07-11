@@ -239,3 +239,25 @@ This is the north-star property (the thing that would make ZTE "like word embedd
 - **No single-run luck** — seeds 42/43/44 and bootstrap CIs on every verdict check; a difference has to clear an effect-size floor and a CI, not a sign.
 - **No gaze shortcut in the headline** — the invariance and collapse studies are EEG-only; Study 1 measures the gaze contribution rather than hiding it.
 - **Matched A/Bs** — every comparison changes exactly one lever; the config generator enforces this by sharing a base config between each pair.
+
+## The LOSO "new brain" experiment (the decisive test) — `scripts/run_loso.sh`
+
+Study 2 above is a single held-out subject (ZAB). The **LOSO sweep** rotates the held-out subject over the *whole cohort* so one data point becomes a **trend** — the honest answer to "does the invariance recipe transfer to brains it has never seen?".
+
+```sh
+SMOKE=1 bash scripts/run_loso.sh                 # fast synthetic dry-run (CPU, no data)
+bash scripts/run_loso.sh res/data/zuco_extracted # real sweep (auto-GPU, multi-hour)
+CONTROL=1 bash scripts/run_loso.sh <root>        # add the no-recipe control arm (clean A/B per subject)
+```
+
+- **Portable & auto-GPU.** Runs unchanged on macOS (MPS), Linux (CUDA), and Google Colab; `--device auto` picks the accelerator. See [RUNNING.md](./RUNNING.md) and [`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb).
+- **Fully resumable.** Every per-subject run carries `--resume`; stop with `Ctrl-C` and re-run the identical command to continue exactly where it stopped (finished subjects skipped, the interrupted one resumed from its last checkpoint).
+- **One combined view.** The sweep ends by building `res/experiments/loso/COMPARE.html` (`zte-compare`) so every held-out subject sits side by side, scored against the same pass/fail rubric.
+
+### The honesty layer (what each run now proves, not just claims)
+
+Every run's `metrics.json` and `report.md` gain a **`honesty`** block whenever the embedding set spans ≥ 2 subjects (so it is populated for `by_stimulus` runs and, for a LOSO run, for the held-out subject specifically):
+
+- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* → a p-value, not merely an analytic chance line. Feeds `verdict.retrieval_above_chance_perm`.
+- **Held-out cross-subject decoding** (`honesty.cross_subject_decode`) — a linear probe trained on N−1 subjects and scored on the held-out one, one fold per subject, per target (category / length band / word length / log-frequency), with a bootstrap CI vs an honest chance baseline. Content that decodes on an unseen brain is the real generalization signal.
+- **Anchor calibration lift** (`honesty.calibration`) — fits an orthogonal Procrustes alignment from a few shared **anchor** words to snap a held-out subject into the shared frame, then measures whether same-word cross-subject cohesion improves on *held-out* words. A metrics-side preview of "can a stranger be calibrated in without retraining?", mirroring the explorer's **Calibrate** mode.

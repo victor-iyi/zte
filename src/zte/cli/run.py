@@ -77,6 +77,14 @@ def parse_arguments() -> argparse.Namespace:
         '--tasks', type=str, default=None, help='Comma-separated task subset (overrides config).'
     )
     parser.add_argument(
+        '--loso-holdout',
+        type=str,
+        default=None,
+        help='Leave-one-subject-out held-out subject code (overrides config.train.loso_holdout_subject; '
+        'forces split=by_subject_loso). When --name is unset the run name is suffixed with _lo<SUBJ> so '
+        'each held-out subject gets its own resumable run directory.',
+    )
+    parser.add_argument(
         '--resume',
         action='store_true',
         help='Resume an interrupted run: reuse the cached bundle, continue training from the last '
@@ -126,10 +134,16 @@ def _run(args: argparse.Namespace) -> None:
     config = ZTEConfig.from_yaml(args.config)
     if args.seed is not None:
         config.train.seed = args.seed
+    if args.loso_holdout is not None:
+        config.train.loso_holdout_subject = args.loso_holdout
+        config.train.split = 'by_subject_loso'
     if args.name:
         config.run_name = args.name
-    elif args.seed is not None:
-        config.run_name = f'{config.run_name}_s{args.seed}'
+    else:
+        if args.loso_holdout is not None:
+            config.run_name = f'{config.run_name}_lo{args.loso_holdout}'
+        if args.seed is not None:
+            config.run_name = f'{config.run_name}_s{args.seed}'
     if args.epochs is not None:
         config.train.epochs = args.epochs
     if args.device is not None:
