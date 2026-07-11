@@ -10,6 +10,7 @@ import argparse
 
 from zte.logging_utils import configure_logging, get_logger
 from zte.utils.archive import delete_run, human_size, list_runs, unpack, zip_experiments, zip_run
+from zte.utils.env import clean_outputs
 
 _LOG = get_logger('cli.pack')
 
@@ -51,6 +52,15 @@ def parse_arguments() -> argparse.Namespace:
     d = sub.add_parser('delete', help='Delete run directories.')
     d.add_argument('names', nargs='+', help='Run names to delete.')
     d.add_argument('--yes', action='store_true', help='Actually delete (otherwise a dry run).')
+
+    c = sub.add_parser('clean', help='Delete res/ output subfolders (free space / start fresh).')
+    c.add_argument(
+        'targets',
+        nargs='*',
+        help='Which res/ subtrees to remove: experiments data cache benchmark explorer embeddings, '
+        'or "all" (the whole res/). Default: experiments.',
+    )
+    c.add_argument('--yes', action='store_true', help='Actually delete (otherwise a dry run).')
     return parser.parse_args()
 
 
@@ -96,6 +106,11 @@ def main() -> None:
     elif args.command == 'delete':
         for name in args.names:
             delete_run(f'{root}/{name}', yes=args.yes)
+        if not args.yes:
+            print('Dry run — pass --yes to actually delete.')
+
+    elif args.command == 'clean':
+        clean_outputs(args.targets or None, yes=args.yes)
         if not args.yes:
             print('Dry run — pass --yes to actually delete.')
 

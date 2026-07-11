@@ -42,27 +42,49 @@ def add_data_source_args(
 
 
 def add_extract_dir(parser: argparse.ArgumentParser) -> None:
-    """Adds `--extract-dir` for Drive/zip staging."""
+    """Adds `--extract-dir` (Drive/zip staging) and `--overwrite` (force re-extraction)."""
     parser.add_argument('--extract-dir', type=str, default=DEFAULT_EXTRACT_DIR, help=_EXTRACT_HELP)
+    parser.add_argument(
+        '--overwrite',
+        action='store_true',
+        help='Re-extract `.mat` files even if already present in the extract dir (else reused).',
+    )
 
 
 def resolve_data_root(
     args: argparse.Namespace,
     *,
     default: str | None = None,
+    tasks: object = None,
+    subjects: object = None,
 ) -> str:
-    """Resolves `--root` or `--drive` to a local directory of `.mat` files."""
+    """Resolves `--root` or `--drive` to a local directory of `.mat` files.
+
+    Only the `.mat` files matching `tasks` / `subjects` are extracted (so selecting `SR,NR` never unpacks `TSR`),
+    and `--overwrite` (read off `args`) forces re-extraction.
+    """
     from zte.data.sources import resolve_source  # pylint: disable=import-outside-toplevel
 
     spec = getattr(args, 'drive', None) or getattr(args, 'root', None) or default
     if spec is None:
         msg = 'One of --root or --drive is required.'
         raise ValueError(msg)
+    # Fall back to the CLI's own --tasks / --subjects (comma-separated) so every command extracts
+    # only what it will load, unless the caller passed an explicit list.
+    if tasks is None:
+        t = getattr(args, 'tasks', None)
+        tasks = t.split(',') if isinstance(t, str) and t else None
+    if subjects is None:
+        s = getattr(args, 'subjects', None)
+        subjects = s.split(',') if isinstance(s, str) and s else None
     extract_dir = getattr(args, 'extract_dir', DEFAULT_EXTRACT_DIR)
     return str(
         resolve_source(
             spec,
             extract_dir=extract_dir,
             download_dir=DEFAULT_DOWNLOAD_DIR,
+            tasks=tasks,  # type: ignore[arg-type]
+            subjects=subjects,  # type: ignore[arg-type]
+            overwrite=bool(getattr(args, 'overwrite', False)),
         )
     )

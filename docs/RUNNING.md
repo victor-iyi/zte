@@ -107,10 +107,15 @@ uv run zte-pack zip exp6 --with-bundle                 # one run, incl. dataset 
 uv run zte-pack zip --all --move --out ~/zte.zip       # zip, then delete the local run dirs (free space)
 
 uv run zte-pack unpack ~/zte.zip --dest res/experiments # on your Mac
-uv run zte-pack delete colab_exp6 --yes                # free space (omit --yes for a dry run)
+uv run zte-pack delete colab_exp6 --yes                # delete one run (omit --yes for a dry run)
+uv run zte-pack clean experiments cache --yes          # wipe res/ subtrees to free space (or: clean all)
 ```
 
 **On Colab**, mount Drive (`from google.colab import drive; drive.mount('/gdrive')`), read the dataset directly with `--root "/gdrive/My Drive/Sharables/ZuCo Dataset"` (no `zte-download` needed), and point `zte-pack zip --out` at a Drive folder to upload the archive straight to Drive — or set `OUT_ROOT=/gdrive/... bash scripts/run_loso.sh` to write runs to Drive as they finish. See **[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)** for the full end-to-end flow.
+
+**Extraction is selective (only what you need).** When `--root` points at a folder of `.zip` archives (e.g. on Drive), ZTE reads each zip's index and extracts **only the `.mat` files matching the run's `tasks` / `subjects`** — the task and subject are parsed straight from the `results<SUBJECT>_<TASK>.mat` filename. So a run with `tasks: [SR, NR]` extracts only `task1 - SR` and `task2 - NR` and never unpacks `task3 - TSR` (or unrelated archives like `scripts.zip`), on Colab **and** locally. Already-extracted files are reused, not re-unpacked, unless you pass `--overwrite`. A folder that already holds extracted `.mat` files is used in place.
+
+**Housekeeping.** `zte-pack clean <targets> --yes` removes `res/` subtrees (`experiments data cache benchmark explorer embeddings`, or `all`); dry-run without `--yes`. To pull critical updates on Colab, delete the checkout and re-clone (`rm -rf zte && git clone …`) — your data and saved runs on Drive are untouched.
 
 ## GPUs and TPUs
 

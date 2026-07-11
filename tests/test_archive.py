@@ -7,6 +7,7 @@ from pathlib import Path
 
 from zte.utils import (
     accelerator_info,
+    clean_outputs,
     delete_run,
     ensure_dirs,
     list_runs,
@@ -93,6 +94,23 @@ def test_delete_run_is_guarded(tmp_path: Path):
     assert run.exists()
     assert delete_run(run, yes=True) is True
     assert not run.exists()
+
+
+def test_clean_outputs_is_guarded_and_selective(tmp_path: Path):
+    (tmp_path / 'res' / 'experiments' / 'r1').mkdir(parents=True)
+    (tmp_path / 'res' / 'cache').mkdir(parents=True)
+    (tmp_path / 'res' / 'data').mkdir(parents=True)
+    # dry run removes nothing
+    assert clean_outputs(['experiments', 'cache'], root=tmp_path) == []
+    assert (tmp_path / 'res' / 'experiments').exists()
+    # confirmed run removes just the named targets, leaving data intact
+    removed = clean_outputs(['experiments', 'cache'], root=tmp_path, yes=True)
+    assert {p.name for p in removed} == {'experiments', 'cache'}
+    assert not (tmp_path / 'res' / 'experiments').exists()
+    assert (tmp_path / 'res' / 'data').exists()
+    # 'all' wipes the whole res/ tree
+    clean_outputs(['all'], root=tmp_path, yes=True)
+    assert not (tmp_path / 'res').exists()
 
 
 def test_ensure_dirs_and_accelerator_info(tmp_path: Path):

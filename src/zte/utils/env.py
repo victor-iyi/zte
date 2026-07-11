@@ -9,12 +9,24 @@ changes into it if asked, and creates the `res/` output directories. It is idemp
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('utils.env')
+
+# Named `res/` output subtrees that are safe to wipe to free space / start fresh.
+_RES_TARGETS: dict[str, str] = {
+    'experiments': 'res/experiments',
+    'data': 'res/data',
+    'cache': 'res/cache',
+    'benchmark': 'res/benchmark',
+    'explorer': 'res/explorer',
+    'embeddings': 'res/embeddings',
+    'all': 'res',
+}
 
 
 def project_root(start: str | Path | None = None) -> Path:
@@ -99,6 +111,41 @@ def ensure_dirs(root: str | Path | None = None) -> list[Path]:
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     return dirs
+
+
+def clean_outputs(
+    targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False
+) -> list[Path]:
+    """Deletes selected `res/` output subtrees — to free Colab space or start fresh.
+
+    Args:
+        targets: Names to remove, from ``experiments, data, cache, benchmark, explorer, embeddings``
+            or ``all`` (the whole ``res/``). Defaults to ``['experiments']``.
+        root: Project root (default: :func:`project_root`).
+        yes: Must be `True` to actually delete; otherwise this is a dry run that only logs.
+
+    Returns:
+        The directories removed (empty on a dry run).
+    """
+    base = Path(root) if root is not None else project_root()
+    names = targets or ['experiments']
+    paths = (
+        [base / _RES_TARGETS['all']]
+        if 'all' in names
+        else [base / _RES_TARGETS[n] for n in names if n in _RES_TARGETS]
+    )
+    removed: list[Path] = []
+    for p in paths:
+        if not p.exists():
+            _LOG.info('%s does not exist; nothing to remove.', p)
+            continue
+        if not yes:
+            _LOG.info('[dry-run] would remove %s. Pass yes=True to confirm.', p)
+            continue
+        shutil.rmtree(p)
+        _LOG.info('Removed %s', p)
+        removed.append(p)
+    return removed
 
 
 def accelerator_info() -> dict[str, Any]:

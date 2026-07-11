@@ -10,11 +10,19 @@ from zte.utils.archive import (
     zip_experiments,
     zip_run,
 )
-from zte.utils.env import accelerator_info, bootstrap, ensure_dirs, project_root, set_env
+from zte.utils.env import (
+    accelerator_info,
+    bootstrap,
+    clean_outputs,
+    ensure_dirs,
+    project_root,
+    set_env,
+)
 
 __all__ = [
     'accelerator_info',
     'bootstrap',
+    'clean_outputs',
     'delete_run',
     'ensure_dirs',
     'human_size',

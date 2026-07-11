@@ -112,7 +112,12 @@ def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
         root = 'res/data/synthetic_zuco'
         generate_synthetic_zuco(root, tasks=config.dataset.tasks)
         return root
-    return resolve_data_root(args, default=config.dataset.root)
+    return resolve_data_root(
+        args,
+        default=config.dataset.root,
+        tasks=config.dataset.tasks,
+        subjects=config.dataset.subjects,
+    )
 
 
 def main() -> None:
