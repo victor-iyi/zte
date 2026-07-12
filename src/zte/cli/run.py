@@ -208,7 +208,13 @@ def _run(args: argparse.Namespace) -> None:
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
 
-    manifest: dict[str, Any] = {'run_name': config.run_name, 'data_root': config.dataset.root}
+    manifest: dict[str, Any] = {
+        'run_name': config.run_name,
+        'data_root': config.dataset.root,
+        # Records whether this run used --synthetic (a schema-faithful fake tree). Lets tooling
+        # exclude smoke/synthetic runs from Drive backups (zte-pack --skip-synthetic).
+        'synthetic': bool(args.synthetic),
+    }
 
     bundle_dir = run_dir / 'bundle'
 

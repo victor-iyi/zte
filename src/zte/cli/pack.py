@@ -57,6 +57,12 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help='Free-text note stored in the archive PROVENANCE metadata (e.g. "flagship real-data run").',
     )
+    z.add_argument(
+        '--skip-synthetic',
+        action='store_true',
+        dest='skip_synthetic',
+        help='Exclude runs made with --synthetic (smoke runs) from the archive.',
+    )
 
     s = sub.add_parser(
         'snapshot',
@@ -76,6 +82,12 @@ def parse_arguments() -> argparse.Namespace:
     )
     s.add_argument(
         '--move', action='store_true', help='Delete the archived subtrees after a successful zip.'
+    )
+    s.add_argument(
+        '--skip-synthetic',
+        action='store_true',
+        dest='skip_synthetic',
+        help='Exclude experiment runs made with --synthetic (smoke runs) from the snapshot.',
     )
 
     u = sub.add_parser(
@@ -133,7 +145,13 @@ def main() -> None:
             'note': args.note,
         }
         if args.all or len(args.names) != 1:
-            out = zip_experiments(root, names=args.names or None, out=args.out, **kw)
+            out = zip_experiments(
+                root,
+                names=args.names or None,
+                out=args.out,
+                skip_synthetic=args.skip_synthetic,
+                **kw,
+            )
         else:
             out = zip_run(f'{root}/{args.names[0]}', out=args.out, **kw)
         print(out)
@@ -145,6 +163,7 @@ def main() -> None:
             out=args.out,
             note=args.note,
             move=args.move,
+            skip_synthetic=args.skip_synthetic,
         )
         print(out)
 

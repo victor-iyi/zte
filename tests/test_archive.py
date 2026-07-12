@@ -15,9 +15,10 @@ from zte.utils import (
     zip_experiments,
     zip_run,
 )
+from zte.utils.archive import is_synthetic_run
 
 
-def _make_run(root: Path, name: str) -> Path:
+def _make_run(root: Path, name: str, synthetic: bool | None = None) -> Path:
     """Fabricates a minimal run directory resembling a real one."""
     run = root / name
     (run / 'checkpoints').mkdir(parents=True)
@@ -31,7 +32,26 @@ def _make_run(root: Path, name: str) -> Path:
     (run / 'evaluation' / 'metrics.json').write_text(json.dumps({'ok': True}))
     (run / 'config.yaml').write_text('run_name: ' + name)
     (run / 'cache' / 'x' / 'big.npz').write_bytes(b'2' * 8192)
+    if synthetic is not None:
+        (run / 'manifest.json').write_text(json.dumps({'run_name': name, 'synthetic': synthetic}))
     return run
+
+
+def test_skip_synthetic_excludes_smoke_runs(tmp_path: Path):
+    """`skip_synthetic` drops --synthetic runs but keeps real (and flag-less) ones."""
+    exp = tmp_path / 'experiments'
+    exp.mkdir()
+    _make_run(exp, 'real', synthetic=False)
+    _make_run(exp, 'smoke', synthetic=True)
+    _make_run(exp, 'legacy')  # no manifest -> treated as real
+
+    assert is_synthetic_run(exp / 'smoke') is True
+    assert is_synthetic_run(exp / 'real') is False
+    assert is_synthetic_run(exp / 'legacy') is False
+
+    archive = zip_experiments(exp, out=tmp_path / 'real.zip', best_only=True, skip_synthetic=True)
+    tops = set(unpack(archive, tmp_path / 'out'))
+    assert tops == {'real', 'legacy'}  # smoke excluded
 
 
 def test_best_only_keeps_just_best_checkpoint(tmp_path: Path):

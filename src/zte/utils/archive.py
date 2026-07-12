@@ -65,6 +65,27 @@ def _dir_size(path: Path) -> int:
     return sum(p.stat().st_size for p in path.rglob('*') if p.is_file())
 
 
+def is_synthetic_run(run_dir: Path) -> bool:
+    """Returns whether a run was produced with `--synthetic` (per its `manifest.json`).
+
+    Used to keep smoke/synthetic runs out of Drive backups. A run whose manifest is missing or lacks
+    the flag is treated as **not** synthetic (real), so real runs are never dropped by accident.
+
+    Args:
+        run_dir (Path): The run directory.
+
+    Returns:
+        bool: `True` only when `manifest.json` explicitly records `synthetic: true`.
+    """
+    manifest = run_dir / 'manifest.json'
+    if not manifest.is_file():
+        return False
+    try:
+        return bool(json.loads(manifest.read_text(encoding='utf-8')).get('synthetic', False))
+    except OSError, json.JSONDecodeError:
+        return False
+
+
 def _run_is_complete(run_dir: Path) -> bool:
     """Heuristic: a run is 'complete' if it has a best/last checkpoint and an evaluation."""
     ckpt = (run_dir / 'checkpoints' / 'best.pt').exists() or (
@@ -213,6 +234,7 @@ def zip_experiments(
     best_only: bool = False,
     move: bool = False,
     note: str | None = None,
+    skip_synthetic: bool = False,
 ) -> Path:
     """Zips several runs (default: all) into one archive, each under its own folder.
 
@@ -239,8 +261,14 @@ def zip_experiments(
         else [p for p in sorted(root.iterdir()) if p.is_dir() and not p.name.startswith('_')]
     )
     selected = [p for p in selected if p.is_dir()]
+    if skip_synthetic:
+        real = [p for p in selected if not is_synthetic_run(p)]
+        dropped = len(selected) - len(real)
+        if dropped:
+            _LOG.info('Skipping %d synthetic run(s) from the archive.', dropped)
+        selected = real
     if not selected:
-        raise ValueError(f'no runs to zip under {root}')
+        raise ValueError(f'no runs to zip under {root} (after skip_synthetic filtering)')
     out_path = Path(out) if out is not None else root / 'zte_experiments.zip'
     out_path.parent.mkdir(parents=True, exist_ok=True)
     total = 0
@@ -282,6 +310,7 @@ def zip_res(
     *,
     note: str | None = None,
     move: bool = False,
+    skip_synthetic: bool = False,
 ) -> Path:
     """Zips whole `res/` subtrees into one archive so you can continue locally without re-training.
 
@@ -313,16 +342,26 @@ def zip_res(
         raise ValueError(f'no res/ subtrees to snapshot under {root} (looked for {names}).')
     out_path = Path(out) if out is not None else root / 'zte_snapshot.zip'
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Synthetic experiment run dirs to exclude (smoke runs shouldn't be shipped to Drive).
+    synthetic_dirs: set[Path] = set()
+    exp_root = root / 'experiments'
+    if skip_synthetic and exp_root.is_dir():
+        synthetic_dirs = {d for d in exp_root.iterdir() if d.is_dir() and is_synthetic_run(d)}
+        if synthetic_dirs:
+            _LOG.info('Snapshot: skipping %d synthetic run(s).', len(synthetic_dirs))
     total = 0
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for sub in subtrees:
             for p in sorted(sub.rglob('*')):
-                if p.is_file():
+                if p.is_file() and not any(sd in p.parents for sd in synthetic_dirs):
                     zf.write(p, str(p.relative_to(root)))
                     total += 1
-        exp_root = root / 'experiments'
         run_dirs = (
-            [d for d in sorted(exp_root.iterdir()) if d.is_dir() and not d.name.startswith('_')]
+            [
+                d
+                for d in sorted(exp_root.iterdir())
+                if d.is_dir() and not d.name.startswith('_') and d not in synthetic_dirs
+            ]
             if exp_root.is_dir()
             else []
         )
