@@ -69,6 +69,9 @@ class ZTEModel(nn.Module):
         config: ModelConfig,
         in_dim: int | None = None,
         raw_shape: tuple[int, int] | None = None,
+        n_channels: int | None = None,
+        bp_features_per_channel: int | None = None,
+        montage_csv: str | None = None,
     ) -> None:
         """Builds the encoder for the configured representation.
 
@@ -76,11 +79,21 @@ class ZTEModel(nn.Module):
             config (ModelConfig): Model configuration.
             in_dim (int | None): Flattened band-power size `n_features` (band-power frontend).
             raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
+            n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`.
+            bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power spatial encoding.
+            montage_csv (str | None): Optional electrode-coordinate CSV (`channel,x,y,z`) for exact scalp geometry.
         """
         super().__init__()
         self.config = config
         self.uses_raw = config.frontend == 'raw_conformer'
-        self.frontend = build_frontend(config, in_dim, raw_shape)
+        self.frontend = build_frontend(
+            config,
+            in_dim,
+            raw_shape,
+            n_channels=n_channels,
+            bp_features_per_channel=bp_features_per_channel,
+            montage_csv=montage_csv,
+        )
         self.hidden_dim = self.frontend.out_dim  # type: ignore[attr-defined]
         self.embed_dim = config.embed_dim
 
@@ -273,6 +286,9 @@ def build_model(
     config: ModelConfig,
     in_dim: int | None = None,
     raw_shape: tuple[int, int] | None = None,
+    n_channels: int | None = None,
+    bp_features_per_channel: int | None = None,
+    montage_csv: str | None = None,
 ) -> ZTEModel:
     """Factory that constructs a `ZTEModel` for the given input shapes.
 
@@ -280,9 +296,19 @@ def build_model(
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (band-power frontend).
         raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
+        n_channels (int | None): EEG channel count for electrode `spatial_encoding` geometry.
+        bp_features_per_channel (int | None): Band-power features per channel (band-power spatial encoding).
+        montage_csv (str | None): Optional electrode-coordinate CSV for exact scalp geometry.
 
     Returns:
         ZTEModel: An initialised `ZTEModel`.
 
     """
-    return ZTEModel(config, in_dim=in_dim, raw_shape=raw_shape)
+    return ZTEModel(
+        config,
+        in_dim=in_dim,
+        raw_shape=raw_shape,
+        n_channels=n_channels,
+        bp_features_per_channel=bp_features_per_channel,
+        montage_csv=montage_csv,
+    )

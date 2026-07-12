@@ -133,6 +133,23 @@ The EEG band-power is always kept; the toggle only governs the extra gaze dimens
 | `raw`          | `C×T` (105×window) | `raw_conformer`  | Richer temporal detail; heavier            |
 | `both`         | both available     | either           | Keep options open; switch via model config |
 
+Per set of words the band-power tensor is $X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}$, where $n_{bp} = (\#\text{measures} \times \#\text{bands})$ band-power features are laid over $C = 105$ channels. Each token flattens the $(n_{bp} \times C)$ grid into a band-major, channel-minor vector, optionally with appended eye-tracking scalars:
+
+$$X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}, \qquad x_{\text{token}} \in \mathbb{R}^{n_{bp}\cdot C}\ (\text{e.g. } 8 \times 105 = 840)$$
+
+The `raw` representation instead keeps $C \times T$ samples per token, with $C = 105$ and $T =$ `raw_window`.
+
+## Normalisation (`normalize`)
+
+`FeatureNormalizer` fits its statistics on the **present** training tokens (never on masked omitted words), then transforms every split with those fixed statistics. The variants:
+
+- `zscore_channel` — per-channel (per-feature) z-score using that channel's train mean $\mu_c$ and std $\sigma_c$: $\tilde x_c = \dfrac{x_c - \mu_c}{\sigma_c}$.
+- `zscore_global` — a single global $\mu,\sigma$ over all features: $\tilde x = \dfrac{x - \mu}{\sigma}$.
+- `minmax` — rescale to $[0,1]$: $\tilde x = \dfrac{x - \min x}{\max x - \min x}$.
+- `none` — leave features unscaled.
+
+$$\tilde x_c = \frac{x_c - \mu_c}{\sigma_c}, \qquad \tilde x = \frac{x - \min x}{\max x - \min x}$$
+
 ## Missing-value strategies (`MissingConfig.method`)
 
 Omitted (skipped) words carry **no** EEG. Every strategy returns a **presence mask** so omitted-word zero-vectors never leak into training losses.
@@ -147,6 +164,10 @@ Omitted (skipped) words carry **no** EEG. Every strategy returns a **presence ma
 | `iterative`                           | Model-based round-robin regression imputation                     |
 | `ffill` / `interpolate`               | Sequence-aware fills along reading order (never cross sentences)  |
 | `drop`                                | Remove omitted-word rows entirely                                 |
+
+The statistical fills average over the observed entries only. For `col_mean` / `global_mean`, the missing entry $x_{ij}$ is filled from the observed set $\Omega_j$ of column $j$ (a single global column for `global_mean`); `row_mean` averages a token's own present features instead:
+
+$$\hat x_{ij} = \frac{1}{\lvert \Omega_j \rvert}\sum_{i' \in \Omega_j} x_{i'j}$$
 
 ```mermaid
 flowchart TD

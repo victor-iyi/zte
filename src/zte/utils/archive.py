@@ -10,6 +10,7 @@ Everything here is pure-stdlib and platform-agnostic (paths via `pathlib`), so i
 
 from __future__ import annotations
 
+import json
 import shutil
 import zipfile
 from pathlib import Path
@@ -20,6 +21,26 @@ _LOG = get_logger('utils.archive')
 
 # Directory names excluded from a run archive by default (heavy and not needed for inference).
 _HEAVY_DIRS: set[str] = {'cache', 'tb', 'bundle'}
+
+
+def _write_provenance(zf: zipfile.ZipFile, run_dirs: list[Path], note: str | None) -> None:
+    """Writes reproducibility metadata (`PROVENANCE.json` + `PROVENANCE.md`) into the archive root.
+
+    Best-effort: any failure to gather provenance is logged and skipped so it can never break packing.
+
+    Args:
+        zf (zipfile.ZipFile): The open archive to write into.
+        run_dirs (list[Path]): The run directories included in this archive.
+        note (str | None): Optional free-text note stored in the metadata.
+    """
+    try:
+        from zte.utils.provenance import build_provenance, provenance_markdown
+
+        prov = build_provenance(run_dirs, note=note)
+        zf.writestr('PROVENANCE.json', json.dumps(prov, indent=2, default=str))
+        zf.writestr('PROVENANCE.md', provenance_markdown(prov))
+    except Exception as exc:  # noqa: BLE001 — provenance is a nicety, never a hard requirement.
+        _LOG.warning('Skipped provenance metadata: %r', exc)
 
 
 def human_size(n: int) -> str:
@@ -134,6 +155,7 @@ def zip_run(
     with_tb: bool = False,
     best_only: bool = False,
     move: bool = False,
+    note: str | None = None,
 ) -> Path:
     """Zips a single run into an archive suitable for download.
 
@@ -166,6 +188,7 @@ def zip_run(
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for abs_path, arcname in files:
             zf.write(abs_path, arcname)
+        _write_provenance(zf, [run], note)
     _LOG.info(
         'Zipped %s (%d files) -> %s [%s]',
         run.name,
@@ -189,6 +212,7 @@ def zip_experiments(
     with_tb: bool = False,
     best_only: bool = False,
     move: bool = False,
+    note: str | None = None,
 ) -> Path:
     """Zips several runs (default: all) into one archive, each under its own folder.
 
@@ -232,6 +256,7 @@ def zip_experiments(
             total += len(files)
             for abs_path, arcname in files:
                 zf.write(abs_path, arcname)
+        _write_provenance(zf, selected, note)
     _LOG.info(
         'Zipped %d run(s), %d files -> %s [%s]',
         len(selected),
@@ -243,6 +268,76 @@ def zip_experiments(
         for run in selected:
             shutil.rmtree(run)
         _LOG.info('Moved: removed %d local run dir(s) after archiving.', len(selected))
+    return out_path
+
+
+#: Default res/ subtrees for a full "continue locally" snapshot.
+_SNAPSHOT_TARGETS: tuple[str, ...] = ('experiments', 'cache', 'benchmark', 'explorer')
+
+
+def zip_res(
+    res_root: str | Path = 'res',
+    targets: list[str] | tuple[str, ...] | None = None,
+    out: str | Path | None = None,
+    *,
+    note: str | None = None,
+    move: bool = False,
+) -> Path:
+    """Zips whole `res/` subtrees into one archive so you can continue locally without re-training.
+
+    Unlike :func:`zip_experiments` (which packs per-run checkpoints for inference), this captures the
+    heavier *working state* — the dataset `cache/` (so a local session never re-prepares the data), the
+    full `experiments/` (all checkpoints + evaluation), `benchmark/` tables and `explorer/` HTML — under
+    their `res/`-relative paths, plus a `PROVENANCE.json`/`PROVENANCE.md`. Unpack it with
+    ``unpack(archive, dest='res')`` to restore `res/experiments`, `res/cache`, … verbatim.
+
+    Args:
+        res_root (str | Path): The `res/` directory root.
+        targets (list[str] | tuple[str, ...] | None): Subtree names to include (default:
+            `experiments`, `cache`, `benchmark`, `explorer`). Missing subtrees are skipped.
+        out (str | Path | None): Output `.zip` path (default `<res_root>/zte_snapshot.zip`). Point it at a
+            mounted Drive folder to upload straight to Drive.
+        note (str | None): Optional free-text note stored in the archive provenance.
+        move (bool): Delete the archived subtrees after a successful zip (free local space).
+
+    Returns:
+        Path: The written archive path.
+
+    Raises:
+        ValueError: If none of the requested subtrees exist.
+    """
+    root = Path(res_root)
+    names = tuple(targets) if targets else _SNAPSHOT_TARGETS
+    subtrees = [root / n for n in names if (root / n).is_dir()]
+    if not subtrees:
+        raise ValueError(f'no res/ subtrees to snapshot under {root} (looked for {names}).')
+    out_path = Path(out) if out is not None else root / 'zte_snapshot.zip'
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    total = 0
+    with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for sub in subtrees:
+            for p in sorted(sub.rglob('*')):
+                if p.is_file():
+                    zf.write(p, str(p.relative_to(root)))
+                    total += 1
+        exp_root = root / 'experiments'
+        run_dirs = (
+            [d for d in sorted(exp_root.iterdir()) if d.is_dir() and not d.name.startswith('_')]
+            if exp_root.is_dir()
+            else []
+        )
+        _write_provenance(zf, run_dirs, note)
+    _LOG.info(
+        'Snapshot: %d file(s) from %s -> %s [%s]',
+        total,
+        ', '.join(s.name for s in subtrees),
+        out_path,
+        human_size(out_path.stat().st_size),
+    )
+    if move:
+        for sub in subtrees:
+            shutil.rmtree(sub)
+        _LOG.info('Moved: removed %d local subtree(s) after snapshot.', len(subtrees))
     return out_path
 
 
@@ -263,7 +358,11 @@ def unpack(archive: str | Path, dest: str | Path = 'res/experiments') -> list[st
     with zipfile.ZipFile(arc) as zf:
         names = zf.namelist()
         zf.extractall(dest_path)
-    tops = sorted({Path(n).parts[0] for n in names if n and not n.startswith('/')})
+    # Return the top-level run *folders* only; root-level files (PROVENANCE.json/md) are metadata,
+    # not runs, so they are extracted but not reported as run names.
+    tops = sorted(
+        {Path(n).parts[0] for n in names if n and not n.startswith('/') and len(Path(n).parts) > 1}
+    )
     _LOG.info('Unpacked %s -> %s (%d run folder(s))', arc, dest_path, len(tops))
     return tops
 

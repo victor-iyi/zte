@@ -60,6 +60,18 @@ Running the full evaluation suite (`examples/evaluate_zte.py`, a 4-subject skip-
 | Cross-subject retrieval above chance | ✗                               | Top-1 0.054 vs chance 0.054                             |
 | Subject arithmetic above chance      | ✓                               | Top-1 0.010 vs chance 0.006                             |
 
+Effective rank quantifies how many dimensions the space meaningfully spans: from the singular values $\sigma_k$ of the centred $Z\in\mathbb{R}^{n\times d}$ with $p_k=\sigma_k/\sum_j\sigma_j$,
+
+$$
+\operatorname{erank}=\exp\!\Big(-\sum_k p_k\log p_k\Big),
+$$
+
+and the reported **0.57** is $\operatorname{erank}/d = 54.6/96$. Retrieval is scored by $\text{Recall@}k$ — the fraction of $Q$ queries whose correct match ranks in the top $k$ (Top-1 is $k=1$):
+
+$$
+\text{Recall@}k=\frac{1}{Q}\sum_q \mathbb{1}[\text{rank}_q\le k].
+$$
+
 The embedding is healthy (well-spread, no collapse) and carries lexical attributes above the noise floor. Cross-subject retrieval sits **at** chance here — expected, because synthetic subjects share no real neural structure to retrieve across. That is precisely the gap real ZuCo is meant to close, and why the suite reports it honestly rather than hiding it.
 
 ![Linear probe comparison](figures/eval/probe_linear.png)

@@ -9,7 +9,15 @@ from __future__ import annotations
 import argparse
 
 from zte.logging_utils import configure_logging, get_logger
-from zte.utils.archive import delete_run, human_size, list_runs, unpack, zip_experiments, zip_run
+from zte.utils.archive import (
+    delete_run,
+    human_size,
+    list_runs,
+    unpack,
+    zip_experiments,
+    zip_res,
+    zip_run,
+)
 from zte.utils.env import clean_outputs
 
 _LOG = get_logger('cli.pack')
@@ -44,10 +52,40 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Delete the local run dir(s) after a successful zip (e.g. once the archive is on Drive).',
     )
+    z.add_argument(
+        '--note',
+        default=None,
+        help='Free-text note stored in the archive PROVENANCE metadata (e.g. "flagship real-data run").',
+    )
 
-    u = sub.add_parser('unpack', help='Extract a run archive (e.g. on your Mac).')
-    u.add_argument('archive', help='Path to a .zip produced by zip.')
-    u.add_argument('--dest', default='res/experiments', help='Where to extract run folders.')
+    s = sub.add_parser(
+        'snapshot',
+        help='Zip whole res/ subtrees (experiments+cache+benchmark+explorer) into one archive to continue locally.',
+    )
+    s.add_argument(
+        'targets',
+        nargs='*',
+        help='res/ subtrees to include (default: experiments cache benchmark explorer). Missing ones are skipped.',
+    )
+    s.add_argument('--res', default='res', help='The res/ root to snapshot from.')
+    s.add_argument(
+        '--out', default=None, help='Output .zip path (point at Drive to upload directly).'
+    )
+    s.add_argument(
+        '--note', default=None, help='Free-text note stored in the archive PROVENANCE metadata.'
+    )
+    s.add_argument(
+        '--move', action='store_true', help='Delete the archived subtrees after a successful zip.'
+    )
+
+    u = sub.add_parser(
+        'unpack',
+        help='Extract a run/snapshot archive (e.g. on your Mac). Use --dest res for a snapshot.',
+    )
+    u.add_argument('archive', help='Path to a .zip produced by zip / snapshot.')
+    u.add_argument(
+        '--dest', default='res/experiments', help='Where to extract (use res for a snapshot).'
+    )
 
     d = sub.add_parser('delete', help='Delete run directories.')
     d.add_argument('names', nargs='+', help='Run names to delete.')
@@ -92,11 +130,22 @@ def main() -> None:
             'with_tb': args.with_tb,
             'best_only': args.best_only,
             'move': args.move,
+            'note': args.note,
         }
         if args.all or len(args.names) != 1:
             out = zip_experiments(root, names=args.names or None, out=args.out, **kw)
         else:
             out = zip_run(f'{root}/{args.names[0]}', out=args.out, **kw)
+        print(out)
+
+    elif args.command == 'snapshot':
+        out = zip_res(
+            args.res,
+            targets=args.targets or None,
+            out=args.out,
+            note=args.note,
+            move=args.move,
+        )
         print(out)
 
     elif args.command == 'unpack':

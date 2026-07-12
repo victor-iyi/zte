@@ -188,7 +188,11 @@ If ZTE is a real thought code, *who* produced a thought should be a translation 
 
 ### State-of-the-art positional encoding
 
-`model.pos_encoding` selects the sequence encoding for the context transformer: `rope` (rotary, default — relative, length-generalising, SOTA), `sinusoidal`, `learned`, `alibi`, or `none` (ablation). RoPE and ALiBi act inside attention; the encoder is a pre-norm, GELU Transformer honouring padding and causal (CPC) masks.
+`model.pos_encoding` selects the sequence encoding for the context transformer: `rope` (rotary, default — relative, length-generalising, SOTA), `sinusoidal`, `learned`, `alibi`, or `none` (ablation). RoPE and ALiBi act inside attention; the encoder is a pre-norm, GELU Transformer honouring padding and causal (CPC) masks. The `sinusoidal` option is the classic fixed encoding, for position $p$ and dimension index $i$ (with model width $d$):
+
+$$
+PE_{p,2i}=\sin\!\big(p/10000^{2i/d}\big), \qquad PE_{p,2i+1}=\cos\!\big(p/10000^{2i/d}\big)
+$$
 
 ### Stratified evaluation + interactive reporting
 
@@ -290,6 +294,12 @@ The **non-contextual** path (frontend -> projection) is the word2vec analogue: a
 | `masked`   | BERT / data2vec / MAEEG | Mask word tokens; predict EMA-teacher latent or reconstruct features | bidirectional  |
 | `cpc`      | wav2vec / BENDR         | Causally predict future word latents via InfoNCE                     | causal         |
 
+Writing the L2-normalised embeddings as $\hat z_i = z_i/\lVert z_i\rVert$ with cosine similarity $s_{ij}=\hat z_i^\top\hat z_j$ and temperature $\tau$, the multi-positive skip-gram InfoNCE loss over anchors $A$, positives $P(i)$ and candidates $\mathcal{C}(i)$ is
+
+$$
+\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}
+$$
+
 All objectives gate on the presence mask: omitted words are never anchors, positives, or targets.
 
 ---
@@ -375,7 +385,12 @@ Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` 
 
 The *Honest Performance & Accuracy Review* found ZTE well-instrumented but dimensionally collapsed and subject-dominated. Every "Areas for improvement" item is now implemented and tested — see **[`CHANGELOG.md`](CHANGELOG.md)** for the full mapping. The load-bearing changes:
 
-- **Anti-collapse (VICReg).** `objective.variance_weight` / `objective.covariance_weight` add a variance-hinge + covariance penalty to every objective — the single biggest fix for the ~15-of-768 collapse.
+- **Anti-collapse (VICReg).** `objective.variance_weight` / `objective.covariance_weight` add a variance-hinge + covariance penalty to every objective — the single biggest fix for the ~15-of-768 collapse. The variance hinge pushes every one of the $d$ embedding dimensions to keep a standard deviation of at least the target $\gamma$:
+
+$$
+\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\operatorname{Var}(z_{:,j}) + \epsilon}\big)
+$$
+
 - **Learn "what", not "who".** `objective.cross_subject_positives` (same stimulus, different subject, via a stimulus-grouped batch sampler), `objective.subject_adversary_weight` (gradient-reversal subject adversary), and `dataset.normalize='zscore_subject'` (per-subject whitening) attack subject dominance directly.
 - **Masked objective repaired.** The exported 768-d head is now trained; the data2vec teacher is normalised across tokens with a variance floor and its EMA decay is ramped — no more exp2 cone.
 - **Honest evaluation.** `train.test_fraction` defaults to `0.1` (held-out), a new `by_stimulus` split keeps a sentence's text on one side, and the normaliser is fit on train only. Verdicts use bootstrap CIs + effect-size floors; retrieval chance is query-weighted; probes are shuffled and scaled; the `task_transfer` id bug is fixed; a real electrode montage can be supplied via `dataset.montage_csv`.

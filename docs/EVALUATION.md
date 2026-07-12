@@ -92,7 +92,13 @@ Linear + kNN probes predict known attributes (word length, log frequency, subjec
 - **raw band-power** — the un-learned input features (a strong reference).
 - **noise (matched)** — Gaussian noise matched to the data's mean/variance (the floor a *real* encoder must beat).
 
-R² for regression, accuracy for classification; a dashed baseline marks predict-the-mean / majority. ZTE should beat the noise control and rival raw band-power in far fewer dimensions.
+R² for regression, accuracy for classification; a dashed baseline marks predict-the-mean / majority. The coefficient of determination compares residual to total variance,
+
+$$
+R^{2} = 1 - \frac{\sum_i (y_i - \hat y_i)^{2}}{\sum_i (y_i - \bar y)^{2}}
+$$
+
+so the predict-the-mean baseline sits at $R^{2}=0$. ZTE should beat the noise control and rival raw band-power in far fewer dimensions.
 
 ![Linear probe comparison](figures/eval/probe_linear.png)
 ![kNN probe comparison](figures/eval/probe_knn.png)
@@ -110,6 +116,32 @@ Label-free metrics from `zte.evaluation.metrics`:
 | Anisotropy                 | low                     | a degenerate "cone"       |
 | Dead-dim fraction          | ~0                      | unused dimensions         |
 
+Writing $Z \in \mathbb{R}^{n \times d}$ ($d = 768$) for the embedding matrix with rows $z_i$, unit-normalised $\hat z_i = z_i / \lVert z_i \rVert$ and cosine $s_{ij} = \hat z_i^\top \hat z_j$, the label-free metrics are:
+
+- **Effective rank** (Roy & Vetterli) from the singular values $\sigma_k$ of the mean-centred $Z$, with $p_k = \sigma_k / \sum_j \sigma_j$ — a soft count of active dimensions:
+
+$$
+\operatorname{erank}(Z) = \exp\!\Big(-\sum_k p_k \log p_k\Big)
+$$
+
+- **Uniformity** (Wang & Isola, $t = 2$) — the log mean Gaussian potential over all distinct pairs, lower when embeddings spread over the sphere:
+
+$$
+\mathcal{U} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-t\,\lVert \hat z_i - \hat z_j \rVert^{2}\big)
+$$
+
+- **Alignment** (over positive pairs $P$, adjacent words, $\alpha = 2$) — low when neighbours stay close:
+
+$$
+\mathcal{A} = \mathbb{E}_{(i,j)\in P}\ \lVert \hat z_i - \hat z_j \rVert^{\alpha}
+$$
+
+- **Anisotropy** — the mean off-diagonal cosine; high values signal a degenerate "cone". On the unit sphere it is equivalent (up to a constant) to squared distance:
+
+$$
+\text{aniso} = \mathbb{E}_{i \ne j}\big[\hat z_i^\top \hat z_j\big], \qquad \lVert \hat z_i - \hat z_j \rVert^{2} = 2 - 2\,\hat z_i^\top \hat z_j
+$$
+
 ![Embedding health](figures/eval/embedding_health.png)
 
 The PCA projections should show smooth structure by word length and separable subjects rather than a featureless blob:
@@ -119,7 +151,13 @@ The PCA projections should show smooth structure by word length and separable su
 
 ### 3. Content retrieval (do same-thoughts attract?)
 
-Leave-one-out retrieval: does the *same stimulus read by a different subject* retrieve its counterparts better than chance (Top-K, MRR)? This is the honest cross-subject test and the direct analogue of the downstream zero-shot task.
+Leave-one-out retrieval: does the *same stimulus read by a different subject* retrieve its counterparts better than chance (Top-K, MRR)? Over $Q$ queries, a hit is a $\text{top-}k$ neighbour sharing the query's group, and $\text{rank}_q$ is the rank of the first such neighbour:
+
+$$
+\text{Recall@}k = \frac{1}{Q}\sum_{q=1}^{Q} \mathbb{1}\!\big[\text{rank}_q \le k\big], \qquad \text{MRR} = \frac{1}{Q}\sum_{q=1}^{Q} \frac{1}{\text{rank}_q}
+$$
+
+This is the honest cross-subject test and the direct analogue of the downstream zero-shot task.
 
 ![Same vs different content similarity](figures/eval/similarity_by_content.png)
 ![Cross-subject sentence retrieval](figures/eval/retrieval_sentence.png)
@@ -168,10 +206,20 @@ Flags: one of `--bundle` / `--root` / `--drive` / `--synthetic`, `--extract-dir`
 Each check is now backed by a **statistic, not a sign**. "Beats noise" requires the paired
 per-fold (ZTE − noise) probe-score difference's bootstrap 95% CI lower bound to clear an
 **effect-size floor** (0.01), not merely be positive by 1e-3; retrieval- and arithmetic-above-chance
-require the bootstrap CI on `(Top-1 − chance)` over the per-query hit vector to exclude zero. The CIs
-are stored in the verdict (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`,
+require the bootstrap CI on `(Top-1 − chance)` over the per-query hit vector to exclude zero. These are
+**percentile bootstrap** intervals: resample the statistic $B$ times to get $\theta^{\ast}_1,\dots,\theta^{\ast}_B$, then take the central $(1-\alpha)$ quantile pair,
+
+$$\text{CI}_{1-\alpha} = \big[\theta^{\ast}_{(\alpha/2)},\ \theta^{\ast}_{(1-\alpha/2)}\big].$$
+
+The CIs are stored in the verdict (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`,
 `effect_size_floor`). Two further honesty fixes: retrieval **chance is query-weighted** (matching how
-hits are scored — the old type-weighted value is kept as `chance_top1_typeweighted` and typically
+hits are scored) — for group sizes $g$ this is
+
+$$
+\text{chance} = \frac{\sum_g g(g-1)}{\big(\sum_g g\big)(n-1)}
+$$
+
+(the old type-weighted value is kept as `chance_top1_typeweighted` and typically
 understated chance by ~30×), and probes use **shuffled, scaled** cross-validation so R² magnitudes are
 trustworthy (direction was always correct). Evaluation now defaults to a **held-out** split
 (`train.test_fraction = 0.1`, or a `by_stimulus` split) rather than in-sample.

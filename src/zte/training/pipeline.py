@@ -75,7 +75,15 @@ def run_training(
     dataset.refit_normalizer(splits['train'])
 
     in_dim, raw_shape, feature_dim = _shapes(dataset, config)
-    model = build_model(config.model, in_dim=in_dim, raw_shape=raw_shape)
+    n_channels, bp_features_per_channel = _channel_shape(dataset, config, raw_shape)
+    model = build_model(
+        config.model,
+        in_dim=in_dim,
+        raw_shape=raw_shape,
+        n_channels=n_channels,
+        bp_features_per_channel=bp_features_per_channel,
+        montage_csv=config.dataset.montage_csv,
+    )
     objective = build_objective(config.objective, model, feature_dim=feature_dim)
 
     vocab = build_subject_vocab(dataset)
@@ -107,6 +115,9 @@ def run_training(
         'normalizer': None if dataset.normalizer is None else dataset.normalizer.state,
         'in_dim': in_dim,
         'raw_shape': raw_shape,
+        'n_channels': n_channels,
+        'bp_features_per_channel': bp_features_per_channel,
+        'montage_csv': config.dataset.montage_csv,
         'feature_names': dataset.feature_names,
     }
     trainer = Trainer(
@@ -162,3 +173,25 @@ def _shapes(
     if config.model.frontend == 'raw_conformer' and raw_shape is not None:
         recon_dim = raw_shape[0] * raw_shape[1]
     return in_dim, raw_shape, recon_dim
+
+
+def _channel_shape(
+    dataset: ZuCoDataset, config: ZTEConfig, raw_shape: tuple[int, int] | None
+) -> tuple[int | None, int | None]:
+    """Resolves the EEG channel geometry needed for electrode spatial encoding.
+
+    Args:
+        dataset (ZuCoDataset): A built dataset.
+        config (ZTEConfig): The run configuration.
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` for the raw frontend.
+
+    Returns:
+        `(n_channels, bp_features_per_channel)`. `bp_features_per_channel` is `None` for the raw frontend (each electrode token is a time window, not a
+        band-power vector); either value is `None` when it cannot be determined, which disables spatial encoding.
+    """
+    if config.model.frontend == 'raw_conformer':
+        return (raw_shape[0] if raw_shape is not None else None), None
+    bp = dataset.band_power_raw
+    if bp is None:
+        return None, None
+    return int(bp.shape[2]), int(bp.shape[1])

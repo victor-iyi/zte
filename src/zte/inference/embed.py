@@ -95,7 +95,14 @@ class ZTEEmbedder:
         if in_dim is None and raw_shape is None:
             raise ValueError('Checkpoint lacks input shapes; pass the dataset it was trained on.')
 
-        model = build_model(config.model, in_dim=in_dim, raw_shape=raw_shape)
+        model = build_model(
+            config.model,
+            in_dim=in_dim,
+            raw_shape=raw_shape,
+            n_channels=extra.get('n_channels'),
+            bp_features_per_channel=extra.get('bp_features_per_channel'),
+            montage_csv=extra.get('montage_csv'),
+        )
         model.load_state_dict(payload['model'])
         embedder = cls(model, config, device)
         embedder.in_dim = in_dim

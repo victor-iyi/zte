@@ -415,6 +415,28 @@ def _as_float(value: Any) -> float | None:
     return f
 
 
+def _data_uri(path: Path) -> str | None:
+    """Reads a PNG and returns a base64 `data:` URI, or `None` if unreadable.
+
+    The dashboard embeds the PCA thumbnail as a data URI so it renders **inline everywhere** —
+    including Colab's sandboxed HTML display and a copy shared on Drive — where a relative
+    `<img src>` path cannot be resolved. Opening the file locally still works either way.
+
+    Args:
+        path (Path): Path to a PNG file.
+
+    Returns:
+        A `data:image/png;base64,...` string, or `None` if the file is missing/unreadable.
+    """
+    import base64
+
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return 'data:image/png;base64,' + base64.b64encode(raw).decode('ascii')
+
+
 def _relative_paths(run_dir: Path) -> dict[str, str | None]:
     """Builds links (relative to the run's parent) to a run's rich artifacts."""
     base = run_dir.name
@@ -427,6 +449,9 @@ def _relative_paths(run_dir: Path) -> dict[str, str | None]:
     out: dict[str, str | None] = {}
     for key, rel in candidates.items():
         out[key] = f'{base}/{rel}' if (run_dir / rel).is_file() else None
+    # Embed the PCA thumbnail itself (not just a relative link) so the card image shows
+    # inline in Colab / a Drive copy; the relative links above still open in a new tab locally.
+    out['pca_thumb'] = _data_uri(run_dir / candidates['pca'])
     return out
 
 
@@ -721,7 +746,7 @@ renderDetail();
   let h='';
   runs.forEach(r=>{
     const p=r.paths||{};
-    const thumb=p.pca? '<img class="thumb" src="'+esc(p.pca)+'" alt="PCA by subject"/>'
+    const thumb=p.pca_thumb? '<img class="thumb" src="'+p.pca_thumb+'" alt="PCA by subject"/>'
       : '<div class="thumb"></div>';
     const links=[];
     if(p.explorer) links.push('<a href="'+esc(p.explorer)+'" target="_blank">🌌 Explorer</a>');

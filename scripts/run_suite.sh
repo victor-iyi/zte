@@ -27,10 +27,10 @@ set -euo pipefail
 # Configuration
 # --------------------------------------------------------------------------- #
 ROOT="${1:-res/data/zuco_extracted}"     # data root (positional arg 1)
-SEEDS="42 43"                            # fixed seeds -> differences carry CIs
-PY=".venv/bin/python"                    # project venv interpreter
-OUT_ROOT="res/experiments"               # where zte-run catalogues each run
-BENCH_ROOT="res/benchmark"               # where zte-benchmark writes tables
+SEEDS="${SEEDS:-42}"                      # fixed seed(s); default single seed 42. Override e.g. SEEDS="42 43".
+PY="${PY:-.venv/bin/python}"             # project venv interpreter
+OUT_ROOT="${OUT_ROOT:-res/experiments}"  # where zte-run catalogues each run (set to a mounted Drive path to persist)
+BENCH_ROOT="${BENCH_ROOT:-res/benchmark}" # where zte-benchmark writes tables
 SMOKE="${SMOKE:-0}"                      # SMOKE=1 -> tiny synthetic run
 
 # All 12 ZuCo v1 subjects, for the full leave-one-subject-out sweep in Study 2.
@@ -40,8 +40,7 @@ LOSO_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
 if [[ "${SMOKE}" == "1" ]]; then
   SRC_ARGS=(--synthetic --epochs 2 --device cpu)
   BENCH_SRC=(--synthetic --epochs 2)
-  SEEDS="42 43"
-  echo ">>> SMOKE mode: tiny synthetic runs, single seed."
+  echo ">>> SMOKE mode: tiny synthetic runs, seed(s)=${SEEDS}."
 else
   SRC_ARGS=(--root "${ROOT}")
   BENCH_SRC=(--root "${ROOT}")

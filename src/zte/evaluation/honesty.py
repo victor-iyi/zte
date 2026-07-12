@@ -105,25 +105,40 @@ def _fit_score(
     xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str
 ) -> float | None:
     """Fits a standardised linear probe on ``(xtr, ytr)`` and scores it on the held-out fold."""
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
     from sklearn.linear_model import LogisticRegression, Ridge
     from sklearn.preprocessing import StandardScaler
+
+    try:
+        from scipy.linalg import LinAlgWarning
+    except ImportError:  # pragma: no cover
+        LinAlgWarning = RuntimeWarning
 
     if len(xtr) < 8 or len(xte) < 2:
         return None
     scaler = StandardScaler().fit(xtr)
     xtr_s, xte_s = scaler.transform(xtr), scaler.transform(xte)
-    if task == 'regression':
-        model = Ridge(alpha=1.0).fit(xtr_s, ytr)
-        # R^2 on the held-out subject
-        pred = model.predict(xte_s)
-        ss_res = float(np.sum((yte - pred) ** 2))
-        ss_tot = float(np.sum((yte - yte.mean()) ** 2)) or 1.0
-        return 1.0 - ss_res / ss_tot
-    if len(np.unique(ytr)) < 2:
-        return None
-    model = LogisticRegression(max_iter=300, C=1.0)
-    model.fit(xtr_s, ytr)
-    return float(model.score(xte_s, yte))
+    # High-dimensional embeddings give the probes a near-collinear (Ridge) or near-separable
+    # (lbfgs) design, so scikit-learn emits an ill-conditioning / non-convergence warning once per
+    # LOSO fold. Neither is actionable here -- the probe's held-out score is still the diagnostic we
+    # want, and conditioning is separately quantified by embedding_health's effective rank -- so we
+    # give lbfgs a larger iteration budget and suppress the per-fold spam rather than flood stderr.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', ConvergenceWarning)
+        warnings.simplefilter('ignore', LinAlgWarning)
+        if task == 'regression':
+            model: object = Ridge(alpha=1.0).fit(xtr_s, ytr)
+            # R^2 on the held-out subject
+            pred = model.predict(xte_s)  # type: ignore[attr-defined]
+            ss_res = float(np.sum((yte - pred) ** 2))
+            ss_tot = float(np.sum((yte - yte.mean()) ** 2)) or 1.0
+            return 1.0 - ss_res / ss_tot
+        if len(np.unique(ytr)) < 2:
+            return None
+        model = LogisticRegression(max_iter=2000, C=1.0).fit(xtr_s, ytr)
+        return float(model.score(xte_s, yte))  # type: ignore[attr-defined]
 
 
 def cross_subject_decode(

@@ -37,6 +37,7 @@ type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 type PoolName = Literal['mean', 'attention', 'cls']
 type SchedulerName = Literal['cosine', 'linear', 'constant']
 type PosEncoding = Literal['rope', 'sinusoidal', 'learned', 'alibi', 'none']
+type SpatialEncoding = Literal['none', 'spherical_harmonics']
 
 
 @dataclass
@@ -149,6 +150,16 @@ class ModelConfig:
             position inside attention and generalises to any sentence length -- the current SOTA choice; `sinusoidal` adds the fixed Transformer encoding;
             `learned` adds an absolute learned table; `alibi` adds linear distance attention biases; `none` disables positional information (ablation). Each run records its scheme in the checkpoint config, so inference rebuilds the matching encoder.
         max_positions (int): Position table size for `learned`/`sinusoidal`.
+        spatial_encoding (SpatialEncoding): **Electrode** positional encoding, applied over the EEG channel axis (orthogonal to the word-sequence
+            `pos_encoding` above). `spherical_harmonics` injects each electrode's scalp position via the real spherical-harmonic basis -- the sphere's
+            Laplace-Beltrami eigenfunctions, i.e. the mathematically correct generalisation of sinusoidal position encoding from a line to the scalp
+            surface (see `zte.models.spatial`). `none` (default) leaves the channel axis position-free, as before. Requires electrode coordinates: exact
+            when `dataset.montage_csv` supplies `channel,x,y,z`, otherwise an approximate coordinate-free fallback is used and flagged.
+        spatial_harmonic_degree (int): Maximum harmonic degree `l_max` for `spherical_harmonics`. `(l_max + 1) ** 2` harmonics are used; higher degrees
+            resolve finer scalp patterns (degree = angular frequency), analogous to adding higher-frequency sinusoids.
+        spatial_mix (bool): If `True`, follow the additive electrode encoding with one self-attention layer over the channel axis (electrodes as
+            tokens), so each electrode is contextualised by geometrically-related electrodes. If `False`, only add the encoding.
+        spatial_encoding_learnable (bool): Whether the per-degree harmonic gains and projection are trainable (`True`) or the harmonic gains are frozen.
         pool (PoolName): How per-word tokens are pooled into a sentence embedding.
         subject_conditioning (bool): Add a learned subject embedding (ZTE v1 is not yet subject-invariant; this exposes the knob for ablations).
         n_subjects (int): Vocabulary size for subject conditioning.
@@ -165,6 +176,10 @@ class ModelConfig:
     conformer_temporal_kernel: int = 25
     pos_encoding: PosEncoding = 'rope'
     max_positions: int = 512
+    spatial_encoding: SpatialEncoding = 'none'
+    spatial_harmonic_degree: int = 6
+    spatial_mix: bool = True
+    spatial_encoding_learnable: bool = True
     pool: PoolName = 'attention'
     subject_conditioning: bool = False
     n_subjects: int = 12

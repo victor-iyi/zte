@@ -116,6 +116,18 @@ CLI flags override YAML, so you can pin a base config and sweep one knob: `uv ru
 | `cpc_steps`             | `4`        | cpc           | future steps predicted               |
 | `reduce_omitted_weight` | `0.0`      | all           | down-weight omitted-word tokens      |
 
+The contrastive objectives score pairs by cosine similarity of the unit-normalised embeddings, $s_{ij} = \hat z_i^\top \hat z_j$ with $\hat z_i = z_i / \lVert z_i \rVert$, and divide the logits by the `temperature` $\tau$. Skip-gram treats every context word of an anchor as a positive, so it minimises a multi-positive InfoNCE over anchors $A$, positives $P(i)$ and candidate keys $\mathcal{C}(i)$ (the positives plus `n_negatives` sampled negatives); that is,
+
+$$\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}$$
+
+CBOW and CPC instead have a single positive $i^{+}$ per anchor (the pooled context, or the true future step), giving the standard single-positive form
+
+$$\mathcal{L} = -\frac{1}{N}\sum_{i} \log \frac{\exp(s_{i,i^{+}}/\tau)}{\sum_{k} \exp(s_{ik}/\tau)}$$
+
+Lowering $\tau$ sharpens the softmax and increasingly penalises hard negatives.
+
+The masked objective (`masked_target: latent`, i.e. data2vec) regresses a student prediction onto an EMA **teacher**. Before the loss, the teacher targets are normalised across tokens per feature $j$, $\tilde t_{:,j} = (t_{:,j} - \mu_j) / \max(\sigma_j,\ \sigma_{\min})$, and the loss is a smooth-L1 (Huber) between the student prediction and $\tilde t$ over the masked positions (`mask_ratio` sets the masked fraction).
+
 ### Model knobs (`ModelConfig`)
 
 `frontend`, `embed_dim` (768 by default -> LLM-compatible), `hidden_dim`, `n_layers`, `n_heads`, `dropout`, `pos_encoding`, `max_positions`, `pool` (`mean`/`attention`/`cls`), `subject_conditioning`, `n_subjects`. Raw-Conformer adds `conformer_filters` and `conformer_temporal_kernel`.
@@ -153,6 +165,8 @@ flowchart TD
     ee --> val[validate]
     val --> ckpt[save best/last · rotate · Drive backup]
 ```
+
+For the data2vec / masked objective, the `EMA teacher update` step above is an exponential moving average of the student parameters $\phi$ into the teacher parameters $\theta$, that is, $\theta \leftarrow \rho\,\theta + (1-\rho)\,\phi$, where the decay $\rho$ is the `ema_decay` field (typically ramped $\rho_0 \to \rho_1$ over training).
 
 ## What a run produces
 

@@ -92,7 +92,7 @@ def linear_probe(
                 return {**nan_out, 'baseline': 1.0}
             splitter = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
             model: object = Pipeline(
-                [('scale', StandardScaler()), ('clf', LogisticRegression(max_iter=500))]
+                [('scale', StandardScaler()), ('clf', LogisticRegression(max_iter=2000))]
             )
             scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='accuracy')
             baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
