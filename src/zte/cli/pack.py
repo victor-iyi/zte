@@ -1,6 +1,6 @@
 """`zte-pack` — list, zip, unpack and delete training runs (the Colab↔local hand-off).
 
-Train on a cloud GPU, `zte-pack zip --all` into a small archive, download it, and `zte-pack unpack` it on your Mac for inference.
+Train on a cloud GPU, `zte-pack zip --all` into a small archive, download it, and `zte-pack unpack` it locally for inference.
 Heavy `cache/`, `tb/` and `bundle/` folders are excluded by default (a checkpoint already embeds what inference needs).
 """
 
@@ -92,7 +92,7 @@ def parse_arguments() -> argparse.Namespace:
 
     u = sub.add_parser(
         'unpack',
-        help='Extract a run/snapshot archive (e.g. on your Mac). Use --dest res for a snapshot.',
+        help='Extract a run/snapshot archive (e.g. on your machine). Use --dest res for a snapshot.',
     )
     u.add_argument('archive', help='Path to a .zip produced by zip / snapshot.')
     u.add_argument(

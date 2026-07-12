@@ -1,6 +1,6 @@
-# Running ZTE — local (Mac/Linux) or Google Colab
+# Running ZTE — locally or on Google Colab
 
-Everything here works the same on **macOS (MPS)**, **Linux/servers (CUDA)**, and **Google Colab (GPU)**.
+Everything here works the same on **Apple Silicon (MPS)**, **Linux/servers (CUDA)**, and **Google Colab (GPU)**.
 The accelerator is chosen automatically — `--device auto` is the default, and it picks **CUDA -> MPS -> CPU**.
 Every long run is **resumable**: stop any time (`Ctrl-C`) and re-run the same command to continue exactly where it left off.
 
@@ -9,7 +9,7 @@ Every long run is **resumable**: stop any time (`Ctrl-C`) and re-run the same co
 
 ---
 
-## Quick start (local — Mac or Linux)
+## Quick start (local machine)
 
 ```sh
 # from the repo root
@@ -95,7 +95,7 @@ For a LOSO run these are reported for the held-out subject specifically (the swe
 
 ## Cloud -> local hand-off (`zte-pack`)
 
-Train on a powerful cloud GPU, zip the finished runs, download, and run inference on your Mac. Heavy `cache/`, `tb/` and `bundle/` folders are excluded by default — a checkpoint already embeds the input shapes and fitted normaliser, so **inference needs only the checkpoint**.
+Train on a powerful cloud GPU, zip the finished runs, download, and run inference locally. Heavy `cache/`, `tb/` and `bundle/` folders are excluded by default — a checkpoint already embeds the input shapes and fitted normaliser, so **inference needs only the checkpoint**.
 
 ```sh
 uv run zte-pack list                                   # runs with sizes + completeness
@@ -107,7 +107,7 @@ uv run zte-pack zip exp6 --with-bundle                 # one run, incl. dataset 
 
 uv run zte-pack zip --all --move --out ~/zte.zip       # zip, then delete the local run dirs (free space)
 
-uv run zte-pack unpack ~/zte.zip --dest res/experiments # on your Mac
+uv run zte-pack unpack ~/zte.zip --dest res/experiments # on your machine
 uv run zte-pack delete colab_exp6 --yes                # delete one run (omit --yes for a dry run)
 uv run zte-pack clean experiments cache --yes          # wipe res/ subtrees to free space (or: clean all)
 ```

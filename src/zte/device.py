@@ -1,6 +1,6 @@
 """Device, dtype and autocast helpers for portable CPU / CUDA / MPS execution.
 
-The package is meant to run unchanged on a CPU box, an Apple-silicon Mac (the `mps` backend, e.g. an M-series chip)
+The package is meant to run unchanged on a CPU box, an Apple Silicon device (the `mps` backend, e.g. an M-series chip)
 and an Nvidia GPU (`cuda`). All device-specific decisions -- which accelerator to use, whether mixed precision is safe,
 which autocast dtype to pick, whether to pin host memory -- are centralised here so model and training code stays backend-agnostic.
 """
@@ -22,7 +22,7 @@ type PrecisionPreference = Literal['auto', 'fp32', 'fp16', 'bf16']
 def _xla_device() -> torch.device | None:
     """Returns a Cloud-TPU XLA device if `torch_xla` is installed and a TPU is present, else `None`.
 
-    Kept import-guarded so the package runs unchanged on machines without `torch_xla` (Mac, plain GPU
+    Kept import-guarded so the package runs unchanged on machines without `torch_xla` (Apple Silicon, plain GPU
     boxes). On a Colab/Cloud **TPU** runtime with `torch_xla` installed this returns the XLA device.
     """
     try:
@@ -250,7 +250,7 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         # TPU autocast lives in torch_xla; fall back to the generic 'xla' device_type, then to a
         # no-op (fp32) so a torch_xla version without autocast degrades safely rather than crashing.
         try:
-            import torch_xla.amp
+            import torch_xla.amp  # type: ignore[import-untyped]
 
             with torch_xla.amp.autocast(spec.device):
                 yield

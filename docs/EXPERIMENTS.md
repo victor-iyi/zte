@@ -257,7 +257,7 @@ bash scripts/run_loso.sh res/data/zuco_extracted # real sweep (auto-GPU, multi-h
 CONTROL=1 bash scripts/run_loso.sh <root>        # add the no-recipe control arm (clean A/B per subject)
 ```
 
-- **Portable & auto-GPU.** Runs unchanged on macOS (MPS), Linux (CUDA), and Google Colab; `--device auto` picks the accelerator. See [RUNNING.md](./RUNNING.md) and `[notebooks/zte_colab.ipynb](../notebooks/zte_colab.ipynb)`.
+- **Portable & auto-GPU.** Runs unchanged on Apple Silicon (MPS), Linux (CUDA), and Google Colab; `--device auto` picks the accelerator. See [RUNNING.md](./RUNNING.md) and `[notebooks/zte_colab.ipynb](../notebooks/zte_colab.ipynb)`.
 - **Fully resumable.** Every per-subject run carries `--resume`; stop with `Ctrl-C` and re-run the identical command to continue exactly where it stopped (finished subjects skipped, the interrupted one resumed from its last checkpoint).
 - **One combined view.** The sweep ends by building `res/experiments/loso/COMPARE.html` (`zte-compare`) so every held-out subject sits side by side, scored against the same pass/fail rubric.
 

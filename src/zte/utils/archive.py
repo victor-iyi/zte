@@ -2,7 +2,7 @@
 
 The intended workflow: train on a powerful cloud GPU (Colab Pro), **zip** the finished runs into a small archive
 (checkpoints + config + evaluation, without the huge dataset cache / TensorBoard logs by default), **download** them, and **unpack**
-on a Mac for inference / offline exploration. A run's checkpoint embeds its input shapes and fitted normaliser, so inference needs only
+locally for inference / offline exploration. A run's checkpoint embeds its input shapes and fitted normaliser, so inference needs only
 the checkpoint — which is why the default archive is light.
 
 Everything here is pure-stdlib and platform-agnostic (paths via `pathlib`), so it behaves the same on Linux, macOS and Colab.
@@ -381,7 +381,7 @@ def zip_res(
 
 
 def unpack(archive: str | Path, dest: str | Path = 'res/experiments') -> list[str]:
-    """Extracts a run archive into `dest` (e.g. on your Mac after downloading).
+    """Extracts a run archive into `dest` (e.g. on your machine after downloading).
 
     Args:
         archive: (str | Path): The path to a `.zip` produced by `zip_run` / `zip_experiments`.
