@@ -3,7 +3,7 @@
 How ZTE proves — without training a decoder — that its encoder turns EEG into a **structured, re-purposable** space rather than memorising noise. This is the project's defence against the "BLEU-trap": every headline number is checked against a raw-feature reference **and** a noise-matched control.
 
 > Related: [ARCHITECTURE.md] · [TRAINING.md] · [RESULTS.md] (validated numbers from a real run).
-> The figures below come from the synthetic smoke run (`examples/evaluate_zte.py`); on real ZuCo the same commands produce the same artifacts at scale.
+> Each run writes its plots to `evaluation/figures/` (via `examples/evaluate_zte.py`); the numbers here come from the synthetic smoke run, and real ZuCo produces the same artifacts at scale.
 
 ## How to run it
 
@@ -65,7 +65,7 @@ res/evaluation/
 ├── comparison.csv     # probe table (ZTE vs raw vs noise, per target)
 ├── breakdown.csv      # per-subject / per-task rows
 ├── region_importance.csv
-├── figures/           # all figures below
+├── figures/           # generated plots (per run)
 ├── interactive/word_explorer.html   # self-contained 3-D explorer
 └── tb/<run_name>/     # TensorBoard (if --tensorboard)
 ```
@@ -100,10 +100,6 @@ $$
 
 so the predict-the-mean baseline sits at $R^{2}=0$. ZTE should beat the noise control and rival raw band-power in far fewer dimensions.
 
-![Linear probe comparison](figures/eval/probe_linear.png)
-![kNN probe comparison](figures/eval/probe_knn.png)
-![kNN probe of log frequency](figures/eval/probe_logfreq_scatter.png)
-
 ### 2. Geometry / health (is the space healthy, or collapsed?)
 
 Label-free metrics from `zte.evaluation.metrics`:
@@ -121,7 +117,7 @@ Writing $Z \in \mathbb{R}^{n \times d}$ ($d = 768$) for the embedding matrix wit
 - **Effective rank** (Roy & Vetterli) from the singular values $\sigma_k$ of the mean-centred $Z$, with $p_k = \sigma_k / \sum_j \sigma_j$ — a soft count of active dimensions:
 
 $$
-\operatorname{erank}(Z) = \exp\!\Big(-\sum_k p_k \log p_k\Big)
+\mathrm{erank}(Z) = \exp\!\Big(-\sum_k p_k \log p_k\Big)
 $$
 
 - **Uniformity** (Wang & Isola, $t = 2$) — the log mean Gaussian potential over all distinct pairs, lower when embeddings spread over the sphere:
@@ -142,25 +138,17 @@ $$
 \text{aniso} = \mathbb{E}_{i \ne j}\big[\hat z_i^\top \hat z_j\big], \qquad \lVert \hat z_i - \hat z_j \rVert^{2} = 2 - 2\,\hat z_i^\top \hat z_j
 $$
 
-![Embedding health](figures/eval/embedding_health.png)
-
 The PCA projections should show smooth structure by word length and separable subjects rather than a featureless blob:
-
-![PCA by word length](figures/eval/pca_by_word_length.png)
-![PCA by subject](figures/eval/pca_by_subject.png)
 
 ### 3. Content retrieval (do same-thoughts attract?)
 
 Leave-one-out retrieval: does the *same stimulus read by a different subject* retrieve its counterparts better than chance (Top-K, MRR)? Over $Q$ queries, a hit is a $\text{top-}k$ neighbour sharing the query's group, and $\text{rank}_q$ is the rank of the first such neighbour:
 
 $$
-\text{Recall@}k = \frac{1}{Q}\sum_{q=1}^{Q} \mathbb{1}\!\big[\text{rank}_q \le k\big], \qquad \text{MRR} = \frac{1}{Q}\sum_{q=1}^{Q} \frac{1}{\text{rank}_q}
+\text{Recall@}k = \frac{1}{Q}\sum_{q=1}^{Q} \mathbf{1}\!\big[\text{rank}_q \le k\big], \qquad \text{MRR} = \frac{1}{Q}\sum_{q=1}^{Q} \frac{1}{\text{rank}_q}
 $$
 
 This is the honest cross-subject test and the direct analogue of the downstream zero-shot task.
-
-![Same vs different content similarity](figures/eval/similarity_by_content.png)
-![Cross-subject sentence retrieval](figures/eval/retrieval_sentence.png)
 
 ### 4. Vector arithmetic (the `king − man + woman` test for thoughts)
 
@@ -170,14 +158,9 @@ the space. For a stimulus token `t`,
 report gives **subject-transfer** (and task-transfer) analogy accuracy vs chance,
 with a raw-feature control — a falsifiable test of subject-agnosticism.
 
-![Analogy transfer](figures/eval/analogy_transfer.png)
-
 ## Stratified breakdowns
 
 The same metrics are re-computed **per subject, per task and per sentence category** (`zte.evaluation.breakdown`), so a strong global number can't hide a subject that fails:
-
-![Per-subject breakdown](figures/eval/breakdown_subject.png)
-![Per-task breakdown](figures/eval/breakdown_task.png)
 
 ## Scalp-region importance & eye-tracking (`zte-explore`)
 
@@ -189,8 +172,6 @@ uv run zte-explore --drive <folder-id-or-url> --out res/exploration
 # Supply an exact montage instead of the approximate default map:
 uv run zte-explore --bundle res/bundle --montage-csv my_montage.csv --out res/exploration
 ```
-
-![Scalp-region importance](figures/eval/region_importance.png)
 
 Flags: one of `--bundle` / `--root` / `--drive` / `--synthetic`, `--extract-dir`, `--tasks`, `--out`, `--montage-csv`, `--method mutual_info|f_score`.
 

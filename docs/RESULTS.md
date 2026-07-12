@@ -19,8 +19,6 @@ A skip-gram (InfoNCE) model trained end-to-end via `examples/run_demo.py` on a 3
 | Word embeddings extracted    | 433 (present words only)          |
 | Embedding dim                | 128 (768 by default in real runs) |
 
-![ZTE training history](./figures/training_curves.png)
-
 Train loss decreases steadily; on this tiny synthetic split the validation curve is essentially flat — expected, since the smoke-run exercises the machinery rather than benchmarking generalisation.
 
 ## 2. All four objectives train
@@ -40,14 +38,7 @@ The raw-Conformer frontend (`--frontend raw_conformer --representation raw`) tra
 
 The synthetic generator injects the structure the real corpus exhibits, and the analysis tooling recovers it:
 
-![Omission and reading time vs word length](figures/omission_by_length.png)
-
 Short words are skipped far more often (omission ≈ 0.5 at length 1–2, falling with length) and total reading time rises with word length — exactly the lexical effects ZuCo is known for.
-
-![Eye-tracking correlations](figures/et_correlations.png)
-![Eye-tracking distributions](figures/et_distributions.png)
-![Missingness by measure and task](figures/missingness.png)
-![Word-level EEG availability](figures/eeg_availability.png)
 
 ## 4. Evaluation of the learned space
 
@@ -63,21 +54,16 @@ Running the full evaluation suite (`examples/evaluate_zte.py`, a 4-subject skip-
 Effective rank quantifies how many dimensions the space meaningfully spans: from the singular values $\sigma_k$ of the centred $Z\in\mathbb{R}^{n\times d}$ with $p_k=\sigma_k/\sum_j\sigma_j$,
 
 $$
-\operatorname{erank}=\exp\!\Big(-\sum_k p_k\log p_k\Big),
+\mathrm{erank}=\exp\!\Big(-\sum_k p_k\log p_k\Big),
 $$
 
-and the reported **0.57** is $\operatorname{erank}/d = 54.6/96$. Retrieval is scored by $\text{Recall@}k$ — the fraction of $Q$ queries whose correct match ranks in the top $k$ (Top-1 is $k=1$):
+and the reported **0.57** is $\mathrm{erank}/d = 54.6/96$. Retrieval is scored by $\text{Recall@}k$ — the fraction of $Q$ queries whose correct match ranks in the top $k$ (Top-1 is $k=1$):
 
 $$
-\text{Recall@}k=\frac{1}{Q}\sum_q \mathbb{1}[\text{rank}_q\le k].
+\text{Recall@}k=\frac{1}{Q}\sum_q \mathbf{1}[\text{rank}_q\le k].
 $$
 
 The embedding is healthy (well-spread, no collapse) and carries lexical attributes above the noise floor. Cross-subject retrieval sits **at** chance here — expected, because synthetic subjects share no real neural structure to retrieve across. That is precisely the gap real ZuCo is meant to close, and why the suite reports it honestly rather than hiding it.
-
-![Linear probe comparison](figures/eval/probe_linear.png)
-![Embedding health](figures/eval/embedding_health.png)
-![PCA by subject](figures/eval/pca_by_subject.png)
-![Cross-subject sentence retrieval](figures/eval/retrieval_sentence.png)
 
 See [EVALUATION.md] for what every figure and metric means, plus the per-subject/per-task breakdowns, analogy transfer and scalp-region importance.
 

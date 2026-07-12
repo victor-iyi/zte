@@ -153,7 +153,7 @@ The context transformer (`transformer.py`) honours `model.pos_encoding`:
 
 All four schemes modify the same scaled dot-product attention that the context transformer computes over its $L$ tokens, where $Q,K,V$ are the per-head query/key/value projections and $d_h$ is the per-head dimension:
 
-$$\operatorname{Attn}(Q,K,V) = \operatorname{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V$$
+$$\mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V$$
 
 They differ in *where* they inject position (token position $p$, or indices $m,n$):
 

@@ -55,6 +55,25 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
+    parser.add_argument(
+        '--precision',
+        choices=['auto', 'fp32', 'fp16', 'bf16'],
+        default='auto',
+        help='Mixed-precision override (auto = bf16 on Ampere+/TPU, fp16 on older CUDA, fp32 on MPS/CPU).',
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=-1,
+        dest='num_workers',
+        help='DataLoader workers; -1 = auto per backend (default).',
+    )
+    parser.add_argument(
+        '--compile',
+        choices=['on', 'off'],
+        default='off',
+        help='torch.compile the model (CUDA only).',
+    )
     parser.add_argument('--out', type=str, default='res/benchmark')
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()
@@ -166,6 +185,9 @@ def main() -> None:
         cfg.train.epochs = args.epochs
         cfg.train.batch_size = args.batch_size
         cfg.train.device = args.device
+        cfg.train.precision = args.precision
+        cfg.train.num_workers = args.num_workers
+        cfg.train.compile_model = args.compile == 'on'
         cfg.train.seed = seed
         cfg.train.deterministic = True
         cfg.train.ckpt_dir = str(out / 'runs' / tag)

@@ -38,7 +38,7 @@ The harmonics are *exact* for any electrode coordinates. All approximation lives
 
 - `real_spherical_harmonics(theta, phi, l_max)` — the validated real (tesseral, Condon–Shortley) basis.
 - `ScalpGeometry` — electrode positions on the unit sphere, with constructors `from_csv` (`channel,x,y,z` or `channel,theta,phi`), `from_mne` (`GSN-HydroCel-128`), `from_xyz`, and the coordinate‑free `fibonacci_fallback`.
-- `SphericalHarmonicEncoding` — precomputes the $(\text{n\_channels}, (\ell_{\max}+1)^2)$ harmonic matrix as a fixed buffer, applies learnable per‑degree gains, and projects to the frontend width.
+- `SphericalHarmonicEncoding` — precomputes the harmonic matrix (one row per electrode, $(\ell_{\max}+1)^2$ columns) as a fixed buffer, applies learnable per‑degree gains, and projects to the frontend width.
 - `SpatialChannelMixer` — adds that per‑electrode encoding to the channel features and (when `spatial_mix=True`) runs one self‑attention layer over the electrodes‑as‑tokens, so each electrode is contextualised by geometrically related electrodes before the frontend consumes the channel axis.
 
 Both coordinate forms describe the same unit‑sphere point under the convention

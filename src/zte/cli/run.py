@@ -60,6 +60,32 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--out-root', type=str, default='res/experiments')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
+    parser.add_argument(
+        '--precision',
+        choices=['auto', 'fp32', 'fp16', 'bf16'],
+        default=None,
+        help='Mixed-precision override. auto = bf16 on Ampere+/TPU, fp16 on older CUDA, fp32 on MPS/CPU.',
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=None,
+        dest='num_workers',
+        help='DataLoader workers; -1 = auto per backend (a few on an accelerator, 0 on CPU).',
+    )
+    parser.add_argument(
+        '--compile',
+        choices=['on', 'off'],
+        default=None,
+        help='torch.compile the model (CUDA only; can speed up training, first step is slower).',
+    )
+    parser.add_argument(
+        '--static-shapes',
+        choices=['auto', 'on', 'off'],
+        default=None,
+        dest='static_shapes',
+        help='Fixed-length padding for XLA/TPU (auto = on only on TPU). Accuracy-neutral.',
+    )
     parser.add_argument('--epochs', type=int, default=None, help='Override config epochs.')
     parser.add_argument(
         '--seed',
@@ -153,6 +179,14 @@ def _run(args: argparse.Namespace) -> None:
         config.train.epochs = args.epochs
     if args.device is not None:
         config.train.device = args.device
+    if args.precision is not None:
+        config.train.precision = args.precision
+    if args.num_workers is not None:
+        config.train.num_workers = args.num_workers
+    if args.compile is not None:
+        config.train.compile_model = args.compile == 'on'
+    if args.static_shapes is not None:
+        config.train.static_shapes = args.static_shapes
     if args.subjects is not None:
         config.dataset.subjects = tuple(args.subjects.split(','))
     if args.tasks is not None:

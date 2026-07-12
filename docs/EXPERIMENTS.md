@@ -23,7 +23,7 @@ $$\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{
 
 and the two VICReg terms, with target std $\gamma$ and covariance $C=\frac{1}{n-1}(Z-\bar Z)^\top(Z-\bar Z)$, push each of the $d=768$ dimensions to stay alive and decorrelated:
 
-$$\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\operatorname{Var}(z_{:,j}) + \epsilon}\big), \qquad \mathcal{L}_{\text{cov}} = \frac{1}{d}\sum_{i \ne j} C_{ij}^{2}$$
+$$\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\mathrm{Var}(z_{:,j}) + \epsilon}\big), \qquad \mathcal{L}_{\text{cov}} = \frac{1}{d}\sum_{i \ne j} C_{ij}^{2}$$
 
 - **Multiple seeds -> confidence intervals.** Run each study at seeds **42, 43, 44**. The evaluator already computes bootstrap 95% CIs on the load-bearing quantities (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`); seeds turn a single-run point into a distribution so differences carry error bars, not noise.
 - **The eye-tracking confound is controlled by making EEG-only the honest headline.** Gaze scalars (fixation durations, pupil size) trivially encode word length and frequency. Every invariance / collapse study sets `include_eye_tracking: false` so a "reading-from-EEG" claim can't be a gaze artefact; Study 1 measures the size of that artefact directly.
@@ -161,8 +161,8 @@ backed by a **bootstrap 95% CI, not a sign**:
   - `beats_noise` + `beats_noise_ci` — the paired per-fold (ZTE − noise) probe gap must clear an **effect-size floor** (`effect_size_floor = 0.01`), not merely be positive.
   - `retrieval_above_chance` + `retrieval_ci` — CI on `(Top-1 − chance)` over the per-query hit vector must exclude zero. **Chance is query-weighted** (matches how hits are scored); the old type-weighted value is kept as `chance_top1_typeweighted` and typically *understated* chance by ~30×.
   - `subject_arithmetic_above_chance` + `subject_arithmetic_ci` — same idea for the subject vector-arithmetic test.
-- `embedding_health` — geometry / collapse metrics: `effective_rank_ratio` (high ≈ healthy, near 1.0; low ≈ collapsed), `anisotropy` (low is good), uniformity, alignment, dead-dim fraction. Effective rank is the entropy of the singular spectrum of centred $Z$, $\operatorname{erank}=\exp(-\sum_k p_k\log p_k)$ with $p_k=\sigma_k/\sum_j\sigma_j$ (the ratio divides by $d$); anisotropy is the mean off-diagonal cosine $\text{aniso}=\mathbb{E}_{i \ne j}[\hat z_i^\top \hat z_j]$. **The headline for Study 3.**
-- `sentence_retrieval` **/** `word_retrieval` — leave-one-out cross-subject retrieval: does the *same stimulus read by a different person* retrieve its counterparts? `top1`, `mrr`, and `chance_top1` (query-weighted). Over $Q$ queries these are $\text{Recall@}k=\frac{1}{Q}\sum_q \mathbb{1}[\text{rank}_q\le k]$ (`top1` is $k=1$) and $\text{MRR}=\frac{1}{Q}\sum_q \frac{1}{\text{rank}_q}$. **The honest cross-subject test — headline for Studies 1 & 2.**
+- `embedding_health` — geometry / collapse metrics: `effective_rank_ratio` (high ≈ healthy, near 1.0; low ≈ collapsed), `anisotropy` (low is good), uniformity, alignment, dead-dim fraction. Effective rank is the entropy of the singular spectrum of centred $Z$, $\mathrm{erank}=\exp(-\sum_k p_k\log p_k)$ with $p_k=\sigma_k/\sum_j\sigma_j$ (the ratio divides by $d$); anisotropy is the mean off-diagonal cosine $\text{aniso}=\mathbb{E}_{i \ne j}[\hat z_i^\top \hat z_j]$. **The headline for Study 3.**
+- `sentence_retrieval` **/** `word_retrieval` — leave-one-out cross-subject retrieval: does the *same stimulus read by a different person* retrieve its counterparts? `top1`, `mrr`, and `chance_top1` (query-weighted). Over $Q$ queries these are $\text{Recall@}k=\frac{1}{Q}\sum_q \mathbf{1}[\text{rank}_q\le k]$ (`top1` is $k=1$) and $\text{MRR}=\frac{1}{Q}\sum_q \frac{1}{\text{rank}_q}$. **The honest cross-subject test — headline for Studies 1 & 2.**
 - `analogy` — vector arithmetic `emb(t, A) − centroid(A) + centroid(B)` should retrieve `emb(t, B)`. `subject_transfer` / `task_transfer` Top-1 vs chance. **The falsifiable subject-agnosticism test — headline for Study 2.**
 - `probe_comparison` — the ZTE-vs-raw-vs-noise probe rows (mirrored to `comparison.csv`).
 - `neurons` — the compact neuron-interpretability block (full detail in `neurons.json`); see the who-vs-what budget below.
@@ -235,7 +235,7 @@ This is the north-star property (the thing that would make ZTE "like word embedd
 
 **How to *see* it, without guessing:** open `thought_space_explorer.html`. Its landing banners state, in plain language, whether same/related thoughts cluster; its **auto-analogy leaderboard** finds the working `A->B` analogies for you (no need to pick a word or a person); and its **neighbourhood view** shows a word's nearest thoughts across subjects.
 
-**How to *make* it emerge (and which config):** ZTE v1 largely does **not** have these properties yet — the space encodes *who*. The levers designed to produce them are all in `study_invariance_full_loso.yaml` / `exp6_skipgram_eegonly_invariant.yaml`: **cross-subject positives** (same stimulus across subjects pulled together), a **subject adversary** + **per-subject normalisation** (remove identity), and **VICReg** (stop collapse so there's room for content). The adversary is a gradient-reversal min-max on a subject classifier's cross-entropy $\mathcal{L}_{\text{adv}}=-\sum_c \mathbb{1}[s=c]\log p_c$: the referee minimises it while the reversed gradient trains the encoder to *hide* subject identity. Study 2 (baseline -> full) is precisely the A/B that shows whether the `emergence` gaps *move*. Turning the knobs up: raise `objective.subject_adversary_weight`, keep `cross_subject_positives: true`, raise `variance_weight`/`covariance_weight`, and use `normalize: zscore_subject`. Ultimately the parent project's LLM alignment (EEG-OT-CLIP) is what maps ZTE into a genuinely semantic space — this suite tells you how good a starting point ZTE is.
+**How to *make* it emerge (and which config):** ZTE v1 largely does **not** have these properties yet — the space encodes *who*. The levers designed to produce them are all in `study_invariance_full_loso.yaml` / `exp6_skipgram_eegonly_invariant.yaml`: **cross-subject positives** (same stimulus across subjects pulled together), a **subject adversary** + **per-subject normalisation** (remove identity), and **VICReg** (stop collapse so there's room for content). The adversary is a gradient-reversal min-max on a subject classifier's cross-entropy $\mathcal{L}_{\text{adv}}=-\sum_c \mathbf{1}[s=c]\log p_c$: the referee minimises it while the reversed gradient trains the encoder to *hide* subject identity. Study 2 (baseline -> full) is precisely the A/B that shows whether the `emergence` gaps *move*. Turning the knobs up: raise `objective.subject_adversary_weight`, keep `cross_subject_positives: true`, raise `variance_weight`/`covariance_weight`, and use `normalize: zscore_subject`. Ultimately the parent project's LLM alignment (EEG-OT-CLIP) is what maps ZTE into a genuinely semantic space — this suite tells you how good a starting point ZTE is.
 
 ## Avoiding bias & overfitting — the guarantees, made explicit
 
@@ -265,19 +265,19 @@ CONTROL=1 bash scripts/run_loso.sh <root>        # add the no-recipe control arm
 
 Every run's `metrics.json` and `report.md` gain a `honesty` block whenever the embedding set spans ≥ 2 subjects (so it is populated for `by_stimulus` runs and, for a LOSO run, for the held-out subject specifically):
 
-- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* -> a p-value, not merely an analytic chance line. Over $B$ shuffles with shuffled scores $s^{\ast}_b$ against the observed $s$, $p=\frac{1+\#\{b: s^{\ast}_b \ge s\}}{1+B}$. Feeds `verdict.retrieval_above_chance_perm`.
+- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* -> a p-value, not merely an analytic chance line. Over $B$ shuffles with shuffled scores $s^{\ast}_b$ against the observed $s$, $p=\frac{1+\lvert\{b : s^{\ast}_b \ge s\}\rvert}{1+B}$. Feeds `verdict.retrieval_above_chance_perm`.
 - **Held-out cross-subject decoding** (`honesty.cross_subject_decode`) — a linear probe trained on N−1 subjects and scored on the held-out one, one fold per subject, per target (category / length band / word length / log-frequency), with a bootstrap CI vs an honest chance baseline. Content that decodes on an unseen brain is the real generalization signal.
 - **Anchor calibration lift** (`honesty.calibration`) — fits an orthogonal Procrustes alignment from a few shared **anchor** words to snap a held-out subject into the shared frame, then measures whether same-word cross-subject cohesion improves on *held-out* words. A metrics-side preview of "can a stranger be calibrated in without retraining?", mirroring the explorer's **Calibrate** mode.
 
-## §10 roadmap — implemented improvements
+## Implemented improvements
 
-The report's §10 "what to fix next" is now wired into the config and objectives (all off by default; enabled in the flagship recipe configs `exp6_skipgram_eegonly_invariant.yaml` and `study_invariance_full_loso.yaml`).
+These improvements are now wired into the config and objectives (all off by default; enabled in the flagship recipe configs `exp6_skipgram_eegonly_invariant.yaml` and `study_invariance_full_loso.yaml`).
 
-### Fix the dimensional collapse / the "cone" (§10.1)
+### Fix the dimensional collapse / the "cone"
 
 The LOSO space became a near-degenerate **cone** (anisotropy $\text{aniso}=\mathbb{E}_{i \ne j}[\hat z_i^\top \hat z_j]\approx 0.997$): rank looked high but no dimension separated content. Because $\lVert \hat z_i - \hat z_j \rVert^{2} = 2 - 2\,\hat z_i^\top \hat z_j$, that saturated cosine leaves the normalised codes crammed into a sliver of the sphere. Two complementary levers:
 
-- `objective.whiten` — ZCA-whitens the exported embeddings at evaluation, $\tilde z = \Sigma^{-1/2}(z-\mu)$ (centre + decorrelate + equalise variance). Centring removes the shared direction that *is* the cone, so **anisotropy drops from ~0.998 to ~0.00**; because it is label-free, every downstream metric is recomputed on the whitened space, so the report honestly shows whether content survives (on synthetic, un-saturating the cosines lifts the same-word cross-subject gap from ~0 to positive).
+- `objective.whiten` — ZCA-whitens the exported embeddings at evaluation, $\tilde z = \Sigma^{-1/2}(z-\mu)$ (centre + decorrelate + equalise variance). Centring removes the shared direction that *is* the cone, so **anisotropy drops from ~0.998 to ~0.00**; because it is label-free, every downstream metric is recomputed on the whitened space, so the evaluation honestly shows whether content survives (on synthetic, un-saturating the cosines lifts the same-word cross-subject gap from ~0 to positive).
 - `objective.anisotropy_weight` — a Wang & Isola **uniformity** term ($t=2$) that spreads the normalised embeddings over the sphere during training:
 
 $$\mathcal{L}_{\text{unif}} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-2\,\lVert \hat z_i - \hat z_j \rVert^{2}\big)$$
@@ -288,11 +288,11 @@ $$\mathcal{L}_{\text{unif}} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-2\,\lVert 
 
 A ready-made A/B ablation: `study_anticone_off.yaml` (VICReg only) vs `study_anticone_on.yaml` (VICReg + whitening + uniformity). Compare `embedding_health.anisotropy` and `effective_rank_ratio`.
 
-### Kill the stimulus shortcut, chase meaning (§10.2)
+### Kill the stimulus shortcut, chase meaning
 
 - `objective.meaning_positives` (skip-gram) — also draws positive pairs from the **same content word occurring in different sentences** (subject- and context-agnostic word identity), not only the same stimulus token, so same-*meaning* clustering has room to grow instead of memorising which passage a word came from.
 - `objective.stimulus_adversary_weight` — a **second gradient-reversal referee** that predicts *which passage/task* a token came from; the reversed gradient removes the "which of the sentence-sets" shortcut. (Sized by `model.n_tasks`.)
 
-### Report on truly held-out data (§10.3)
+### Report on truly held-out data
 
 - The **LOSO sweep** (`scripts/run_loso.sh`) evaluates every held-out subject; the **honesty block** adds a permutation null, a held-out cross-subject decoder, and the anchor-calibration lift for the held-out subject (see above). The **raw-waveform path** for richer signal already exists as `exp5_raw_conformer_masked.yaml` (`frontend: raw_conformer`).

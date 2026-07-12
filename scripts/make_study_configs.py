@@ -63,6 +63,7 @@ def _base_train(**overrides: object) -> TrainConfig:
         seed=42,
         deterministic=True,
         tensorboard=True,
+        num_workers=-1,  # auto per backend (a few on GPU/TPU/MPS, 0 on CPU)
     )
     return replace(base, **overrides)
 

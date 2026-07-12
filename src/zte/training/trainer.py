@@ -19,7 +19,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from zte.config import ZTEConfig
-from zte.device import DeviceSpec, autocast, resolve_device, seed_everything
+from zte.device import DeviceSpec, autocast, configure_backend, resolve_device, seed_everything
 from zte.logging_utils import get_logger, progress
 from zte.training.checkpoint import CheckpointManager
 from zte.training.scheduler import build_scheduler
@@ -85,6 +85,8 @@ class Trainer:
         seed_everything(config.train.seed, deterministic=config.train.deterministic)
         self.config = config
         self.device = device or resolve_device(config.train.device, config.train.precision)
+        # Backend-global speedups that don't change accuracy (TF32 on Ampere+; no-op elsewhere).
+        configure_backend(self.device)
         self.model = model.to(self.device.device)
         self.objective = objective.to(self.device.device)
         self._move_teacher()

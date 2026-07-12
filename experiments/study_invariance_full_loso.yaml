@@ -88,7 +88,7 @@ train:
   grad_clip: 1.0
   device: auto
   precision: auto
-  num_workers: 0
+  num_workers: -1
   split: by_subject_loso
   val_fraction: 0.1
   test_fraction: 0.1

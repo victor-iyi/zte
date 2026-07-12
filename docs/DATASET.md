@@ -133,7 +133,7 @@ The EEG band-power is always kept; the toggle only governs the extra gaze dimens
 | `raw`          | `C×T` (105×window) | `raw_conformer`  | Richer temporal detail; heavier            |
 | `both`         | both available     | either           | Keep options open; switch via model config |
 
-Per set of words the band-power tensor is $X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}$, where $n_{bp} = (\#\text{measures} \times \#\text{bands})$ band-power features are laid over $C = 105$ channels. Each token flattens the $(n_{bp} \times C)$ grid into a band-major, channel-minor vector, optionally with appended eye-tracking scalars:
+Per set of words the band-power tensor is $X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}$, where $n_{bp} = n_{\text{measures}} \times n_{\text{bands}}$ band-power features are laid over $C = 105$ channels. Each token flattens the $(n_{bp} \times C)$ grid into a band-major, channel-minor vector, optionally with appended eye-tracking scalars:
 
 $$X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}, \qquad x_{\text{token}} \in \mathbb{R}^{n_{bp}\cdot C}\ (\text{e.g. } 8 \times 105 = 840)$$
 

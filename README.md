@@ -381,20 +381,19 @@ Three transports, tried in order: mounted Drive path (most reliable) -> `gdown` 
 
 ---
 
-## Performance-review response (turning the honest negative result into levers)
+## Anti-collapse & subject-invariance levers
 
-The *Honest Performance & Accuracy Review* found ZTE well-instrumented but dimensionally collapsed and subject-dominated. Every "Areas for improvement" item is now implemented and tested — see **[`CHANGELOG.md`](CHANGELOG.md)** for the full mapping. The load-bearing changes:
+ZTE v1 is well-instrumented but, on real data so far, dimensionally collapsed and subject-dominated. These levers address that head-on — all implemented and tested (see **[`CHANGELOG.md`](CHANGELOG.md)**). The load-bearing changes:
 
 - **Anti-collapse (VICReg).** `objective.variance_weight` / `objective.covariance_weight` add a variance-hinge + covariance penalty to every objective — the single biggest fix for the ~15-of-768 collapse. The variance hinge pushes every one of the $d$ embedding dimensions to keep a standard deviation of at least the target $\gamma$:
 
 $$
-\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\operatorname{Var}(z_{:,j}) + \epsilon}\big)
+\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\mathrm{Var}(z_{:,j}) + \epsilon}\big)
 $$
 
 - **Learn "what", not "who".** `objective.cross_subject_positives` (same stimulus, different subject, via a stimulus-grouped batch sampler), `objective.subject_adversary_weight` (gradient-reversal subject adversary), and `dataset.normalize='zscore_subject'` (per-subject whitening) attack subject dominance directly.
 - **Masked objective repaired.** The exported 768-d head is now trained; the data2vec teacher is normalised across tokens with a variance floor and its EMA decay is ramped — no more exp2 cone.
 - **Honest evaluation.** `train.test_fraction` defaults to `0.1` (held-out), a new `by_stimulus` split keeps a sentence's text on one side, and the normaliser is fit on train only. Verdicts use bootstrap CIs + effect-size floors; retrieval chance is query-weighted; probes are shuffled and scaled; the `task_transfer` id bug is fixed; a real electrode montage can be supplied via `dataset.montage_csv`.
-- **Correction to the review:** its "P0 SyntaxError blocker" is not real on this tree — Python 3.14 (PEP 758) accepts `except A, B:` as a tuple that catches both types, so the package imports fine and the tests pass on a clean checkout (the project's own `ruff` formatter even keeps that unparenthesised form). It was a false-positive static-analysis finding.
 
 The new **`exp6_skipgram_eegonly_invariant`** preset is the fairest test: EEG-only, `by_stimulus` held-out, and every subject-invariance lever on.
 

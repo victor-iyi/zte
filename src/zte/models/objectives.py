@@ -127,7 +127,14 @@ def vicreg_terms(
         if n > 1024:
             idx = torch.randperm(n, device=unit.device)[:1024]
             unit = unit[idx]
-        sq_dist = torch.pdist(unit).pow(2)
+        # Pairwise squared distances from the Gram matrix (unit vectors: ||a-b||^2 = 2 - 2 a·b)
+        # rather than torch.pdist, which is unimplemented on MPS (Apple Silicon) and XLA (TPU).
+        # This is numerically identical to pdist(unit).pow(2) but runs on every backend.
+        m = unit.shape[0]
+        gram = unit @ unit.t()
+        sq = (2.0 - 2.0 * gram).clamp_min(0.0)
+        iu = torch.triu_indices(m, m, offset=1, device=unit.device)
+        sq_dist = sq[iu[0], iu[1]]
         uniform_loss = sq_dist.mul(-2.0).exp().mean().clamp_min(1e-12).log()
         loss = loss + aniso_weight * uniform_loss
         metrics['uniformity_loss'] = float(uniform_loss.detach())

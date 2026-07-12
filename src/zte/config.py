@@ -270,7 +270,13 @@ class TrainConfig:
         grad_clip (float): Global gradient-norm clip (`0` disables).
         device (DeviceKind | Literal['auto']): Backend preference passed to `resolve_device`.
         precision (PrecisionPreference): Mixed-precision preference.
-        num_workers (int): DataLoader worker processes.
+        num_workers (int): DataLoader worker processes. `-1` (or any negative) means **auto** — a few
+            workers on an accelerator (CUDA/MPS/TPU), single-process on CPU (see `zte.device.auto_num_workers`).
+        static_shapes (Literal['auto', 'on', 'off']): Whether to pad every batch to a single fixed sentence
+            length instead of the per-batch maximum. `auto` enables it **only on XLA/TPU**, where varying
+            tensor shapes force constant recompilation; `on`/`off` force it. It is accuracy-neutral — the
+            padded positions are masked out of attention, pooling and the loss — at the cost of some extra
+            padded compute, which is the right trade only on TPU. No effect on CUDA/MPS/CPU under `auto`.
         split (SplitStrategy): Train/val split strategy.
         val_fraction (float): Validation fraction for random/by_sentence splits.
         test_fraction (float): Held-out test fraction (`0` disables). Defaults to `0.1` so evaluation reports on data the
@@ -300,6 +306,7 @@ class TrainConfig:
     device: Literal['auto', 'cpu', 'cuda', 'mps'] = 'auto'
     precision: Literal['auto', 'fp32', 'fp16', 'bf16'] = 'auto'
     num_workers: int = 0
+    static_shapes: Literal['auto', 'on', 'off'] = 'auto'
     split: SplitStrategy = 'by_sentence'
     val_fraction: float = 0.1
     test_fraction: float = 0.1

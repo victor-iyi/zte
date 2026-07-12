@@ -158,13 +158,60 @@ def _resolve_precision(
     if precision == 'fp16':
         return torch.float16, kind in {'cuda', 'mps'}
     if precision == 'bf16':
-        return torch.bfloat16, kind == 'cuda'
+        return torch.bfloat16, kind in {'cuda', 'xla'}
 
-    # auto: be conservative outside CUDA.
+    # auto: pick the fastest *accuracy-safe* mixed precision per backend.
     if kind == 'cuda':
+        # bf16 on Ampere+ (A100/H100) keeps an fp32 master copy -> speed without accuracy loss;
+        # fp16 (+ GradScaler) on older CUDA.
         return (torch.bfloat16, True) if _cuda_supports_bf16() else (torch.float16, True)
-    # MPS autocast is still maturing; CPU AMP rarely helps -> default to fp32.
+    if kind == 'xla':
+        # Cloud TPUs are bf16-native; bf16 mixed precision is the fast, accuracy-safe default.
+        return torch.bfloat16, True
+    # MPS autocast is still maturing (some ops NaN/error); CPU AMP rarely helps -> stable fp32.
     return None, False
+
+
+def configure_backend(spec: DeviceSpec) -> None:
+    """Applies backend-global performance settings that do not change training accuracy.
+
+    Idempotent; call once at trainer/pipeline setup. The only backend that gets a global switch is
+    CUDA: **TF32** for fp32 matmuls and cuDNN, which is a large speedup on Ampere+ (A100/H100) at
+    negligible accuracy cost — PyTorch's recommended Ampere default — and a no-op on pre-Ampere GPUs.
+    MPS, CPU and XLA have nothing global to set here (their mixed precision is handled by `autocast`).
+
+    Args:
+        spec (DeviceSpec): The resolved device specification.
+    """
+    if spec.kind != 'cuda':
+        return
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision('high')
+    except AttributeError, RuntimeError:  # pragma: no cover — depends on the CUDA build
+        pass
+
+
+def auto_num_workers(spec: DeviceSpec, requested: int) -> int:
+    """Resolves the DataLoader worker count, auto-picking when `requested < 0`.
+
+    On an accelerator (CUDA/MPS/XLA) input pipelining matters, so `auto` uses a few workers; on CPU
+    it stays single-process (extra workers rarely help and hurt reproducibility). An explicit
+    non-negative `requested` is always honoured.
+
+    Args:
+        spec (DeviceSpec): The resolved device specification.
+        requested (int): The configured worker count, or a negative value to request `auto`.
+
+    Returns:
+        int: The effective number of DataLoader workers.
+    """
+    if requested >= 0:
+        return requested
+    if spec.kind in {'cuda', 'mps', 'xla'}:
+        return min(4, max(1, (os.cpu_count() or 2) - 1))
+    return 0
 
 
 def _device_name(kind: DeviceKind, device: torch.device) -> str:
@@ -196,10 +243,28 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         >>> with autocast(spec):
         ...     pass
     """
-    if spec.use_amp and spec.autocast_dtype is not None:
-        with torch.autocast(device_type=spec.kind, dtype=spec.autocast_dtype):
+    if not (spec.use_amp and spec.autocast_dtype is not None):
+        yield
+        return
+    if spec.kind == 'xla':
+        # TPU autocast lives in torch_xla; fall back to the generic 'xla' device_type, then to a
+        # no-op (fp32) so a torch_xla version without autocast degrades safely rather than crashing.
+        try:
+            import torch_xla.amp
+
+            with torch_xla.amp.autocast(spec.device):
+                yield
+            return
+        except Exception:  # noqa: BLE001 — try the generic path next.
+            pass
+        try:
+            with torch.autocast(device_type='xla', dtype=spec.autocast_dtype):
+                yield
+            return
+        except RuntimeError, ValueError:
             yield
-    else:
+            return
+    with torch.autocast(device_type=spec.kind, dtype=spec.autocast_dtype):
         yield
 
 

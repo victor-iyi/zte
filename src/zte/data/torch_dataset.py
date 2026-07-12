@@ -8,6 +8,7 @@ positive/negative pairs and masking on top of this batch.
 
 from __future__ import annotations
 
+import functools
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -252,11 +253,15 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         )
 
 
-def collate_sentences(batch: list[SentenceSample]) -> dict[str, Any]:
+def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) -> dict[str, Any]:
     """Pads a list of :class:`SentenceSample` into a batched tensor dict.
 
     Args:
         batch (list[SentenceSample]): Sentence samples of varying length.
+        pad_to (int | None): If set, pad the sequence axis to at least this fixed length (for static
+            shapes on XLA/TPU, which avoid recompilation). `None` pads to the per-batch maximum (the
+            default; smallest tensors on GPU/CPU/MPS). Never truncates — a sample longer than `pad_to`
+            still fits.
 
     Returns:
         dict[str, Any]: A dict with keys:
@@ -272,7 +277,7 @@ def collate_sentences(batch: list[SentenceSample]) -> dict[str, Any]:
 
     """
     lengths = torch.tensor([s.length for s in batch], dtype=torch.long)
-    max_len = int(lengths.max().item())
+    max_len = max(int(lengths.max().item()), pad_to or 0)
     batch_size = len(batch)
 
     pad_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
@@ -389,6 +394,7 @@ def make_dataloader(
     drop_last: bool = False,
     group_by_stimulus: bool = False,
     seed: int = 0,
+    pad_to: int | None = None,
 ) -> DataLoader[SentenceSample]:
     """Creates a :class:`~torch.utils.data.DataLoader` with the padding collate.
 
@@ -403,11 +409,15 @@ def make_dataloader(
             that the same sentence read by different subjects co-occurs -- required for cross-subject
             positives to actually appear in a batch. Overrides `shuffle` (the sampler shuffles internally).
         seed (int): Base seed for the stimulus sampler's per-epoch shuffling.
+        pad_to (int | None): Fixed sequence length to pad every batch to (static shapes for XLA/TPU);
+            `None` pads to each batch's own maximum.
 
     Returns:
         DataLoader[SentenceSample]: A configured DataLoader yielding collated batch dicts.
 
     """
+    # functools.partial keeps the collate picklable for num_workers > 0.
+    collate = functools.partial(collate_sentences, pad_to=pad_to)
     if group_by_stimulus:
         sampler = StimulusBatchSampler(
             torch_dataset.stimulus_keys,
@@ -421,7 +431,7 @@ def make_dataloader(
             batch_sampler=sampler,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            collate_fn=collate_sentences,
+            collate_fn=collate,
         )
     return DataLoader(
         torch_dataset,
@@ -430,5 +440,5 @@ def make_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=drop_last,
-        collate_fn=collate_sentences,
+        collate_fn=collate,
     )
