@@ -31,6 +31,7 @@ SEEDS="${SEEDS:-42}"                      # fixed seed(s); default single seed 4
 PY="${PY:-.venv/bin/python}"             # project venv interpreter
 OUT_ROOT="${OUT_ROOT:-res/experiments}"  # where zte-run catalogues each run (set to a mounted Drive path to persist)
 BENCH_ROOT="${BENCH_ROOT:-res/benchmark}" # where zte-benchmark writes tables
+DRIVE_BACKUP="${DRIVE_BACKUP:-}"         # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
 SMOKE="${SMOKE:-0}"                      # SMOKE=1 -> tiny synthetic run
 
 # All 12 ZuCo v1 subjects, for the full leave-one-subject-out sweep in Study 2.
@@ -56,9 +57,11 @@ fi
 run_seeded() {
   local config="$1" seed="$2"
   echo ">>> [seed ${seed}] $(basename "${config}" .yaml)_s${seed}"
+  local backup=()
+  [[ -n "${DRIVE_BACKUP}" ]] && backup=(--drive-backup "${DRIVE_BACKUP}")
   # --resume makes each run idempotent: finished runs are skipped, interrupted ones continue.
   "${PY}" -m zte.cli.run --config "${config}" "${SRC_ARGS[@]}" \
-    --seed "${seed}" --out-root "${OUT_ROOT}" --resume
+    --seed "${seed}" --out-root "${OUT_ROOT}" --resume "${backup[@]+"${backup[@]}"}"
 }
 
 # zte-benchmark sweeps are NOT resumable, so skip one whose benchmark.csv already exists

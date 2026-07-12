@@ -67,6 +67,13 @@ When the sweep finishes it builds `res/experiments/loso/COMPARE.html` — the co
 
 Open **[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)** in Colab (there's an *Open in Colab* badge at the top). Pick a **GPU runtime** (`Runtime -> Change runtime type -> GPU`) and run the cells top to bottom. The notebook: installs `uv` + Python 3.14, confirms the GPU, runs a synthetic smoke test, runs the LOSO sweep (synthetic by default; switch to real Drive data in one cell), and renders the comparison view inline. Because every step is resumable, a disconnect just means re-running the last cell.
 
+### Surviving a lost Colab runtime (continuous Drive backup + resume)
+
+Colab runtimes are ephemeral, so a long real run needs its checkpoints on Drive. Two options, both fully `--resume`-safe (a completed run is skipped instantly; an interrupted one continues from its last checkpoint):
+
+- **Train local + live Drive mirror (recommended — fast, reliable I/O).** `--drive-backup <mounted-drive-folder>` copies each run's `best.pt`/`last.pt` to Drive **after every epoch** (best-effort; a Drive hiccup won't crash training). In the suite: `DRIVE_BACKUP="/gdrive/.../experiments" bash scripts/run_suite.sh <data>`. After a reset, copy the Drive checkpoints back to local `res/experiments/` (the notebook's `restore_from_drive()` does this) and re-run with `--resume`.
+- **Write straight to Drive (simplest).** Point `--out-root` (or `OUT_ROOT=`) at a mounted Drive folder; every checkpoint, config and metric lands on Drive as it's written. To resume, just re-run the same command with the same `--out-root` and `--resume` — no restore step needed.
+
 ---
 
 ## Combine and compare all runs

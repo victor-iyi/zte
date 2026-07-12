@@ -6,7 +6,7 @@
 # subject over the whole cohort), so the single-subject LOSO result becomes a *trend*.
 # Each per-subject run is a self-contained, resumable `zte-run`.
 #
-#   * Portable: runs on macOS (MPS), Linux, and Google Colab. The device is chosen
+#   * Portable: runs on Apple Silicon (MPS), Linux, and Google Colab. The device is chosen
 #     automatically (CUDA > MPS > CPU) — no flags needed. Set DEVICE=... to force one.
 #   * Fully resumable: every run carries `--resume`. Stop any time (Ctrl-C) and re-run
 #     the exact same command — finished subjects are skipped and the interrupted one
@@ -19,7 +19,8 @@
 #   CONTROL=1 bash scripts/run_loso.sh            # also run the no-recipe control arm (A/B)
 #   DEVICE=cuda bash scripts/run_loso.sh          # force a device (else auto)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh   # restrict the held-out set
-#   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write runs to Google Drive (persist)
+#   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write ALL runs to Google Drive (persist everything)
+#   DRIVE_BACKUP="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh  # train local (fast) + mirror checkpoints to Drive each epoch
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -28,6 +29,7 @@ ROOT="${1:-res/data/zuco_extracted}"
 PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive path to persist runs
+DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
 FULL_CFG="experiments/study_invariance_full_loso.yaml"       # the invariance recipe
 CTRL_CFG="experiments/study_invariance_baseline_loso.yaml"   # no-recipe control
 
@@ -49,8 +51,10 @@ run_one() {   # cfg, holdout
   local cfg="$1" holdout="$2"
   echo "───────────────────────────────────────────────────────────────"
   echo "▶ LOSO hold out ${holdout}  ($(basename "${cfg}"))"
+  local backup=()
+  [ -n "${DRIVE_BACKUP}" ] && backup=(--drive-backup "${DRIVE_BACKUP}")
   "${PY}" -m zte.cli.run --config "${cfg}" "${SRC[@]}" \
-      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore
+      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore "${backup[@]+"${backup[@]}"}"
   local code=$?
   if [ "${code}" = "130" ]; then
     echo "⏸  Paused during ${holdout}. Re-run this script to resume exactly here."

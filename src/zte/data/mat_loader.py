@@ -115,6 +115,40 @@ def _channel_vector(value: object, n_channels: int = N_CHANNELS) -> np.ndarray:
     return out
 
 
+def _coerce_raw_2d(value: object) -> np.ndarray:
+    """Coerces a raw-EEG value to a numeric 2-D array, tolerating a ragged cell of segments.
+
+    ZuCo's per-word `rawEEG` is usually a `(channels, time)` matrix, but a word with several
+    fixations can arrive as a **cell array of per-fixation segments** of different lengths — which
+    `scipy.io.loadmat` returns as an object ndarray. A plain `np.asarray(..., dtype=float32)` then
+    raises "setting an array element with a sequence". This picks the largest convertible segment
+    (the most raw signal), which the caller pads/truncates to the fixed window, so extraction never
+    crashes on ragged raw EEG.
+
+    Args:
+        value (object): A scipy-loaded raw-EEG field (a matrix, a cell of segments, or empty).
+
+    Returns:
+        A numeric float32 array (2-D where possible), or an empty array when nothing is convertible.
+    """
+    try:
+        arr = np.asarray(value, dtype=np.float32)
+        if arr.dtype != object:
+            return arr
+    except ValueError, TypeError:
+        pass  # ragged / nested -> fall through to the per-segment path
+    best: np.ndarray | None = None
+    for element in np.atleast_1d(np.asarray(value, dtype=object)).ravel():
+        try:
+            segment = np.asarray(element, dtype=np.float32)
+        except ValueError, TypeError:
+            continue
+        # Only real (>=1-D, non-empty) segments count; scalars/None coerce to a 0-D nan and are junk.
+        if segment.ndim >= 1 and segment.size and (best is None or segment.size > best.size):
+            best = segment
+    return best if best is not None else np.zeros(0, dtype=np.float32)
+
+
 def _raw_window(value: object, n_channels: int, window: int) -> np.ndarray:
     """Pads/truncates a raw EEG segment to `(n_channels, window)`.
 
@@ -126,8 +160,8 @@ def _raw_window(value: object, n_channels: int, window: int) -> np.ndarray:
     Returns:
         A `(n_channels, window)` float32 array; all-zero when the source is empty (an omitted word), so callers must consult the presence mask.
     """
-    arr = np.asarray(value, dtype=np.float32)
-    if arr.size == 0:
+    arr = _coerce_raw_2d(value)
+    if arr.size == 0 or arr.ndim == 0:  # empty (omitted word) or a stray scalar
         return np.zeros((n_channels, window), dtype=np.float32)
     if arr.ndim == 1:
         arr = arr[np.newaxis, :]

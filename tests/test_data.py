@@ -11,8 +11,50 @@ from scipy.io import loadmat
 
 from zte.config import MissingConfig
 from zte.data.dataset import ZuCoDataset
+from zte.data.mat_loader import _raw_window
 from zte.data.missing import MissingValueImputer
 from zte.data.schema import BANDS, ET_MEASURES, N_CHANNELS, band_feature_name
+
+
+def _obj_array(items: list) -> np.ndarray:
+    """Builds a 1-D object ndarray (like scipy.io.loadmat returns for a MATLAB cell)."""
+    arr = np.empty(len(items), dtype=object)
+    for i, x in enumerate(items):
+        arr[i] = x
+    return arr
+
+
+def test_raw_window_handles_ragged_cell_arrays() -> None:
+    """Raw EEG that arrives as a ragged cell of per-fixation segments must not crash extraction.
+
+    Regression for the raw-conformer path: `scipy.io.loadmat` returns a multi-fixation `rawEEG` as an
+    object ndarray of variable-length `(channels, time)` segments, which a naive `np.asarray(...,
+    float32)` cannot convert ("setting an array element with a sequence"). `_raw_window` coerces it to
+    the largest segment and pads to the fixed window instead of raising.
+    """
+    window = 128
+    ragged = _obj_array(
+        [np.ones((N_CHANNELS, 40), np.float32), np.full((N_CHANNELS, 90), 2.0, np.float32)]
+    )
+    out = _raw_window(ragged, N_CHANNELS, window)
+    assert out.shape == (N_CHANNELS, window)
+    # The larger (90-sample) segment is kept; the rest is zero-padded.
+    assert (out[:, :90] == 2.0).all() and (out[:, 90:] == 0.0).all()
+
+    # Degenerate inputs never crash and yield an all-zero window (callers use the presence mask).
+    for junk in ([], _obj_array([None, 'x']), 5.0, _obj_array([np.zeros(0), np.zeros(0)])):
+        z = _raw_window(junk, N_CHANNELS, window)
+        assert z.shape == (N_CHANNELS, window) and not z.any()
+
+    # Normal (channels, time) and transposed (time, channels) still work.
+    assert _raw_window(np.random.randn(N_CHANNELS, 200), N_CHANNELS, window).shape == (
+        N_CHANNELS,
+        window,
+    )
+    assert _raw_window(np.random.randn(200, N_CHANNELS), N_CHANNELS, window).shape == (
+        N_CHANNELS,
+        window,
+    )
 
 
 def test_synthetic_matches_zuco_schema(synthetic_dir: Path) -> None:

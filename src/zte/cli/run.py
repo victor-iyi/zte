@@ -59,6 +59,14 @@ def parse_arguments() -> argparse.Namespace:
         '--name', type=str, default=None, help='Run name (default: config run_name).'
     )
     parser.add_argument('--out-root', type=str, default='res/experiments')
+    parser.add_argument(
+        '--drive-backup',
+        type=str,
+        default=None,
+        dest='drive_backup',
+        help="Mounted Drive folder to mirror each run's checkpoints to after every epoch (train "
+        'locally, keep a live Drive copy). Each run backs up to <root>/<run_name>/checkpoints.',
+    )
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
     parser.add_argument(
         '--precision',
@@ -207,6 +215,14 @@ def _run(args: argparse.Namespace) -> None:
     config.dataset.cache_dir = str(run_dir / 'cache')
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
+    # Continuous checkpoint mirror to Drive: train fast on the local disk, but copy best/last.pt to
+    # a mounted Drive path after every epoch so a lost runtime never loses trainable progress. The
+    # mirror is best-effort (a Drive hiccup won't crash training). `--drive-backup <root>` points at
+    # a per-session Drive folder; each run mirrors to <root>/<run_name>/checkpoints.
+    if args.drive_backup:
+        # The checkpoint manager copies its `checkpoints/` dir *into* drive_backup_dir, so point it at
+        # the run's Drive folder -> checkpoints land at <root>/<run_name>/checkpoints.
+        config.train.drive_backup_dir = str(Path(args.drive_backup) / config.run_name)
 
     manifest: dict[str, Any] = {
         'run_name': config.run_name,
