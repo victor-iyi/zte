@@ -32,10 +32,10 @@ viz = [
   'seaborn>=0.13.2',
   'plotly>=6.9.0',
 ]
-# Optional: only needed to fetch real electrode coordinates for spherical-harmonic
-# spatial encoding (ScalpGeometry.from_mne / scripts/export_montage.py). The core
-# encoding works without it via a montage CSV or the coordinate-free fallback.
-montage = [
+# Optional real-data provisioning for the MOSAIC levers (docs/METHODS.md):
+#   * `mne` fetches real electrode coordinates for spherical-harmonic spatial encoding
+#     (ScalpGeometry.from_mne / scripts/export_montage.py --zuco105).
+assets = [
   'mne>=1.12.1',
 ]
 dev = [

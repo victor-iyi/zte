@@ -1391,6 +1391,9 @@ all = [
     { name = "seaborn" },
     { name = "tensorboard" },
 ]
+assets = [
+    { name = "mne" },
+]
 dev = [
     { name = "mypy" },
     { name = "pytest" },
@@ -1401,9 +1404,6 @@ drive = [
 ]
 logging = [
     { name = "tensorboard" },
-]
-montage = [
-    { name = "mne" },
 ]
 viz = [
     { name = "plotly" },
@@ -1431,6 +1431,7 @@ all = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "tensorboard", specifier = ">=2.21.0" },
 ]
+assets = [{ name = "mne", specifier = ">=1.12.1" }]
 dev = [
     { name = "mypy", specifier = ">=2.3.0" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -1438,7 +1439,6 @@ dev = [
 ]
 drive = [{ name = "gdown", specifier = ">=6.1.0" }]
 logging = [{ name = "tensorboard", specifier = ">=2.21.0" }]
-montage = [{ name = "mne", specifier = ">=1.12.1" }]
 viz = [
     { name = "plotly", specifier = ">=6.9.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
