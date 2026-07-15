@@ -94,14 +94,13 @@ class FeatureNormalizer:
         """Initialises the normaliser.
 
         Args:
-            mode (Normalization): One of `zscore_channel` (per-column z-score), `zscore_global`
-                (single mean/std), `zscore_subject` (per-subject per-column z-score), `riemannian`
-                (per-subject covariance whitening -- recentres each subject's feature covariance to
-                a shared reference, the mechanistic attack on the forward-model fingerprint),
-                `minmax` or `none`.
+            mode (Normalization): One of `zscore_channel` (per-column z-score), `zscore_global` (single mean/std),
+                `zscore_subject` (per-subject per-column z-score), `riemannian` (per-subject covariance whitening
+                -- recentres each subject's feature covariance to a shared reference, the mechanistic attack on the
+                forward-model fingerprint), `minmax` or `none`.
             eps (float): Numerical floor for divisions.
-            shrinkage (float): Ledoit-Wolf-style shrinkage toward a scaled identity for the
-                `riemannian` covariance, keeping it well-conditioned and invertible.
+            shrinkage (float): Ledoit-Wolf-style shrinkage toward a scaled identity for the `riemannian` covariance,
+                keeping it well-conditioned and invertible.
         """
         self.mode = mode
         self.eps = eps
@@ -272,9 +271,8 @@ class FeatureNormalizer:
     def inverse_transform(self, x: np.ndarray, subjects: np.ndarray | None = None) -> np.ndarray:
         """Reconstructs the pre-normalisation matrix from normalised features.
 
-        This is the exact inverse of :meth:`transform` and is used to re-derive the raw feature
-        matrix when re-fitting statistics on a train-only subset (see
-        :meth:`~zte.data.dataset.ZuCoDataset.refit_normalizer`).
+        This is the exact inverse of `transform` and is used to re-derive the raw feature
+        matrix when re-fitting statistics on a train-only subset (see `ZuCoDataset.refit_normalizer`).
 
         Args:
             x (np.ndarray): A previously normalised matrix `(n_words, n_features)`.
@@ -369,7 +367,7 @@ class FeatureNormalizer:
 
     @classmethod
     def from_state(cls, state: dict[str, object]) -> FeatureNormalizer:
-        """Rebuilds a normaliser from :attr:`state`.
+        """Rebuilds a normaliser from `state`.
 
         Args:
             state (dict[str, object]): A dict previously produced by `state`.

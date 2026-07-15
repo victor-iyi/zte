@@ -73,7 +73,11 @@ def main() -> None:
     """Parses arguments and writes the montage CSV."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True, type=Path, help='Destination CSV path.')
-    parser.add_argument('--montage', default='GSN-HydroCel-129', help='MNE standard montage name (ZuCo uses the 129-net).')
+    parser.add_argument(
+        '--montage',
+        default='GSN-HydroCel-129',
+        help='MNE standard montage name (ZuCo uses the 129-net).',
+    )
     parser.add_argument(
         '--zuco105',
         action='store_true',

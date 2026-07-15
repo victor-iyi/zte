@@ -3,7 +3,7 @@
 Turns ZuCo's per-word eye-tracking into a model-ready target matrix so an auxiliary head can
 predict reading difficulty from the embedding — a lexically-driven, meaning-adjacent signal.
 Supports the duration measures (`FFD`/`SFD`/`GD`/`GPT`/`TRT`), derived `regression_time`
-(`GPT − GD`), `n_fixations`/`mean_pupil`, and binary `is_omitted` (skipping). Duration/count
+(`GPT - GD`), `n_fixations`/`mean_pupil`, and binary `is_omitted` (skipping). Duration/count
 targets are log1p-then-z-scored; missing-by-design cells are `NaN` and masked by the head.
 See `docs/METHODS.md`.
 """
