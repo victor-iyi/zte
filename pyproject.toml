@@ -41,7 +41,7 @@ montage = [
 dev = [
   'ruff>=0.15.21',
   'pytest>=9.1.1',
-  'mypy>=2.2.0',
+  'mypy>=2.3.0',
 ]
 
 all = [
@@ -58,6 +58,8 @@ zte-evaluate = 'zte.cli.evaluate:main'
 zte-explore = 'zte.cli.explore:main'
 zte-benchmark = 'zte.cli.benchmark:main'
 zte-run = 'zte.cli.run:main'
+zte-audit = 'zte.cli.audit:main'
+zte-ablate = 'zte.cli.ablate:main'
 zte-download = 'zte.cli.download:main'
 zte-visualize = 'zte.cli.visualize:main'
 zte-compare = 'zte.cli.compare:main'

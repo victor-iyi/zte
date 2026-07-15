@@ -146,6 +146,71 @@ class BandPowerMLP(nn.Module):
         return self.net(x)
 
 
+class BandRoutedMLP(nn.Module):
+    """Band-family-routed MLP: theta/gamma (content) and alpha/beta (state) get separate paths.
+
+    Unit D. The flat band-power block is `(n_bp_features, n_channels)`; each bp-feature carries a
+    frequency band whose *family* is known (`zte.data.schema.BAND_FAMILY`). Theta and gamma carry
+    lexical-semantic load while alpha and beta carry attention/arousal state, so routing them
+    through separate sub-encoders lets invariance pressure fall asymmetrically instead of over a
+    flat 840-vector. Trailing eye-tracking columns join the state path (gaze is a behaviour/state
+    signal). The two paths' hiddens are concatenated to `hidden_dim`.
+
+    Attributes:
+        out_dim (int): Hidden dimensionality per token.
+    """
+
+    def __init__(
+        self, in_dim: int, config: ModelConfig, n_channels: int, bp_features_per_channel: int
+    ) -> None:
+        """Builds the two band-family pathways.
+
+        Args:
+            in_dim (int): Flattened feature width (channel block + any eye-tracking columns).
+            config (ModelConfig): Model configuration.
+            n_channels (int): EEG channel count.
+            bp_features_per_channel (int): Band-power features per channel (measures × bands).
+        """
+        super().__init__()
+        from zte.data.schema import BAND_FAMILY, BANDS
+
+        self.out_dim = config.hidden_dim
+        n_bp, n_ch = bp_features_per_channel, n_channels
+        n_bands = len(BANDS)
+        content_fam = {'theta', 'gamma'}
+        content_cols: list[int] = []
+        state_cols: list[int] = []
+        for i in range(n_bp):
+            fam = BAND_FAMILY[BANDS[i % n_bands]]  # measures repeat the band order
+            cols = list(range(i * n_ch, (i + 1) * n_ch))
+            (content_cols if fam in content_fam else state_cols).extend(cols)
+        extra = list(range(n_bp * n_ch, in_dim))  # trailing eye-tracking columns -> state path
+        state_cols += extra
+        self.register_buffer('_content_cols', torch.tensor(content_cols, dtype=torch.long))
+        self.register_buffer('_state_cols', torch.tensor(state_cols, dtype=torch.long))
+
+        c_out = config.hidden_dim - config.hidden_dim // 2
+        s_out = config.hidden_dim // 2
+        self.content_path = self._branch(len(content_cols), c_out, config)
+        self.state_path = self._branch(len(state_cols), s_out, config)
+
+    @staticmethod
+    def _branch(in_dim: int, out_dim: int, config: ModelConfig) -> nn.Module:
+        """A small LayerNorm→(Linear+GELU+Dropout)* branch producing `out_dim`."""
+        layers: list[nn.Module] = [nn.LayerNorm(in_dim)]
+        prev = in_dim
+        for _ in range(max(1, config.n_layers)):
+            layers += [nn.Linear(prev, out_dim), nn.GELU(), nn.Dropout(config.dropout)]
+            prev = out_dim
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Routes band families through their paths and concatenates the hiddens."""
+        content = self.content_path(x.index_select(-1, self._content_cols))
+        state = self.state_path(x.index_select(-1, self._state_cols))
+        return torch.cat([content, state], dim=-1)
+
+
 class RawConformer(nn.Module):
     """Conformer-style token encoder for raw EEG windows `(..., n_channels, time_steps)`.
 
@@ -270,6 +335,19 @@ def build_frontend(
         if in_dim is None:
             raise ValueError(
                 'band_power_mlp frontend requires in_dim (n_bp_features * n_channels).'
+            )
+        # Unit D: band-family routing. Needs the (n_bp, n_channels) layout and a bp count that is a
+        # whole number of bands; otherwise fall back to the flat MLP with a warning.
+        if getattr(config, 'band_routing', False):
+            from zte.data.schema import BANDS
+
+            if n_channels and bp_features_per_channel and bp_features_per_channel % len(BANDS) == 0:
+                return BandRoutedMLP(in_dim, config, n_channels, bp_features_per_channel)
+            _LOG.warning(
+                'band_routing requested but layout is unknown (bp_per_channel=%s, n_channels=%s); '
+                'using the flat band-power MLP.',
+                bp_features_per_channel,
+                n_channels,
             )
         mixer = build_spatial_mixer(config, bp_features_per_channel or 0, n_channels, montage_csv)
         return BandPowerMLP(

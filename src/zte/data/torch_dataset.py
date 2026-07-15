@@ -105,6 +105,7 @@ class SentenceSample:
     content: torch.Tensor | None = None
     word_id: torch.Tensor | None = None
     task_id: int = 0
+    behaviour: torch.Tensor | None = None  # (seq_len, n_behaviour) or None
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -123,6 +124,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         representation: str | None = None,
         min_length: int = 1,
         subject_vocab: dict[str, int] | None = None,
+        behaviour_targets: tuple[str, ...] = (),
     ) -> None:
         """Builds the sequence index over (a subset of) the dataset's words.
 
@@ -163,6 +165,18 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             if 'task' in dataset.words.columns
             else {}
         )
+
+        # Unit B: per-word reading-behaviour target matrix (aligned to ds.words rows). Built once
+        # when requested; indexed per token in __getitem__ and padded by collate.
+        self._behaviour: np.ndarray | None = None
+        self.behaviour_names: list[str] = []
+        self.behaviour_binary: np.ndarray = np.zeros(0, dtype=bool)
+        if behaviour_targets:
+            from zte.data.behaviour import build_behaviour_matrix
+
+            self._behaviour, self.behaviour_names, self.behaviour_binary = build_behaviour_matrix(
+                dataset.words, behaviour_targets
+            )
 
         self._sequences: list[np.ndarray] = []
         self._subjects: list[int] = []
@@ -205,6 +219,11 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         return self._subjects
 
     @property
+    def word_vocab(self) -> dict[str, int]:
+        """Subject-agnostic `{word: id}` map used for `word_id` (and the meaning matrix)."""
+        return self._word_vocab
+
+    @property
     def stimulus_keys(self) -> list[str]:
         """Normalised sentence-text key per sentence, aligned with `sequences`.
 
@@ -241,6 +260,9 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             presence = torch.from_numpy(np.ascontiguousarray(ds.presence[rows])).bool()
         else:
             presence = torch.ones(len(rows), dtype=torch.bool)
+        behaviour = None
+        if self._behaviour is not None:
+            behaviour = torch.from_numpy(np.ascontiguousarray(self._behaviour[rows])).float()
         return SentenceSample(
             features=features,
             raw=raw,
@@ -250,6 +272,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             content=torch.from_numpy(np.ascontiguousarray(self._content[idx])).long(),
             word_id=torch.from_numpy(np.ascontiguousarray(self._word_id[idx])).long(),
             task_id=self._task_id[idx],
+            behaviour=behaviour,
         )
 
 
@@ -306,6 +329,14 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             raw[i, : sample.length] = sample.raw
 
+    behaviour = None
+    if batch[0].behaviour is not None:
+        n_beh = batch[0].behaviour.shape[-1]
+        # NaN pad: the behaviour head masks non-finite cells (padding *and* missing measures).
+        behaviour = torch.full((batch_size, max_len, n_beh), float('nan'), dtype=torch.float32)
+        for i, sample in enumerate(batch):
+            behaviour[i, : sample.length] = sample.behaviour
+
     return {
         'features': features,
         'raw': raw,
@@ -316,6 +347,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         'content_id': content_id,
         'word_id': word_id,
         'task_id': torch.tensor([s.task_id for s in batch], dtype=torch.long),
+        'behaviour_target': behaviour,
     }
 
 

@@ -164,8 +164,14 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         super().__init__()
         self.config = config
         self._n_subjects = model.config.n_subjects
+        # Unit C: when factored, the subject adversary acts on the *content subspace* of the
+        # embedding (pushing identity OUT of content), not the shared hidden -- the crux of
+        # disentanglement. Otherwise it acts on the token hidden, as before.
+        self._factored = bool(model.config.factored)
+        self._content_dim = model.config.content_dim if self._factored else model.embed_dim
+        adv_in = self._content_dim if self._factored else model.hidden_dim
         self.subject_adversary: SubjectAdversary | None = (
-            SubjectAdversary(model.hidden_dim, model.config.n_subjects)
+            SubjectAdversary(adv_in, model.config.n_subjects)
             if config.subject_adversary_weight > 0.0
             else None
         )
@@ -177,6 +183,41 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             if config.stimulus_adversary_weight > 0.0
             else None
         )
+
+        # Unit A: meaning-distillation head projects the (content) embedding to the frozen
+        # word-vector space. It is sized in `attach_auxiliary` to the *attached matrix's* width
+        # (a real LM file sets its own dim; the hash fallback uses config.meaning_dim), so the
+        # projection can never mismatch the target.
+        self.meaning_head: nn.Module | None = None
+        self.register_buffer('meaning_matrix', None, persistent=False)
+        # Unit B: reading-behaviour head (sized when the targets are attached).
+        self.behaviour_head: nn.Module | None = None
+        self.register_buffer('_behaviour_binary', None, persistent=False)
+
+    def attach_auxiliary(
+        self,
+        meaning_matrix: torch.Tensor | None = None,
+        behaviour_binary: 'torch.Tensor | None' = None,
+    ) -> None:
+        """Attaches dataset-derived auxiliary targets (Units A & B) after construction.
+
+        Args:
+            meaning_matrix (torch.Tensor | None): Frozen `(vocab, meaning_dim)` word vectors
+                indexed by `batch['word_id']`; required when `meaning_distill_weight > 0`.
+            behaviour_binary (torch.Tensor | None): Bool `(n_behaviour,)` mask marking which
+                behaviour targets are binary; its length sizes the behaviour head.
+        """
+        if self.config.meaning_distill_weight > 0.0 and meaning_matrix is not None:
+            self.meaning_matrix = meaning_matrix  # buffer: moves with .to(device), not trained
+            self.meaning_head = nn.Linear(self._content_dim, int(meaning_matrix.shape[1]))
+        if self.config.behaviour_weight > 0.0 and behaviour_binary is not None:
+            n_beh = int(behaviour_binary.numel())
+            self.behaviour_head = nn.Linear(self._content_dim, n_beh)
+            self._behaviour_binary = behaviour_binary.bool()
+
+    def _content_slice(self, emb: torch.Tensor) -> torch.Tensor:
+        """Returns the content subspace of `emb` (all dims unless the model is factored)."""
+        return emb[..., : self._content_dim]
 
     def regularize(
         self,
@@ -216,9 +257,12 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             self.stimulus_adversary is not None and batch.get('task_id') is not None
         )
         hid_u = adv_hidden.reshape(-1, adv_hidden.shape[-1])[flat] if need_hidden else None
+        # Unit C: the subject adversary sees the content subspace when factored (drive identity out
+        # of content), else the shared token hidden.
+        subj_adv_in = self._content_slice(emb_u) if self._factored else hid_u
         if self.subject_adversary is not None and self._n_subjects > 1:
             subj = batch['subject'][:, None].expand(usable.shape).reshape(-1)[flat]
-            logits = self.subject_adversary(hid_u, lambda_=1.0)
+            logits = self.subject_adversary(subj_adv_in, lambda_=1.0)
             adv_loss = F.cross_entropy(logits, subj)
             loss = loss + self.config.subject_adversary_weight * adv_loss
             metrics['adv_loss'] = float(adv_loss.detach())
@@ -232,6 +276,42 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             metrics['stim_adv_acc'] = float(
                 (t_logits.argmax(dim=-1) == task).float().mean().detach()
             )
+
+        # Unit A: meaning distillation -- pull the content subspace toward the frozen word vector
+        # (cosine). This is the explicit content target skip-gram never had.
+        if (
+            self.meaning_head is not None
+            and self.meaning_matrix is not None
+            and batch.get('word_id') is not None
+        ):
+            wid = batch['word_id'].reshape(-1)[flat]
+            has_w = wid >= 0
+            if bool(has_w.any()):
+                pred = self.meaning_head(self._content_slice(emb_u)[has_w])
+                target = F.embedding(wid[has_w], self.meaning_matrix)
+                m_loss = (
+                    1.0 - F.cosine_similarity(F.normalize(pred, dim=-1), target, dim=-1)
+                ).mean()
+                loss = loss + self.config.meaning_distill_weight * m_loss
+                metrics['meaning_loss'] = float(m_loss.detach())
+
+        # Unit B: reading-behaviour supervision -- regress fixation difficulty from the content
+        # subspace (privileged information); NaN cells (padding / skipped words) are masked.
+        if self.behaviour_head is not None and batch.get('behaviour_target') is not None:
+            beh = batch['behaviour_target'].reshape(-1, batch['behaviour_target'].shape[-1])[flat]
+            pred = self.behaviour_head(self._content_slice(emb_u))
+            finite = torch.isfinite(beh)
+            if bool(finite.any()):
+                binary = self._behaviour_binary
+                reg_m = finite & ~binary[None, :] if binary is not None else finite
+                bin_m = finite & binary[None, :] if binary is not None else torch.zeros_like(finite)
+                b_loss = pred.new_zeros(())
+                if bool(reg_m.any()):
+                    b_loss = b_loss + F.mse_loss(pred[reg_m], beh[reg_m])
+                if bool(bin_m.any()):
+                    b_loss = b_loss + F.binary_cross_entropy_with_logits(pred[bin_m], beh[bin_m])
+                loss = loss + self.config.behaviour_weight * b_loss
+                metrics['behaviour_loss'] = float(b_loss.detach())
         return loss, metrics
 
 
@@ -311,6 +391,18 @@ class SkipGramObjective(_ObjectiveBase):
         logits = center_flat @ context_flat.t() / self.config.temperature
         neg_inf = torch.finfo(logits.dtype).min
         cand_mask = usable_flat[None, :] & not_self
+        # Unit A: confound-matched hard negatives -- keep only negatives that SHARE the anchor's
+        # confound (same subject & task), so the softmax cannot be won by reading identity/task off
+        # the negatives; positives stay eligible regardless. De-confounds the contrastive objective.
+        if self.config.hard_negatives:
+            match = torch.ones(b * length, b * length, dtype=torch.bool, device=center.device)
+            for key in self.config.hard_negative_keys:
+                per_sent = batch.get(key if key != 'task' else 'task_id')
+                if per_sent is None:
+                    continue
+                tok = per_sent[:, None].expand(b, length).reshape(-1)
+                match = match & (tok[:, None] == tok[None, :])
+            cand_mask = cand_mask & (match | pos_mask)
         logits = logits.masked_fill(~cand_mask, neg_inf)
 
         has_pos = pos_mask.any(dim=1) & usable_flat

@@ -12,6 +12,9 @@ from scipy.signal import butter, filtfilt
 
 from zte.config import Normalization
 from zte.data.schema import SAMPLING_RATE_HZ
+from zte.logging_utils import get_logger
+
+_LOG = get_logger('data.transforms')
 
 
 def bandpass_filter(
@@ -81,21 +84,36 @@ class FeatureNormalizer:
         inference subject) falls back to a **global pooled** mean/std computed at fit time.
     """
 
-    def __init__(self, mode: Normalization = 'zscore_channel', eps: float = 1e-6) -> None:
+    # Above this feature width, per-subject covariance whitening (O(d^3)) is skipped and
+    # `riemannian` degrades to `zscore_subject` with a warning.
+    _RIEMANN_MAX_DIM = 2048
+
+    def __init__(
+        self, mode: Normalization = 'zscore_channel', eps: float = 1e-6, shrinkage: float = 0.1
+    ) -> None:
         """Initialises the normaliser.
 
         Args:
             mode (Normalization): One of `zscore_channel` (per-column z-score), `zscore_global`
-                (single mean/std), `zscore_subject` (per-subject per-column z-score), `minmax` or `none`.
+                (single mean/std), `zscore_subject` (per-subject per-column z-score), `riemannian`
+                (per-subject covariance whitening -- recentres each subject's feature covariance to
+                a shared reference, the mechanistic attack on the forward-model fingerprint),
+                `minmax` or `none`.
             eps (float): Numerical floor for divisions.
-
+            shrinkage (float): Ledoit-Wolf-style shrinkage toward a scaled identity for the
+                `riemannian` covariance, keeping it well-conditioned and invertible.
         """
         self.mode = mode
         self.eps = eps
+        self.shrinkage = shrinkage
         self._a: np.ndarray | None = None  # mean or min (global stats)
         self._b: np.ndarray | None = None  # std or (max-min) (global stats)
         # Per-subject stats for mode 'zscore_subject': {subject_code: (mean, std)}.
         self._subject_stats: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        # Per-subject (mean, W = Sigma^-1/2, W_inv = Sigma^1/2) for mode 'riemannian';
+        # `_global_map` is the fallback for subjects unseen at fit time.
+        self._subject_maps: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._global_map: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
     def fit(self, x: np.ndarray, subjects: np.ndarray | None = None) -> FeatureNormalizer:
         """Learns normalisation statistics from `x`.
@@ -119,6 +137,8 @@ class FeatureNormalizer:
             self._b = np.array(np.nanstd(x), dtype=np.float32)
         elif self.mode == 'zscore_subject':
             return self._fit_subject(x, subjects)
+        elif self.mode == 'riemannian':
+            return self._fit_riemannian(x, subjects)
         else:  # zscore_channel (per-column)
             self._a = np.nanmean(x, axis=0)
             self._b = np.nanstd(x, axis=0)
@@ -146,6 +166,71 @@ class FeatureNormalizer:
         """Replaces near-zero scales with 1 so constant columns pass through unchanged."""
         b = np.asarray(b, dtype=np.float32)
         return np.where(np.abs(b) < self.eps, 1.0, b)
+
+    # -- Riemannian (per-subject covariance whitening) ---------------------- #
+
+    def _cov_maps(self, xc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Returns `(Sigma^-1/2, Sigma^1/2)` for centred rows `xc`, with shrinkage.
+
+        Shrinkage toward a scaled identity keeps the covariance invertible even when a subject has
+        few words relative to the feature dimension; the matrix square roots come from a symmetric
+        eigendecomposition.
+        """
+        d = xc.shape[1]
+        cov = (xc.T @ xc) / max(len(xc) - 1, 1)
+        mu = float(np.trace(cov) / d)
+        cov = (1.0 - self.shrinkage) * cov + self.shrinkage * mu * np.eye(d, dtype=np.float64)
+        w, v = np.linalg.eigh(cov)
+        w = np.clip(w, self.eps, None)
+        inv_sqrt = (v * (w**-0.5)) @ v.T
+        sqrt = (v * (w**0.5)) @ v.T
+        return inv_sqrt.astype(np.float32), sqrt.astype(np.float32)
+
+    def _fit_riemannian(self, x: np.ndarray, subjects: np.ndarray | None) -> FeatureNormalizer:
+        """Fits per-subject whitening maps plus a global fallback map."""
+        x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0)
+        if x.shape[1] > self._RIEMANN_MAX_DIM:
+            _LOG.warning(
+                'riemannian normalise skipped: %d features exceed the %d cap; '
+                'falling back to zscore_subject.',
+                x.shape[1],
+                self._RIEMANN_MAX_DIM,
+            )
+            self.mode = 'zscore_subject'
+            return self._fit_subject(x, subjects)
+        gmean = x.mean(axis=0)
+        g_inv, g_sqrt = self._cov_maps(x - gmean)
+        self._global_map = (gmean.astype(np.float32), g_inv, g_sqrt)
+        self._a = gmean.astype(np.float32)  # keeps `state`/`transform` guards happy
+        self._b = np.ones(x.shape[1], dtype=np.float32)
+        self._subject_maps = {}
+        if subjects is not None:
+            subjects = np.asarray(subjects)
+            for code in np.unique(subjects):
+                rows = subjects == code
+                if int(rows.sum()) < 2:
+                    continue
+                mean = x[rows].mean(axis=0)
+                inv_sqrt, sqrt = self._cov_maps(x[rows] - mean)
+                self._subject_maps[str(code)] = (mean.astype(np.float32), inv_sqrt, sqrt)
+        return self
+
+    def _riemann_apply(
+        self, x: np.ndarray, subjects: np.ndarray | None, inverse: bool
+    ) -> np.ndarray:
+        """Applies (or inverts) per-subject whitening row-wise, global map for unknown subjects."""
+        assert self._global_map is not None
+        x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0)
+        out = np.empty_like(x, dtype=np.float32)
+        subj_arr = None if subjects is None else np.asarray(subjects)
+        for i in range(len(x)):
+            code = None if subj_arr is None else str(subj_arr[i])
+            mean, inv_sqrt, sqrt = self._subject_maps.get(code, self._global_map)  # type: ignore[arg-type]
+            if inverse:
+                out[i] = (x[i] @ sqrt) + mean
+            else:
+                out[i] = (x[i] - mean) @ inv_sqrt
+        return out
 
     def _subject_ab(
         self, n_rows: int, subjects: np.ndarray | None
@@ -175,6 +260,8 @@ class FeatureNormalizer:
         """
         if self.mode == 'none' or self._a is None:
             return x.astype(np.float32, copy=False)
+        if self.mode == 'riemannian':
+            return self._riemann_apply(x, subjects, inverse=False)
         if self.mode == 'zscore_subject':
             a, b = self._subject_ab(len(x), subjects)
             return ((x - a) / b).astype(np.float32)
@@ -198,6 +285,8 @@ class FeatureNormalizer:
         """
         if self.mode == 'none' or self._a is None:
             return np.asarray(x, dtype=np.float32)
+        if self.mode == 'riemannian':
+            return self._riemann_apply(x, subjects, inverse=True)
         if self.mode == 'zscore_subject':
             a, b = self._subject_ab(len(x), subjects)
             return (x * b + a).astype(np.float32)
@@ -218,6 +307,36 @@ class FeatureNormalizer:
         """
         return self.fit(x, subjects=subjects).transform(x, subjects=subjects)
 
+    def calibrate_subject(self, baseline_x: np.ndarray, subject_code: str) -> FeatureNormalizer:
+        """Registers per-subject statistics for a *new* subject from an unlabelled baseline.
+
+        This is the zero-shot new-brain path: a short recording of the new person reading
+        anything yields their own normalisation (per-subject mean/std, or the Riemannian
+        covariance-whitening map), so their words are placed on the shared scale without any
+        labels or retraining. Subsequent `transform(..., subjects=[subject_code, ...])` uses
+        the calibrated statistics instead of the population fallback. A no-op for modes that
+        carry no per-subject state.
+
+        Args:
+            baseline_x (np.ndarray): The new subject's baseline feature matrix `(n, n_features)`.
+            subject_code (str): The code to register the statistics under.
+
+        Returns:
+            `self`, for chaining.
+        """
+        code = str(subject_code)
+        if self.mode == 'zscore_subject':
+            mean = np.nanmean(baseline_x, axis=0)
+            std = self._clamp(np.nanstd(baseline_x, axis=0))
+            mean = np.where(np.isnan(mean), self._a, mean)
+            self._subject_stats[code] = (mean.astype(np.float32), std)
+        elif self.mode == 'riemannian':
+            x = np.nan_to_num(np.asarray(baseline_x, dtype=np.float64), nan=0.0)
+            mean = x.mean(axis=0)
+            inv_sqrt, sqrt = self._cov_maps(x - mean)
+            self._subject_maps[code] = (mean.astype(np.float32), inv_sqrt, sqrt)
+        return self
+
     @property
     def state(self) -> dict[str, object]:
         """Returns a serialisable dict of fitted statistics for checkpointing.
@@ -237,6 +356,15 @@ class FeatureNormalizer:
                 code: {'a': np.asarray(mean).tolist(), 'b': np.asarray(std).tolist()}
                 for code, (mean, std) in self._subject_stats.items()
             }
+        if self.mode == 'riemannian':
+            out['shrinkage'] = self.shrinkage
+            if self._global_map is not None:
+                gm, gi, gs = self._global_map
+                out['global_map'] = {'mean': gm.tolist(), 'inv': gi.tolist(), 'sqrt': gs.tolist()}
+            out['subject_maps'] = {
+                code: {'mean': m.tolist(), 'inv': i.tolist(), 'sqrt': s.tolist()}
+                for code, (m, i, s) in self._subject_maps.items()
+            }
         return out
 
     @classmethod
@@ -251,10 +379,27 @@ class FeatureNormalizer:
 
         """
         norm = cls(mode=state['mode'], eps=float(state['eps']))  # type: ignore[arg-type]
+        if state.get('shrinkage') is not None:
+            norm.shrinkage = float(state['shrinkage'])  # type: ignore[arg-type]
         if state['a'] is not None:
             norm._a = np.asarray(state['a'], dtype=np.float32)
         if state['b'] is not None:
             norm._b = np.asarray(state['b'], dtype=np.float32)
+        gm = state.get('global_map')
+        if gm is not None:
+            norm._global_map = (
+                np.asarray(gm['mean'], dtype=np.float32),  # type: ignore[index]
+                np.asarray(gm['inv'], dtype=np.float32),  # type: ignore[index]
+                np.asarray(gm['sqrt'], dtype=np.float32),  # type: ignore[index]
+            )
+        norm._subject_maps = {
+            str(code): (
+                np.asarray(m['mean'], dtype=np.float32),
+                np.asarray(m['inv'], dtype=np.float32),
+                np.asarray(m['sqrt'], dtype=np.float32),
+            )
+            for code, m in (state.get('subject_maps') or {}).items()  # type: ignore[union-attr]
+        }
         subject_stats = state.get('subject_stats') or {}
         norm._subject_stats = {
             str(code): (

@@ -89,13 +89,35 @@ def run_training(
     vocab = build_subject_vocab(dataset)
     # Auto-pick DataLoader workers per backend when config.train.num_workers < 0 (else honour it).
     workers = auto_num_workers(device, config.train.num_workers)
+    # Unit B: only emit per-word behaviour targets when the behaviour head is active.
+    beh_targets = (
+        config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
+    )
     # Build the torch datasets up front so static-shape padding can be sized from actual lengths.
-    train_td = dataset.to_torch(split=splits['train'], subject_vocab=vocab)
+    train_td = dataset.to_torch(
+        split=splits['train'], subject_vocab=vocab, behaviour_targets=beh_targets
+    )
     val_td = (
-        dataset.to_torch(split=splits['val'], subject_vocab=vocab)
+        dataset.to_torch(split=splits['val'], subject_vocab=vocab, behaviour_targets=beh_targets)
         if len(splits['val']) > 0
         else None
     )
+
+    # Units A & B: attach dataset-derived auxiliary targets to the objective now that the word
+    # vocabulary and behaviour spec exist. The meaning matrix is frozen (a distillation teacher).
+    if config.objective.meaning_distill_weight > 0.0 or config.objective.behaviour_weight > 0.0:
+        import torch as _torch
+
+        from zte.data.meaning import build_meaning_matrix
+
+        meaning_mat = None
+        if config.objective.meaning_distill_weight > 0.0:
+            mat = build_meaning_matrix(
+                train_td.word_vocab, config.objective.meaning_source, config.objective.meaning_dim
+            )
+            meaning_mat = _torch.from_numpy(mat)
+        beh_binary = _torch.from_numpy(train_td.behaviour_binary) if beh_targets else None
+        objective.attach_auxiliary(meaning_matrix=meaning_mat, behaviour_binary=beh_binary)
     # Static shapes (XLA/TPU only under 'auto'): pad every batch to the dataset-wide max sentence
     # length so XLA compiles a single graph instead of recompiling per shape. Accuracy-neutral
     # (padded positions are masked out); `None` keeps the smallest per-batch padding on GPU/CPU/MPS.
