@@ -17,7 +17,9 @@ from zte.data.schema import BANDS, Band, EyeTrackingMeasure, Task
 
 type Granularity = Literal['word', 'sentence']
 type Representation = Literal['band_power', 'raw', 'both']
-type Normalization = Literal['zscore_channel', 'zscore_global', 'zscore_subject', 'minmax', 'none']
+type Normalization = Literal[
+    'zscore_channel', 'zscore_global', 'zscore_subject', 'riemannian', 'minmax', 'none'
+]
 type MissingMethod = Literal[
     'zero',
     'row_mean',
@@ -121,6 +123,12 @@ class DatasetConfig:
     bands: tuple[Band, ...] = BANDS
     raw_field: str = 'rawEEG'
     raw_window: int = 128
+    time_bins: int = 1
+    """Gate 3b (temporal N400): number of time bins to split each word's raw window into
+    when computing band power. `1` (default) is the legacy single whole-fixation vector;
+    `>1` yields band power per bin so an N400-window feature is exposed to the encoder
+    instead of being integrated away. Requires the raw signal (`representation` includes
+    raw). See `zte.data.temporal` and `docs/MONTAGE_AND_TEMPORAL.md`."""
     normalize: Normalization = 'zscore_channel'
     normalizer_fit: Literal['train', 'all'] = 'train'
     montage_csv: str | None = None
@@ -185,6 +193,21 @@ class ModelConfig:
     n_subjects: int = 12
     n_tasks: int = 3
     projection_hidden: int = 512
+
+    # -- Unit C: factored / disentangled embedding --------------------------- #
+    factored: bool = False
+    """If `True`, split the embedding into named subspaces `[content | nuisance]` and route only the content subspace to retrieval/meaning,
+    while identity/behaviour heads act on the nuisance subspace. Turns 'delete the shortcut' (adversary) into 'give the shortcut its own room'
+    (disentanglement), so the meaning target cannot be offloaded onto identity."""
+
+    content_dim: int = 384
+    """Width of the content subspace when `factored` (the remaining `embed_dim - content_dim` dims are the nuisance subspace).
+    Retrieval and meaning distillation use only these dims."""
+
+    # -- Unit D / Gate 3b: band-family routing ------------------------------- #
+    band_routing: bool = False
+    """If `True` (band-power frontend), encode theta/gamma (lexical-semantic) and alpha/beta (attention/state) through separate pathways,
+    so invariance pressure can be applied asymmetrically instead of over a flat 840-vector."""
 
 
 @dataclass
@@ -253,6 +276,34 @@ class ObjectiveConfig:
     meaning_positives: bool = False
     subject_adversary_weight: float = 0.0
     stimulus_adversary_weight: float = 0.0
+
+    # -- Unit A: meaning distillation + confound-matched hard negatives ------- #
+    meaning_distill_weight: float = 0.0
+    """Weight of a distillation loss that pulls each word's embedding toward a *frozen language-model vector*
+    for the word it read (0 disables). This is the direct attack on `content = 0%`: skip-gram never populated
+    content because random negatives are separable by identity/task; an explicit meaning target forces the token in."""
+
+    meaning_source: str | None = None
+    """Where the frozen word vectors come from: a path to a `word v1 v2 ...` text file (GloVe/fastText format) or an `.npy`+vocab pair,
+    or `None`/`'hash'` for a deterministic hash embedding (mechanism verification only -- carries no semantics)."""
+
+    meaning_dim: int = 64
+    """Meaning-vector dimensionality (must match `meaning_source`; used as-is for `'hash'`)."""
+
+    hard_negatives: bool = False
+    """For skip-gram/CBOW, restrict InfoNCE negatives to tokens that *share the confound* (same subject and task) so the only way
+    to tell anchor from negative is the word itself.  De-confounds the contrastive objective (see the confound audit, Gate 2)."""
+
+    hard_negative_keys: tuple[str, ...] = ('subject', 'task')
+    """Batch fields that a negative must match the anchor on when `hard_negatives` is set."""
+
+    # -- Unit B: eye-tracking privileged supervision ------------------------- #
+    behaviour_weight: float = 0.0
+    """Weight of an auxiliary head predicting per-word reading behaviour (fixation difficulty) from the embedding (0 disables).
+    Behaviour is a lexical-difficulty proxy the EEG-only space struggles to find, so predicting it injects a meaning-adjacent gradient"""
+
+    behaviour_targets: tuple[str, ...] = ('TRT', 'regression_time', 'is_omitted')
+    """Which per-word behaviour signals the auxiliary head regresses/classifies."""
 
 
 @dataclass

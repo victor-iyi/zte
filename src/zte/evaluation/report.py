@@ -216,6 +216,15 @@ def evaluate_representation(
     # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
     metrics['honesty'] = honesty
+
+    # 4d) The honest scoreboard: the held-out number stated as a lift over the raw
+    #     control, plus the content-probe positive control. Gate 1 of the improvement
+    #     plan — every headline metric must clear the raw baseline to count as progress.
+    from zte.evaluation.scoreboard import build_scoreboard
+
+    metrics['scoreboard'] = build_scoreboard(
+        word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
+    )
     perm = honesty.get('retrieval_permutation') or {}
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
@@ -846,6 +855,13 @@ def _render_report(
         f'Word embeddings: **{metrics["n_word_embeddings"]}** | '
         f'sentence embeddings: **{metrics["n_sentence_embeddings"]}**',
         '',
+    ]
+    if metrics.get('scoreboard'):
+        from zte.evaluation.scoreboard import render_markdown as _render_scoreboard
+
+        lines.append(_render_scoreboard(metrics['scoreboard']))
+        lines.append('')
+    lines += [
         '## Verdict',
         '',
         'Checks are backed by bootstrap 95% confidence intervals (CI), not sign-only '

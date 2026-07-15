@@ -186,12 +186,31 @@ class ZTEEmbedder:
         )
         return emb_array, pd.DataFrame(meta_rows)
 
+    def calibrate_subject(self, baseline_band_power: np.ndarray, subject_code: str) -> None:
+        """Calibrates a new subject into the shared space from an unlabelled baseline.
+
+        Computes and registers the new person's own normalisation (per-subject mean/std or the
+        Riemannian covariance-whitening map) from a short recording of them reading anything, so
+        their word embeddings are placed on the training cohort's scale with no labels and no
+        retraining. Pass their code to `embed_signals(..., subject_codes=...)` afterwards.
+
+        Args:
+            baseline_band_power (np.ndarray): `(n, n_features)` un-normalised baseline tokens.
+            subject_code (str): The code to register the calibrated statistics under.
+        """
+        if self.normalizer is None:
+            return
+        self.normalizer.calibrate_subject(
+            np.asarray(baseline_band_power, dtype=np.float32), subject_code
+        )
+
     @torch.no_grad()
     def embed_signals(
         self,
         band_power: np.ndarray | None = None,
         raw: np.ndarray | None = None,
         subjects: np.ndarray | None = None,
+        subject_codes: np.ndarray | None = None,
         apply_normalizer: bool = True,
         batch_size: int = 256,
         show_progress: bool = True,
@@ -212,6 +231,8 @@ class ZTEEmbedder:
             band_power (np.ndarray | None): `(n_tokens, n_features)` *un-normalised* band-power tokens; the last dim must equal the model's input size.
             raw (np.ndarray | None): `(n_tokens, n_channels, time_steps)` raw EEG windows for a raw model.
             subjects (np.ndarray | None): Optional `(n_tokens,)` integer subject ids for a subject-conditioned model (defaults to id 0).
+            subject_codes (np.ndarray | None): Optional `(n_tokens,)` subject *codes* (strings) selecting per-subject normalisation
+                statistics (from training or :meth:`calibrate_subject`); unknown codes use the population fallback.
             apply_normalizer (bool): Apply the checkpoint's band-power normaliser (ignored for raw input).
             batch_size (int): Tokens per forward pass.
             show_progress (bool): Show a progress bar.
@@ -252,7 +273,7 @@ class ZTEEmbedder:
                     'signals have no eye tracking -- the imagined-thought path.'
                 )
             if apply_normalizer and self.normalizer is not None:
-                signals = self.normalizer.transform(signals)
+                signals = self.normalizer.transform(signals, subjects=subject_codes)
 
         n = signals.shape[0]
         subj = (

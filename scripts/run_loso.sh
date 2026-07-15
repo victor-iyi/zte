@@ -19,6 +19,7 @@
 #   CONTROL=1 bash scripts/run_loso.sh            # also run the no-recipe control arm (A/B)
 #   DEVICE=cuda bash scripts/run_loso.sh          # force a device (else auto)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh   # restrict the held-out set
+#   FULL_CFG=experiments/sota_loso.yaml bash scripts/run_loso.sh   # run the SOTA stack instead of the old recipe
 #   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write ALL runs to Google Drive (persist everything)
 #   DRIVE_BACKUP="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh  # train local (fast) + mirror checkpoints to Drive each epoch
 # =============================================================================
@@ -30,8 +31,8 @@ PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive path to persist runs
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
-FULL_CFG="experiments/study_invariance_full_loso.yaml"       # the invariance recipe
-CTRL_CFG="experiments/study_invariance_baseline_loso.yaml"   # no-recipe control
+FULL_CFG="${FULL_CFG:-experiments/study_invariance_full_loso.yaml}"       # the invariance recipe (override: FULL_CFG=experiments/sota_loso.yaml)
+CTRL_CFG="${CTRL_CFG:-experiments/study_invariance_baseline_loso.yaml}"   # no-recipe control
 
 # All 12 ZuCo v1 subjects; synthetic mode only has three.
 ALL_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
