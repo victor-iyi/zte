@@ -14,7 +14,7 @@ from torch import nn
 
 from zte.config import ModelConfig
 from zte.logging_utils import get_logger
-from zte.models.spatial import SpatialChannelMixer, resolve_geometry
+from zte.models.spatial import SpatialAttention, SpatialChannelMixer, resolve_geometry
 
 _LOG = get_logger('models.frontends')
 
@@ -24,8 +24,14 @@ def build_spatial_mixer(
     feat_dim: int,
     n_channels: int | None,
     montage_csv: str | None,
-) -> SpatialChannelMixer | None:
+) -> nn.Module | None:
     """Constructs the electrode spatial-encoding mixer if enabled and applicable.
+
+    Two encodings share the `(..., n_channels, feat_dim) -> same shape` contract:
+    `spherical_harmonics` (a :class:`~zte.models.spatial.SpatialChannelMixer`, geometry via the sphere's
+    Laplace-Beltrami eigenfunctions) and `spatial_attention` (a :class:`~zte.models.spatial.SpatialAttention`,
+    Défossez-style learned attention over 2-D scalp coordinates). Both need electrode geometry, so both
+    benefit from a real `montage_csv`; without one the approximate coordinate-free fallback is used.
 
     Args:
         config (ModelConfig): Model configuration (reads the `spatial_*` fields).
@@ -34,9 +40,9 @@ def build_spatial_mixer(
         montage_csv (str | None): Optional electrode-coordinate CSV for exact geometry.
 
     Returns:
-        SpatialChannelMixer | None: The mixer, or `None` when spatial encoding is off or the channel count is unknown.
+        nn.Module | None: The mixer, or `None` when spatial encoding is off or the channel count is unknown.
     """
-    if config.spatial_encoding != 'spherical_harmonics':
+    if config.spatial_encoding not in {'spherical_harmonics', 'spatial_attention'}:
         return None
     if not n_channels or n_channels <= 0:
         _LOG.warning(
@@ -46,6 +52,10 @@ def build_spatial_mixer(
         )
         return None
     geometry = resolve_geometry(n_channels, montage_csv)
+    if config.spatial_encoding == 'spatial_attention':
+        return SpatialAttention(
+            geometry, feat_dim=feat_dim, n_freqs=config.spatial_attn_freqs, dropout=config.dropout
+        )
     return SpatialChannelMixer(
         feat_dim=feat_dim,
         geometry=geometry,
@@ -72,7 +82,7 @@ class BandPowerMLP(nn.Module):
         self,
         in_dim: int,
         config: ModelConfig,
-        spatial: SpatialChannelMixer | None = None,
+        spatial: nn.Module | None = None,
         n_channels: int | None = None,
         bp_features_per_channel: int | None = None,
     ) -> None:
@@ -223,7 +233,7 @@ class RawConformer(nn.Module):
         n_channels: int,
         time_steps: int,
         config: ModelConfig,
-        spatial: SpatialChannelMixer | None = None,
+        spatial: nn.Module | None = None,
     ) -> None:  # pylint: disable=unused-argument
         """Initialises the raw Conformer frontend.
 

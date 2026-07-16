@@ -54,19 +54,19 @@ model:
   conformer_temporal_kernel: 25
   pos_encoding: rope
   max_positions: 512
-  spatial_encoding: spherical_harmonics
+  spatial_encoding: spatial_attention
   spatial_harmonic_degree: 6
   spatial_mix: true
   spatial_encoding_learnable: true
   spatial_attn_freqs: 8
   pool: attention
   subject_conditioning: false
-  subject_film: false
+  subject_film: true
   n_subjects: 12
   n_tasks: 3
   projection_hidden: 512
   factored: true
-  content_dim: 384
+  content_dim: 320
   band_routing: false
 objective:
   name: skipgram
@@ -136,4 +136,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: sota_loso
+run_name: exp7_sota_geom_invariance

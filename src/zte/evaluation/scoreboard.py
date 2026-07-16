@@ -171,6 +171,7 @@ def cross_subject_holdout_retrieval(
     out = {f'top{k}': 0.0 for k in ks}
     rr = 0.0
     chances = []
+    percentiles: list[float] = []  # rank-percentile per query (1.0 = correct match ranked first)
     n_scored = 0
     for i in q_idx:
         cross = subjects != subjects[i]  # gallery: other people only
@@ -182,11 +183,14 @@ def cross_subject_holdout_retrieval(
         if not same.any():
             # still counts as a query (a miss); chance uses this query's gallery
             chances.append(float((content_ids[cand] == content_ids[i]).mean()))
+            percentiles.append(0.0)
             n_scored += 1
             continue
         for k in ks:
             out[f'top{k}'] += float(same[:k].any())
         rr += 1.0 / (np.argmax(same) + 1)
+        rank = int(np.argmax(same)) + 1
+        percentiles.append(1.0 - (rank - 1) / max(len(order) - 1, 1))
         chances.append(float((content_ids[cand] == content_ids[i]).mean()))
         n_scored += 1
     if n_scored == 0:
@@ -195,6 +199,7 @@ def cross_subject_holdout_retrieval(
         out[f'top{k}'] /= n_scored
     out['mrr'] = rr / n_scored
     out['chance_top1'] = float(np.mean(chances)) if chances else float('nan')
+    out['rank_percentile'] = float(np.mean(percentiles)) if percentiles else float('nan')
     out['n_queries'] = int(n_scored)
     out['lift_top1'] = _sub(out['top1'], out['chance_top1'])
     return out

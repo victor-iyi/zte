@@ -9,10 +9,14 @@ distillation; out-of-vocabulary words fall back to the mean. See `docs/METHODS.m
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from zte.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 _LOG = get_logger('data.meaning')
 
@@ -101,3 +105,121 @@ def build_meaning_matrix(
         )
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     return (mat / np.clip(norms, 1e-8, None)).astype(np.float32)
+
+
+def build_meaning_matrix_hf(
+    words: pd.DataFrame,
+    model_name: str = 'bert-base-uncased',
+    *,
+    layer: int = -1,
+    device: str = 'cpu',
+    max_length: int = 256,
+) -> tuple[np.ndarray | None, int]:
+    """Builds a per-*occurrence* contextual meaning target aligned row-for-row with `words`.
+
+    Unlike `build_meaning_matrix` (one static vector per word *type*), each row is the word's
+    contextual hidden state from a frozen HuggingFace encoder run on the whole sentence it belongs to,
+    with sub-word pieces mean-pooled per word. This disambiguates polysemy the static target collapses,
+    and the brain-alignment literature is clear that contextual middle-layer representations predict
+    neural activity far better than static word vectors (Toneva & Wehbe 2019; Caucheteux & King 2022).
+    Rows are L2-normalised; rows never covered (truncation, empty tokens) stay `NaN` so the distillation
+    loss masks them.
+
+    Because the linguistic content of a word occurrence is subject-independent, the encoder is run once
+    per unique sentence text (`stimulus_key`) and the resulting per-position vectors are broadcast to
+    every subject's reading of that word -- a ~12x saving over per-reading encoding, and exactly the
+    subject-invariant target LOSO wants.
+
+    Args:
+        words (pd.DataFrame): The word-level table (`ZuCoDataset.words`) with `word` and `word_idx`, and
+            ideally `stimulus_key` (falls back to a `task|sentence_idx` key). Row order is positional.
+        model_name (str): HuggingFace model id, e.g. `'bert-base-uncased'`.
+        layer (int): Hidden-state layer index (`-1` = last; a middle layer ~7-9 aligns best with brain data).
+        device (str): Torch device for the encoder pass.
+        max_length (int): Tokeniser truncation length.
+
+    Returns:
+        tuple[np.ndarray | None, int]: `((n_words, hidden) float32 with NaN for uncovered rows, hidden)`,
+            or `(None, 0)` when `transformers` is unavailable (the caller falls back to the static path).
+    """
+    try:
+        from collections import defaultdict
+
+        import torch
+        from transformers import AutoModel, AutoTokenizer  # type: ignore[import-untyped]
+    except ImportError:
+        _LOG.warning(
+            'meaning_contextual=%r needs the optional `transformers` dependency, which is not '
+            'installed; falling back to the static (word-type) meaning target.',
+            model_name,
+        )
+        return None, 0
+
+    tok = AutoTokenizer.from_pretrained(model_name)
+    enc = AutoModel.from_pretrained(model_name, output_hidden_states=True).eval().to(device)
+    hidden = int(enc.config.hidden_size)
+    n = len(words)
+    out = np.full((n, hidden), np.nan, dtype=np.float32)
+
+    if 'stimulus_key' in words.columns:
+        skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
+    else:
+        skey = (words['task'].astype(str) + '|' + words['sentence_idx'].astype(str)).to_numpy()
+    widx = (words['word_idx'].to_numpy() if 'word_idx' in words.columns else np.arange(n)).astype(
+        int
+    )
+    warr = words['word'].fillna('').astype(str).to_numpy() if 'word' in words.columns else None
+    if warr is None:
+        _LOG.warning('words table has no `word` column; cannot build a contextual target.')
+        return None, 0
+
+    key_to_rows: dict[str, list[int]] = defaultdict(list)
+    for i in range(n):
+        key_to_rows[skey[i]].append(i)
+
+    n_sent = 0
+    for row_group in key_to_rows.values():
+        rows = sorted(row_group, key=lambda i: widx[i])
+        pos_word: dict[int, str] = {}
+        for i in rows:
+            pos_word.setdefault(int(widx[i]), warr[i])
+        positions = sorted(pos_word)
+        toks = [pos_word[p] or '[UNK]' for p in positions]
+        if not toks:
+            continue
+        enc_in = tok(
+            toks,
+            is_split_into_words=True,
+            return_tensors='pt',
+            truncation=True,
+            max_length=max_length,
+        ).to(device)
+        with torch.no_grad():
+            hs = enc(**enc_in).hidden_states[layer][0]  # (n_subword, hidden)
+        pooled: dict[int, list[torch.Tensor]] = defaultdict(list)
+        for sub, wp in enumerate(enc_in.word_ids(0)):
+            if wp is not None and wp < len(positions):
+                pooled[wp].append(hs[sub])
+        vec_by_pos = {
+            positions[wp]: torch.stack(vecs).mean(0).cpu().numpy() for wp, vecs in pooled.items()
+        }
+        for i in rows:
+            v = vec_by_pos.get(int(widx[i]))
+            if v is not None:
+                out[i] = v
+        n_sent += 1
+
+    seen = np.isfinite(out).all(axis=1)
+    norms = np.linalg.norm(np.nan_to_num(out), axis=1, keepdims=True)
+    out = out / np.clip(norms, 1e-8, None)
+    out[~seen] = np.nan
+    _LOG.info(
+        'Contextual meaning target: %s layer %d over %d unique sentences -> %d/%d word rows covered (dim %d).',
+        model_name,
+        layer,
+        n_sent,
+        int(seen.sum()),
+        n,
+        hidden,
+    )
+    return out.astype(np.float32), hidden

@@ -102,6 +102,16 @@ class ZTEModel(nn.Module):
             if config.subject_conditioning
             else None
         )
+        # Report B §3.1: FiLM per-subject conditioning -- a feature-wise affine (gamma, beta) applied
+        # to the token hiddens. Zero-initialised, so it starts as the identity and, crucially, stays
+        # the identity for any subject id never seen in training (the held-out LOSO subject gets a valid
+        # vocab id but its row is never updated). This is the "condition on identity, don't only
+        # adversarially remove it" lever (Defossez et al., 2023) made honest for the held-out north-star.
+        self.subject_film = (
+            nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None
+        )
+        if self.subject_film is not None:
+            nn.init.zeros_(self.subject_film.weight)
         # Absolute positional schemes are added to the inputs here; relative schemes
         # (RoPE / ALiBi) are applied inside the encoder's attention.
         self.pos_encoding = config.pos_encoding
@@ -164,6 +174,11 @@ class ZTEModel(nn.Module):
         hidden = self.frontend(x)  # (batch_size, seq_len, hidden_dim)
         if self.subject_emb is not None:
             hidden = hidden + self.subject_emb(batch['subject']).unsqueeze(1)
+        if self.subject_film is not None:
+            # Per-subject feature-wise affine, broadcast over the token axis. Zero-init -> gamma=0,
+            # beta=0 => identity, so an unseen (held-out) subject id is a no-op, not injected noise.
+            gamma, beta = self.subject_film(batch['subject']).chunk(2, dim=-1)
+            hidden = (1.0 + gamma).unsqueeze(1) * hidden + beta.unsqueeze(1)
         return hidden
 
     def contextualize(

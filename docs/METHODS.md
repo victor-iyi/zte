@@ -143,3 +143,39 @@ $$
 - **Ablation** (`zte-ablate`) — one-knob sweeps + scoreboard diff, so each method's held-out LOSO contribution is attributable. A method is kept only if it moves the north-star.
 
 The north-star metric is **held-out-LOSO cross-subject retrieval**, not in-sample scores. A method that improves a home-game number but not the away game has not earned its place.
+
+---
+
+## Report B — the road to SOTA (implemented)
+
+MOSAIC (above) is the *generative* thesis — disentangle the neural superposition into content and
+nuisance subspaces. It left one blocking result: on the held-out subject **ZAB**, cross-subject
+retrieval was **below chance** on an otherwise healthy (non-collapsed, isotropic) space. The two
+evaluation reports diagnosed this not as a lack of signal but as **hostile target geometry**
+(anisotropy + hubness breaking the nearest-neighbour graph) plus an **over-aggressive subject
+adversary** (full strength from step 0) eroding content it is confounded with.
+
+**Report B** is the implemented fix, layered on top of MOSAIC as the retrieval-and-honesty tier, in the
+same three groups the reports used:
+
+- **Tier 1 — geometry & invariance:** all-but-the-top + CSLS retrieval correction
+  (`objective.all_but_top`, `objective.csls_neighbors`), a rebalanced and DANN-ramped subject adversary
+  (`objective.subject_adversary_weight: 0.1`, `objective.subject_adversary_warmup_ratio`), and the exact
+  GSN-HydroCel montage (`dataset.montage_csv`).
+- **Tier 2 — sharpen the contrastive objective:** the alignment half of align+uniformity
+  (`objective.alignment_weight`), debiased InfoNCE (`objective.tau_plus`), a collapse-proof frozen-target
+  nuisance regression (`objective.data2vec_aux_weight`), and a per-occurrence contextual meaning target
+  (`objective.meaning_contextual`).
+- **Tier 3 — architecture & evaluation hardening:** zero-init per-subject FiLM and learned spatial
+  attention (`model.subject_film`, `model.spatial_encoding: spatial_attention`), and a hardened verdict
+  (permutation-*p* AND-ed with the bootstrap CI; phase-shuffle, seen/novel, and frequency-matched
+  controls; rank-percentile / median-rank reporting).
+
+Two flagship configs run it: `experiments/sota_loso.yaml` (geometry-fixed spherical-harmonic SOTA) and
+`experiments/exp7_sota_geom_invariance.yaml` (spatial-attention + FiLM + shrunk `content_dim` A/B). The
+win condition stays honest: a **rank distribution left of the permutation null** and a **positive
+content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the
+hardest non-invasive setting).
+
+**Full write-up — hypotheses, citations, exact config keys, code locations, and confirming metrics for
+every lever — in [SOTA_IMPLEMENTATION.md](./SOTA_IMPLEMENTATION.md).**

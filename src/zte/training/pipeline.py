@@ -93,9 +93,21 @@ def run_training(
     beh_targets = (
         config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
     )
+    # Report B target study: a per-occurrence contextual meaning target is built (once) on the train
+    # split when meaning distillation is on and a contextual model is configured; None keeps the
+    # word-type-keyed static path. Only the train dataset carries it (val loss is a monitor).
+    mctx = (
+        config.objective.meaning_contextual
+        if config.objective.meaning_distill_weight > 0.0
+        else None
+    )
     # Build the torch datasets up front so static-shape padding can be sized from actual lengths.
     train_td = dataset.to_torch(
-        split=splits['train'], subject_vocab=vocab, behaviour_targets=beh_targets
+        split=splits['train'],
+        subject_vocab=vocab,
+        behaviour_targets=beh_targets,
+        meaning_contextual=mctx,
+        meaning_context_layer=config.objective.meaning_context_layer,
     )
     val_td = (
         dataset.to_torch(split=splits['val'], subject_vocab=vocab, behaviour_targets=beh_targets)
@@ -103,21 +115,30 @@ def run_training(
         else None
     )
 
-    # Units A & B: attach dataset-derived auxiliary targets to the objective now that the word
-    # vocabulary and behaviour spec exist. The meaning matrix is frozen (a distillation teacher).
-    if config.objective.meaning_distill_weight > 0.0 or config.objective.behaviour_weight > 0.0:
+    # Units A & B + Report B §2.3: attach dataset-derived auxiliary targets to the objective now that
+    # the word vocabulary and behaviour spec exist. The meaning matrix is frozen (a distillation teacher).
+    obj = config.objective
+    if (
+        obj.meaning_distill_weight > 0.0
+        or obj.behaviour_weight > 0.0
+        or obj.data2vec_aux_weight > 0.0
+    ):
         import torch as _torch
 
         from zte.data.meaning import build_meaning_matrix
 
         meaning_mat = None
-        if config.objective.meaning_distill_weight > 0.0:
-            mat = build_meaning_matrix(
-                train_td.word_vocab, config.objective.meaning_source, config.objective.meaning_dim
-            )
+        # A per-occurrence contextual target (meaning_contextual) is carried in the batch, so no
+        # word-type matrix is built here; the objective sizes its head from the contextual width.
+        if obj.meaning_distill_weight > 0.0 and not obj.meaning_contextual:
+            mat = build_meaning_matrix(train_td.word_vocab, obj.meaning_source, obj.meaning_dim)
             meaning_mat = _torch.from_numpy(mat)
+        elif obj.meaning_distill_weight > 0.0 and obj.meaning_contextual:
+            objective._meaning_contextual_dim = int(getattr(train_td, 'meaning_dim', 0))  # noqa: SLF001
         beh_binary = _torch.from_numpy(train_td.behaviour_binary) if beh_targets else None
-        objective.attach_auxiliary(meaning_matrix=meaning_mat, behaviour_binary=beh_binary)
+        objective.attach_auxiliary(
+            meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim
+        )
     # Static shapes (XLA/TPU only under 'auto'): pad every batch to the dataset-wide max sentence
     # length so XLA compiles a single graph instead of recompiling per shape. Accuracy-neutral
     # (padded positions are masked out); `None` keeps the smallest per-batch padding on GPU/CPU/MPS.

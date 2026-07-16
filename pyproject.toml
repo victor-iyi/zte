@@ -38,8 +38,15 @@ viz = [
 assets = [
   'mne>=1.12.1',
 ]
+# Optional contextual meaning target (Report B): a frozen HuggingFace encoder (e.g. BERT middle # layer)
+# supplies a per-occurrence distillation target via `data.meaning.build_meaning_matrix_hf`.
+# Opt-in — `transformers` is heavy and the static GloVe/fastText path needs nothing extra;
+# enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
+meaning = [
+  'transformers>=4.44.0',
+]
 dev = [
-  'ruff>=0.15.21',
+  'ruff>=0.15.22',
   'pytest>=9.1.1',
   'mypy>=2.3.0',
 ]

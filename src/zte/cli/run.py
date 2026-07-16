@@ -351,13 +351,24 @@ def _evaluate(
     config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
     """Embeds the best checkpoint and runs the full evaluation suite."""
-    from zte.cli.evaluate import collect_embeddings
+    from zte.cli.evaluate import collect_embeddings, phase_shuffled_word_emb, training_vocab
     from zte.evaluation.report import evaluate_representation
     from zte.inference.embed import ZTEEmbedder
 
     embedder = ZTEEmbedder.from_checkpoint(run_dir / 'checkpoints' / 'best.pt', dataset)
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
+    )
+    # Report B §3.2: opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
+    phase_emb = (
+        phase_shuffled_word_emb(embedder, dataset)
+        if getattr(config.objective, 'eval_phase_shuffle', False)
+        else None
+    )
+    train_vocab = (
+        training_vocab(dataset, config)
+        if getattr(config.objective, 'eval_seen_novel', False)
+        else None
     )
     metrics = evaluate_representation(
         word_emb,
@@ -372,6 +383,8 @@ def _evaluate(
         config=config,
         tensorboard=str(run_dir / 'tb' / 'eval') if not args.no_tensorboard else False,
         interactive=not args.no_interactive,
+        phase_word_emb=phase_emb,
+        train_vocab=train_vocab,
     )
     return {
         'verdict': metrics['verdict'],

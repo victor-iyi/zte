@@ -39,7 +39,7 @@ type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 type PoolName = Literal['mean', 'attention', 'cls']
 type SchedulerName = Literal['cosine', 'linear', 'constant']
 type PosEncoding = Literal['rope', 'sinusoidal', 'learned', 'alibi', 'none']
-type SpatialEncoding = Literal['none', 'spherical_harmonics']
+type SpatialEncoding = Literal['none', 'spherical_harmonics', 'spatial_attention']
 
 
 @dataclass
@@ -188,8 +188,19 @@ class ModelConfig:
     spatial_harmonic_degree: int = 6
     spatial_mix: bool = True
     spatial_encoding_learnable: bool = True
+    spatial_attn_freqs: int = 8
+    """Number of Fourier frequencies per axis for `spatial_encoding='spatial_attention'` (the
+    Défossez-style learned attention over 2-D electrode coordinates); `2 * spatial_attn_freqs ** 2`
+    positional features are used. Ignored for `spherical_harmonics`/`none`."""
     pool: PoolName = 'attention'
     subject_conditioning: bool = False
+    subject_film: bool = False
+    """If `True`, condition token hiddens with a per-subject **FiLM** affine (`(1 + gamma) * h + beta`)
+    instead of (or alongside) the additive `subject_conditioning` embedding. The FiLM table is
+    zero-initialised, so at start -- and, crucially, for any subject id never seen in training (the
+    held-out LOSO subject) -- the transform is the identity (`gamma = 0`, `beta = 0`) rather than an
+    untrained random vector. This is the Défossez "condition on identity, don't only adversarially
+    remove it" lever, made safe for the held-out-subject north-star (Report B §3.1)."""
     n_subjects: int = 12
     n_tasks: int = 3
     projection_hidden: int = 512
@@ -304,6 +315,80 @@ class ObjectiveConfig:
 
     behaviour_targets: tuple[str, ...] = ('TRT', 'regression_time', 'is_omitted')
     """Which per-word behaviour signals the auxiliary head regresses/classifies."""
+
+    # -- Report B §1.1: fix the retrieval geometry (anti-hubness / anti-anisotropy) --------- #
+    all_but_top: int = 0
+    """Remove the top-`all_but_top` principal directions from the exported embeddings at evaluation
+    (0 disables). The label-free *all-but-the-top* post-processing of Mu & Viswanath (2018): after
+    centring, nulling the few dominant PCA directions strips the shared frequency/hub axis that makes
+    a below-chance retrieval space (the textbook symptom of anisotropy + hubness). Applied in the same
+    post-processing block as `whiten` in `evaluation/report.py`, so every metric is honestly recomputed
+    on the corrected space. Whiten then ABTT is the right order (whiten equalises variance; ABTT strips
+    residual shared axes)."""
+
+    csls_neighbors: int = 0
+    """Neighbourhood size `k` for CSLS retrieval correction (0 = plain cosine). Cross-domain Similarity
+    Local Scaling (Conneau et al., 2018): each similarity is corrected to `2 * cos - r_query - r_bank`,
+    where `r` is the mean cosine to a point's `k` nearest neighbours, penalising hub-dense regions that
+    are everyone's nearest neighbour. A monotone re-ranking (adds no signal), applied consistently to
+    the retrieval index and its permutation null so the reported Top-1 and its p-value stay coherent."""
+
+    # -- Report B §1.2: ramp the subject adversary from zero (DANN schedule) ---------------- #
+    subject_adversary_warmup_ratio: float = 0.0
+    """Fraction of total optimiser steps over which the subject-adversary gradient-reversal strength
+    `lambda_` ramps linearly 0 -> 1 (0 = full strength from step 0). A cold adversary early lets the
+    encoder learn content before invariance pressure is applied, avoiding the over-aggressive early
+    inversion that erases the very content it should preserve (Ganin et al., 2016; Zhao et al., 2019).
+    The flat loss weight stays at `subject_adversary_weight`; only the reversal strength ramps."""
+
+    # -- Report B §2.1: the missing alignment half of align+uniformity ---------------------- #
+    alignment_weight: float = 0.0
+    """Weight of an explicit *alignment* penalty `E_{(i,j) in pos} ||center_i - context_j||^2` over the
+    contrastive positive pairs (0 disables). `anisotropy_weight` already supplies the Wang & Isola (2020)
+    *uniformity* half; this closes the theory's other half, pulling positives together and directly
+    tightening the same-word geometry retrieval depends on."""
+
+    # -- Report B §2.2: debiased contrastive (stop punishing correct answers) --------------- #
+    tau_plus: float = 0.0
+    """Class-prior `tau_plus` for the debiased contrastive estimator of Chuang et al. (2020), 0 = plain
+    InfoNCE. In a word-level batch another EEG trial of the same word is a *false negative*; the debiased
+    estimator subtracts an estimate of that positive mass from the negative log-sum-exp, so the loss stops
+    shoving semantically-identical items apart. Small (`~0.05-0.1`) in low-SNR EEG batches."""
+
+    # -- Report B §2.3: collapse-proof regression auxiliary (fills idle nuisance dims) ------ #
+    data2vec_aux_weight: float = 0.0
+    """Weight of a frozen-target regression auxiliary on the **nuisance** subspace (0 disables). A
+    collapse-resistant complement to InfoNCE (data2vec / HuBERT spirit): the nuisance dims of a factored
+    embedding regress toward a *fixed* random projection of the token's own input features, which cannot
+    co-collapse (the target is frozen) and gives the otherwise-idle `embed_dim - content_dim` dimensions a
+    job -- so the factored design's nuisance room is actually used instead of left ungoverned."""
+
+    # -- Report B target study: per-occurrence contextual meaning target -------------------- #
+    meaning_contextual: str | None = None
+    """HuggingFace model id (e.g. `'bert-base-uncased'`) for a **per-occurrence contextual** meaning target,
+    or `None` to use the word-type-keyed `meaning_source` file. When set, each word's distillation target is
+    its contextual last-hidden state from a frozen encoder run on the whole sentence (sub-words mean-pooled),
+    so polysemy the static GloVe/fastText target collapses is disambiguated. Requires `transformers`; falls
+    back to the static path with a warning if unavailable. See `data.meaning.build_meaning_matrix_hf`."""
+
+    meaning_context_layer: int = -1
+    """Which hidden layer of the contextual model to read (a middle layer ~7-9 aligns best with brain
+    activity; Toneva & Wehbe 2019, Caucheteux & King 2022). `-1` = the last hidden state."""
+
+    # -- Report B §3.2: evaluation hardening (opt-in, heavier checks) ----------------------- #
+    eval_phase_shuffle: bool = False
+    """Add a **phase-scrambled-input** control representation: the same trained encoder run on
+    FFT-phase-randomised EEG (power spectrum preserved, temporal/phase structure destroyed). Proves the
+    encoder invents no structure from spectrum alone. Informative only for raw frontends (band power is
+    near-phase-invariant); a no-op-by-construction for band-power models, reported honestly."""
+
+    eval_seen_novel: bool = False
+    """Split cross-subject word retrieval into *seen* vs *novel* word types (novel = absent from the
+    training split), so "zero-shot" means unseen word types, not only unseen subjects."""
+
+    eval_freq_matched: bool = False
+    """Restrict each retrieval query's distractor bank to its own frequency/length bin, so a hit reflects
+    content rather than a lexical-frequency shortcut (a rare word standing out among common ones)."""
 
 
 @dataclass

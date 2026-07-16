@@ -108,6 +108,8 @@ def evaluate_representation(
     config: Any | None = None,
     tensorboard: bool | str = False,
     interactive: bool = True,
+    phase_word_emb: np.ndarray | None = None,
+    train_vocab: set[str] | None = None,
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
 
@@ -136,22 +138,47 @@ def evaluate_representation(
     fig_dir = out / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # 0) Optional ZCA whitening of the ZTE embeddings — the anti-cone / anti-collapse fix. It is
-    #    label-free, so every metric below is honestly recomputed on the whitened space (we get to see
-    #    whether content survives the geometry fix, not just that anisotropy dropped).
-    if config is not None and getattr(getattr(config, 'objective', None), 'whiten', False):
+    # 0) Label-free geometry post-processing of the ZTE embeddings — the anti-cone / anti-hubness fix.
+    #    Both are label-free, so every metric below is honestly recomputed on the corrected space (we
+    #    see whether content survives the geometry fix, not just that anisotropy/hubness dropped). Order
+    #    matters: whiten (equalise variance across dims) THEN all-but-the-top (strip residual shared axes).
+    #    A raw copy is snapshotted first so the report can show the geometry before vs after (Report B §1.1).
+    obj_cfg = getattr(config, 'objective', None)
+    word_emb_raw = np.asarray(word_emb, dtype=np.float32).copy()
+    if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
         word_emb = M.whiten_features(word_emb)
         sent_emb = M.whiten_features(sent_emb)
         _LOG.info(
             'Applied ZCA whitening to the exported embeddings (config.objective.whiten=True).'
         )
+    n_top = int(getattr(obj_cfg, 'all_but_top', 0) or 0) if obj_cfg is not None else 0
+    if n_top > 0:
+        word_emb = M.all_but_the_top(word_emb, n_top)
+        sent_emb = M.all_but_the_top(sent_emb, n_top)
+        _LOG.info('Removed the top-%d principal directions (config.objective.all_but_top).', n_top)
+    csls_k = int(getattr(obj_cfg, 'csls_neighbors', 0) or 0) if obj_cfg is not None else 0
+    use_csls = csls_k > 0
+    if use_csls:
+        _LOG.info(
+            'Retrieval uses CSLS hubness correction (k=%d, config.objective.csls_neighbors).',
+            csls_k,
+        )
 
-    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control.
+    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control (+ an optional phase-shuffled
+    #    ZTE control, Report B §3.2b). The phase control must get the SAME whiten/ABTT as ZTE or the
+    #    comparison is rigged; embedding the phase-scrambled EEG happened at the export site (the caller).
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),
         'raw band-power': np.asarray(raw_word_feats, dtype=np.float32),
         'noise (matched)': noise_matched(np.asarray(raw_word_feats, dtype=np.float32)),
     }
+    if phase_word_emb is not None:
+        phase_word_emb = np.asarray(phase_word_emb, dtype=np.float32)
+        if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
+            phase_word_emb = M.whiten_features(phase_word_emb)
+        if n_top > 0:
+            phase_word_emb = M.all_but_the_top(phase_word_emb, n_top)
+        representations['phase-shuffled ZTE'] = phase_word_emb
     targets = _word_targets(word_meta)
     comparison = M.representation_comparison(representations, targets)
 
@@ -162,9 +189,51 @@ def evaluate_representation(
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
     #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then
     #    strip it so it never bloats the persisted metrics.
-    sent_ret = M.content_retrieval(sent_emb, np.asarray(sent_content_ids), return_hits=True)
+    sent_ret = M.content_retrieval(
+        sent_emb,
+        np.asarray(sent_content_ids),
+        return_hits=True,
+        return_ranks=True,
+        csls=use_csls,
+        csls_k=csls_k,
+    )
     sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
-    word_ret = M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()))
+    sent_ranks = sent_ret.pop('ranks', [])  # per-query ranks for the rank-distribution figure
+    word_ret = M.content_retrieval(
+        word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k
+    )
+    eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
+    eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
+    # 3.2c) Seen vs novel WORD TYPES: does cross-subject retrieval hold for words absent from the
+    #       training split? Novelty is type-level (in LOSO the held-out subject reads the same stimuli,
+    #       so the novel bucket is small -- flagged in the report, not oversold).
+    word_ret_by_novelty: dict[str, Any] = {}
+    if eval_seen_novel and train_vocab is not None and 'word' in word_meta.columns:
+        words_arr = word_meta['word'].astype(str).to_numpy()
+        seen_mask = np.array([w in train_vocab for w in words_arr])
+        word_codes = _encode(word_meta['word'].to_numpy())
+        for label, mask in (('seen', seen_mask), ('novel', ~seen_mask)):
+            if int(mask.sum()) >= 4:
+                word_ret_by_novelty[label] = M.content_retrieval(
+                    word_emb[mask], word_codes[mask], csls=use_csls, csls_k=csls_k
+                )
+    # 3.2d) Frequency/length-matched distractors: restrict each query's bank to its own bin, so a hit
+    #       reflects content, not a lexical-frequency shortcut. Chance is recomputed per bin (higher).
+    word_ret_freq_matched: dict[str, float] | None = None
+    if eval_freq_matched:
+        freq_col = 'corpus_log_freq' if 'corpus_log_freq' in word_meta else 'log_freq'
+        if freq_col in word_meta.columns:
+            lf = pd.to_numeric(word_meta[freq_col], errors='coerce').to_numpy()
+            nbin = min(5, max(1, int(np.unique(lf[np.isfinite(lf)]).size)))
+            if nbin >= 2:
+                fbin = pd.qcut(pd.Series(lf), q=nbin, labels=False, duplicates='drop').to_numpy()
+                word_ret_freq_matched = M.matched_content_retrieval(
+                    word_emb,
+                    _encode(word_meta['word'].to_numpy()),
+                    fbin,
+                    csls=use_csls,
+                    csls_k=csls_k,
+                )
 
     # 4) Stratified breakdowns, vector arithmetic, and scalp-region importance.
     breakdown_words = stratified_report(word_emb, word_meta)
@@ -194,6 +263,8 @@ def evaluate_representation(
         'embedding_health': health,
         'sentence_retrieval': sent_ret,
         'word_retrieval': word_ret,
+        'word_retrieval_by_novelty': word_ret_by_novelty,
+        'word_retrieval_freq_matched': word_ret_freq_matched,
         'probe_comparison': comparison,
         'breakdown_words': breakdown_words,
         'retrieval_by_category': breakdown_categories,
@@ -229,18 +300,41 @@ def evaluate_representation(
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
         metrics['verdict']['retrieval_above_chance_perm'] = perm['above_chance']
+        # Report B §3.2a: gate the headline on BOTH the bootstrap-CI lift AND the empirical
+        # permutation null -- a single check can no longer carry the verdict. When the permutation is
+        # inapplicable (too few items / no multi-member group) the CI verdict stands alone (the guard
+        # above), so this only ever demotes, never promotes.
+        metrics['verdict']['retrieval_above_chance'] = bool(
+            metrics['verdict']['retrieval_above_chance'] and perm['above_chance']
+        )
 
     # 5) Figures (each guarded so tiny inputs never abort the run).
     figures = _render_figures(
         word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir
     )
     figures += _render_extended_figures(analogy, breakdown_words, region_rows, fig_dir)
+    montage_csv = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
+    figures += _render_sota_figures(
+        word_emb_raw,
+        np.asarray(word_emb, dtype=np.float32),
+        word_meta,
+        sent_ranks,
+        sent_ret,
+        len(sent_emb),
+        neurons,
+        word_band_power,
+        montage_csv,
+        fig_dir,
+    )
     metrics['figures'] = [str(p.relative_to(out)) for p in figures]
 
     # 6) Interactive HTML explorers (self-contained; static PNG fallback).
     if interactive:
         metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
         metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
+        metrics['scoreboard_html'] = _write_scoreboard_html(
+            metrics.get('scoreboard'), out, run_name
+        )
 
     # 6b) Persist the full neuron report (the per-dimension arrays are large, so they live in
     #     their own file; only the compact summary is embedded in metrics.json).
@@ -527,6 +621,27 @@ def _neuron_summary(neurons: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _write_scoreboard_html(board: dict[str, Any] | None, out: Path, run_name: str) -> str | None:
+    """Writes the interactive held-out scoreboard dashboard, returning its path relative to `out`.
+
+    The dashboard visualises the BLOCKING held-out ("new brain") numbers -- effective rank, anisotropy,
+    content lift over raw, identity leak, cross-subject retrieval vs chance, and rank-percentile -- each
+    against its named reference line. Degrades to `None` on failure so a run never aborts here.
+    """
+    if not board:
+        return None
+    try:
+        from zte.evaluation.scoreboard_viz import scoreboard_html
+    except ImportError:  # pragma: no cover
+        return None
+    try:
+        path = scoreboard_html(board, out / 'interactive' / 'held_out_scoreboard.html', run_name)
+        return str(path.relative_to(out))
+    except (ValueError, OSError, KeyError, TypeError) as exc:  # pragma: no cover
+        _LOG.warning('Scoreboard dashboard failed: %r', exc)
+        return None
+
+
 def _write_neuron_atlas(neurons: dict[str, Any], out: Path) -> str | None:
     """Writes the interactive Neuron Atlas HTML, returning its path relative to `out`."""
     try:
@@ -539,6 +654,117 @@ def _write_neuron_atlas(neurons: dict[str, Any], out: Path) -> str | None:
     except (ValueError, OSError, KeyError) as exc:  # pragma: no cover
         _LOG.warning('Neuron atlas failed: %r', exc)
         return None
+
+
+def _render_sota_figures(
+    word_emb_raw: np.ndarray,
+    word_emb: np.ndarray,
+    word_meta: pd.DataFrame,
+    sent_ranks: list[float],
+    sent_ret: dict[str, float],
+    n_sent: int,
+    neurons: dict[str, Any],
+    word_band_power: np.ndarray | None,
+    montage_csv: str | None,
+    fig_dir: Path,
+) -> list[Path]:
+    """Renders the Report-B evaluation figures (geometry before/after, rank distribution, variance
+    budget, subject-similarity, neuron selectivity, scalp topomap), skipping any that fail."""
+    import matplotlib.pyplot as plt
+
+    written: list[Path] = []
+
+    def _save(fig: Any, name: str) -> None:
+        path = fig_dir / name
+        fig.savefig(path, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        written.append(path)
+
+    word_ids = _encode(word_meta['word'].to_numpy()) if 'word' in word_meta.columns else None
+    builders: list[tuple[str, Any]] = []
+    if word_ids is not None:
+        builders.append(
+            (
+                'geometry_before_after.png',
+                lambda: P.geometry_before_after(word_emb_raw, word_emb, word_ids),
+            )
+        )
+    if sent_ranks:
+        builders.append(
+            (
+                'retrieval_rank_distribution.png',
+                lambda: P.retrieval_rank_distribution(
+                    np.asarray(sent_ranks), n_sent, float(sent_ret.get('chance_top1', 0.0) or 0.0)
+                ),
+            )
+        )
+    summary = neurons.get('summary', {})
+    if summary.get('variance_budget'):
+        builders.append(('variance_budget_pie.png', lambda: P.variance_budget_pie(summary)))
+    top_neurons = neurons.get('top_neurons', [])
+    if top_neurons:
+        builders.append(
+            ('neuron_selectivity.png', lambda: P.neuron_selectivity_heatmap(top_neurons[:12]))
+        )
+    if 'subject' in word_meta.columns and word_meta['subject'].nunique() > 1:
+        builders.append(
+            (
+                'subject_similarity.png',
+                lambda: P.subject_similarity_heatmap(word_emb, word_meta['subject'].to_numpy()),
+            )
+        )
+    scalp = _scalp_topomap_data(word_band_power, word_meta, montage_csv)
+    if scalp is not None:
+        vals, coords = scalp
+        builders.append(
+            (
+                'scalp_topomap.png',
+                lambda: P.scalp_topomap(vals, coords, 'Scalp map: lexical-frequency importance'),
+            )
+        )
+    for name, builder in builders:
+        try:
+            _save(builder(), name)
+        except (ValueError, KeyError, IndexError, np.linalg.LinAlgError) as exc:
+            _LOG.warning('Skipped SOTA figure %s: %r', name, exc)
+    return written
+
+
+def _scalp_topomap_data(
+    word_band_power: np.ndarray | None, word_meta: pd.DataFrame, montage_csv: str | None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Per-channel lexical-frequency importance + 2-D electrode coordinates for the scalp topomap.
+
+    Importance is the per-channel absolute correlation between mean band power and log word frequency,
+    averaged over bands -- a "which electrodes carry lexical information" map. Coordinates come from the
+    montage geometry (exact when a montage CSV was supplied, else the approximate fallback).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] | None: `(per_channel_importance (C,), coords_2d (C, 2))`, or
+            `None` when band power / a frequency column is unavailable.
+    """
+    freq_col = 'corpus_log_freq' if 'corpus_log_freq' in word_meta else 'log_freq'
+    if word_band_power is None or word_band_power.ndim != 3 or freq_col not in word_meta.columns:
+        return None
+    freq = pd.to_numeric(word_meta[freq_col], errors='coerce').to_numpy(dtype=float)
+    finite = np.isfinite(freq)
+    if int(finite.sum()) < 8:
+        return None
+    from zte.models.spatial import resolve_geometry
+
+    bp = np.asarray(word_band_power, dtype=np.float64)  # (n, n_bands, n_channels)
+    n_channels = bp.shape[2]
+    # mean band power per (word, channel) over bands, then |corr with log_freq| per channel.
+    chan_power = np.nanmean(bp, axis=1)[finite]  # (n_finite, n_channels)
+    f = freq[finite]
+    imp = np.zeros(n_channels, dtype=np.float64)
+    for c in range(n_channels):
+        col = chan_power[:, c]
+        ok = np.isfinite(col)
+        if int(ok.sum()) >= 8 and np.std(col[ok]) > 1e-9:
+            imp[c] = abs(float(np.corrcoef(col[ok], f[ok])[0, 1]))
+    geo = resolve_geometry(n_channels, montage_csv)
+    return np.nan_to_num(imp), geo.coords_2d
 
 
 def _render_extended_figures(
@@ -877,7 +1103,19 @@ def _render_report(
         f'- Cross-subject retrieval above chance: **{verdict["retrieval_above_chance"]}** '
         f'(Top-1 {sent.get("top1", float("nan")):.3f} vs query-weighted chance '
         f'{sent.get("chance_top1", float("nan")):.3f}; '
-        f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))})',
+        f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))}'
+        + (
+            f'; permutation p={verdict["retrieval_permutation_p"]:.3f}'
+            if 'retrieval_permutation_p' in verdict
+            else ''
+        )
+        + (
+            f'; rank-percentile {sent["rank_percentile"]:.3f}, median rank {sent["median_rank"]:.0f}'
+            if 'rank_percentile' in sent
+            else ''
+        )
+        + '). The headline requires BOTH the CI lift and the permutation null (Report B §3.2a); '
+        'rank-percentile (1.0 = correct match ranked first) shows the whole distribution, not just the tail.',
         '',
         '## Transfer probes (frozen embeddings)',
         '',
@@ -903,6 +1141,29 @@ def _render_report(
         f'query-weighted chance {sent.get("chance_top1", float("nan")):.3f}',
         f'- Word (same token): Top-1 {metrics["word_retrieval"].get("top1", float("nan")):.3f}, '
         f'query-weighted chance {metrics["word_retrieval"].get("chance_top1", float("nan")):.3f}',
+    ]
+    fm = metrics.get('word_retrieval_freq_matched')
+    if fm:
+        lines.append(
+            f'- Word, frequency-matched distractors (§3.2d): Top-1 {fm.get("top1", float("nan")):.3f} '
+            f'vs matched chance {fm.get("chance_top1", float("nan")):.3f} over {int(fm.get("n_bins", 0))} bins '
+            '-- a hit here cannot be a lexical-frequency shortcut.'
+        )
+    nov = metrics.get('word_retrieval_by_novelty') or {}
+    if nov:
+        for label in ('seen', 'novel'):
+            blk = nov.get(label)
+            if blk:
+                lines.append(
+                    f'- Word, {label} types (§3.2c): Top-1 {blk.get("top1", float("nan")):.3f} '
+                    f'vs chance {blk.get("chance_top1", float("nan")):.3f} '
+                    f'({int(blk.get("n_queries", 0))} queries)'
+                )
+        lines.append(
+            '  _"novel" = a word type absent from the training split. In a LOSO run the held-out '
+            'subject reads the same stimuli, so most types are seen and the novel bucket is small._'
+        )
+    lines += [
         '',
         '_Chance is query-weighted (matches the per-occurrence hit rate); the legacy '
         'type-weighted value is kept as `chance_top1_typeweighted` in `metrics.json`._',

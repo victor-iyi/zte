@@ -106,6 +106,9 @@ class SentenceSample:
     word_id: torch.Tensor | None = None
     task_id: int = 0
     behaviour: torch.Tensor | None = None  # (seq_len, n_behaviour) or None
+    meaning: torch.Tensor | None = (
+        None  # (seq_len, hidden) per-occurrence contextual target or None
+    )
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -125,6 +128,8 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         min_length: int = 1,
         subject_vocab: dict[str, int] | None = None,
         behaviour_targets: tuple[str, ...] = (),
+        meaning_contextual: str | None = None,
+        meaning_context_layer: int = -1,
     ) -> None:
         """Builds the sequence index over (a subset of) the dataset's words.
 
@@ -176,6 +181,18 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
 
             self._behaviour, self.behaviour_names, self.behaviour_binary = build_behaviour_matrix(
                 dataset.words, behaviour_targets
+            )
+
+        # Report B target study: per-occurrence contextual meaning target (aligned to ds.words rows),
+        # built once at dataset construction and carried per token like the behaviour target. `None`
+        # (or a failed transformers import) leaves the objective on the word-type-keyed static path.
+        self._meaning: np.ndarray | None = None
+        self.meaning_dim: int = 0
+        if meaning_contextual:
+            from zte.data.meaning import build_meaning_matrix_hf
+
+            self._meaning, self.meaning_dim = build_meaning_matrix_hf(
+                dataset.words, meaning_contextual, layer=meaning_context_layer
             )
 
         self._sequences: list[np.ndarray] = []
@@ -263,6 +280,9 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         behaviour = None
         if self._behaviour is not None:
             behaviour = torch.from_numpy(np.ascontiguousarray(self._behaviour[rows])).float()
+        meaning = None
+        if self._meaning is not None:
+            meaning = torch.from_numpy(np.ascontiguousarray(self._meaning[rows])).float()
         return SentenceSample(
             features=features,
             raw=raw,
@@ -273,6 +293,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             word_id=torch.from_numpy(np.ascontiguousarray(self._word_id[idx])).long(),
             task_id=self._task_id[idx],
             behaviour=behaviour,
+            meaning=meaning,
         )
 
 
@@ -337,6 +358,14 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             behaviour[i, : sample.length] = sample.behaviour
 
+    meaning = None
+    if batch[0].meaning is not None:
+        n_dim = batch[0].meaning.shape[-1]
+        # NaN pad: the meaning-distillation loss masks non-finite rows (padding + uncovered words).
+        meaning = torch.full((batch_size, max_len, n_dim), float('nan'), dtype=torch.float32)
+        for i, sample in enumerate(batch):
+            meaning[i, : sample.length] = sample.meaning
+
     return {
         'features': features,
         'raw': raw,
@@ -348,6 +377,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         'word_id': word_id,
         'task_id': torch.tensor([s.task_id for s in batch], dtype=torch.long),
         'behaviour_target': behaviour,
+        'meaning_target': meaning,
     }
 
 

@@ -17,6 +17,40 @@ from zte.logging_utils import get_logger
 _LOG = get_logger('data.transforms')
 
 
+def phase_scramble(x: np.ndarray, *, axis: int = -1, seed: int = 0) -> np.ndarray:
+    """Phase-randomised surrogate: destroys temporal/phase structure, preserves the power spectrum.
+
+    FFTs each channel along `axis`, replaces the Fourier phases with i.i.d. uniform angles (keeping DC
+    and the Nyquist bin real so the inverse is real-valued), and inverts. The result has the *same
+    per-channel power spectrum* as the input but no meaningful temporal or cross-channel structure -- the
+    honest "spectrum-matched but meaningless" null input. Embedding phase-scrambled EEG through the
+    *trained* encoder shows whether the encoder invents structure from destroyed signal: a genuine
+    temporal encoder should collapse toward noise on it, while a purely band-power feature is essentially
+    unchanged (so this control is informative for raw frontends, and a no-op-by-construction for band power).
+
+    Args:
+        x (np.ndarray): Real signal, e.g. raw EEG `(..., n_channels, n_times)`; scrambled along `axis`.
+        axis (int): Time axis to scramble.
+        seed (int): RNG seed.
+
+    Returns:
+        np.ndarray: Phase-scrambled real signal, same shape as `x` (float32).
+    """
+    rng = np.random.default_rng(seed)
+    spec = np.fft.rfft(np.asarray(x, dtype=np.float64), axis=axis)
+    phases = np.exp(1j * rng.uniform(0.0, 2.0 * np.pi, size=spec.shape))
+    # Keep DC (and the Nyquist bin for an even-length signal) real so irfft is exactly real.
+    sl0 = [slice(None)] * spec.ndim
+    sl0[axis] = slice(0, 1)
+    phases[tuple(sl0)] = 1.0
+    if x.shape[axis] % 2 == 0:
+        sln = [slice(None)] * spec.ndim
+        sln[axis] = slice(-1, None)
+        phases[tuple(sln)] = 1.0
+    scrambled = np.fft.irfft(np.abs(spec) * phases, n=x.shape[axis], axis=axis)
+    return scrambled.astype(np.float32)
+
+
 def bandpass_filter(
     data: np.ndarray,
     lowcut: float = 0.5,

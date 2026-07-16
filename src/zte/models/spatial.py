@@ -179,6 +179,22 @@ class ScalpGeometry:
         """Azimuthal angle in radians (`atan2(y, x)`), shape `(n_channels,)`."""
         return np.arctan2(self.xyz[:, 1], self.xyz[:, 0])
 
+    @property
+    def coords_2d(self) -> np.ndarray:
+        """Azimuthal-equidistant 2-D scalp projection in `[0, 1] ** 2`, shape `(n_channels, 2)`.
+
+        The standard EEG topomap flattening: radius is the colatitude from the vertex (`+z`), azimuth is
+        `phi`, so the vertex maps to the centre and the scalp rim to the disc edge. This is the 2-D layout
+        a Défossez-style learned spatial-attention layer consumes (and what `zte.evaluation.plots.scalp_topomap`
+        draws over).
+
+        Returns:
+            np.ndarray: `(n_channels, 2)` coordinates in `[0, 1]`, `+y` toward the front of the head.
+        """
+        r = self.theta / np.pi  # 0 at the vertex, -> 1 at the base of the scalp cap
+        x, y = r * np.cos(self.phi), r * np.sin(self.phi)
+        return np.stack([(x + 1.0) * 0.5, (y + 1.0) * 0.5], axis=1)
+
     def geodesic_angles(self) -> np.ndarray:
         """Returns the `(n_channels, n_channels)` great-circle angle (radians) between every electrode pair."""
         gram = np.clip(self.xyz @ self.xyz.T, -1.0, 1.0)
@@ -498,3 +514,64 @@ class SpatialChannelMixer(nn.Module):
             attended, _ = self.attn(h, h, h, need_weights=False)
             flat = flat + attended
         return flat.reshape(*lead, c, d)
+
+
+class SpatialAttention(nn.Module):
+    """Défossez-style learned spatial attention over 2-D electrode coordinates.
+
+    An alternative to :class:`SpatialChannelMixer` (which encodes geometry via spherical harmonics on
+    the sphere): each output electrode is a fixed, geometry-derived weighted combination of the input
+    electrodes, `out_o = in_o + sum_c softmax_c(z_o(pos_c)) . in_c`, where `z_o` reads a 2-D Fourier
+    embedding of each electrode's flattened scalp coordinate (Défossez et al., 2023, whose per-subject
+    spatial-attention layer was the single most important component of their MEG/EEG decoder). Input
+    and output channel counts are equal, so it drops into a frontend exactly like `SpatialChannelMixer`.
+
+    Attributes:
+        n_channels (int): Number of electrodes.
+        approximate_geometry (bool): Whether the coordinates were the approximate fallback.
+    """
+
+    def __init__(
+        self, geometry: ScalpGeometry, feat_dim: int, n_freqs: int = 8, dropout: float = 0.0
+    ) -> None:  # pylint: disable=unused-argument
+        """Builds the spatial-attention mixer.
+
+        Args:
+            geometry (ScalpGeometry): Electrode positions; its channel order defines the channel axis.
+            feat_dim (int): Per-electrode feature width (kept for interface parity with the mixer).
+            n_freqs (int): Fourier frequencies per axis; `2 * n_freqs ** 2` positional features.
+            dropout (float): Dropout applied to the attention matrix.
+        """
+        super().__init__()
+        self.n_channels = geometry.n_channels
+        self.approximate_geometry = bool(geometry.approximate)
+        coords = torch.from_numpy(geometry.coords_2d.astype(np.float32))  # (C, 2)
+        k = torch.arange(1, n_freqs + 1, dtype=torch.float32)
+        kx, ky = torch.meshgrid(k, k, indexing='ij')
+        freqs = 2.0 * math.pi * torch.stack([kx.reshape(-1), ky.reshape(-1)], dim=1)  # (F, 2)
+        self.register_buffer('coords', coords, persistent=True)
+        self.register_buffer('freqs', freqs, persistent=True)
+        self.attn_map = nn.Linear(2 * freqs.shape[0], self.n_channels)  # z_o(pos_c) read-out
+        self.drop = nn.Dropout(dropout)
+
+    def _pos_embed(self) -> torch.Tensor:
+        """Returns the `(n_channels, 2 * n_freqs ** 2)` 2-D Fourier embedding of the scalp coordinates."""
+        proj = self.coords @ self.freqs.t()  # type: ignore[operator]  # (C, F)
+        return torch.cat([proj.cos(), proj.sin()], dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Mixes electrode features by geometry-derived attention.
+
+        Args:
+            x (torch.Tensor): `(..., n_channels, feat_dim)` with arbitrary leading dims.
+
+        Returns:
+            torch.Tensor: Same shape as `x`.
+        """
+        logits = self.attn_map(self._pos_embed().to(x.dtype))  # (C_in, C_out)
+        attn = self.drop(torch.softmax(logits, dim=0).t())  # (C_out, C_in), columns sum to 1
+        lead = x.shape[:-2]
+        c, d = x.shape[-2:]
+        flat = x.reshape(-1, c, d)
+        mixed = torch.einsum('oc,ncd->nod', attn, flat)  # (N, C_out=C, d)
+        return (flat + mixed).reshape(*lead, c, d)

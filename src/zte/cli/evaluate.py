@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -126,6 +127,72 @@ def collect_embeddings(
     return word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, merged, word_band_power
 
 
+def phase_shuffled_word_emb(
+    embedder: ZTEEmbedder, dataset: ZuCoDataset, indices: np.ndarray | None = None
+) -> np.ndarray | None:
+    """Embeds phase-scrambled EEG through the trained encoder (Report B §3.2b control).
+
+    Passing FFT-phase-randomised raw EEG through the *same* trained encoder tests whether the encoder
+    invents structure from destroyed signal. Only meaningful for a raw frontend: band-power features are
+    (near-)phase-invariant, so scrambling raw EEG barely moves them -- for band-power models this returns
+    `None` rather than presenting an identical-looking baseline as if it destroyed signal.
+
+    Args:
+        embedder (ZTEEmbedder): The restored embedder.
+        dataset (ZuCoDataset): A built dataset.
+        indices (np.ndarray | None): Optional word-row restriction (kept aligned with `present`).
+
+    Returns:
+        np.ndarray | None: Phase-scrambled ZTE word embeddings `(n, d)`, or `None` for band-power models.
+    """
+    if not embedder.model.uses_raw or dataset.raw_eeg is None:
+        return None
+    from zte.data.transforms import phase_scramble
+
+    present = (
+        np.ones(len(dataset.words), dtype=bool)
+        if dataset.presence is None
+        else dataset.presence.copy()
+    )
+    if indices is not None:
+        in_split = np.zeros(len(dataset.words), dtype=bool)
+        in_split[np.asarray(indices, dtype=int)] = True
+        present = present & in_split
+    scrambled = phase_scramble(dataset.raw_eeg[present], axis=-1)  # (n, channels, time)
+    return embedder.embed_signals(raw=scrambled)
+
+
+def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:
+    """Returns the set of word types in the training split (for the seen-vs-novel retrieval split).
+
+    Recomputes the deterministic, seeded train/val/test split the run used and reads its word types, so
+    a word can be labelled *novel* (never seen in training) at evaluation time.
+
+    Args:
+        dataset (ZuCoDataset): A built dataset.
+        config (ZTEConfig): The run config (its `train` split settings are reused verbatim).
+
+    Returns:
+        set[str] | None: Training word types, or `None` if unavailable.
+    """
+    if 'word' not in dataset.words.columns:
+        return None
+    try:
+        splits = dataset.split(
+            config.train.split,
+            val_fraction=config.train.val_fraction,
+            test_fraction=config.train.test_fraction,
+            holdout_subject=config.train.loso_holdout_subject,
+            seed=config.train.seed,
+        )
+    except ValueError, KeyError:  # pragma: no cover - defensive
+        return None
+    train_idx = splits.get('train')
+    if train_idx is None or len(train_idx) == 0:
+        return None
+    return set(dataset.words.iloc[np.asarray(train_idx, dtype=int)]['word'].astype(str))
+
+
 def main() -> None:
     """Runs the evaluation end-to-end from the command line."""
     args = parse_arguments()
@@ -139,6 +206,17 @@ def main() -> None:
         embedder.config.dataset.montage_csv = args.montage_csv
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
+    )
+    obj_cfg = getattr(embedder.config, 'objective', None)
+    phase_emb = (
+        phase_shuffled_word_emb(embedder, dataset)
+        if getattr(obj_cfg, 'eval_phase_shuffle', False)
+        else None
+    )
+    train_vocab = (
+        training_vocab(dataset, embedder.config)
+        if getattr(obj_cfg, 'eval_seen_novel', False)
+        else None
     )
 
     metrics = evaluate_representation(
@@ -154,6 +232,8 @@ def main() -> None:
         config=embedder.config,
         tensorboard=bool(args.tensorboard),
         interactive=not args.no_interactive,
+        phase_word_emb=phase_emb,
+        train_vocab=train_vocab,
     )
     _LOG.info('Verdict: %s', json.dumps(metrics['verdict']))
     _LOG.info('Report + figures written to %s', args.out)

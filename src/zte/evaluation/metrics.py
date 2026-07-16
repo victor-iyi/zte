@@ -65,6 +65,32 @@ def whiten_features(
     return ((x - mean) @ inv_sqrt).astype(np.float32)
 
 
+def all_but_the_top(emb: np.ndarray, n_components: int) -> np.ndarray:
+    """Removes the top-`n_components` principal directions from embeddings (Mu & Viswanath, 2018).
+
+    A label-free anti-hubness / anti-anisotropy post-processing: after subtracting the common mean,
+    the dominant PCA directions -- along which nearly all embeddings share a large component -- are
+    projected out. Those directions carry the frequency / "hub" axis that makes a few points everyone's
+    nearest neighbour, which is the textbook cause of below-chance retrieval on an otherwise healthy
+    space. Complementary to :func:`whiten_features` (whiten equalises variance across dimensions; ABTT
+    strips the residual shared axes); apply whiten *then* ABTT.
+
+    Args:
+        emb (np.ndarray): Embeddings `(n, d)`.
+        n_components (int): Number of leading directions to remove (`<= 0` is a no-op).
+
+    Returns:
+        np.ndarray: Post-processed embeddings `(n, d)` (float32).
+    """
+    x = np.asarray(emb, dtype=np.float64)
+    if n_components <= 0 or len(x) < 2:
+        return x.astype(np.float32)
+    x = x - x.mean(axis=0, keepdims=True)
+    _, _, vt = np.linalg.svd(x, full_matrices=False)
+    u = vt[: min(n_components, vt.shape[0])]  # (n_components, d) leading directions
+    return (x - (x @ u.T) @ u).astype(np.float32)
+
+
 def effective_rank(embeddings: np.ndarray) -> float:
     """Computes the effective rank (Roy & Vetterli) of an embedding matrix.
 
@@ -299,6 +325,10 @@ def content_retrieval(
     group_ids: np.ndarray,
     ks: tuple[int, ...] = (1, 5, 10),
     return_hits: bool = False,
+    *,
+    csls: bool = False,
+    csls_k: int = 10,
+    return_ranks: bool = False,
 ) -> dict[str, float]:
     """Leave-one-out retrieval: do same-content items retrieve each other?
 
@@ -319,6 +349,13 @@ def content_retrieval(
         ks (tuple[int, ...]): Top-K cut-offs.
         return_hits (bool): When `True`, also return `top1_hits`, the per-query Top-1
             hit vector (0/1 floats) used for bootstrap confidence intervals.
+        csls (bool): Apply CSLS hubness correction inside the nearest-neighbour index
+            (Conneau et al., 2018); default `False` keeps plain cosine.
+        csls_k (int): CSLS neighbourhood size.
+        return_ranks (bool): When `True`, also return the whole-distribution rank summary
+            (`median_rank`, `rank_percentile`, `ranks`) -- the honesty-preferred view of
+            retrieval that a Top-1 scalar hides. Computed on the plain-cosine geometry over a
+            (subsampled) set of queries; see :func:`_group_ranks`.
 
     Returns:
         dict[str, float]: `top{k}` for each `k`, `mrr`, `n_queries`, `chance_top1`
@@ -327,7 +364,7 @@ def content_retrieval(
     """
     group_ids = np.asarray(group_ids)
     metadata = _ids_frame(group_ids)
-    index = NearestNeighborIndex(embeddings, metadata)
+    index = NearestNeighborIndex(embeddings, metadata, csls=csls, csls_k=csls_k)
     n = len(embeddings)
 
     # Only items whose group has another member can possibly hit.
@@ -360,9 +397,122 @@ def content_retrieval(
     out['chance_top1'] = numer / denom if denom > 0 else float('nan')
     # Legacy type-weighted average over distinct groups (kept for comparison).
     out['chance_top1_typeweighted'] = float(np.mean((counts - 1) / (n - 1)))
+    if return_ranks:
+        exact = _group_ranks(index.bank, group_ids, valid)
+        if exact.size:
+            out['median_rank'] = float(np.median(exact))
+            out['mean_rank'] = float(np.mean(exact))
+            # 1.0 = correct match ranked first; 0.0 = ranked last. Degrades gracefully with
+            # gallery size, unlike Top-1, so it exposes a real-but-small effect the tail hides.
+            out['rank_percentile'] = float(np.mean(1.0 - (exact - 1.0) / max(n - 1, 1)))
+            out['ranks'] = exact.tolist()  # type: ignore[assignment]
     if return_hits:
         out['top1_hits'] = hits[:, 0].astype(float).tolist()  # type: ignore[assignment]
     return out
+
+
+def _group_ranks(
+    bank: np.ndarray,
+    group_ids: np.ndarray,
+    valid: np.ndarray,
+    *,
+    max_queries: int = 4000,
+    seed: int = 0,
+) -> np.ndarray:
+    """Exact 1-based rank of each query's best same-group neighbour over the full gallery.
+
+    Computed on plain cosine (the honest geometry of the space), block-tiled so the full
+    `(n x n)` similarity is never materialised, and subsampled to `max_queries` queries for cost.
+    A query's rank is `1 + #{items strictly more similar than its best same-group item}`.
+
+    Args:
+        bank (np.ndarray): L2-normalised embeddings `(n, d)` (the index's `bank`).
+        group_ids (np.ndarray): Content/group id per row `(n,)`.
+        valid (np.ndarray): Boolean `(n,)` marking queries whose group has >= 2 members.
+        max_queries (int): Cap on the number of queries scored (random subsample above it).
+        seed (int): Subsample seed.
+
+    Returns:
+        np.ndarray: 1-based ranks `(n_scored,)` (empty when no valid query).
+    """
+    n = len(bank)
+    q_idx = np.where(valid)[0]
+    if q_idx.size == 0:
+        return np.empty(0, dtype=np.float64)
+    if q_idx.size > max_queries:
+        q_idx = np.sort(np.random.default_rng(seed).choice(q_idx, size=max_queries, replace=False))
+    block = max(1, min(2048, (128 * 1024 * 1024) // (n * 4)))
+    ranks = np.empty(q_idx.size, dtype=np.float64)
+    for start in range(0, q_idx.size, block):
+        rows = q_idx[start : start + block]
+        sims = bank[rows] @ bank.T  # (b, n)
+        br = np.arange(len(rows))
+        sims[br, rows] = -np.inf  # exclude self
+        same = group_ids[None, :] == group_ids[rows][:, None]
+        same[br, rows] = False
+        best_same = np.where(same, sims, -np.inf).max(axis=1)  # (b,)
+        ranks[start : start + block] = 1.0 + (sims > best_same[:, None]).sum(axis=1)
+    return ranks
+
+
+def matched_content_retrieval(
+    embeddings: np.ndarray,
+    group_ids: np.ndarray,
+    bins: np.ndarray,
+    ks: tuple[int, ...] = (1, 5, 10),
+    *,
+    csls: bool = False,
+    csls_k: int = 10,
+) -> dict[str, float]:
+    """Content retrieval with each query's distractor bank restricted to its own nuisance bin.
+
+    Runs leave-one-out retrieval independently within every value of `bins`, so a query only competes
+    against items matched on that nuisance (e.g. a log-frequency or length quantile). This removes the
+    "easy odd-one-out" confound: a hit can no longer be a rare word standing out among common ones. Per-bin
+    results are pooled query-weighted, and chance is recomputed *within* each bin (a smaller gallery, so a
+    higher chance) -- never compared to the global chance, which would understate difficulty.
+
+    Args:
+        embeddings (np.ndarray): Array `(n, d)`.
+        group_ids (np.ndarray): Content/group id per row `(n,)`.
+        bins (np.ndarray): Nuisance-bin id per row `(n,)`; the bank is restricted to the same bin.
+        ks (tuple[int, ...]): Top-K cut-offs.
+        csls (bool): Apply CSLS correction within each bin.
+        csls_k (int): CSLS neighbourhood size.
+
+    Returns:
+        dict[str, float]: Query-weighted `top{k}`, `mrr`, `n_queries`, `chance_top1`, `n_bins`.
+    """
+    bins = np.asarray(bins)
+    finite = ~pd_isna(bins)
+    keys = (*(f'top{k}' for k in ks), 'mrr', 'chance_top1')
+    acc: dict[str, float] = {key: 0.0 for key in keys}
+    total = 0.0
+    n_bins = 0
+    for value in np.unique(bins[finite]):
+        mask = (bins == value) & finite
+        if int(mask.sum()) < 4:
+            continue
+        res = content_retrieval(embeddings[mask], group_ids[mask], ks=ks, csls=csls, csls_k=csls_k)
+        nq = float(res.get('n_queries', 0.0))
+        if not nq:
+            continue
+        for key in keys:
+            acc[key] += float(res.get(key, 0.0) or 0.0) * nq
+        total += nq
+        n_bins += 1
+    if total <= 0:
+        return {key: float('nan') for key in keys} | {'n_queries': 0.0, 'n_bins': 0.0}
+    out = {key: acc[key] / total for key in keys}
+    out['n_queries'] = total
+    out['n_bins'] = float(n_bins)
+    return out
+
+
+def pd_isna(values: np.ndarray) -> np.ndarray:
+    """NaN mask that works for float bins and is `False` for non-float (categorical) bins."""
+    values = np.asarray(values)
+    return np.isnan(values) if values.dtype.kind == 'f' else np.zeros(len(values), dtype=bool)
 
 
 # --------------------------------------------------------------------------- #

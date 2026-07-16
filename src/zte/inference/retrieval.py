@@ -59,12 +59,26 @@ class NearestNeighborIndex:
 
     """
 
-    def __init__(self, embeddings: np.ndarray, metadata: pd.DataFrame) -> None:
+    def __init__(
+        self,
+        embeddings: np.ndarray,
+        metadata: pd.DataFrame,
+        *,
+        csls: bool = False,
+        csls_k: int = 10,
+    ) -> None:
         """Builds the index from a bank of embeddings and aligned metadata.
 
         Args:
             embeddings (np.ndarray): Bank embeddings `(n_items, embed_dim)`.
             metadata (pd.DataFrame): Labels aligned row-for-row with `embeddings`.
+            csls (bool): If `True`, correct similarities with Cross-domain Similarity Local Scaling
+                (Conneau et al., 2018): `sim -> 2 * cos - r_query - r_bank`, where `r` is a point's mean
+                cosine to its `csls_k` nearest bank neighbours. This penalises hub-dense neighbourhoods
+                that are everyone's nearest neighbour -- the anisotropy/hubness that drives below-chance
+                retrieval -- without adding any signal (a monotone re-ranking). Default `False` keeps
+                plain cosine, so every existing caller is unchanged.
+            csls_k (int): Neighbourhood size for the CSLS mean-shift term.
 
         Raises:
             ValueError: If `embeddings` and `metadata` lengths differ.
@@ -76,6 +90,41 @@ class NearestNeighborIndex:
             )
         self.bank = _l2_normalize(embeddings)
         self.metadata = metadata.reset_index(drop=True)
+        self.csls = bool(csls)
+        self.csls_k = int(csls_k)
+        # Per-bank neighbourhood mean r_bank (the CSLS "hubness" term); None when disabled.
+        self.r_bank: np.ndarray | None = (
+            self._neighbourhood_means(self.bank, self.csls_k) if self.csls else None
+        )
+
+    def _neighbourhood_means(self, points: np.ndarray, m: int) -> np.ndarray:
+        """Mean of each row's top-`m` cosine similarities to the bank (excluding an exact self-match).
+
+        Block-tiled so the `(n_items x n_items)` similarity matrix is never materialised -- the same
+        memory guard `query` uses (a full self-similarity at ZuCo word scale would be ~96 GiB).
+
+        Args:
+            points (np.ndarray): L2-normalised points `(n, embed_dim)` scored against the bank. When
+                `points is self.bank` the diagonal self-match is dropped.
+            m (int): Neighbourhood size.
+
+        Returns:
+            np.ndarray: Per-row mean top-`m` cosine `(n,)`, float32.
+        """
+        n_items = self.bank.shape[0]
+        m = max(1, min(m, n_items - 1))
+        is_self = points is self.bank
+        out = np.empty(len(points), dtype=np.float32)
+        block = _query_block_rows(n_items)
+        for start in range(0, len(points), block):
+            stop = min(start + block, len(points))
+            sims = points[start:stop] @ self.bank.T  # (b, n_items)
+            if is_self:
+                rows = np.arange(stop - start)
+                sims[rows, np.arange(start, stop)] = -np.inf
+            top = np.partition(sims, kth=n_items - m, axis=1)[:, -m:]
+            out[start:stop] = top.mean(axis=1)
+        return out
 
     def __len__(self) -> int:
         """Returns the number of bank entries."""
@@ -111,6 +160,12 @@ class NearestNeighborIndex:
         for start in range(0, n_queries, block):
             stop = min(start + block, n_queries)
             sims = q[start:stop] @ self.bank.T  # (b, n_items)
+            if self.csls and self.r_bank is not None:
+                # CSLS mean-shift: 2*cos - r_query - r_bank de-hubs the space so anisotropy /
+                # hubness no longer let a few points win every top-1 (Conneau et al., 2018).
+                m = max(1, min(self.csls_k, n_items - 1))
+                r_query = np.partition(sims, kth=n_items - m, axis=1)[:, -m:].mean(axis=1)
+                sims = 2.0 * sims - r_query[:, None] - self.r_bank[None, :]
             if self_indices is not None:
                 rows = np.arange(stop - start)
                 sims[rows, self_indices[start:stop]] = -np.inf
