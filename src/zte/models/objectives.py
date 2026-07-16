@@ -2,8 +2,8 @@
 
 Four interchangeable objectives, all driven by `~zte.config.ObjectiveConfig`:
 
-- `SkipGramObjective` -- given a word's EEG embedding, identify the EEG of its neighbours (or the same
-    stimulus read by another subject) via multi-positive InfoNCE with in-batch negatives.
+- `SkipGramObjective` -- given a word's EEG embedding, identify the EEG of its neighbours (or the same stimulus read by another subject)
+    via multi-positive InfoNCE with in-batch negatives.
 - `CBOWObjective` -- predict a word's embedding from the averaged embeddings of its neighbours.
 - `MaskedObjective` -- mask word tokens and predict either an EMA-teacher latent (data2vec) or the raw features (MAEEG-style reconstruction).
 - `CPCObjective` -- autoregressively predict future word latents (wav2vec/BENDR contrastive predictive coding).
@@ -11,21 +11,19 @@ Four interchangeable objectives, all driven by `~zte.config.ObjectiveConfig`:
 **Every** objective treats omitted words (presence `False`) as non-tokens:
 they are never anchors, positives or targets, so the zero/NaN vectors that plague word-level ZuCo modelling cannot leak into the loss.
 
-Three cross-cutting improvements from the performance review are wired through the shared
-:class:`_ObjectiveBase`:
+Three cross-cutting improvements are wired through the shared `_ObjectiveBase`:
 
-- **Anti-collapse (VICReg).** A variance-hinge + covariance penalty on the exported embeddings
-    (`objective.variance_weight`, `objective.covariance_weight`) stops the InfoNCE / smooth-L1 losses
-    from solving the task in a handful of the 768 dimensions.
-- **Subject invariance (adversary).** An optional gradient-reversal subject classifier
-    (`objective.subject_adversary_weight`) trains the encoder to *hide* subject identity.
-- **Cross-subject positives.** Skip-gram can draw its positives from the *same stimulus read by
-    different subjects* (`objective.cross_subject_positives` + a stimulus-grouped batch sampler),
-    turning subject identity from a shortcut into a nuisance the loss must remove.
+- **Anti-collapse (VICReg).** A variance-hinge + covariance penalty on the exported embeddings (`objective.variance_weight`, `objective.covariance_weight`)
+    stops the InfoNCE / smooth-L1 losses from solving the task in a handful of the 768 dimensions.
+- **Subject invariance (adversary).** An optional gradient-reversal subject classifier (`objective.subject_adversary_weight`)
+    trains the encoder to *hide* subject identity.
+- **Cross-subject positives.** Skip-gram can draw its positives from the *same stimulus read by different subjects* (`objective.cross_subject_positives`
+    + a stimulus-grouped batch sampler), turning subject identity from a shortcut into a nuisance the loss must remove.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -82,13 +80,11 @@ def vicreg_terms(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Computes the VICReg variance/covariance penalties plus an anti-cone anisotropy penalty.
 
-    The variance term hinges each embedding dimension's batch std up toward `gamma`, so no dimension is
-    allowed to go silent -- this is what prevents the ~15-of-768 dimensional collapse the review found.
-    The covariance term drives off-diagonal feature covariances toward zero so the dimensions carry
-    decorrelated information (raising effective rank). The **anisotropy** term penalises the squared norm
-    of the mean L2-normalised embedding -- which equals the population mean off-diagonal cosine -- so the
-    space cannot degenerate into a cone (every vector pointing the same way, the LOSO failure mode where
-    rank looks high but no dimension separates content).
+    The variance term hinges each embedding dimension's batch std up toward `gamma`, so no dimension is allowed to go silent -- this
+    is what prevents the ~15-of-768 dimensional collapse that otherwise appears. The covariance term drives off-diagonal feature
+    covariances toward zero so the dimensions carry decorrelated information (raising effective rank). The **anisotropy** term
+    penalises the squared norm of the mean L2-normalised embedding -- which equals the population mean off-diagonal cosine -- so the space
+    cannot degenerate into a cone (every vector pointing the same way, the LOSO failure mode where rank looks high but no dimension separates content).
 
     Args:
         emb (torch.Tensor): Embeddings `(n_tokens, embed_dim)` (un-normalised).
@@ -144,12 +140,11 @@ def vicreg_terms(
 def alignment_penalty(
     center: torch.Tensor, context: torch.Tensor, pos_mask: torch.Tensor
 ) -> torch.Tensor:
-    """Mean squared distance over positive pairs of L2-normalised embeddings (Report B §2.1).
+    """Mean squared distance over positive pairs of L2-normalised embeddings.
 
-    The *alignment* half of alignment + uniformity (Wang & Isola, 2020): for unit vectors,
-    `||c_i - x_j||^2 = 2 - 2 c_i . x_j`, so pulling positives together directly tightens the
-    same-word geometry that retrieval depends on. `anisotropy_weight` already supplies the uniformity
-    half; this closes the theory's other side.
+    The *alignment* half of alignment + uniformity (Wang & Isola, 2020): for unit vectors, `||c_i - x_j||^2 = 2 - 2 c_i . x_j`,
+    so pulling positives together directly tightens the same-word geometry that retrieval depends on. `anisotropy_weight`
+    already supplies the uniformity half; this closes the theory's other side.
 
     Args:
         center (torch.Tensor): L2-normalised anchor embeddings `(n_tokens, d)`.
@@ -174,11 +169,10 @@ def debiased_infonce(
 ) -> torch.Tensor:
     """Debiased multi-positive InfoNCE (Chuang et al., 2020) -- stops punishing false negatives.
 
-    In a word-level batch, another EEG trial of the same word sits among the "negatives" and plain
-    InfoNCE shoves it away. The debiased estimator corrects the negative expectation with a class-prior
-    `tau_plus`: `E_neg = (mean_neg - tau_plus * mean_pos) / (1 - tau_plus)`, floored at `exp(-1/temp)`,
-    so the loss subtracts an estimate of the positive mass leaking into the negatives. Computed with a
-    per-anchor max-shift for numerical stability (the shift cancels in the final log-ratio).
+    In a word-level batch, another EEG trial of the same word sits among the "negatives" and plain InfoNCE shoves it away.
+    The debiased estimator corrects the negative expectation with a class-prior `tau_plus`: `E_neg = (mean_neg - tau_plus * mean_pos) / (1 - tau_plus)`,
+    floored at `exp(-1/temp)`, so the loss subtracts an estimate of the positive mass leaking into the negatives.
+    Computed with a per-anchor max-shift for numerical stability (the shift cancels in the final log-ratio).
 
     Args:
         logits (torch.Tensor): Similarity logits `(n_anchor, n_items)` with non-candidates at `-inf`.
@@ -229,7 +223,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         super().__init__()
         self.config = config
         self._n_subjects = model.config.n_subjects
-        # Unit C: when factored, the subject adversary acts on the *content subspace* of the
+        # When factored, the subject adversary acts on the *content subspace* of the
         # embedding (pushing identity OUT of content), not the shared hidden -- the crux of
         # disentanglement. Otherwise it acts on the token hidden, as before.
         self._factored = bool(model.config.factored)
@@ -249,20 +243,20 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             else None
         )
 
-        # Unit A: meaning-distillation head projects the (content) embedding to the frozen
+        # Meaning-distillation head projects the (content) embedding to the frozen
         # word-vector space. It is sized in `attach_auxiliary` to the *attached matrix's* width
         # (a real LM file sets its own dim; the hash fallback uses config.meaning_dim), so the
         # projection can never mismatch the target.
         self.meaning_head: nn.Module | None = None
         self.register_buffer('meaning_matrix', None, persistent=False)
-        # Unit B: reading-behaviour head (sized when the targets are attached).
+        # Reading-behaviour head (sized when the targets are attached).
         self.behaviour_head: nn.Module | None = None
         self.register_buffer('_behaviour_binary', None, persistent=False)
         # Nuisance subspace of a factored embedding (embed_dim - content_dim); 0 when not factored.
         # The behaviour / data2vec-aux heads are routed here so the otherwise-idle nuisance dims are
-        # supervised (Report B §2.3 / §3.1) instead of receiving gradient from nothing.
+        # supervised instead of receiving gradient from nothing.
         self._nuisance_dim = (model.embed_dim - self._content_dim) if self._factored else 0
-        # Report B §2.3: collapse-proof regression auxiliary. A FIXED (non-trainable) random projection
+        # Collapse-proof regression auxiliary. A FIXED (non-trainable) random projection
         # of the token's own input features is the frozen regression target for the nuisance subspace;
         # because the target never moves it cannot co-collapse with the student (unlike a plain EMA
         # teacher), and it gives the nuisance room a job. Both sized in `attach_auxiliary`.
@@ -271,16 +265,16 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         # Width of a per-occurrence contextual meaning target (0 = the word-type-keyed matrix path).
         # Set by the training pipeline before `attach_auxiliary` when `meaning_contextual` is used.
         self._meaning_contextual_dim = 0
-        # Report B §1.2: current training progress, set by the trainer before each `compute`, so the
+        # Current training progress, set by the trainer before each `compute`, so the
         # subject-adversary gradient-reversal strength can ramp 0 -> 1. `None` (eval / legacy) -> full.
         self._cur_step: int | None = None
         self._cur_total: int | None = None
 
     def set_progress(self, step: int | None, total_steps: int | None) -> None:
-        """Records the current optimiser step so the subject-adversary lambda can ramp (Report B §1.2).
+        """Records the current optimiser step so the subject-adversary lambda can ramp.
 
-        Called by the :class:`~zte.training.trainer.Trainer` before each training `compute`; left at
-        `None` during evaluation and for legacy callers, where the ramp is inert (`lambda_ = 1`).
+        Called by the :class:`~zte.training.trainer.Trainer` before each training `compute`; left at `None` during
+        evaluation and for legacy callers, where the ramp is inert (`lambda_ = 1`).
 
         Args:
             step (int | None): Current global optimiser step.
@@ -291,10 +285,9 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
     def _adv_lambda(self) -> float:
         """Ramped gradient-reversal strength for the subject adversary, in `[0, 1]`.
 
-        Ramps linearly `0 -> 1` across `subject_adversary_warmup_ratio * total_steps` optimiser steps
-        (DANN / data2vec schedule), then holds at 1. Returns 1.0 when progress is unset or the ratio is
-        0, preserving the pre-ramp behaviour exactly. A cold adversary early lets the encoder learn
-        content before invariance pressure is applied.
+        Ramps linearly `0 -> 1` across `subject_adversary_warmup_ratio * total_steps` optimiser steps (DANN / data2vec schedule),
+        then holds at 1. Returns 1.0 when progress is unset or the ratio is 0, preserving the pre-ramp behaviour exactly.
+        A cold adversary early lets the encoder learn content before invariance pressure is applied.
 
         Returns:
             float: Reversal strength in `[0, 1]`.
@@ -311,20 +304,18 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         behaviour_binary: 'torch.Tensor | None' = None,
         feature_dim: int | None = None,
     ) -> None:
-        """Attaches dataset-derived auxiliary targets (Units A & B, Report B §2.3) after construction.
+        """Attaches dataset-derived auxiliary targets (meaning, behaviour, and the collapse-proof regression auxiliary) after construction.
 
         Args:
-            meaning_matrix (torch.Tensor | None): Frozen `(vocab, meaning_dim)` word vectors
-                indexed by `batch['word_id']`; required when `meaning_distill_weight > 0` and the
-                target is word-type-keyed (the per-occurrence contextual path carries its target in
-                the batch instead — see `meaning_contextual`).
-            behaviour_binary (torch.Tensor | None): Bool `(n_behaviour,)` mask marking which
-                behaviour targets are binary; its length sizes the behaviour head.
-            feature_dim (int | None): Flattened band-power input width, used to build the frozen
-                regression target for the data2vec collapse-insurance head (§2.3). `None` (or a raw
-                frontend) disables that head.
+            meaning_matrix (torch.Tensor | None): Frozen `(vocab, meaning_dim)` word vectors indexed by `batch['word_id']`;
+                required when `meaning_distill_weight > 0` and the target is word-type-keyed (the per-occurrence contextual
+                path carries its target in the batch instead — see `meaning_contextual`).
+            behaviour_binary (torch.Tensor | None): Bool `(n_behaviour,)` mask marking which behaviour targets are binary;
+                its length sizes the behaviour head.
+            feature_dim (int | None): Flattened band-power input width, used to build the frozen regression target for the data2vec
+                collapse-insurance head. `None` (or a raw frontend) disables that head.
         """
-        # Unit A meaning head: sized from an attached word-type matrix, else (per-occurrence
+        # Meaning head: sized from an attached word-type matrix, else (per-occurrence
         # contextual target carried in the batch) from the configured contextual model width.
         if self.config.meaning_distill_weight > 0.0:
             if meaning_matrix is not None:
@@ -334,11 +325,11 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
                 self.meaning_head = nn.Linear(self._content_dim, self._meaning_contextual_dim)
         if self.config.behaviour_weight > 0.0 and behaviour_binary is not None:
             # Behaviour (reading difficulty) is a meaning-adjacent, privileged target, so it stays on
-            # the CONTENT subspace (Unit B) -- predicting processing load pulls surprisal/frequency in.
+            # the CONTENT subspace -- predicting processing load pulls surprisal/frequency in.
             n_beh = int(behaviour_binary.numel())
             self.behaviour_head = nn.Linear(self._content_dim, n_beh)
             self._behaviour_binary = behaviour_binary.bool()
-        # Report B §2.3: collapse-proof regression auxiliary on the NUISANCE subspace. The target is a
+        # Collapse-proof regression auxiliary on the NUISANCE subspace. The target is a
         # FIXED random projection of the token's own band-power input (frozen, so no teacher/student
         # co-collapse); regressing the otherwise-idle nuisance dims toward it gives them a real job.
         if (
@@ -399,12 +390,12 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             self.stimulus_adversary is not None and batch.get('task_id') is not None
         )
         hid_u = adv_hidden.reshape(-1, adv_hidden.shape[-1])[flat] if need_hidden else None
-        # Unit C: the subject adversary sees the content subspace when factored (drive identity out
+        # The subject adversary sees the content subspace when factored (drive identity out
         # of content), else the shared token hidden.
         subj_adv_in = self._content_slice(emb_u) if self._factored else hid_u
         if self.subject_adversary is not None and self._n_subjects > 1:
             subj = batch['subject'][:, None].expand(usable.shape).reshape(-1)[flat]
-            adv_lambda = self._adv_lambda()  # Report B §1.2: ramped gradient-reversal strength
+            adv_lambda = self._adv_lambda()  # ramped gradient-reversal strength
             logits = self.subject_adversary(subj_adv_in, lambda_=adv_lambda)
             adv_loss = F.cross_entropy(logits, subj)
             loss = loss + self.config.subject_adversary_weight * adv_loss
@@ -421,7 +412,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
                 (t_logits.argmax(dim=-1) == task).float().mean().detach()
             )
 
-        # Unit A: meaning distillation -- pull the content subspace toward the frozen word vector
+        # Meaning distillation -- pull the content subspace toward the frozen word vector
         # (cosine). This is the explicit content target skip-gram never had. A per-occurrence
         # *contextual* target carried in the batch (`meaning_target`) is preferred when present, so the
         # same surface word gets a context-specific target (disambiguating polysemy); otherwise the
@@ -452,7 +443,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
                 loss = loss + self.config.meaning_distill_weight * m_loss
                 metrics['meaning_loss'] = float(m_loss.detach())
 
-        # Unit B: reading-behaviour supervision -- regress fixation difficulty from the content
+        # Reading-behaviour supervision -- regress fixation difficulty from the content
         # subspace (privileged information); NaN cells (padding / skipped words) are masked.
         if self.behaviour_head is not None and batch.get('behaviour_target') is not None:
             beh = batch['behaviour_target'].reshape(-1, batch['behaviour_target'].shape[-1])[flat]
@@ -470,7 +461,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
                 loss = loss + self.config.behaviour_weight * b_loss
                 metrics['behaviour_loss'] = float(b_loss.detach())
 
-        # Report B §2.3: collapse-proof regression auxiliary. The nuisance subspace regresses (cosine)
+        # Collapse-proof regression auxiliary. The nuisance subspace regresses (cosine)
         # toward a FROZEN random projection of the token's own band-power input. The target cannot move,
         # so there is no teacher/student co-collapse, and the otherwise-idle nuisance dims are put to
         # work reconstructing the input -- the factored "nuisance room" is now genuinely used.
@@ -565,7 +556,7 @@ class SkipGramObjective(_ObjectiveBase):
         logits = center_flat @ context_flat.t() / self.config.temperature
         neg_inf = torch.finfo(logits.dtype).min
         cand_mask = usable_flat[None, :] & not_self
-        # Unit A: confound-matched hard negatives -- keep only negatives that SHARE the anchor's
+        # Confound-matched hard negatives -- keep only negatives that SHARE the anchor's
         # confound (same subject & task), so the softmax cannot be won by reading identity/task off
         # the negatives; positives stay eligible regardless. De-confounds the contrastive objective.
         if self.config.hard_negatives:
@@ -590,7 +581,7 @@ class SkipGramObjective(_ObjectiveBase):
         pos_logits = anchor_logits.masked_fill(~anchor_pos, neg_inf)
         numer = torch.logsumexp(pos_logits, dim=1)
         if self.config.tau_plus > 0.0:
-            # Report B §2.2: debiased contrastive -- correct for same-word false negatives.
+            # Debiased contrastive -- correct for same-word false negatives.
             info_loss = debiased_infonce(
                 anchor_logits,
                 anchor_pos,
@@ -608,7 +599,7 @@ class SkipGramObjective(_ObjectiveBase):
             'cross_subject': float(use_cross),
             **reg_metrics,
         }
-        # Report B §2.1: alignment term -- pull positive pairs together (the missing half of
+        # Alignment term -- pull positive pairs together (the missing half of
         # alignment + uniformity). Uses the already-L2-normalised center/context and the final pos_mask.
         if self.config.alignment_weight > 0.0:
             align_loss = alignment_penalty(center_flat, context_flat, pos_mask)
@@ -695,7 +686,7 @@ class MaskedObjective(_ObjectiveBase):
     """Masked word-EEG modelling: data2vec latent prediction or reconstruction.
 
     Both variants predict/reconstruct *through the exported 768-d projection head*, so that head is
-    actually trained (the review found it received no gradient before). The data2vec teacher target is
+    actually trained (otherwise it receives no gradient at all). The data2vec teacher target is
     normalised **across tokens** with a variance floor, which is what stops the teacher/student
     co-collapsing onto a constant, and the teacher EMA decay is **ramped** across training.
 
@@ -918,6 +909,148 @@ class CPCObjective(_ObjectiveBase):
         }
 
 
+def _clip_direction(logits: torch.Tensor, pos: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """One direction of a multi-positive InfoNCE over a `(B, B)` similarity matrix.
+
+    Rows are anchors, columns candidates. Candidates whose item is invalid (no text target) are masked
+    out of the denominator; an anchor's positives are the columns sharing its sentence text (so the same
+    sentence read by different subjects counts as a positive, which drives subject-invariance for free).
+
+    Args:
+        logits (torch.Tensor): Scaled cosine logits `(B, B)`.
+        pos (torch.Tensor): Boolean `(B, B)` positive mask.
+        valid (torch.Tensor): Boolean `(B,)`; `True` for items with a text target.
+
+    Returns:
+        torch.Tensor: Scalar mean loss over valid anchors (0 when none).
+    """
+    neg_inf = torch.finfo(logits.dtype).min
+    cand = valid[None, :]
+    masked = logits.masked_fill(~cand, neg_inf)
+    denom = torch.logsumexp(masked, dim=1)
+    numer = torch.logsumexp(masked.masked_fill(~(pos & cand), neg_inf), dim=1)
+    per = denom - numer
+    return per[valid].mean() if bool(valid.any()) else logits.new_zeros(())
+
+
+class SentenceClipObjective(_ObjectiveBase):
+    """Symmetric sentence-level CLIP alignment between EEG and a frozen text encoder.
+
+    The pivot from self-supervised structural mapping to *explicit semantic alignment*: each sentence's
+    word-EEG tokens are pooled into one sentence vector (contextual attention pooling), projected to the
+    text space, and aligned to a **frozen** sentence embedding of the ground-truth text via a symmetric
+    InfoNCE loss (Radford et al., 2021, CLIP; Défossez et al., 2023 for non-invasive brain signals). The
+    loss is multi-positive: because the same ZuCo sentence is read by several subjects, every EEG reading
+    of a text is a positive for that text, so identity is pushed out for free.
+
+    The anti-collapse (VICReg) and invariance (subject/stimulus adversary, cross-subject positives) levers
+    are kept as *auxiliaries* through the shared :meth:`_ObjectiveBase.regularize` -- CLIP supplies the
+    content, VICReg/invariance keep the geometry healthy and subject-agnostic.
+
+    Attributes:
+        clip_head (nn.Module | None): Projects the pooled sentence embedding to the text-embedding width.
+        logit_scale (nn.Parameter): Learnable CLIP temperature (log scale), clamped in the forward pass.
+    """
+
+    def __init__(self, config: ObjectiveConfig, model: ZTEModel) -> None:
+        """Initialises the CLIP objective.
+
+        Args:
+            config (ObjectiveConfig): Objective configuration (uses `clip_temperature`).
+            model (ZTEModel): The encoder (its `embed_dim` sizes the CLIP projection head).
+        """
+        super().__init__(config, model)
+        self._embed_dim = model.embed_dim
+        self.clip_head: nn.Module | None = None
+        self.register_buffer('text_matrix', None, persistent=False)
+        self.logit_scale = nn.Parameter(
+            torch.tensor(math.log(1.0 / max(config.clip_temperature, 1e-4)))
+        )
+
+    def attach_text(self, text_matrix: torch.Tensor) -> None:
+        """Attaches the frozen `(n_sentences, text_dim)` L2-normalised text-embedding matrix.
+
+        Args:
+            text_matrix (torch.Tensor): Frozen sentence embeddings indexed by `batch['sentence_text_id']`.
+        """
+        self.text_matrix = text_matrix  # buffer: moves with .to(device), never trained
+        self.clip_head = nn.Linear(self._embed_dim, int(text_matrix.shape[1]))
+
+    def _sentence_vectors(
+        self, model: ZTEModel, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pools each sentence's word-EEG tokens into one contextual sentence embedding `(B, embed_dim)`.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: `(sentence_embeddings (B, embed_dim), token_hiddens (B, L, H))`.
+        """
+        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
+        empty = ~valid.any(dim=1)
+        if bool(empty.any()):
+            valid = valid.clone()
+            valid[empty] = batch['pad_mask'][empty]
+        hidden = model.token_hidden(batch)  # (B, L, H)
+        hidden_ctx = model.contextualize(hidden, valid)  # sentence-contextual (bidirectional)
+        pooled = model._pool_tokens(hidden_ctx, valid)  # (B, H)  # noqa: SLF001 — shared pooling
+        return model.project(
+            pooled
+        ), hidden  # (B, embed_dim), plus token hiddens for VICReg/adversary
+
+    def compute(
+        self, model: ZTEModel, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Computes the symmetric CLIP loss (+ VICReg/invariance auxiliaries) for a batch.
+
+        Args:
+            model (ZTEModel): The ZTE encoder.
+            batch (dict[str, Any]): A collated batch dict (uses `sentence_text_id`).
+
+        Returns:
+            tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`.
+        """
+        usable = _usable_mask(batch)
+        z_sent, hidden = self._sentence_vectors(model, batch)  # (B, embed_dim), (B, L, H)
+        emb_tok = model.project(hidden)  # token embeddings for VICReg / adversary
+        reg_loss, reg_metrics = self.regularize(batch, hidden, emb_tok, usable)
+
+        text_id = batch.get('sentence_text_id')
+        if self.clip_head is None or self.text_matrix is None or text_id is None:
+            zero = z_sent.sum() * 0.0 + reg_loss
+            return zero, {'loss': float(reg_loss.detach()), 'n_valid': 0.0, **reg_metrics}
+
+        z_eeg = F.normalize(self.clip_head(z_sent), dim=-1)  # (B, text_dim)
+        valid = text_id >= 0
+        z_txt = F.embedding(
+            text_id.clamp(min=0), self.text_matrix
+        )  # (B, text_dim), already L2-normed
+        scale = self.logit_scale.exp().clamp(max=100.0)
+        logits = (z_eeg @ z_txt.t()) * scale  # (B, B): row=EEG reading, col=text
+        pos = (text_id[:, None] == text_id[None, :]) & valid[:, None] & valid[None, :]
+
+        if not bool(valid.any()):
+            zero = logits.sum() * 0.0 + reg_loss
+            return zero, {'loss': float(reg_loss.detach()), 'n_valid': 0.0, **reg_metrics}
+
+        clip_loss = 0.5 * (
+            _clip_direction(logits, pos, valid)  # EEG -> text
+            + _clip_direction(logits.t(), pos, valid)  # text -> EEG (pos is symmetric)
+        )
+        loss = clip_loss + reg_loss
+        with torch.no_grad():
+            neg_inf = torch.finfo(logits.dtype).min
+            pred = logits.masked_fill(~valid[None, :], neg_inf).argmax(dim=1)
+            hit = pos[torch.arange(len(pred), device=pred.device), pred] & valid
+            acc = float(hit.sum()) / max(int(valid.sum()), 1)
+        return loss, {
+            'loss': float(loss.detach()),
+            'clip_loss': float(clip_loss.detach()),
+            'clip_top1': acc,
+            'logit_scale': float(scale.detach()),
+            'n_valid': float(valid.sum()),
+            **reg_metrics,
+        }
+
+
 def build_objective(
     config: ObjectiveConfig, model: ZTEModel, feature_dim: int | None = None
 ) -> nn.Module:
@@ -943,4 +1076,6 @@ def build_objective(
         return MaskedObjective(config, model, feature_dim)
     if config.name == 'cpc':
         return CPCObjective(config, model)
+    if config.name == 'clip':
+        return SentenceClipObjective(config, model)
     raise ValueError(f'Unknown objective: {config.name!r}')

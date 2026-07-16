@@ -9,7 +9,7 @@ positive/negative pairs and masking on top of this batch.
 from __future__ import annotations
 
 import functools
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -109,6 +109,7 @@ class SentenceSample:
     meaning: torch.Tensor | None = (
         None  # (seq_len, hidden) per-occurrence contextual target or None
     )
+    text_id: int = -1  # subject-agnostic sentence-text id (CLIP alignment target), or -1
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -153,6 +154,12 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         skey_arr, widx_arr = _content_key_arrays(dataset)
         presence = dataset.presence
 
+        # Sentence-text vocabulary (CLIP alignment): a stable id per unique sentence text (stimulus_key),
+        # shared across every split, so the same sentence read by any subject maps to one text target.
+        self._text_vocab: dict[str, int] = {
+            key: i for i, key in enumerate(sorted({str(s) for s in skey_arr}))
+        }
+
         # Subject-agnostic *word identity* (for meaning positives: same word in different sentences)
         # and a *passage/task id* per sentence (for the passage adversary).
         word_arr = (
@@ -171,7 +178,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             else {}
         )
 
-        # Unit B: per-word reading-behaviour target matrix (aligned to ds.words rows). Built once
+        # Per-word reading-behaviour target matrix (aligned to ds.words rows). Built once
         # when requested; indexed per token in __getitem__ and padded by collate.
         self._behaviour: np.ndarray | None = None
         self.behaviour_names: list[str] = []
@@ -183,7 +190,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
                 dataset.words, behaviour_targets
             )
 
-        # Report B target study: per-occurrence contextual meaning target (aligned to ds.words rows),
+        # Per-occurrence contextual meaning target (aligned to ds.words rows),
         # built once at dataset construction and carried per token like the behaviour target. `None`
         # (or a failed transformers import) leaves the objective on the word-type-keyed static path.
         self._meaning: np.ndarray | None = None
@@ -218,6 +225,15 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             self._word_id.append(word_id)
             self._task_id.append(self._task_vocab.get(str(task), 0))
             self._stimulus_keys.append(str(skey_arr[kept[0]]) if len(kept) else '')
+        # Per-sentence CLIP text id, aligned with `sequences` (same text across subjects shares an id).
+        self._sentence_text_id: list[int] = [
+            self._text_vocab.get(k, -1) for k in self._stimulus_keys
+        ]
+
+    @property
+    def text_vocab(self) -> dict[str, int]:
+        """`{normalised-sentence-text: id}` map for the CLIP alignment target (whole-dataset, stable)."""
+        return self._text_vocab
 
     @property
     def sequences(self) -> list[np.ndarray]:
@@ -294,6 +310,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             task_id=self._task_id[idx],
             behaviour=behaviour,
             meaning=meaning,
+            text_id=self._sentence_text_id[idx],
         )
 
 
@@ -378,6 +395,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         'task_id': torch.tensor([s.task_id for s in batch], dtype=torch.long),
         'behaviour_target': behaviour,
         'meaning_target': meaning,
+        'sentence_text_id': torch.tensor([s.text_id for s in batch], dtype=torch.long),
     }
 
 
@@ -447,6 +465,94 @@ class StimulusBatchSampler(Sampler[list[int]]):
         return (total + self.batch_size - 1) // self.batch_size
 
 
+class SemanticHardNegativeSampler(Sampler[list[int]]):
+    """Batch sampler that co-locates each sentence with its semantically-hard negatives (and positives).
+
+    For the CLIP objective: each batch is seeded with a sentence and filled first with readings of its *hard-negative* sentence texts
+    (surface-similar, semantically distinct; see `zte.data.text.mine_hard_negatives`) and its *same-text* cross-subject readings (the positives),
+    then topped up from the remaining pool. So the in-batch negatives are hard and the positives are present, which is exactly what a symmetric
+    InfoNCE needs to learn meaning over surface form.  Each sentence is yielded once per epoch.
+
+    Attributes:
+        batch_size (int): Sentences per batch.
+    """
+
+    def __init__(
+        self,
+        text_ids: list[int],
+        hard_negs: np.ndarray,
+        batch_size: int,
+        *,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        seed: int = 0,
+    ) -> None:
+        """Groups sentences by text and prepares hard-negative-seeded batches.
+
+        Args:
+            text_ids (list[int]): Per-sentence text id (`ZuCoTorchDataset` sentence order).
+            hard_negs (np.ndarray): `(n_text, k)` hard-negative text ids per text (`-1` padding).
+            batch_size (int): Target sentences per batch.
+            shuffle (bool): Reshuffle each epoch.
+            drop_last (bool): Drop a trailing short batch.
+            seed (int): Base RNG seed.
+        """
+        self.batch_size = max(1, int(batch_size))
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self._seed = seed
+        self._epoch = 0
+        self._hard = hard_negs
+        self._text_ids = [int(t) for t in text_ids]
+        self._by_text: dict[int, list[int]] = defaultdict(list)
+        for i, t in enumerate(self._text_ids):
+            self._by_text[t].append(i)
+        self._n = len(self._text_ids)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        """Yields hard-negative-seeded batches covering each sentence once."""
+        rng = np.random.default_rng(self._seed + self._epoch)
+        self._epoch += 1
+        order = list(range(self._n))
+        if self.shuffle:
+            rng.shuffle(order)
+        used = [False] * self._n
+        queue = deque(order)
+        while queue:
+            seed = queue.popleft()
+            if used[seed]:
+                continue
+            batch = [seed]
+            used[seed] = True
+            text = self._text_ids[seed]
+            cand_texts = [text]
+            if 0 <= text < len(self._hard):
+                cand_texts += [int(x) for x in self._hard[text] if x >= 0]
+            pool = [i for ct in cand_texts for i in self._by_text.get(ct, []) if not used[i]]
+            if self.shuffle:
+                rng.shuffle(pool)
+            for i in pool:
+                if len(batch) >= self.batch_size:
+                    break
+                if not used[i]:
+                    batch.append(i)
+                    used[i] = True
+            while len(batch) < self.batch_size and queue:
+                i = queue.popleft()
+                if not used[i]:
+                    batch.append(i)
+                    used[i] = True
+            if self.drop_last and len(batch) < self.batch_size:
+                break
+            yield batch
+
+    def __len__(self) -> int:
+        """Number of batches per epoch."""
+        if self.drop_last:
+            return self._n // self.batch_size
+        return (self._n + self.batch_size - 1) // self.batch_size
+
+
 def make_dataloader(
     torch_dataset: ZuCoTorchDataset,
     batch_size: int = 64,
@@ -457,6 +563,7 @@ def make_dataloader(
     group_by_stimulus: bool = False,
     seed: int = 0,
     pad_to: int | None = None,
+    hard_negatives: np.ndarray | None = None,
 ) -> DataLoader[SentenceSample]:
     """Creates a :class:`~torch.utils.data.DataLoader` with the padding collate.
 
@@ -480,17 +587,30 @@ def make_dataloader(
     """
     # functools.partial keeps the collate picklable for num_workers > 0.
     collate = functools.partial(collate_sentences, pad_to=pad_to)
-    if group_by_stimulus:
-        sampler = StimulusBatchSampler(
+    batch_sampler: Sampler[list[int]] | None = None
+    if hard_negatives is not None:
+        # CLIP semantic-hard negatives: co-locate each sentence with its hard negatives + same-text
+        # (cross-subject) readings. Subsumes the stimulus grouping (same text = same batch).
+        batch_sampler = SemanticHardNegativeSampler(
+            torch_dataset._sentence_text_id,  # noqa: SLF001
+            hard_negatives,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            seed=seed,
+        )
+    elif group_by_stimulus:
+        batch_sampler = StimulusBatchSampler(
             torch_dataset.stimulus_keys,
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
             seed=seed,
         )
+    if batch_sampler is not None:
         return DataLoader(
             torch_dataset,
-            batch_sampler=sampler,
+            batch_sampler=batch_sampler,
             num_workers=num_workers,
             pin_memory=pin_memory,
             collate_fn=collate,

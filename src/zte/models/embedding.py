@@ -102,13 +102,12 @@ class ZTEModel(nn.Module):
             if config.subject_conditioning
             else None
         )
-        # Report B §3.1: FiLM per-subject conditioning -- a feature-wise affine (gamma, beta) applied
-        # to the token hiddens. Zero-initialised, so it starts as the identity and, crucially, stays
-        # the identity for any subject id never seen in training (the held-out LOSO subject gets a valid
-        # vocab id but its row is never updated). This is the "condition on identity, don't only
+        # FiLM per-subject conditioning -- a feature-wise affine (gamma, beta) applied to the token hiddens. Zero-initialised,
+        # so it starts as the identity and, crucially, stays the identity for any subject id never seen in training (the held-out
+        # LOSO subject gets a valid vocab id but its row is never updated). This is the "condition on identity, don't only
         # adversarially remove it" lever (Defossez et al., 2023) made honest for the held-out north-star.
         self.subject_film = (
-            nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None
+            nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None  # type: ignore[operator]
         )
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)

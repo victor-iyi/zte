@@ -159,12 +159,10 @@ class BandPowerMLP(nn.Module):
 class BandRoutedMLP(nn.Module):
     """Band-family-routed MLP: theta/gamma (content) and alpha/beta (state) get separate paths.
 
-    Unit D. The flat band-power block is `(n_bp_features, n_channels)`; each bp-feature carries a
-    frequency band whose *family* is known (`zte.data.schema.BAND_FAMILY`). Theta and gamma carry
-    lexical-semantic load while alpha and beta carry attention/arousal state, so routing them
-    through separate sub-encoders lets invariance pressure fall asymmetrically instead of over a
-    flat 840-vector. Trailing eye-tracking columns join the state path (gaze is a behaviour/state
-    signal). The two paths' hiddens are concatenated to `hidden_dim`.
+    The flat band-power block is `(n_bp_features, n_channels)`; each bp-feature carries a frequency band whose *family* is known
+    (`zte.data.schema.BAND_FAMILY`). Theta and gamma carry lexical-semantic load while alpha and beta carry attention/arousal state,
+    so routing them through separate sub-encoders lets invariance pressure fall asymmetrically instead of over a flat 840-vector.
+    Trailing eye-tracking columns join the state path (gaze is a behaviour/state signal). The two paths' hiddens are concatenated to `hidden_dim`.
 
     Attributes:
         out_dim (int): Hidden dimensionality per token.
@@ -240,10 +238,9 @@ class RawConformer(nn.Module):
         Args:
             n_channels (int): EEG channel count.
             time_steps (int): Raw window length (time steps).
-            config (ModelConfig): Model configuration
-                (uses `conformer_filters`, `conformer_temporal_kernel`, `n_heads`, `n_layers`, `hidden_dim`, `dropout`).
-            spatial (SpatialChannelMixer | None): Optional electrode spatial-encoding mixer, applied to `(..., n_channels, time_steps)` before the
-                temporal convolution mixes channels.
+            config (ModelConfig): Model configuration (uses `conformer_filters`, `conformer_temporal_kernel`, `n_heads`, `n_layers`, `hidden_dim`, `dropout`).
+            spatial (SpatialChannelMixer | None): Optional electrode spatial-encoding mixer, applied to `(..., n_channels, time_steps)`
+                before the temporal convolution mixes channels.
         """
         super().__init__()
         self.spatial_mixer = spatial
@@ -296,8 +293,7 @@ class RawConformer(nn.Module):
 def _largest_divisor(value: int, target: int) -> int:
     """Returns the largest divisor of `value` that is `<= target` (min 1).
 
-    Ensures `nhead` evenly divides the transformer `d_model` even when the
-    configured head count does not.
+    Ensures `nhead` evenly divides the transformer `d_model` even when the configured head count does not.
 
     Args:
         value (int): The model dimension to divide.
@@ -327,8 +323,7 @@ def build_frontend(
     Args:
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (required for `band_power_mlp`).
-        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape
-            (required for `raw_conformer`).
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (required for `raw_conformer`).
         n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`. For `raw_conformer` this defaults to
             `raw_shape[0]`; for `band_power_mlp` it must be supplied (with `bp_features_per_channel`) for spatial encoding to activate.
         bp_features_per_channel (int | None): Band-power features per channel (the electrode-token width) for `band_power_mlp` spatial encoding.
@@ -346,7 +341,7 @@ def build_frontend(
             raise ValueError(
                 'band_power_mlp frontend requires in_dim (n_bp_features * n_channels).'
             )
-        # Unit D: band-family routing. Needs the (n_bp, n_channels) layout and a bp count that is a
+        # Band-family routing. Needs the (n_bp, n_channels) layout and a bp count that is a
         # whole number of bands; otherwise fall back to the flat MLP with a warning.
         if getattr(config, 'band_routing', False):
             from zte.data.schema import BANDS

@@ -4,7 +4,7 @@ Before any invariance objective is designed, this module quantifies the thing th
 correlated the nuisance factors (subject, task) are with the content the model is supposed to keep (word length, frequency, meaning),
 and with the behaviour it records (fixations, regressions, skipping).**
 
-The motivating diagnosis (see `docs/ZTE_IMPROVEMENT_PLAN.md`): an invariance adversary only ever pushes a nuisance *down*; it never pulls
+The motivating diagnosis: an invariance adversary only ever pushes a nuisance *down*; it never pulls
 content *up*. So if the nuisance and the content are correlated, deleting the nuisance deletes content with it.  The sharpest case is *task*:
 in ZuCo, normal-reading (NR) and sentiment-reading (SR) use **disjoint sentence sets**, so "task" is very nearly an alias for "which stimulus",
 and a task/stimulus adversary is partly a content-deletion operator.
@@ -349,7 +349,7 @@ def render_markdown(report: dict, title: str = 'ZTE Confound Audit') -> str:
         report['behaviour_vs_lexical'],
         '3. Behaviour ↔ lexical signal',
         'Reading behaviour as a proxy for lexical processing (justifies eye-tracking as '
-        'privileged supervision — Unit B). High cells mean the eyes already track the word.',
+        'privileged supervision). High cells mean the eyes already track the word.',
     )
 
     am = report['association_matrix']

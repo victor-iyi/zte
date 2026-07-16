@@ -130,7 +130,7 @@ def collect_embeddings(
 def phase_shuffled_word_emb(
     embedder: ZTEEmbedder, dataset: ZuCoDataset, indices: np.ndarray | None = None
 ) -> np.ndarray | None:
-    """Embeds phase-scrambled EEG through the trained encoder (Report B §3.2b control).
+    """Embeds phase-scrambled EEG through the trained encoder (a signal-destroyed control).
 
     Passing FFT-phase-randomised raw EEG through the *same* trained encoder tests whether the encoder
     invents structure from destroyed signal. Only meaningful for a raw frontend: band-power features are

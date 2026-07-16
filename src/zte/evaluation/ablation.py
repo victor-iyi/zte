@@ -1,18 +1,14 @@
-"""Single-variable ablation harness -- the proof engine (Gate 5).
+"""Single-variable ablation harness -- the proof engine.
 
-Only the VICReg comparison in the original reports changed one variable; every other claim
-bundled several settings, so no contribution could be attributed cleanly. This module makes
-the clean ablation the default unit of evidence:
+Historically only the VICReg comparison changed one variable at a time; every other claim bundled several settings,
+so no contribution could be attributed cleanly.  This module makes the clean ablation the default unit of evidence:
 
-1. `single_variable_configs` takes a base `ZTEConfig` and *one* dotted knob (e.g.
-   `objective.subject_adversary_weight`) with a list of values, and emits configs that differ
-   in exactly that field — nothing else — so any metric delta is caused by that knob alone.
-2. `diff_scoreboards` reads two runs' `metrics.json` and reports the delta on the honest
-   scoreboard (Gate 1): lift-over-raw per target, held-out geometry, and the cross-subject
-   held-out retrieval north-star. That delta *is* the knob's contribution.
+1. `single_variable_configs` takes a base `ZTEConfig` and *one* dotted knob (e.g.  `objective.subject_adversary_weight`) with a list of values,
+    and emits configs that differ in exactly that field — nothing else — so any metric delta is caused by that knob alone.
+2. `diff_scoreboards` reads two runs' `metrics.json` and reports the delta on the honest scoreboard: lift-over-raw per target,
+    held-out geometry, and the cross-subject held-out retrieval north-star. That delta *is* the knob's contribution.
 
-The CLI (`zte-ablate`) drives both: `generate` writes the config sweep to run, `diff`
-compares two finished runs.
+The CLI (`zte-ablate`) drives both: `generate` writes the config sweep to run, `diff` compares two finished runs.
 """
 
 from __future__ import annotations

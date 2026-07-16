@@ -44,6 +44,7 @@ assets = [
 # enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
 meaning = [
   'transformers>=4.44.0',
+  'sentence-transformers>=3.0.0',
 ]
 dev = [
   'ruff>=0.15.22',

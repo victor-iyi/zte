@@ -216,7 +216,7 @@ def build_scoreboard(
 ) -> dict[str, Any]:
     """Assembles the honest scoreboard from already-computed evaluation artefacts."""
     holdout = holdout_subject(config)
-    # Unit C: for a factored model the *thought code* is the content subspace, so the
+    # For a factored model the *thought code* is the content subspace, so the
     # geometry/retrieval headline is judged on those dims, not the full embedding.
     model_cfg = getattr(config, 'model', None)
     if model_cfg is not None and getattr(model_cfg, 'factored', False):

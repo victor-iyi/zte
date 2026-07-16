@@ -359,7 +359,7 @@ def _evaluate(
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )
-    # Report B §3.2: opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
+    # Opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
     phase_emb = (
         phase_shuffled_word_emb(embedder, dataset)
         if getattr(config.objective, 'eval_phase_shuffle', False)

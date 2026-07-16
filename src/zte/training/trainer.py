@@ -261,7 +261,7 @@ class Trainer:
         )
         for i, raw_batch in enumerate(iterator):
             batch = move_batch(raw_batch, self.device.device)
-            # Report B §1.2: hand the objective the current progress so the subject-adversary
+            # Hand the objective the current progress so the subject-adversary
             # gradient-reversal strength can ramp 0 -> 1 (a no-op when warmup_ratio is 0).
             if hasattr(self.objective, 'set_progress'):
                 self.objective.set_progress(self._global_step, self.total_steps)

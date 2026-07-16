@@ -1,6 +1,6 @@
-# MOSAIC — Meaning-Oriented, Subject-Aligned Invariant Code
+# ZTE methods — a meaning-oriented, subject-invariant thought code
 
-The methods behind ZTE's second-generation thought embedding. **MOSAIC** turns the EEG recorded while a person reads a word into a 768-dimensional code that depends on *what* was read rather than *who* read it, by treating the signal as a superposition of generative factors, disentangling them, and aligning them across brains.
+The methods behind ZTE's second-generation thought embedding. The approach turns the EEG recorded while a person reads a word into a 768-dimensional code that depends on *what* was read rather than *who* read it, by treating the signal as a superposition of generative factors, disentangling them, and aligning them across brains.
 
 Configuration: `experiments/sota_loso.yaml`. Every method is an independent, config-gated lever, so each is validated in isolation with `zte-ablate` against the held-out-LOSO scoreboard (`zte.evaluation.scoreboard`).
 
@@ -18,7 +18,7 @@ $$
 - **subject** — the EEG *forward model*: individual skull conductivity and cortical folding project cortical sources onto the scalp differently for each person. This is real biophysics, not noise, and it is the largest source of variance in reading EEG (a linear probe reads identity at $\sim$99%).
 - **task / state / behaviour** — top-down attentional set, arousal, and the oculomotor dynamics of fixations and regressions.
 
-The v1 failure — the space encoding identity, not meaning — follows directly: identity is the loudest term, and an unconstrained objective grabs the loudest correlate of the label. MOSAIC's premise is that these terms should be **separated and modelled**, not deleted, because several of them (frequency drives both the N400 and fixation duration) are *correlated with meaning*, so blind deletion removes content with the nuisance.
+The v1 failure — the space encoding identity, not meaning — follows directly: identity is the loudest term, and an unconstrained objective grabs the loudest correlate of the label. The premise here is that these terms should be **separated and modelled**, not deleted, because several of them (frequency drives both the N400 and fixation duration) are *correlated with meaning*, so blind deletion removes content with the nuisance.
 
 ---
 
@@ -130,7 +130,7 @@ $$
 
 **Idea.** The encoder takes no subject-ID; identity enters only at the normaliser. So a genuinely new person needs only a short *unlabelled* baseline to compute their own normalisation — per-subject mean/std, or the Riemannian whitening map $\Sigma_{\text{new}}^{-1/2}$ — then their words embed on the shared frame with no labels and no retraining.
 
-**Why.** This operationalises the report's cheapest new-subject path: adapt the *one* place identity enters, not the encoder. Riemannian calibration is the principled version — it recentres the new brain's covariance $\Sigma_{\text{new}}$ to the training reference.
+**Why.** This is the cheapest new-subject path: adapt the *one* place identity enters, not the encoder. Riemannian calibration is the principled version — it recentres the new brain's covariance $\Sigma_{\text{new}}$ to the training reference.
 
 **Code:** `FeatureNormalizer.calibrate_subject`, `ZTEEmbedder.calibrate_subject` + `embed_signals(subject_codes=...)`.
 
@@ -139,24 +139,18 @@ $$
 ## Evaluation & proof
 
 - **Scoreboard** (`zte.evaluation.scoreboard`) — held-out-only geometry, cross-subject held-out retrieval (query = the stranger, gallery = trained-on people), every probe stated as $\text{ZTE} - \text{raw}$, and a content-probe positive control. Rendered at the top of every `report.md`.
-- **Confound audit** (`zte-audit`) — the factor-entanglement table that motivates §3.
+- **Confound audit** (`zte-audit`) — the factor-entanglement table that motivates the confound-matched negatives (Section 3).
 - **Ablation** (`zte-ablate`) — one-knob sweeps + scoreboard diff, so each method's held-out LOSO contribution is attributable. A method is kept only if it moves the north-star.
 
 The north-star metric is **held-out-LOSO cross-subject retrieval**, not in-sample scores. A method that improves a home-game number but not the away game has not earned its place.
 
 ---
 
-## Report B — the road to SOTA (implemented)
+## The road to state-of-the-art
 
-MOSAIC (above) is the *generative* thesis — disentangle the neural superposition into content and
-nuisance subspaces. It left one blocking result: on the held-out subject **ZAB**, cross-subject
-retrieval was **below chance** on an otherwise healthy (non-collapsed, isotropic) space. The two
-evaluation reports diagnosed this not as a lack of signal but as **hostile target geometry**
-(anisotropy + hubness breaking the nearest-neighbour graph) plus an **over-aggressive subject
-adversary** (full strength from step 0) eroding content it is confounded with.
+The generative thesis above disentangles the neural superposition into content and nuisance subspaces. It left one blocking result: on the held-out subject **ZAB**, cross-subject retrieval was **below chance** on an otherwise healthy (non-collapsed, isotropic) space. Evaluation diagnosed this not as a lack of signal but as **hostile target geometry** (anisotropy + hubness breaking the nearest-neighbour graph) plus an **over-aggressive subject adversary** (full strength from step 0) eroding content it is confounded with.
 
-**Report B** is the implemented fix, layered on top of MOSAIC as the retrieval-and-honesty tier, in the
-same three groups the reports used:
+The **retrieval-and-honesty layer** is the implemented fix, layered on top of the factored model, in three groups:
 
 - **Tier 1 — geometry & invariance:** all-but-the-top + CSLS retrieval correction
   (`objective.all_but_top`, `objective.csls_neighbors`), a rebalanced and DANN-ramped subject adversary
@@ -171,11 +165,6 @@ same three groups the reports used:
   (permutation-*p* AND-ed with the bootstrap CI; phase-shuffle, seen/novel, and frequency-matched
   controls; rank-percentile / median-rank reporting).
 
-Two flagship configs run it: `experiments/sota_loso.yaml` (geometry-fixed spherical-harmonic SOTA) and
-`experiments/exp7_sota_geom_invariance.yaml` (spatial-attention + FiLM + shrunk `content_dim` A/B). The
-win condition stays honest: a **rank distribution left of the permutation null** and a **positive
-content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the
-hardest non-invasive setting).
+Two flagship configs run it: `experiments/sota_loso.yaml` (geometry-fixed spherical-harmonic SOTA) and `experiments/exp7_sota_geom_invariance.yaml` (spatial-attention + FiLM + shrunk `content_dim` A/B). The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).
 
-**Full write-up — hypotheses, citations, exact config keys, code locations, and confirming metrics for
-every lever — in [SOTA_IMPLEMENTATION.md](./SOTA_IMPLEMENTATION.md).**
+**Full write-up — hypotheses, citations, exact config keys, code locations, and confirming metrics for every lever — in [SOTA_IMPLEMENTATION.md](./SOTA_IMPLEMENTATION.md).**

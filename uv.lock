@@ -1375,6 +1375,25 @@ wheels = [
 ]
 
 [[package]]
+name = "sentence-transformers"
+version = "5.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f9/56/d2cb00765a6b15c994a7fccf20f9032f16e8193ca49147cb5155166ad744/sentence_transformers-5.6.0.tar.gz", hash = "sha256:0e7164d051e416c1853ade7c274ff52af3f9da0f4be7f0b83d734c27699e1057", size = 453194, upload-time = "2026-06-16T14:01:56.42Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/c1/dc1582b79e9a2eb0cddf9559cd9bcdff084f541d6fe881fdd9d98630dba7/sentence_transformers-5.6.0-py3-none-any.whl", hash = "sha256:d2075b5e687a1611005e20ab04a6846994d51adfcf39610aed066af3c0c0b81f", size = 596411, upload-time = "2026-06-16T14:01:55.103Z" },
+]
+
+[[package]]
 name = "setuptools"
 version = "81.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1654,6 +1673,7 @@ logging = [
     { name = "tensorboard" },
 ]
 meaning = [
+    { name = "sentence-transformers" },
     { name = "transformers" },
 ]
 viz = [
@@ -1690,7 +1710,10 @@ dev = [
 ]
 drive = [{ name = "gdown", specifier = ">=6.1.0" }]
 logging = [{ name = "tensorboard", specifier = ">=2.21.0" }]
-meaning = [{ name = "transformers", specifier = ">=4.44.0" }]
+meaning = [
+    { name = "sentence-transformers", specifier = ">=3.0.0" },
+    { name = "transformers", specifier = ">=4.44.0" },
+]
 viz = [
     { name = "plotly", specifier = ">=6.9.0" },
     { name = "seaborn", specifier = ">=0.13.2" },

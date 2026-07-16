@@ -142,7 +142,7 @@ def evaluate_representation(
     #    Both are label-free, so every metric below is honestly recomputed on the corrected space (we
     #    see whether content survives the geometry fix, not just that anisotropy/hubness dropped). Order
     #    matters: whiten (equalise variance across dims) THEN all-but-the-top (strip residual shared axes).
-    #    A raw copy is snapshotted first so the report can show the geometry before vs after (Report B §1.1).
+    #    A raw copy is snapshotted first so report.md can show the geometry before vs after.
     obj_cfg = getattr(config, 'objective', None)
     word_emb_raw = np.asarray(word_emb, dtype=np.float32).copy()
     if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
@@ -164,9 +164,9 @@ def evaluate_representation(
             csls_k,
         )
 
-    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control (+ an optional phase-shuffled
-    #    ZTE control, Report B §3.2b). The phase control must get the SAME whiten/ABTT as ZTE or the
-    #    comparison is rigged; embedding the phase-scrambled EEG happened at the export site (the caller).
+    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control (+ an optional phase-shuffled ZTE control).
+    #    The phase control must get the SAME whiten/ABTT as ZTE or the comparison is rigged;
+    #    embedding the phase-scrambled EEG happened at the export site (the caller).
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),
         'raw band-power': np.asarray(raw_word_feats, dtype=np.float32),
@@ -187,8 +187,7 @@ def evaluate_representation(
     health = M.embedding_health(word_emb, pairs=pairs)
 
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
-    #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then
-    #    strip it so it never bloats the persisted metrics.
+    #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then strip it so it never bloats the persisted metrics.
     sent_ret = M.content_retrieval(
         sent_emb,
         np.asarray(sent_content_ids),
@@ -204,9 +203,8 @@ def evaluate_representation(
     )
     eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
     eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
-    # 3.2c) Seen vs novel WORD TYPES: does cross-subject retrieval hold for words absent from the
-    #       training split? Novelty is type-level (in LOSO the held-out subject reads the same stimuli,
-    #       so the novel bucket is small -- flagged in the report, not oversold).
+    # 3.2c) Seen vs novel WORD TYPES: does cross-subject retrieval hold for words absent from the training split?
+    #       Novelty is type-level (in LOSO the held-out subject reads the same stimuli, so the novel bucket is small -- disclosed as such, not oversold).
     word_ret_by_novelty: dict[str, Any] = {}
     if eval_seen_novel and train_vocab is not None and 'word' in word_meta.columns:
         words_arr = word_meta['word'].astype(str).to_numpy()
@@ -288,9 +286,8 @@ def evaluate_representation(
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
     metrics['honesty'] = honesty
 
-    # 4d) The honest scoreboard: the held-out number stated as a lift over the raw
-    #     control, plus the content-probe positive control. Gate 1 of the improvement
-    #     plan — every headline metric must clear the raw baseline to count as progress.
+    # 4d) The honest scoreboard: the held-out number stated as a lift over the raw control, plus the content-probe positive control.
+    #     Every headline metric must clear the raw baseline to count as progress.
     from zte.evaluation.scoreboard import build_scoreboard
 
     metrics['scoreboard'] = build_scoreboard(
@@ -300,10 +297,8 @@ def evaluate_representation(
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
         metrics['verdict']['retrieval_above_chance_perm'] = perm['above_chance']
-        # Report B §3.2a: gate the headline on BOTH the bootstrap-CI lift AND the empirical
-        # permutation null -- a single check can no longer carry the verdict. When the permutation is
-        # inapplicable (too few items / no multi-member group) the CI verdict stands alone (the guard
-        # above), so this only ever demotes, never promotes.
+        # Gate the headline on BOTH the bootstrap-CI lift AND the empirical permutation null -- a single check can no longer carry the verdict.
+        # When the permutation is inapplicable (too few items / no multi-member group) the CI verdict stands alone (the guard above), so this only ever demotes, never promotes.
         metrics['verdict']['retrieval_above_chance'] = bool(
             metrics['verdict']['retrieval_above_chance'] and perm['above_chance']
         )
@@ -379,7 +374,7 @@ def _honesty_block(
     """Computes the permutation / held-out-decode / calibration add-ons (guarded, best-effort).
 
     Runs only when the embedding set spans >= 2 subjects (cross-subject work is undefined
-    otherwise). Each add-on degrades to ``{'applicable': False, ...}`` on too-little data, so this
+    otherwise). Each add-on degrades to `{'applicable': False, ...}` on too-little data, so this
     never aborts a run.
     """
     from zte.evaluation.honesty import (
@@ -449,11 +444,10 @@ def _region_importance(
     Args:
         word_band_power (np.ndarray | None): Per-word band power `(n_words, n_bands, n_channels)`.
         word_meta (pd.DataFrame): Aligned word metadata.
-        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the
-            approximate coordinate-free default is used inside `region_importance`.
+        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the approximate coordinate-free default is used inside `region_importance`.
 
     Returns:
-        list[dict[str, Any]]: Tidy region-importance rows (empty when no band power).
+        list[dict[str, Any]]: Tidy region-importance rows (empty when no band power)
     """
     if word_band_power is None:
         return []
@@ -668,7 +662,7 @@ def _render_sota_figures(
     montage_csv: str | None,
     fig_dir: Path,
 ) -> list[Path]:
-    """Renders the Report-B evaluation figures (geometry before/after, rank distribution, variance
+    """Renders the evaluation figures (geometry before/after, rank distribution, variance
     budget, subject-similarity, neuron selectivity, scalp topomap), skipping any that fail."""
     import matplotlib.pyplot as plt
 
@@ -1114,7 +1108,7 @@ def _render_report(
             if 'rank_percentile' in sent
             else ''
         )
-        + '). The headline requires BOTH the CI lift and the permutation null (Report B §3.2a); '
+        + '). The headline requires BOTH the CI lift and the permutation null; '
         'rank-percentile (1.0 = correct match ranked first) shows the whole distribution, not just the tail.',
         '',
         '## Transfer probes (frozen embeddings)',
@@ -1145,7 +1139,7 @@ def _render_report(
     fm = metrics.get('word_retrieval_freq_matched')
     if fm:
         lines.append(
-            f'- Word, frequency-matched distractors (§3.2d): Top-1 {fm.get("top1", float("nan")):.3f} '
+            f'- Word, frequency-matched distractors: Top-1 {fm.get("top1", float("nan")):.3f} '
             f'vs matched chance {fm.get("chance_top1", float("nan")):.3f} over {int(fm.get("n_bins", 0))} bins '
             '-- a hit here cannot be a lexical-frequency shortcut.'
         )
@@ -1155,7 +1149,7 @@ def _render_report(
             blk = nov.get(label)
             if blk:
                 lines.append(
-                    f'- Word, {label} types (§3.2c): Top-1 {blk.get("top1", float("nan")):.3f} '
+                    f'- Word, {label} types: Top-1 {blk.get("top1", float("nan")):.3f} '
                     f'vs chance {blk.get("chance_top1", float("nan")):.3f} '
                     f'({int(blk.get("n_queries", 0))} queries)'
                 )

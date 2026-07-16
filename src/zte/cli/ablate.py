@@ -1,4 +1,4 @@
-"""`zte-ablate` — generate single-variable ablation sweeps and diff their scoreboards (Gate 5).
+"""`zte-ablate` — generate single-variable ablation sweeps and diff their scoreboards.
 
 Two subcommands:
 
@@ -12,7 +12,7 @@ Two subcommands:
         --variant  res/experiments/<var>/evaluation/metrics.json
 
 The whole point is that every claim is a *single-variable* comparison, so a metric delta is
-attributable to one knob — the discipline the original reports could only apply to VICReg.
+attributable to one knob — a discipline earlier work could only apply to VICReg.
 """
 
 from __future__ import annotations

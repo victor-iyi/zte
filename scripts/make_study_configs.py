@@ -7,7 +7,7 @@ at. Re-run this any time the schema changes::
     .venv/bin/python scripts/make_study_configs.py
 
 The generated files are the matched variants for the two studies that need new configs -- Study 2 (subject-invariance A/B under LOSO) and Study 3 (VICReg
-anti-collapse ablation). Studies 1, 4 and 5 reuse the shipped `exp*` presets or `zte-benchmark`, so they need no new files (see `docs/EXPERIMENTS.md`).
+anti-collapse ablation). Studies 1, 4 and 5 reuse the shipped `exp*` presets or `zte-benchmark`, so they need no new files.
 
 Design invariants shared by every study config (stated in the doc too):
   * `subjects=None`, `tasks=('SR', 'NR')`  -> maximise the dataset (all 12 subjects, both reading tasks).
@@ -27,20 +27,18 @@ from pathlib import Path
 from zte.config import DatasetConfig, ObjectiveConfig, TrainConfig, ZTEConfig
 
 # Where the study YAMLs are written (next to the shipped exp*.yaml presets).
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / 'experiments'
+EXPERIMENTS_DIR: Path = Path(__file__).resolve().parent.parent / 'experiments'
 
-# One held-out subject for the LOSO study. ZuCo v1 has 12 subjects; rotate this
-# across all of them for a full leave-one-subject-out sweep (see the runner /
-# docs). ZAB is a safe default present in `res/data/zuco_extracted`.
-LOSO_HOLDOUT = 'ZAB'
+# One held-out subject for the LOSO study. ZuCo v1 has 12 subjects; rotate this # across all of them for a full leave-one-subject-out
+# sweep (see the runner / docs). ZAB is a safe default present in `res/data/zuco_extracted`.
+LOSO_HOLDOUT: str = 'ZAB'
 
 
 def _base_dataset(**overrides: object) -> DatasetConfig:
     """A dataset config that maximises the cohort and fits the normaliser on train only.
 
-    All 12 subjects (`subjects=None`), both reading tasks (SR + NR), band-power
-    representation, `normalizer_fit='train'`. `include_eye_tracking` and
-    `normalize` are left to the caller because they are levers under test.
+    All 12 subjects (`subjects=None`), both reading tasks (SR + NR), band-power representation, `normalizer_fit='train'`.
+    `include_eye_tracking` and `normalize` are left to the caller because they are levers under test.
     """
     base = DatasetConfig(
         root='res/data/zuco_extracted',

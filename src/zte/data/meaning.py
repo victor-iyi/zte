@@ -1,9 +1,8 @@
-"""Frozen word-meaning vectors: the Lexical Meaning Distillation target (MOSAIC §2).
+"""Frozen word-meaning vectors: the word-meaning distillation target.
 
-Builds a word→vector matrix aligned to the training vocabulary, from either a real embedding
-file (GloVe/fastText `word v1 v2 …` text, or `.npy` + `.vocab`) or a deterministic per-word
-hash (mechanism verification only, no semantics). Rows are L2-normalised for cosine
-distillation; out-of-vocabulary words fall back to the mean. See `docs/METHODS.md`.
+Builds a word -> vector matrix aligned to the training vocabulary, from either a real embedding file
+(GloVe/fastText `word v1 v2 …` text, or `.npy` + `.vocab`) or a deterministic per-word hash (mechanism verification only, no semantics).
+Rows are L2-normalised for cosine distillation; out-of-vocabulary words fall back to the mean.
 """
 
 from __future__ import annotations
@@ -61,8 +60,7 @@ def build_meaning_matrix(
     Args:
         vocab (dict[str, int]): Word→row-id map (e.g. the training word vocabulary). Row `i`
             of the returned matrix is the vector for the word whose id is `i`.
-        source (str | None): Path to a vectors file, or `None`/`'hash'` for the deterministic
-            hash embedding.
+        source (str | None): Path to a vectors file, or `None`/`'hash'` for the deterministic hash embedding.
         dim (int): Vector dimensionality (ignored when a file sets its own width).
 
     Returns:
@@ -117,18 +115,15 @@ def build_meaning_matrix_hf(
 ) -> tuple[np.ndarray | None, int]:
     """Builds a per-*occurrence* contextual meaning target aligned row-for-row with `words`.
 
-    Unlike `build_meaning_matrix` (one static vector per word *type*), each row is the word's
-    contextual hidden state from a frozen HuggingFace encoder run on the whole sentence it belongs to,
-    with sub-word pieces mean-pooled per word. This disambiguates polysemy the static target collapses,
-    and the brain-alignment literature is clear that contextual middle-layer representations predict
-    neural activity far better than static word vectors (Toneva & Wehbe 2019; Caucheteux & King 2022).
-    Rows are L2-normalised; rows never covered (truncation, empty tokens) stay `NaN` so the distillation
-    loss masks them.
+    Unlike `build_meaning_matrix` (one static vector per word *type*), each row is the word's contextual hidden state from a frozen HuggingFace
+    encoder run on the whole sentence it belongs to, with sub-word pieces mean-pooled per word. This disambiguates polysemy the static
+    target collapses, and the brain-alignment literature is clear that contextual middle-layer representations predict neural activity
+    far better than static word vectors (Toneva & Wehbe 2019; Caucheteux & King 2022).  Rows are L2-normalised; rows never covered
+    (truncation, empty tokens) stay `NaN` so the distillation loss masks them.
 
-    Because the linguistic content of a word occurrence is subject-independent, the encoder is run once
-    per unique sentence text (`stimulus_key`) and the resulting per-position vectors are broadcast to
-    every subject's reading of that word -- a ~12x saving over per-reading encoding, and exactly the
-    subject-invariant target LOSO wants.
+    Because the linguistic content of a word occurrence is subject-independent, the encoder is run once per unique sentence text (`stimulus_key`)
+    and the resulting per-position vectors are broadcast to every subject's reading of that word -- a ~12x saving over per-reading encoding,
+    and exactly the subject-invariant target LOSO wants.
 
     Args:
         words (pd.DataFrame): The word-level table (`ZuCoDataset.words`) with `word` and `word_idx`, and

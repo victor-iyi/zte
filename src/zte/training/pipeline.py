@@ -89,11 +89,11 @@ def run_training(
     vocab = build_subject_vocab(dataset)
     # Auto-pick DataLoader workers per backend when config.train.num_workers < 0 (else honour it).
     workers = auto_num_workers(device, config.train.num_workers)
-    # Unit B: only emit per-word behaviour targets when the behaviour head is active.
+    # Only emit per-word behaviour targets when the behaviour head is active.
     beh_targets = (
         config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
     )
-    # Report B target study: a per-occurrence contextual meaning target is built (once) on the train
+    # A per-occurrence contextual meaning target is built (once) on the train
     # split when meaning distillation is on and a contextual model is configured; None keeps the
     # word-type-keyed static path. Only the train dataset carries it (val loss is a monitor).
     mctx = (
@@ -114,8 +114,10 @@ def run_training(
         if len(splits['val']) > 0
         else None
     )
+    clip_hard_negs = None  # (n_text, k) semantic-hard negatives for the CLIP loader (set below)
 
-    # Units A & B + Report B §2.3: attach dataset-derived auxiliary targets to the objective now that
+    # Attach dataset-derived auxiliary targets (meaning, behaviour, and the collapse-proof
+    # regression auxiliary) to the objective now that
     # the word vocabulary and behaviour spec exist. The meaning matrix is frozen (a distillation teacher).
     obj = config.objective
     if (
@@ -139,6 +141,59 @@ def run_training(
         objective.attach_auxiliary(
             meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim
         )
+
+    # CLIP objective: build the frozen sentence-text target once (each unique ZuCo sentence embedded by
+    # the configured frozen encoder), then attach it. Falls back to a deterministic hash target (no
+    # semantics) when the text encoder / its dependency is unavailable, so training still runs.
+    if config.objective.name == 'clip' and hasattr(objective, 'attach_text'):
+        import torch as _torch
+
+        from zte.data.text import build_sentence_text_matrix
+
+        vocab = train_td.text_vocab  # {normalised sentence text: id}
+        n_text = len(vocab)
+        key_to_text = dict(
+            zip(
+                dataset.sentences['stimulus_key'].astype(str),
+                dataset.sentences['text'].astype(str),
+                strict=False,
+            )
+        )
+        ordered = [''] * n_text
+        for key, tid in vocab.items():
+            ordered[tid] = key_to_text.get(key, key)  # readable sentence, else the normalised key
+        mat, dim = build_sentence_text_matrix(
+            ordered,
+            config.objective.text_source,
+            backend=config.objective.text_backend,
+            prefix=config.objective.text_query_prefix,
+            device=str(device.device),
+        )
+        if mat is None:  # dependency / model unavailable -> hash target (mechanism only)
+            dim = config.objective.meaning_dim or 384
+            rng = np.random.default_rng(config.train.seed)
+            mat = rng.standard_normal((max(n_text, 1), dim)).astype(np.float32)
+            mat /= np.clip(np.linalg.norm(mat, axis=1, keepdims=True), 1e-8, None)
+            _LOG.warning(
+                'CLIP text target unavailable; using a hash target (dim %d, no semantics).', dim
+            )
+        objective.attach_text(_torch.from_numpy(mat))
+        _LOG.info(
+            'Attached CLIP text target: %d sentences x %d dims (%s).',
+            len(mat),
+            dim,
+            config.objective.text_source or 'hash',
+        )
+        if config.objective.semantic_hard_negatives:
+            from zte.data.text import mine_hard_negatives
+
+            clip_hard_negs = mine_hard_negatives(
+                ordered, mat, k=config.objective.hard_negative_pool
+            )
+            _LOG.info(
+                'Mined %d semantic-hard negatives per sentence (surface-similar, meaning-distinct).',
+                config.objective.hard_negative_pool,
+            )
     # Static shapes (XLA/TPU only under 'auto'): pad every batch to the dataset-wide max sentence
     # length so XLA compiles a single graph instead of recompiling per shape. Accuracy-neutral
     # (padded positions are masked out); `None` keeps the smallest per-batch padding on GPU/CPU/MPS.
@@ -152,10 +207,11 @@ def run_training(
         shuffle=True,
         num_workers=workers,
         pin_memory=device.supports_pin_memory,
-        drop_last=config.objective.name in {'skipgram', 'cbow', 'cpc'},
+        drop_last=config.objective.name in {'skipgram', 'cbow', 'cpc', 'clip'},
         group_by_stimulus=group_by_stimulus,
         seed=config.train.seed,
         pad_to=pad_to,
+        hard_negatives=clip_hard_negs,
     )
     val_loader = None
     if val_td is not None:

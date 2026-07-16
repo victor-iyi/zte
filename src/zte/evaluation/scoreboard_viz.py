@@ -1,22 +1,15 @@
 """A self-contained interactive dashboard for the *held-out* honest scoreboard.
 
-`scoreboard.build_scoreboard` returns the single most load-bearing block in the whole
-evaluation: what the space looks like **on a stranger's brain** (the LOSO held-out
-subject) and whether cross-subject retrieval clears its own chance line. Everything in
-the improvement plan hinges on that one retrieval number, so it deserves its own view
-rather than a row buried in a report.
+`scoreboard.build_scoreboard` returns the single most load-bearing block in the whole evaluation: what the space looks like **on a stranger's brain**
+(the LOSO held-out subject) and whether cross-subject retrieval clears its own chance line.
+Everything in the whole result hinges on that one retrieval number, so it deserves its own view rather than a row buried in a report.
 
-This module renders that block as one dependency-free, theme-aware `.html` file — the
-same offline single-file idiom as `zte.evaluation.compare` (an inline `<style>` with CSS
-variables for light/dark, an embedded JSON island, and vanilla JS that computes every
-colour/verdict in the browser). It matches the ZTE HTML family palette
-(`interactive.py`: accents ``#5a4bff`` / ``#ff4d8d``, good ``#0f9d6b``, warn ``#e29008``,
-bad ``#e5484d``).
+This module renders that block as one dependency-free, theme-aware `.html` file — the same offline single-file idiom as `zte.evaluation.compare`
+(an inline `<style>` with CSS variables for light/dark, an embedded JSON island, and vanilla JS that computes every colour/verdict in the browser).
+It matches the ZTE HTML family palette (`interactive.py`: accents `#5a4bff` / `#ff4d8d`, good `#0f9d6b`, warn `#e29008`, bad `#e5484d`).
 
-Honesty rules it keeps: every metric is judged against an *explicitly named* reference
-line (never a bare threshold), and every probe/retrieval number is framed as a lift over
-the raw band-power control — because raw band power currently beats the encoder on a
-stranger, so only ``ZTE - raw`` is progress.
+Honesty rules it keeps: every metric is judged against an *explicitly named* reference line (never a bare threshold), and every probe/retrieval
+number is framed as a lift over the raw band-power control — because raw band power currently beats the encoder on a stranger, so only `ZTE - raw` is progress.
 """
 
 from __future__ import annotations
@@ -27,8 +20,8 @@ import numbers
 from pathlib import Path
 from typing import Any
 
-# Blocks that can appear as the held-out ("new brain") view and the optional in-sample
-# view. `build_scoreboard` stores retrieval under `held_out_retrieval`; the function that
+# Blocks that can appear as the held-out ("new brain") view and the optional in-sample view.
+# `build_scoreboard` stores retrieval under `held_out_retrieval`; the function that computes it is `cross_subject_holdout_retrieval`, so we accept either key defensively.
 # computes it is `cross_subject_holdout_retrieval`, so we accept either key defensively.
 _HELD_GEOMETRY_KEYS: tuple[str, ...] = ('held_out_geometry',)
 _HELD_RETRIEVAL_KEYS: tuple[str, ...] = ('held_out_retrieval', 'cross_subject_holdout_retrieval')
@@ -43,19 +36,15 @@ _INSAMPLE_RETRIEVAL_KEYS: tuple[str, ...] = (
 def scoreboard_html(scoreboard: dict, out_path: str | Path, run_name: str = 'ZTE run') -> Path:
     """Writes the interactive held-out scoreboard dashboard as a single offline HTML file.
 
-    The output is fully self-contained (no external hosts, CDNs or fonts): a JSON island
-    carrying the rounded scoreboard numbers plus vanilla JS that derives the verdict,
-    colour-codes each stat card against its own named reference line, and draws the
-    ``ZTE - raw`` lift comparison. It degrades to a "no scoreboard data" card when the
-    dict is empty and hides any block whose numbers are absent.
+    The output is fully self-contained (no external hosts, CDNs or fonts): a JSON island carrying the rounded scoreboard numbers
+    plus vanilla JS that derives the verdict, colour-codes each stat card against its own named reference line, and draws the `ZTE - raw` lift comparison.
+    It degrades to a "no scoreboard data" card when the dict is empty and hides any block whose numbers are absent.
 
     Args:
         scoreboard (dict): The dict from `zte.evaluation.scoreboard.build_scoreboard`.
-            Read defensively — `held_out_geometry`, `held_out_retrieval` /
-            `cross_subject_holdout_retrieval`, `lift_over_raw` (with its `content_probe`
-            sub-block) and any in-sample blocks are all optional.
-        out_path (str | Path): Destination `.html` path (parents are created; a non-html
-            suffix is rewritten to `.html`).
+            Read defensively — `held_out_geometry`, `held_out_retrieval` or `cross_subject_holdout_retrieval`, `lift_over_raw`
+            (with its `content_probe` sub-block) and any in-sample blocks are all optional.
+        out_path (str | Path): Destination `.html` path (parents are created; a non-html suffix is rewritten to `.html`).
         run_name (str): Human label for the run, shown in the header and the page title.
 
     Returns:

@@ -34,7 +34,7 @@ type MissingMethod = Literal[
     'mask_only',
 ]
 type SplitStrategy = Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
-type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc']
+type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc', 'clip']
 type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 type PoolName = Literal['mean', 'attention', 'cls']
 type SchedulerName = Literal['cosine', 'linear', 'constant']
@@ -124,11 +124,11 @@ class DatasetConfig:
     raw_field: str = 'rawEEG'
     raw_window: int = 128
     time_bins: int = 1
-    """Gate 3b (temporal N400): number of time bins to split each word's raw window into
-    when computing band power. `1` (default) is the legacy single whole-fixation vector;
-    `>1` yields band power per bin so an N400-window feature is exposed to the encoder
-    instead of being integrated away. Requires the raw signal (`representation` includes
-    raw). See `zte.data.temporal` and `docs/MONTAGE_AND_TEMPORAL.md`."""
+    """Number of time bins to split each word's raw window into when computing band power,
+    to expose the post-word N400 semantic-integration window. `1` (default) is the legacy
+    single whole-fixation vector; `>1` yields band power per bin so an N400-window feature is
+    exposed to the encoder instead of being integrated away. Requires the raw signal
+    (`representation` includes raw). See `zte.data.temporal`."""
     normalize: Normalization = 'zscore_channel'
     normalizer_fit: Literal['train', 'all'] = 'train'
     montage_csv: str | None = None
@@ -189,23 +189,21 @@ class ModelConfig:
     spatial_mix: bool = True
     spatial_encoding_learnable: bool = True
     spatial_attn_freqs: int = 8
-    """Number of Fourier frequencies per axis for `spatial_encoding='spatial_attention'` (the
-    Défossez-style learned attention over 2-D electrode coordinates); `2 * spatial_attn_freqs ** 2`
-    positional features are used. Ignored for `spherical_harmonics`/`none`."""
+    """Number of Fourier frequencies per axis for `spatial_encoding='spatial_attention'` (the Défossez-style learned attention over
+    2-D electrode coordinates); `2 * spatial_attn_freqs ** 2` positional features are used. Ignored for `spherical_harmonics`/`none`."""
     pool: PoolName = 'attention'
     subject_conditioning: bool = False
     subject_film: bool = False
-    """If `True`, condition token hiddens with a per-subject **FiLM** affine (`(1 + gamma) * h + beta`)
-    instead of (or alongside) the additive `subject_conditioning` embedding. The FiLM table is
-    zero-initialised, so at start -- and, crucially, for any subject id never seen in training (the
-    held-out LOSO subject) -- the transform is the identity (`gamma = 0`, `beta = 0`) rather than an
-    untrained random vector. This is the Défossez "condition on identity, don't only adversarially
-    remove it" lever, made safe for the held-out-subject north-star (Report B §3.1)."""
+    """If `True`, condition token hiddens with a per-subject **FiLM** affine (`(1 + gamma) * h + beta`) instead of (or alongside) the
+    additive `subject_conditioning` embedding. The FiLM table is zero-initialised, so at start -- and, crucially,
+    for any subject id never seen in training (the held-out LOSO subject) -- the transform is the identity (`gamma = 0`, `beta = 0`)
+    rather than an untrained random vector. This is the Défossez "condition on identity, don't only adversarially remove it" lever,
+    made safe for the held-out-subject north-star."""
     n_subjects: int = 12
     n_tasks: int = 3
     projection_hidden: int = 512
 
-    # -- Unit C: factored / disentangled embedding --------------------------- #
+    # -- Factored / disentangled embedding ----------------------------------- #
     factored: bool = False
     """If `True`, split the embedding into named subspaces `[content | nuisance]` and route only the content subspace to retrieval/meaning,
     while identity/behaviour heads act on the nuisance subspace. Turns 'delete the shortcut' (adversary) into 'give the shortcut its own room'
@@ -215,7 +213,7 @@ class ModelConfig:
     """Width of the content subspace when `factored` (the remaining `embed_dim - content_dim` dims are the nuisance subspace).
     Retrieval and meaning distillation use only these dims."""
 
-    # -- Unit D / Gate 3b: band-family routing ------------------------------- #
+    # -- Band-family routing ------------------------------------------------- #
     band_routing: bool = False
     """If `True` (band-power frontend), encode theta/gamma (lexical-semantic) and alpha/beta (attention/state) through separate pathways,
     so invariance pressure can be applied asymmetrically instead of over a flat 840-vector."""
@@ -243,7 +241,7 @@ class ObjectiveConfig:
         cpc_steps (int): How many future steps CPC predicts.
         variance_weight (float): Weight of the VICReg variance-hinge term (0 disables). Penalises any embedding dimension
             whose batch std falls below `variance_target`, which is what prevents the InfoNCE/L1 objectives from collapsing
-            into ~15 of 768 dimensions. The single biggest metric mover in the performance review.
+            into ~15 of 768 dimensions. This is the single biggest metric mover among the anti-collapse levers.
         covariance_weight (float): Weight of the VICReg covariance term (0 disables). Pushes off-diagonal feature
             covariances toward zero so dimensions carry decorrelated information (higher effective rank).
         variance_target (float): Target per-dimension std (`gamma`) for the variance-hinge term.
@@ -258,9 +256,9 @@ class ObjectiveConfig:
             L2-normalised embeddings over the sphere so their angular arrangement cannot degenerate. It complements `whiten`
             (which removes the shared-mean cone) by keeping directions well spread; pair both with VICReg (variance + covariance).
         whiten (bool): If `True`, the exported embeddings are ZCA-whitened at evaluation (centre + decorrelate + equalise variance). This is the
-            direct fix for the "cone" (anisotropy ~0.997) and dimensional collapse the review found: centring removes the dominant shared direction
+            direct fix for the "cone" (anisotropy ~0.997) and dimensional collapse that otherwise appears: centring removes the dominant shared direction
             (anisotropy -> ~0) and whitening spreads variance across all dimensions (effective rank -> full).  Because it is label-free, all downstream
-            metrics are recomputed on the whitened space, so the report honestly shows whether content (retrieval, clustering) survives the fix.
+            metrics are recomputed on the whitened space, so the evaluation report honestly shows whether content (retrieval, clustering) survives the fix.
         meaning_positives (bool): If `True` (skip-gram), also draw positive pairs from the *same content word occurring in
             different sentences* (subject-agnostic word identity), not only the same stimulus token. This gives the
             "same meaning across contexts" structure room to grow instead of memorising which passage a word came from.
@@ -288,7 +286,7 @@ class ObjectiveConfig:
     subject_adversary_weight: float = 0.0
     stimulus_adversary_weight: float = 0.0
 
-    # -- Unit A: meaning distillation + confound-matched hard negatives ------- #
+    # -- Meaning distillation + confound-matched hard negatives -------------- #
     meaning_distill_weight: float = 0.0
     """Weight of a distillation loss that pulls each word's embedding toward a *frozen language-model vector*
     for the word it read (0 disables). This is the direct attack on `content = 0%`: skip-gram never populated
@@ -303,12 +301,13 @@ class ObjectiveConfig:
 
     hard_negatives: bool = False
     """For skip-gram/CBOW, restrict InfoNCE negatives to tokens that *share the confound* (same subject and task) so the only way
-    to tell anchor from negative is the word itself.  De-confounds the contrastive objective (see the confound audit, Gate 2)."""
+    to tell anchor from negative is the word itself.  De-confounds the contrastive objective, since subject and task are
+    otherwise near-perfectly predictable from the negatives."""
 
     hard_negative_keys: tuple[str, ...] = ('subject', 'task')
     """Batch fields that a negative must match the anchor on when `hard_negatives` is set."""
 
-    # -- Unit B: eye-tracking privileged supervision ------------------------- #
+    # -- Eye-tracking privileged supervision -------------------------------- #
     behaviour_weight: float = 0.0
     """Weight of an auxiliary head predicting per-word reading behaviour (fixation difficulty) from the embedding (0 disables).
     Behaviour is a lexical-difficulty proxy the EEG-only space struggles to find, so predicting it injects a meaning-adjacent gradient"""
@@ -316,66 +315,57 @@ class ObjectiveConfig:
     behaviour_targets: tuple[str, ...] = ('TRT', 'regression_time', 'is_omitted')
     """Which per-word behaviour signals the auxiliary head regresses/classifies."""
 
-    # -- Report B §1.1: fix the retrieval geometry (anti-hubness / anti-anisotropy) --------- #
+    # -- Fix the retrieval geometry (anti-hubness / anti-anisotropy) ------------------------ #
     all_but_top: int = 0
-    """Remove the top-`all_but_top` principal directions from the exported embeddings at evaluation
-    (0 disables). The label-free *all-but-the-top* post-processing of Mu & Viswanath (2018): after
-    centring, nulling the few dominant PCA directions strips the shared frequency/hub axis that makes
-    a below-chance retrieval space (the textbook symptom of anisotropy + hubness). Applied in the same
-    post-processing block as `whiten` in `evaluation/report.py`, so every metric is honestly recomputed
-    on the corrected space. Whiten then ABTT is the right order (whiten equalises variance; ABTT strips
-    residual shared axes)."""
+    """Remove the top-`all_but_top` principal directions from the exported embeddings at evaluation (0 disables).
+    The label-free *all-but-the-top* post-processing of Mu & Viswanath (2018): after centring, nulling the few dominant PCA directions
+    strips the shared frequency/hub axis that makes a below-chance retrieval space (the textbook symptom of anisotropy + hubness).
+    Applied in the same post-processing block as `whiten` in `evaluation/report.py`, so every metric is honestly recomputed on the corrected space.
+    Whiten then ABTT is the right order (whiten equalises variance; ABTT strips residual shared axes)."""
 
     csls_neighbors: int = 0
-    """Neighbourhood size `k` for CSLS retrieval correction (0 = plain cosine). Cross-domain Similarity
-    Local Scaling (Conneau et al., 2018): each similarity is corrected to `2 * cos - r_query - r_bank`,
-    where `r` is the mean cosine to a point's `k` nearest neighbours, penalising hub-dense regions that
-    are everyone's nearest neighbour. A monotone re-ranking (adds no signal), applied consistently to
+    """Neighbourhood size `k` for CSLS retrieval correction (0 = plain cosine). Cross-domain Similarity Local Scaling (Conneau et al., 2018):
+    each similarity is corrected to `2 * cos - r_query - r_bank`, where `r` is the mean cosine to a point's `k` nearest neighbours,
+    penalising hub-dense regions that are everyone's nearest neighbour. A monotone re-ranking (adds no signal), applied consistently to
     the retrieval index and its permutation null so the reported Top-1 and its p-value stay coherent."""
 
-    # -- Report B §1.2: ramp the subject adversary from zero (DANN schedule) ---------------- #
+    # -- Ramp the subject adversary from zero (domain-adversarial schedule) ----------------- #
     subject_adversary_warmup_ratio: float = 0.0
-    """Fraction of total optimiser steps over which the subject-adversary gradient-reversal strength
-    `lambda_` ramps linearly 0 -> 1 (0 = full strength from step 0). A cold adversary early lets the
-    encoder learn content before invariance pressure is applied, avoiding the over-aggressive early
-    inversion that erases the very content it should preserve (Ganin et al., 2016; Zhao et al., 2019).
+    """Fraction of total optimiser steps over which the subject-adversary gradient-reversal strength `lambda_` ramps linearly 0 -> 1
+    (0 = full strength from step 0). A cold adversary early lets the encoder learn content before invariance pressure is applied,
+    avoiding the over-aggressive early inversion that erases the very content it should preserve (Ganin et al., 2016; Zhao et al., 2019).
     The flat loss weight stays at `subject_adversary_weight`; only the reversal strength ramps."""
 
-    # -- Report B §2.1: the missing alignment half of align+uniformity ---------------------- #
+    # -- The missing alignment half of the align+uniformity pair ---------------------------- #
     alignment_weight: float = 0.0
-    """Weight of an explicit *alignment* penalty `E_{(i,j) in pos} ||center_i - context_j||^2` over the
-    contrastive positive pairs (0 disables). `anisotropy_weight` already supplies the Wang & Isola (2020)
-    *uniformity* half; this closes the theory's other half, pulling positives together and directly
-    tightening the same-word geometry retrieval depends on."""
+    """Weight of an explicit *alignment* penalty `E_{(i,j) in pos} ||center_i - context_j||^2` over the contrastive positive pairs (0 disables).
+    `anisotropy_weight` already supplies the Wang & Isola (2020) *uniformity* half; this closes the theory's other half,
+    pulling positives together and directly tightening the same-word geometry retrieval depends on."""
 
-    # -- Report B §2.2: debiased contrastive (stop punishing correct answers) --------------- #
+    # -- Debiased contrastive (stop punishing correct answers) ------------------------------ #
     tau_plus: float = 0.0
-    """Class-prior `tau_plus` for the debiased contrastive estimator of Chuang et al. (2020), 0 = plain
-    InfoNCE. In a word-level batch another EEG trial of the same word is a *false negative*; the debiased
-    estimator subtracts an estimate of that positive mass from the negative log-sum-exp, so the loss stops
-    shoving semantically-identical items apart. Small (`~0.05-0.1`) in low-SNR EEG batches."""
+    """Class-prior `tau_plus` for the debiased contrastive estimator of Chuang et al. (2020), 0 = plain InfoNCE. In a word-level batch another
+    EEG trial of the same word is a *false negative*; the debiased estimator subtracts an estimate of that positive mass from the negative log-sum-exp,
+    so the loss stops shoving semantically-identical items apart. Small (`~0.05-0.1`) in low-SNR EEG batches."""
 
-    # -- Report B §2.3: collapse-proof regression auxiliary (fills idle nuisance dims) ------ #
+    # -- Collapse-proof regression auxiliary (fills idle nuisance dims) --------------------- #
     data2vec_aux_weight: float = 0.0
-    """Weight of a frozen-target regression auxiliary on the **nuisance** subspace (0 disables). A
-    collapse-resistant complement to InfoNCE (data2vec / HuBERT spirit): the nuisance dims of a factored
-    embedding regress toward a *fixed* random projection of the token's own input features, which cannot
-    co-collapse (the target is frozen) and gives the otherwise-idle `embed_dim - content_dim` dimensions a
-    job -- so the factored design's nuisance room is actually used instead of left ungoverned."""
+    """Weight of a frozen-target regression auxiliary on the **nuisance** subspace (0 disables). A collapse-resistant complement to InfoNCE
+    (data2vec / HuBERT spirit): the nuisance dims of a factored embedding regress toward a *fixed* random projection of the token's own input
+    features, which cannot co-collapse (the target is frozen) and gives the otherwise-idle `embed_dim - content_dim` dimensions a job -- so the
+    factored design's nuisance room is actually used instead of left ungoverned."""
 
-    # -- Report B target study: per-occurrence contextual meaning target -------------------- #
+    # -- Per-occurrence contextual meaning target ------------------------------------------- #
     meaning_contextual: str | None = None
-    """HuggingFace model id (e.g. `'bert-base-uncased'`) for a **per-occurrence contextual** meaning target,
-    or `None` to use the word-type-keyed `meaning_source` file. When set, each word's distillation target is
-    its contextual last-hidden state from a frozen encoder run on the whole sentence (sub-words mean-pooled),
-    so polysemy the static GloVe/fastText target collapses is disambiguated. Requires `transformers`; falls
-    back to the static path with a warning if unavailable. See `data.meaning.build_meaning_matrix_hf`."""
+    """HuggingFace model id (e.g. `'bert-base-uncased'`) for a **per-occurrence contextual** meaning target, or `None` to use the word-type-keyed
+    `meaning_source` file. When set, each word's distillation target is its contextual last-hidden state from a frozen encoder run on the whole sentence
+    (sub-words mean-pooled), so polysemy the static GloVe/fastText target collapses is disambiguated. Requires `transformers`;
+    falls back to the static path with a warning if unavailable. See `data.meaning.build_meaning_matrix_hf`."""
 
     meaning_context_layer: int = -1
-    """Which hidden layer of the contextual model to read (a middle layer ~7-9 aligns best with brain
-    activity; Toneva & Wehbe 2019, Caucheteux & King 2022). `-1` = the last hidden state."""
+    """Which hidden layer of the contextual model to read (a middle layer ~7-9 aligns best with brain activity; Toneva & Wehbe 2019, Caucheteux & King 2022). `-1` = the last hidden state."""
 
-    # -- Report B §3.2: evaluation hardening (opt-in, heavier checks) ----------------------- #
+    # -- Evaluation hardening (opt-in, heavier checks) -------------------------------------- #
     eval_phase_shuffle: bool = False
     """Add a **phase-scrambled-input** control representation: the same trained encoder run on
     FFT-phase-randomised EEG (power spectrum preserved, temporal/phase structure destroyed). Proves the
@@ -389,6 +379,34 @@ class ObjectiveConfig:
     eval_freq_matched: bool = False
     """Restrict each retrieval query's distractor bank to its own frequency/length bin, so a hit reflects
     content rather than a lexical-frequency shortcut (a rare word standing out among common ones)."""
+
+    # -- CLIP sentence-alignment objective (name='clip') ------------------------------------ #
+    text_source: str | None = None
+    """Frozen text-encoder model id for the CLIP sentence target (`name='clip'`), e.g.
+    `'intfloat/e5-base-v2'` / `'BAAI/bge-base-en-v1.5'` (sentence-transformers) or `'Qwen/Qwen2.5-0.5B'`
+    (a decoder LLM, mean-pooled). Each unique ZuCo sentence is embedded once with this frozen model, and
+    the EEG encoder is trained to align to it (Radford et al. 2021, CLIP; Défossez et al. 2023 for EEG/MEG).
+    `None` falls back to a deterministic hash target (mechanism only, no semantics)."""
+
+    text_backend: Literal['auto', 'sentence-transformers', 'hf'] = 'auto'
+    """How to load `text_source`: `sentence-transformers` (E5/BGE and friends), `hf` (a raw HuggingFace model, mean-pooled over the
+    attention mask — for decoder LLMs like Qwen), or `auto` (sentence-transformers if installed and the id is not obviously a decoder LLM, else hf)."""
+
+    text_query_prefix: str = ''
+    """Optional instruction prefix prepended to each sentence before encoding (some retrieval encoders such as E5
+    expect `'query: '` / `'passage: '`). Empty for BGE/Qwen and most models."""
+
+    clip_temperature: float = 0.07
+    """Initial CLIP temperature; the log-scale is a learnable parameter (clamped), as in CLIP."""
+
+    semantic_hard_negatives: bool = False
+    """Bias each training batch to co-locate every anchor sentence with its *semantically-hard* negatives -- sentences that are
+    **surface/syntactically similar but semantically distinct** (high token-overlap, low text-embedding cosine).
+    This forces the encoder to represent meaning rather than surface form, and is the novelty lever of the CLIP recipe.
+    Complementary to the confound-matched `hard_negatives`."""
+
+    hard_negative_pool: int = 8
+    """Number of semantic-hard negatives mined per sentence (used only when `semantic_hard_negatives`)."""
 
 
 @dataclass
@@ -408,15 +426,14 @@ class TrainConfig:
         precision (PrecisionPreference): Mixed-precision preference.
         num_workers (int): DataLoader worker processes. `-1` (or any negative) means **auto** — a few
             workers on an accelerator (CUDA/MPS/TPU), single-process on CPU (see `zte.device.auto_num_workers`).
-        static_shapes (Literal['auto', 'on', 'off']): Whether to pad every batch to a single fixed sentence
-            length instead of the per-batch maximum. `auto` enables it **only on XLA/TPU**, where varying
-            tensor shapes force constant recompilation; `on`/`off` force it. It is accuracy-neutral — the
-            padded positions are masked out of attention, pooling and the loss — at the cost of some extra
-            padded compute, which is the right trade only on TPU. No effect on CUDA/MPS/CPU under `auto`.
+        static_shapes (Literal['auto', 'on', 'off']): Whether to pad every batch to a single fixed sentence length instead of the per-batch maximum.
+            `auto` enables it **only on XLA/TPU**, where varying tensor shapes force constant recompilation; `on`/`off` force it.  It is accuracy-neutral
+            — the padded positions are masked out of attention, pooling and the loss — at the cost of some extra padded compute,
+            which is the right trade only on TPU. No effect on CUDA/MPS/CPU under `auto`.
         split (SplitStrategy): Train/val split strategy.
         val_fraction (float): Validation fraction for random/by_sentence splits.
         test_fraction (float): Held-out test fraction (`0` disables). Defaults to `0.1` so evaluation reports on data the
-            encoder never trained on (the review found the shipped runs were scored in-sample). For `random`/`by_sentence`/`by_stimulus`
+            encoder never trained on (without a held-out split, runs are scored in-sample, which inflates every metric). For `random`/`by_sentence`/`by_stimulus`
             a disjoint test set is carved out and evaluation runs on it; for `by_subject_loso` the held-out subject is always the test set regardless of this value.
         loso_holdout_subject (str | None): Held-out subject for `by_subject_loso`.
         seed (int): Global RNG seed.

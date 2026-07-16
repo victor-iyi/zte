@@ -1,58 +1,55 @@
 #!/usr/bin/env bash
 #
-# run_suite.sh -- the fixed-seed driver for the ZTE bias-controlled experiment suite.
+# run_suite.sh -- the fixed-seed driver for the ZTE recommended-experiment suite.
 #
-# This script is safe to READ as documentation even if you never execute it: it is
-# just the exact commands from docs/EXPERIMENTS.md, wired into seed loops. Full
-# real-data runs are slow (hours), so read it first, then run the study you want by
-# commenting the others out -- or run a fast synthetic smoke via the SMOKE flag.
+# This runs only the current best-performing recipes (the flagship invariance stack, its spatial-model
+# A/B, and the sentence-level CLIP alignment A/B) at a fixed seed. Full real-data runs are slow (hours),
+# so read this first, then run the study you want by commenting the others out at the bottom -- or run a
+# fast synthetic smoke via the SMOKE flag.
 #
 # Usage:
 #   bash scripts/run_suite.sh                         # real data (default root)
 #   bash scripts/run_suite.sh /path/to/zuco_extracted # a different data root
 #   SMOKE=1 bash scripts/run_suite.sh                 # tiny synthetic sanity pass
 #
-# PAUSE / RESUME: every run is launched with `zte-run --resume`, so you can stop the
-# suite at ANY time (Ctrl-C, or `kill` the process) and simply RE-RUN THE SAME COMMAND
-# to continue exactly where you left off -- finished runs are skipped, an interrupted
-# run resumes from its last checkpoint, and the cached dataset bundle is reused.
+# PAUSE / RESUME: every run is launched with `zte-run --resume`, so you can stop the suite at ANY time
+# (Ctrl-C, or `kill` the process) and simply RE-RUN THE SAME COMMAND to continue exactly where you left
+# off -- finished runs are skipped instantly, an interrupted run resumes from its last checkpoint, and the
+# cached dataset bundle is reused.
 #
-# Anti-bias guarantees are baked into the configs (leakage-aware splits, train-only
-# normaliser, held-out test) and into this runner (fixed seeds -> bootstrap CIs).
-# See docs/EXPERIMENTS.md for the full rationale and "how to read the outputs".
+# Anti-bias guarantees are baked into the configs (leakage-aware leave-one-subject-out splits, a
+# train-only normaliser, a held-out test subject) and into this runner (fixed seeds -> bootstrap CIs).
 
 set -euo pipefail
 
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-ROOT="${1:-res/data/zuco_extracted}"     # data root (positional arg 1)
-SEEDS="${SEEDS:-42}"                      # fixed seed(s); default single seed 42. Override e.g. SEEDS="42 43".
-PY="${PY:-.venv/bin/python}"             # project venv interpreter
-OUT_ROOT="${OUT_ROOT:-res/experiments}"  # where zte-run catalogues each run (set to a mounted Drive path to persist)
-BENCH_ROOT="${BENCH_ROOT:-res/benchmark}" # where zte-benchmark writes tables
-DRIVE_BACKUP="${DRIVE_BACKUP:-}"         # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
-SMOKE="${SMOKE:-0}"                      # SMOKE=1 -> tiny synthetic run
+ROOT="${1:-res/data/zuco_extracted}"      # data root (positional arg 1)
+SEEDS="${SEEDS:-42}"                       # fixed seed(s); default single seed 42. Override e.g. SEEDS="42 43".
+PY="${PY:-.venv/bin/python}"              # project venv interpreter
+OUT_ROOT="${OUT_ROOT:-res/experiments}"   # where zte-run catalogues each run (set to a mounted Drive path to persist)
+DRIVE_BACKUP="${DRIVE_BACKUP:-}"          # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
+SMOKE="${SMOKE:-0}"                       # SMOKE=1 -> tiny synthetic run
 
-# All 12 ZuCo v1 subjects, for the full leave-one-subject-out sweep in Study 2.
+# All 12 ZuCo v1 subjects, for the optional full leave-one-subject-out sweep in Study C.
 LOSO_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
 
 # Common flags: --synthetic --epochs 2 in SMOKE mode, else real data.
 if [[ "${SMOKE}" == "1" ]]; then
   SRC_ARGS=(--synthetic --epochs 2 --device cpu)
-  BENCH_SRC=(--synthetic --epochs 2)
   echo ">>> SMOKE mode: tiny synthetic runs, seed(s)=${SEEDS}."
 else
   SRC_ARGS=(--root "${ROOT}")
-  BENCH_SRC=(--root "${ROOT}")
   echo ">>> Real-data mode, root=${ROOT}, seeds=${SEEDS}."
 fi
 
 # --------------------------------------------------------------------------- #
 # Helper: run one config at one seed.
 #
-# `zte-run --seed <N>` overrides train.seed and suffixes the run name with
-# `_s<N>`, so seeds live side by side under res/experiments/<name>_s<N>/.
+# `zte-run --seed <N>` overrides train.seed and suffixes the run name with `_s<N>`, so seeds live side by
+# side under res/experiments/<name>_s<N>/. The held-out subject is baked into each config
+# (train.loso_holdout_subject: ZAB), so these are all LOSO "new brain" runs.
 # --------------------------------------------------------------------------- #
 run_seeded() {
   local config="$1" seed="$2"
@@ -64,107 +61,57 @@ run_seeded() {
     --seed "${seed}" --out-root "${OUT_ROOT}" --resume "${backup[@]+"${backup[@]}"}"
 }
 
-# zte-benchmark sweeps are NOT resumable, so skip one whose benchmark.csv already exists
-# (set FORCE=1 to redo). This keeps a restarted suite from re-running finished sweeps.
-bench_once() {
-  local out="$1"; shift
-  if [[ "${FORCE:-0}" != "1" && -f "${out}/benchmark.csv" ]]; then
-    echo ">>> benchmark already done: ${out} (skipping; FORCE=1 to redo)."
-    return 0
-  fi
-  "${PY}" -m zte.cli.benchmark "${BENCH_SRC[@]}" "$@" --out "${out}"
-}
-
 # =========================================================================== #
-# STUDY 1 -- Purpose / eye-tracking confound.
-#   Clean matched A/B: same model/seed/split, only include_eye_tracking flips.
-#   Plus the two full-scale flagships (exp1 ET-on vs exp6 EEG-only).
+# STUDY A -- The flagship invariance recipe and its spatial-model A/B.
+#   sota_loso  : skip-gram + full invariance stack + spherical-harmonic spatial encoding (the headline).
+#   exp7       : the same stack with learned spatial attention over 2-D coordinates + FiLM conditioning.
+#   Both EEG-only, held out on ZAB. Compare their held-out retrieval and rank-percentile.
 # =========================================================================== #
-study1() {
-  echo "=== STUDY 1: eye-tracking confound ==="
-  bench_once "${BENCH_ROOT}/et_confound" \
-    --objectives skipgram --pos-encodings rope --eye-tracking both \
-    --seeds "${SEEDS// /,}"
-  # Flagship full runs (report both; the benchmark above is the clean confound test).
+study_flagship() {
+  echo "=== STUDY A: flagship SOTA + spatial-model A/B ==="
   for seed in ${SEEDS}; do
-    run_seeded experiments/exp1_skipgram_rope_et.yaml "${seed}"
-    run_seeded experiments/exp6_skipgram_eegonly_invariant.yaml "${seed}"
+    run_seeded experiments/sota_loso.yaml "${seed}"
+    run_seeded experiments/exp7_sota_geom_invariance.yaml "${seed}"
   done
 }
 
 # =========================================================================== #
-# STUDY 2 -- Subject-invariance A/B under LOSO (the north star).
-#   Baseline (no levers) vs full invariance stack, matched, EEG-only.
+# STUDY B -- Sentence-level CLIP alignment: does aligning EEG to frozen text encode meaning?
+#   exp8_clip_e5   : symmetric InfoNCE against an E5 sentence-embedding target.
+#   exp8_clip_qwen : the same against a Qwen (mean-pooled) target -- the text-encoder A/B.
+#   Needs the frozen encoders (`uv sync --group meaning`); falls back to a hash target otherwise.
 # =========================================================================== #
-study2() {
-  echo "=== STUDY 2: subject-invariance A/B (LOSO) ==="
+study_clip() {
+  echo "=== STUDY B: sentence-level CLIP alignment (E5 vs Qwen) ==="
   for seed in ${SEEDS}; do
-    run_seeded experiments/study_invariance_baseline_loso.yaml "${seed}"
-    run_seeded experiments/study_invariance_full_loso.yaml "${seed}"
-  done
-  # Full leave-one-subject-out sweep: rotate the held-out subject across all 12.
-  # Uncomment to run (expensive: 2 configs x 12 subjects x |SEEDS| runs).
-  # for subj in ${LOSO_SUBJECTS}; do
-  #   for cfg in study_invariance_baseline_loso study_invariance_full_loso; do
-  #     for seed in ${SEEDS}; do
-  #       tmp="${OUT_ROOT}/_seeded/${cfg}_${subj}_s${seed}.yaml"
-  #       mkdir -p "$(dirname "${tmp}")"
-  #       "${PY}" - "experiments/${cfg}.yaml" "${subj}" "${seed}" "${tmp}" <<'PYEOF'
-  # import sys
-  # from zte.config import ZTEConfig
-  # cfg = ZTEConfig.from_yaml(sys.argv[1])
-  # cfg.train.loso_holdout_subject = sys.argv[2]
-  # cfg.train.seed = int(sys.argv[3])
-  # cfg.to_yaml(sys.argv[4])
-  # PYEOF
-  #       "${PY}" -m zte.cli.run --config "${tmp}" "${SRC_ARGS[@]}" \
-  #         --name "${cfg}_${subj}_s${seed}" --out-root "${OUT_ROOT}"
-  #     done
-  #   done
-  # done
-}
-
-# =========================================================================== #
-# STUDY 3 -- Anti-collapse ablation (VICReg OFF vs ON), by_stimulus, EEG-only.
-# =========================================================================== #
-study3() {
-  echo "=== STUDY 3: VICReg anti-collapse ablation ==="
-  for seed in ${SEEDS}; do
-    run_seeded experiments/study_vicreg_off.yaml "${seed}"
-    run_seeded experiments/study_vicreg_on.yaml  "${seed}"
+    run_seeded experiments/exp8_clip_e5.yaml "${seed}"
+    run_seeded experiments/exp8_clip_qwen.yaml "${seed}"
   done
 }
 
 # =========================================================================== #
-# STUDY 4 -- Objective sweep (skipgram/cbow/masked/cpc), EEG-only, fixed seeds.
+# STUDY C (optional, expensive) -- Full leave-one-subject-out sweep on the flagship.
+#   Rotate the held-out subject across all 12, turning one number into a generalisation trend.
+#   Uncomment to run (|LOSO_SUBJECTS| x |SEEDS| runs). Prefer scripts/run_loso.sh for this.
 # =========================================================================== #
-study4() {
-  echo "=== STUDY 4: objective sweep ==="
-  bench_once "${BENCH_ROOT}/objective_sweep" \
-    --objectives skipgram,cbow,masked,cpc --pos-encodings rope \
-    --eye-tracking off --seeds "${SEEDS// /,}"
-}
-
-# =========================================================================== #
-# STUDY 5 (optional) -- Representation: raw conformer vs band-power (both masked).
-# =========================================================================== #
-study5() {
-  echo "=== STUDY 5: representation (raw conformer vs band-power) ==="
-  for seed in ${SEEDS}; do
-    run_seeded experiments/exp5_raw_conformer_masked.yaml "${seed}"
-    run_seeded experiments/exp2_masked_rope_eegonly.yaml  "${seed}"
+study_loso_sweep() {
+  echo "=== STUDY C: full LOSO sweep on the flagship ==="
+  for subj in ${LOSO_SUBJECTS}; do
+    for seed in ${SEEDS}; do
+      "${PY}" -m zte.cli.run --config experiments/sota_loso.yaml "${SRC_ARGS[@]}" \
+        --loso-holdout "${subj}" --seed "${seed}" --out-root "${OUT_ROOT}" --resume \
+        ${DRIVE_BACKUP:+--drive-backup "${DRIVE_BACKUP}"}
+    done
   done
 }
 
 # --------------------------------------------------------------------------- #
 # Run the studies. Comment out any you do not want; each is independent.
 # --------------------------------------------------------------------------- #
-study1
-study2
-study3
-study4
-study5
+study_flagship
+study_clip
+# study_loso_sweep   # <- uncomment for the full 12-subject sweep (multi-hour)
 
-echo ">>> Suite complete. Explore a run with:"
-echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/study_vicreg_on_s42 --out res/explorer/study_vicreg_on.html"
-echo ">>> Read docs/EXPERIMENTS.md -> 'How to read the outputs' for every artifact."
+echo ">>> Suite complete. Compare the runs with:"
+echo "    ${PY} -m zte.cli.compare --experiments ${OUT_ROOT} --out ${OUT_ROOT}/COMPARE.html"
+echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/sota_loso_s42 --kind both"
