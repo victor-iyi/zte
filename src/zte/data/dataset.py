@@ -615,17 +615,32 @@ class ZuCoDataset:
     # -- persistence -------------------------------------------------------- #
 
     def _cache_key(self) -> str:
-        """Builds a short, deterministic cache subfolder name from the config."""
+        """Builds a deterministic cache subfolder name from the full processing-relevant config.
+
+        A short readable prefix aids browsing; a hash of every field that changes the *processed
+        arrays* makes the key collision-proof. This matters because the bundle cache can be shared
+        across experiments and sessions (`zte-run --data-cache <dir>`): a coarse key would silently
+        load the wrong tensors when two configs differ only in, say, `bands`, `time_bins`, or the
+        eye-tracking columns. The data *location* and serialisation settings (`root`, `cache_dir`,
+        `cache_format`) and `montage_csv` (used only at model/eval time, never in the arrays) are
+        excluded, so the same processed dataset is reused whether its `.mat` files sit on Drive or
+        locally, and regardless of which montage a model later requests.
+        """
+        import dataclasses
+        import hashlib
+        import json
+
         cfg = self.config
-        parts = [
-            '-'.join(cfg.tasks),
-            cfg.representation,
-            cfg.granularity,
-            cfg.missing.method,
-            cfg.normalize,
-            f'rw{cfg.raw_window}',
-        ]
-        return '_'.join(parts)
+        payload = dataclasses.asdict(cfg)
+        for ignore in ('root', 'cache_dir', 'cache_format', 'montage_csv'):
+            payload.pop(ignore, None)
+        digest = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        readable = '_'.join(
+            ['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}']
+        )
+        return f'{readable}_{digest}'
 
     def save(self, path: str | Path) -> Path:
         """Saves the full processed dataset as a self-contained directory bundle.

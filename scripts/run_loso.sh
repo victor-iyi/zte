@@ -35,11 +35,14 @@ FULL_CFG="${FULL_CFG:-experiments/study_invariance_full_loso.yaml}"       # the 
 CTRL_CFG="${CTRL_CFG:-experiments/study_invariance_baseline_loso.yaml}"   # no-recipe control
 SPATIAL="${SPATIAL:-}"    # optional: provision spatial encoding per run (e.g. exact); empty = use each config as-is
 MEANING="${MEANING:-}"    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
+DATA_CACHE="${DATA_CACHE:-}"  # optional: shared PROCESSED-dataset cache dir (e.g. a Drive path); build once, reuse across all subjects/sessions
 
-# Built once and reused from cache across every held-out subject (montage + meaning are subject-independent).
+# Built once and reused from cache across every held-out subject (montage, meaning and the processed
+# dataset bundle are all subject-independent, so --data-cache skips the .mat load + processing per subject).
 PROVISION=()
 [ -n "${SPATIAL}" ] && PROVISION+=(--spatial "${SPATIAL}")
 [ -n "${MEANING}" ] && PROVISION+=(--meaning "${MEANING}")
+[ -n "${DATA_CACHE}" ] && PROVISION+=(--data-cache "${DATA_CACHE}")
 
 # All 12 ZuCo v1 subjects; synthetic mode only has three.
 ALL_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"

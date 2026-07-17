@@ -33,12 +33,15 @@ DRIVE_BACKUP="${DRIVE_BACKUP:-}"          # mounted Drive folder to mirror check
 SMOKE="${SMOKE:-0}"                       # SMOKE=1 -> tiny synthetic run
 SPATIAL="${SPATIAL:-}"                    # optional: provision spatial encoding per run (e.g. exact / attention); empty = use each config as-is
 MEANING="${MEANING:-}"                    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
+DATA_CACHE="${DATA_CACHE:-}"              # optional: shared PROCESSED-dataset cache dir (e.g. a Drive path); build once, reuse across all runs/sessions
 
 # Turn-key provisioning shared by every run (built once, then reused from cache): --spatial exact builds
-# + wires the exact montage; --meaning static/contextual builds + wires the meaning target.
+# + wires the exact montage; --meaning static/contextual builds + wires the meaning target; --data-cache
+# stores the processed dataset bundle once so the .mat load + processing is skipped on every later run.
 PROVISION=()
 [[ -n "${SPATIAL}" ]] && PROVISION+=(--spatial "${SPATIAL}")
 [[ -n "${MEANING}" ]] && PROVISION+=(--meaning "${MEANING}")
+[[ -n "${DATA_CACHE}" ]] && PROVISION+=(--data-cache "${DATA_CACHE}")
 
 # All 12 ZuCo v1 subjects, for the optional full leave-one-subject-out sweep in Study C.
 LOSO_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"

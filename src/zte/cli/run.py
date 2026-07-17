@@ -62,6 +62,16 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--out-root', type=str, default='res/experiments')
     parser.add_argument(
+        '--data-cache',
+        type=str,
+        default=None,
+        dest='data_cache',
+        help='Shared directory for the PROCESSED dataset bundle, content-addressed by the dataset '
+        'config. Point it at a persistent/Drive path to build the bundle ONCE and reuse it across '
+        'every run and session: on a cache hit the expensive `.mat` load + processing is skipped '
+        'entirely. Default: a per-run cache under the run directory (no cross-run reuse).',
+    )
+    parser.add_argument(
         '--drive-backup',
         type=str,
         default=None,
@@ -212,9 +222,12 @@ def _run(args: argparse.Namespace) -> None:
 
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
-    # Point every output at the run directory so the experiment is self-contained.
+    # Point every output at the run directory so the experiment is self-contained. The PROCESSED
+    # dataset bundle is the exception: `--data-cache` puts it in a shared, content-addressed store
+    # (ideally a persistent/Drive path) so the costly `.mat` load + processing happens once and every
+    # later run/session reuses it. Without the flag it stays per-run (the original self-contained mode).
     config.dataset.root = _resolve_root(args, config)
-    config.dataset.cache_dir = str(run_dir / 'cache')
+    config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
     # Continuous checkpoint mirror to Drive: train fast on the local disk, but copy best/last.pt to
@@ -235,15 +248,23 @@ def _run(args: argparse.Namespace) -> None:
     }
 
     bundle_dir = run_dir / 'bundle'
+    # With a shared --data-cache, the processed bundle already lives in that content-addressed store
+    # and is reused across runs/sessions, so the per-run `bundle/` copy is redundant: skip it and let
+    # `build()` hit the shared cache (a fast array load, no `.mat` parsing) on this and every later run.
+    shared_cache = args.data_cache is not None
 
     # 1) Prepare (build + cache + save bundle + overview figures). On --resume, reuse the bundle.
-    if args.resume and (bundle_dir / 'meta.json').exists() and not args.force:
+    if args.resume and not shared_cache and (bundle_dir / 'meta.json').exists() and not args.force:
         _LOG.info('[1/4] Resume: loading cached dataset bundle (skipping prepare) ...')
         dataset = ZuCoDataset.load(bundle_dir)
     else:
-        _LOG.info('[1/4] Preparing dataset ...')
-        dataset = ZuCoDataset(config.dataset).build()
-        dataset.save(bundle_dir)
+        _LOG.info(
+            '[1/4] Preparing dataset%s ...',
+            f' (shared cache: {args.data_cache})' if shared_cache else '',
+        )
+        dataset = ZuCoDataset(config.dataset).build(force=args.force)
+        if not shared_cache:
+            dataset.save(bundle_dir)
     manifest['dataset'] = dataset.analyze()
     _save_overview(dataset, run_dir / 'figures')
 
