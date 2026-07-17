@@ -38,7 +38,7 @@ from zte.data.features import (
 )
 from zte.data.missing import MissingValueImputer
 from zte.data.schema import N_CHANNELS
-from zte.data.transforms import FeatureNormalizer, bandpass_filter
+from zte.data.transforms import FeatureNormalizer, bandpass_filter, sanitize_raw_windows
 from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.dataset')
@@ -228,6 +228,10 @@ class ZuCoDataset:
         if self.raw_eeg is not None and self.config.bandpass is not None:
             low, high = self.config.bandpass
             self.raw_eeg = np.stack([bandpass_filter(epoch, low, high) for epoch in self.raw_eeg])
+        if self.raw_eeg is not None:
+            # Band power is imputed + normalised above; raw EEG gets the equivalent treatment here so
+            # `raw_eeg` is model-safe for *every* consumer (training loader, embedding export, controls).
+            self.raw_eeg = sanitize_raw_windows(self.raw_eeg)
         # Omitted words are physically removed when the missing strategy is 'drop'
         # or when the caller opts out of keeping them as masked tokens.
         if self.config.missing.method == 'drop' or not self.config.include_omitted:
@@ -236,20 +240,18 @@ class ZuCoDataset:
     def refit_normalizer(self, train_indices: np.ndarray) -> None:
         """Re-fits the feature normaliser (and eye-tracking fill) on train rows only.
 
-        :meth:`_process` fits the normaliser on *every* present token, which leaks val/test (and
-        held-out-subject) statistics into the training features. The training pipeline calls this
-        method **after** computing the split so the normaliser is honest: it re-fits using only the
-        given train word-row indices (intersected with present tokens), then re-transforms
-        :attr:`features` for *all* rows with those train-only statistics and updates
-        :attr:`normalizer` so the checkpoint contract (`dataset.normalizer.state`) reflects them.
+        `_process` fits the normaliser on *every* present token, which leaks val/test (and held-out-subject) statistics into the
+        training features. The training pipeline calls this method **after** computing the split so the normaliser is honest: it
+        re-fits using only the given train word-row indices (intersected with present tokens), then re-transforms `features` for *all*
+        rows with those train-only statistics and updates `normalizer` so the checkpoint contract (`dataset.normalizer.state`) reflects them.
 
-        The pre-normalisation matrix is recovered by inverting the current normaliser, so this works
-        equally on a freshly built dataset and one loaded from cache. The call is a **no-op** when
-        ``config.normalizer_fit == 'all'`` (legacy whole-dataset fit) or when there are no band-power
+        The pre-normalisation matrix is recovered by inverting the current normaliser, so this works equally on a freshly built dataset and one
+        loaded from cache. The call is a **no-op** when `config.normalizer_fit == 'all'` (legacy whole-dataset fit) or when there are no band-power
         features, and is idempotent: the raw matrix is always re-derived from the original stats.
 
         Args:
             train_indices (np.ndarray): Word-row indices belonging to the training split.
+
         """
         if self.config.normalizer_fit == 'all':
             return
@@ -316,11 +318,10 @@ class ZuCoDataset:
     def _attach_categories(self) -> None:
         """Labels sentences with a category + length band and propagates to words.
 
-        Also attaches a subject-agnostic ``stimulus_key`` -- the normalised sentence text -- onto
-        every word row. Because the key is the sentence *text* (not ``subject|task|sentence_idx``),
-        the same sentence read by different subjects shares one key, which is what lets the
-        ``by_stimulus`` split keep a stimulus wholly on one side (train XOR test) and what the torch
-        bridge hashes into a cross-subject ``content_id``.
+        Also attaches a subject-agnostic `stimulus_key` -- the normalised sentence text -- onto every word row. Because the key is the sentence *text*
+        (not `subject|task|sentence_idx`), the same sentence read by different subjects shares one key, which is what lets the `by_stimulus` split
+        keep a stimulus wholly on one side (train XOR test) and what the torch bridge hashes into a cross-subject `content_id`.
+
         """
         from zte.data.categories import normalise_text, sentence_categories
 
@@ -702,6 +703,10 @@ class ZuCoDataset:
             ds.features = arrays['features'] if 'features' in arrays else None
             ds.presence = arrays['presence'] if 'presence' in arrays else None
             ds.raw_eeg = arrays['raw_eeg'] if 'raw_eeg' in arrays else None
+        if ds.raw_eeg is not None:
+            # Bundles written before raw sanitisation existed still hold NaN/unscaled windows, so clean on
+            # load rather than forcing an expensive rebuild. Idempotent, so already-clean bundles are unchanged.
+            ds.raw_eeg = sanitize_raw_windows(ds.raw_eeg)
         ds.feature_names = meta['feature_names']
         ds.bp_feature_names = meta['bp_feature_names']
         if meta.get('normalizer'):

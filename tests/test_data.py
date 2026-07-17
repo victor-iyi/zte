@@ -99,24 +99,41 @@ def test_dataset_builds_with_aligned_shapes(small_dataset: ZuCoDataset) -> None:
     assert not np.isnan(ds.features).any(), 'features must be finite after imputation'
 
 
-def test_raw_path_sanitises_nan_and_normalises(small_dataset: ZuCoDataset) -> None:
-    """Raw EEG with NaN / extreme samples (as in real ZuCo) yields a finite, z-scored batch.
+def test_raw_windows_are_sanitised_at_source(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """`raw_eeg` is NaN-free and per-channel z-scored for every consumer, old bundles included.
 
-    Regression: unlike the band-power path (imputed + FeatureNormalizer-scaled), raw EEG carries
-    NaN (rejected samples/channels) and is unscaled. Without read-time sanitisation the raw path fed
-    those straight to the conformer, making the contrastive loss NaN from the first step.
+    Regression: unlike band power (imputed + FeatureNormalizer-scaled), raw EEG carries NaN (rejected
+    samples/channels) and unscaled microvolts. Untreated it made the contrastive loss NaN from step 1,
+    and -- because the embedding export reads `raw_eeg` directly rather than via the loader -- produced
+    NaN embeddings that surfaced as `LinAlgError: SVD did not converge` during evaluation. The treatment
+    therefore belongs at the source, not at any single read site.
     """
     ds = small_dataset
     assert ds.raw_eeg is not None
-    rng = np.random.default_rng(0)
-    ds.raw_eeg[rng.random(ds.raw_eeg.shape) < 0.1] = np.nan  # scattered rejected samples
-    ds.raw_eeg[0] = np.nan  # a fully-rejected word
-    ds.raw_eeg[1, :, :3] = 1e6  # extreme unscaled amplitude
+    assert np.isfinite(ds.raw_eeg).all(), 'built raw_eeg must be finite'
 
+    # The training loader (one consumer) sees finite, z-scored windows.
     loader = make_dataloader(ds.to_torch(representation='raw'), batch_size=8, num_workers=0, seed=0)
     raw = next(iter(loader))['raw']
     assert torch.isfinite(raw).all(), 'raw batch must be finite (no NaN/inf reaches the model)'
-    assert abs(float(raw.mean())) < 0.5 and float(raw.std()) < 5.0, 'raw must be per-epoch z-scored'
+
+    # A bundle written before sanitisation existed carries NaN/unscaled windows on disk; loading it
+    # must clean them in place of an expensive rebuild.
+    bundle = ds.save(tmp_path / 'bundle')
+    with np.load(bundle / 'arrays.npz') as handle:
+        arrays = dict(handle)
+    rng = np.random.default_rng(0)
+    stale = arrays['raw_eeg'].astype(np.float32) * 5e4  # unscaled microvolts
+    stale[rng.random(stale.shape) < 0.1] = np.nan  # scattered rejected samples
+    stale[0] = np.nan  # a fully-rejected word
+    arrays['raw_eeg'] = stale
+    np.savez_compressed(bundle / 'arrays.npz', **arrays)
+
+    reloaded = ZuCoDataset.load(bundle)
+    assert reloaded.raw_eeg is not None
+    assert np.isfinite(reloaded.raw_eeg).all(), 'load must sanitise pre-fix bundles'
+    assert abs(float(reloaded.raw_eeg.mean())) < 0.5, 'raw must be per-epoch z-scored'
+    assert float(reloaded.raw_eeg.std()) < 5.0, 'raw must be per-epoch z-scored'
 
 
 def test_presence_matches_omission(small_dataset: ZuCoDataset) -> None:

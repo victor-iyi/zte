@@ -85,21 +85,52 @@ def bandpass_filter(
 
 
 def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Per-channel z-scores a single raw EEG epoch `(n_channels, time_steps)`.
+    """Per-channel z-scores raw EEG epochs `(..., n_channels, time_steps)`.
 
     Per-channel standardisation absorbs impedance and gain differences across electrodes, as recommended for ZuCo raw EEG.
+    Statistics are taken over the time axis only, so leading dimensions (a batch of epochs) broadcast.
 
     Args:
-        epoch (np.ndarray): Array `(n_channels, time_steps)`.
+        epoch (np.ndarray): Array `(..., n_channels, time_steps)`.
         eps (float): Numerical floor added to the per-channel standard deviation.
 
     Returns:
-        The standardised epoch as float32.
+        The standardised epochs as float32.
 
     """
     mean = epoch.mean(axis=-1, keepdims=True)
     std = epoch.std(axis=-1, keepdims=True)
     return ((epoch - mean) / (std + eps)).astype(np.float32)
+
+
+def sanitize_raw_windows(raw: np.ndarray, eps: float = 1e-6, chunk: int = 4096) -> np.ndarray:
+    """Makes raw EEG windows model-safe **in place**: NaN/inf -> 0, then per-channel z-score per epoch.
+
+    ZuCo's `rawEEG` carries `NaN` for rejected samples/channels and is stored in unscaled microvolts.
+    Unlike band power -- which is imputed and `FeatureNormalizer`-scaled -- raw signals reach the frontend exactly as parsed,
+    so a single `NaN` propagates through the convolution and makes the whole contrastive batch (and any exported embedding) `NaN`.
+    This applies the `normalize_raw_epoch` treatment plus sanitisation, and is the single choke point every raw consumer relies on.
+
+    Idempotent: re-applying to already-standardised windows is a no-op up to `eps`. Operates in place and
+    in chunks so multi-GB arrays never allocate a full-size temporary.
+
+    Args:
+        raw (np.ndarray): Float array `(n_epochs, n_channels, time_steps)`, modified in place when float32.
+        eps (float): Numerical floor added to the per-channel standard deviation.
+        chunk (int): Rows standardised per pass (bounds peak temporary memory).
+
+    Returns:
+        np.ndarray: The sanitised, per-channel z-scored windows (float32).
+    """
+    x = np.asarray(raw, dtype=np.float32)
+    np.nan_to_num(x, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    for start in range(0, len(x), chunk):
+        block = x[start : start + chunk]
+        mean = block.mean(axis=-1, keepdims=True)
+        std = block.std(axis=-1, keepdims=True)
+        block -= mean
+        block /= std + eps
+    return x
 
 
 class FeatureNormalizer:

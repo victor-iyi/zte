@@ -139,23 +139,54 @@ def retrieval_metrics(
     return out
 
 
-def noise_matched(x: np.ndarray, seed: int = 0) -> np.ndarray:
+def noise_matched(x: np.ndarray, seed: int = 0, chunk: int = 2048) -> np.ndarray:
     """Returns Gaussian noise matched to `x`'s per-feature mean and variance.
 
     This is the empirical-floor control: a genuine encoder must beat embeddings learned from this noise to claim it decodes real neural structure.
 
+    Computed in row blocks and entirely in float32. The obvious one-liner is not viable on a raw-signal
+    matrix: `rng.standard_normal(x.shape)` draws in **float64** (twice the output), `np.nanmean`/`np.nanstd`
+    each materialise a full-size mask *and* a full-size copy, and `* std + mean` adds more temporaries --
+    together several times the input, which MemoryErrors on a multi-GB raw baseline. Moments accumulate in
+    (n_features,)-sized float64 registers, so the reduction stays exact while peak memory is the output
+    array plus one block.
+
     Args:
-        x (np.ndarray): Real feature matrix `(n_samples, n_features)`.
+        x (np.ndarray): Real feature matrix `(n_samples, n_features)`; may be a read-only memmap.
         seed (int): RNG seed.
+        chunk (int): Rows processed per block (bounds peak temporary memory).
 
     Returns:
-        np.ndarray: A noise matrix of the same shape with matched first/second moments.
+        np.ndarray: A noise matrix of the same shape with matched first/second moments (float32).
 
     """
     rng = np.random.default_rng(seed)
-    mean = np.nanmean(x, axis=0, keepdims=True)
-    std = np.nanstd(x, axis=0, keepdims=True)
-    return (rng.standard_normal(x.shape) * std + mean).astype(np.float32)
+    src = np.asarray(x)
+    n, d = src.shape[0], int(np.prod(src.shape[1:]))
+    count = np.zeros(d, dtype=np.int64)
+    total = np.zeros(d, dtype=np.float64)
+    for start in range(0, n, chunk):  # pass 1: nan-aware mean
+        block = np.asarray(src[start : start + chunk], dtype=np.float32).reshape(-1, d)
+        valid = ~np.isnan(block)
+        count += valid.sum(axis=0)
+        total += np.where(valid, block, np.float32(0.0)).sum(axis=0, dtype=np.float64)
+    safe = np.maximum(count, 1)
+    mean = (total / safe).astype(np.float32)
+    resid = np.zeros(d, dtype=np.float64)
+    for start in range(0, n, chunk):  # pass 2: nan-aware variance about that mean
+        block = np.asarray(src[start : start + chunk], dtype=np.float32).reshape(-1, d)
+        valid = ~np.isnan(block)
+        delta = np.where(valid, block - mean, np.float32(0.0))
+        resid += np.square(delta).sum(axis=0, dtype=np.float64)
+    std = np.sqrt(resid / safe).astype(np.float32)
+    out = np.empty((n, d), dtype=np.float32)
+    for start in range(0, n, chunk):  # draw in float32 -- the default float64 draw doubles this
+        stop = min(start + chunk, n)
+        block = rng.standard_normal((stop - start, d), dtype=np.float32)
+        block *= std
+        block += mean
+        out[start:stop] = block
+    return out.reshape(src.shape)
 
 
 def _l2(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:

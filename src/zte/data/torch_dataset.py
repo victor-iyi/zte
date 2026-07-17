@@ -289,17 +289,8 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             features = torch.from_numpy(np.ascontiguousarray(ds.features[rows])).float()
         raw = None
         if want_raw and ds.raw_eeg is not None:
+            # Already sanitised + per-channel z-scored at the source (ZuCoDataset.sanitize_raw_windows).
             raw = torch.from_numpy(np.ascontiguousarray(ds.raw_eeg[rows])).float()
-            # Raw ZuCo EEG carries NaN (rejected samples/channels, copied through by _raw_window) and is
-            # unscaled -- unlike the band-power path, which is imputed and FeatureNormalizer-scaled. Left
-            # untreated a single NaN makes the whole contrastive batch NaN from step 1, and raw microvolt
-            # scale destabilises the conformer. Sanitise NaN/inf -> 0, then per-channel z-score each epoch
-            # (normalize_raw_epoch semantics) so the frontend sees finite, scale-matched input. Applied at
-            # read-time so it is idempotent across cached bundles (no rebuild) and never double-normalises.
-            raw = torch.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
-            mean = raw.mean(dim=-1, keepdim=True)
-            std = raw.std(dim=-1, unbiased=False, keepdim=True)
-            raw = (raw - mean) / (std + 1e-6)
         if ds.presence is not None:
             presence = torch.from_numpy(np.ascontiguousarray(ds.presence[rows])).bool()
         else:
