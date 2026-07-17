@@ -110,7 +110,9 @@ def _encode_hf_meanpool(texts: list[str], source: str, prefix: str, device: str)
             hs = model(**enc).last_hidden_state  # (b, seq, hidden)
             mask = enc['attention_mask'].unsqueeze(-1).to(hs.dtype)  # (b, seq, 1)
             pooled = (hs * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
-            out[start : start + len(chunk)] = pooled.cpu().numpy()
+            # .float(): decoder LLMs (Qwen etc.) load in bfloat16 on a GPU, and numpy has no bfloat16 --
+            # cast the pooled sentence vectors to float32 before leaving the device.
+            out[start : start + len(chunk)] = pooled.float().cpu().numpy()
     return out
 
 

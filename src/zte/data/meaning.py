@@ -195,8 +195,10 @@ def build_meaning_matrix_hf(
         for sub, wp in enumerate(enc_in.word_ids(0)):
             if wp is not None and wp < len(positions):
                 pooled[wp].append(hs[sub])
+        # .float(): a bf16 encoder (some run in bfloat16 on GPU) has no numpy dtype; cast before numpy.
         vec_by_pos = {
-            positions[wp]: torch.stack(vecs).mean(0).cpu().numpy() for wp, vecs in pooled.items()
+            positions[wp]: torch.stack(vecs).mean(0).float().cpu().numpy()
+            for wp, vecs in pooled.items()
         }
         for i in rows:
             v = vec_by_pos.get(int(widx[i]))

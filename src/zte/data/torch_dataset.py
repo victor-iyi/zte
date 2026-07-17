@@ -9,6 +9,7 @@ positive/negative pairs and masking on top of this batch.
 from __future__ import annotations
 
 import functools
+import sys
 from collections import defaultdict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -607,20 +608,21 @@ def make_dataloader(
             drop_last=drop_last,
             seed=seed,
         )
+    # Worker start method: on Linux with > 0 workers, use `fork` so the (potentially multi-GB, e.g. raw
+    # EEG) dataset is shared copy-on-write instead of pickled to each worker. Python 3.14 defaults to
+    # `forkserver` on Linux, which pickles the whole dataset per worker -- that truncates / OOMs on the
+    # large raw-signal arrays. Workers only do CPU-side loading, so `fork` is safe with CUDA in the
+    # main process. Left at the platform default (spawn) on macOS/Windows.
+    mp_ctx = 'fork' if (num_workers > 0 and sys.platform.startswith('linux')) else None
+    common: dict[str, Any] = {
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+        'collate_fn': collate,
+    }
+    if mp_ctx is not None:
+        common['multiprocessing_context'] = mp_ctx
     if batch_sampler is not None:
-        return DataLoader(
-            torch_dataset,
-            batch_sampler=batch_sampler,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            collate_fn=collate,
-        )
+        return DataLoader(torch_dataset, batch_sampler=batch_sampler, **common)
     return DataLoader(
-        torch_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=drop_last,
-        collate_fn=collate,
+        torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common
     )
