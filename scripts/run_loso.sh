@@ -33,6 +33,13 @@ OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
 FULL_CFG="${FULL_CFG:-experiments/study_invariance_full_loso.yaml}"       # the invariance recipe (override: FULL_CFG=experiments/sota_loso.yaml)
 CTRL_CFG="${CTRL_CFG:-experiments/study_invariance_baseline_loso.yaml}"   # no-recipe control
+SPATIAL="${SPATIAL:-}"    # optional: provision spatial encoding per run (e.g. exact); empty = use each config as-is
+MEANING="${MEANING:-}"    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
+
+# Built once and reused from cache across every held-out subject (montage + meaning are subject-independent).
+PROVISION=()
+[ -n "${SPATIAL}" ] && PROVISION+=(--spatial "${SPATIAL}")
+[ -n "${MEANING}" ] && PROVISION+=(--meaning "${MEANING}")
 
 # All 12 ZuCo v1 subjects; synthetic mode only has three.
 ALL_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
@@ -55,7 +62,8 @@ run_one() {   # cfg, holdout
   local backup=()
   [ -n "${DRIVE_BACKUP}" ] && backup=(--drive-backup "${DRIVE_BACKUP}")
   "${PY}" -m zte.cli.run --config "${cfg}" "${SRC[@]}" \
-      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore "${backup[@]+"${backup[@]}"}"
+      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore \
+      "${PROVISION[@]+"${PROVISION[@]}"}" "${backup[@]+"${backup[@]}"}"
   local code=$?
   if [ "${code}" = "130" ]; then
     echo "⏸  Paused during ${holdout}. Re-run this script to resume exactly here."

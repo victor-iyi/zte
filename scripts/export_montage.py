@@ -14,6 +14,8 @@ Usage:
     python scripts/export_montage.py --out res/montage_gsn105.csv --zuco105   # recommended: the ZuCo 105-channel scalp cap, no manual step
     python scripts/export_montage.py --out res/montage_full.csv               # full net in its own order (unaligned to the 105-subset)
 
+    # Turn-key alternative: `zte-run --spatial exact` builds + wires this montage per-run (see zte.cli.provision).
+
 `--zuco105` starts from the 129-net (the Cz reference is excluded automatically), drops the 23 standard EGI outer-ring electrodes by elevation, and
 keeps the 105 scalp electrodes in native E-number order — the order ZuCo's band-power tensors use.
 
@@ -23,50 +25,13 @@ Requires the optional dependency `mne` (`pip install mne`).
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 
-from zte.models.spatial import ScalpGeometry
+from zte.data.montage import DEFAULT_MONTAGE, build_montage_csv, zuco105_labels
 
-
-def zuco105_labels(montage: str = 'GSN-HydroCel-129') -> list[str]:
-    """Returns ZuCo's 105 retained electrodes -- standard EGI net, standard ordering.
-
-    ZuCo v1/v2 use the EGI HydroCel net with standard channel ordering (confirmed from the dataset
-    docs), keeping 105 scalp channels after the outer face/neck artefact ring is dropped. That ring
-    is exactly the lowest-elevation electrodes, so — starting from the E1..E128 scalp electrodes (the
-    Cz vertex reference is excluded automatically, being the montage's only non-`E` label) — we drop
-    the 23 lowest-z and keep the remaining 105 in native E-number order, the order ZuCo's band-power
-    tensors use. This reproduces ZuCo's retained set; only per-channel scalp attribution assumes the
-    standard reduction, which the standard-ordering guarantee underwrites.
-    """
-    import mne  # type: ignore[import-untyped]
-
-    pos = mne.channels.make_standard_montage(montage).get_positions()['ch_pos']
-    labels = sorted((l for l in pos if l.startswith('E')), key=lambda s: int(s[1:]))
-    z = [pos[l][2] for l in labels]
-    drop = set(sorted(range(len(labels)), key=lambda i: z[i])[: len(labels) - 105])
-    return [l for i, l in enumerate(labels) if i not in drop]
-
-
-def _regions_from_geometry(xyz: object) -> list[str]:
-    """Assigns each electrode an anterior->posterior scalp region from its front-back (y) position.
-
-    In head coordinates the y-axis runs posterior (-) to anterior (+), so ranking electrodes by y
-    and splitting into the 8 `SCALP_REGIONS` bands gives a real, coordinate-derived region map — the
-    same anterior->posterior partition the analysis expects, but exact for this montage.
-    """
-    import numpy as np
-
-    from zte.data.regions import SCALP_REGIONS
-
-    y = np.asarray(xyz, dtype=np.float64)[:, 1]
-    # Rank -> quantile bin; most-anterior (largest y) = frontopolar, most-posterior = occipital.
-    order = np.argsort(-y)  # anterior first
-    rank = np.empty(len(y), dtype=int)
-    rank[order] = np.arange(len(y))
-    bin_idx = (rank * len(SCALP_REGIONS) // max(len(y), 1)).clip(0, len(SCALP_REGIONS) - 1)
-    return [SCALP_REGIONS[b] for b in bin_idx]
+# Re-exported for backward compatibility; the importable core now lives in `zte.data.montage`, shared
+# with the `zte-run --spatial exact` flag so the script and the flag stay byte-for-byte identical.
+__all__ = ['build_montage_csv', 'zuco105_labels']
 
 
 def main() -> None:
@@ -75,7 +40,7 @@ def main() -> None:
     parser.add_argument('--out', required=True, type=Path, help='Destination CSV path.')
     parser.add_argument(
         '--montage',
-        default='GSN-HydroCel-129',
+        default=DEFAULT_MONTAGE,
         help='MNE standard montage name (ZuCo uses the 129-net).',
     )
     parser.add_argument(
@@ -100,29 +65,11 @@ def main() -> None:
     keep = args.keep
     if args.keep_file is not None:
         keep = [ln.strip() for ln in args.keep_file.read_text().splitlines() if ln.strip()]
-    elif args.zuco105:
-        keep = zuco105_labels(args.montage)
 
-    geo = ScalpGeometry.from_mne(args.montage, keep=keep)
-    labels = geo.labels or tuple(f'ch{c:03d}' for c in range(geo.n_channels))
-    regions = _regions_from_geometry(geo.xyz)  # anterior->posterior band per electrode (from y)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open('w', newline='', encoding='utf-8') as fh:
-        writer = csv.writer(fh)
-        # Coordinates (x,y,z) drive the spatial encoding; `region` drives the eval's
-        # region-importance analysis. Emitting both lets one montage serve the whole pipeline.
-        writer.writerow(['channel', 'x', 'y', 'z', 'label', 'region'])
-        for c, (xyz, label) in enumerate(zip(geo.xyz, labels)):
-            writer.writerow(
-                [c, f'{xyz[0]:.6f}', f'{xyz[1]:.6f}', f'{xyz[2]:.6f}', label, regions[c]]
-            )
-    if keep is None:
-        note = ' (WARNING: unaligned full montage)'
-    elif args.zuco105:
-        note = ' (ZuCo-105 scalp cap, standard EGI order)'
-    else:
-        note = ''
-    print(f'Wrote {geo.n_channels}-channel montage to {args.out}{note}')
+    out = build_montage_csv(
+        args.out, montage=args.montage, zuco105=args.zuco105, keep=keep, overwrite=True
+    )
+    print(f'Wrote montage to {out}')
 
 
 if __name__ == '__main__':

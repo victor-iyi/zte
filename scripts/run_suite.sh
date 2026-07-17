@@ -31,6 +31,14 @@ PY="${PY:-.venv/bin/python}"              # project venv interpreter
 OUT_ROOT="${OUT_ROOT:-res/experiments}"   # where zte-run catalogues each run (set to a mounted Drive path to persist)
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"          # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
 SMOKE="${SMOKE:-0}"                       # SMOKE=1 -> tiny synthetic run
+SPATIAL="${SPATIAL:-}"                    # optional: provision spatial encoding per run (e.g. exact / attention); empty = use each config as-is
+MEANING="${MEANING:-}"                    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
+
+# Turn-key provisioning shared by every run (built once, then reused from cache): --spatial exact builds
+# + wires the exact montage; --meaning static/contextual builds + wires the meaning target.
+PROVISION=()
+[[ -n "${SPATIAL}" ]] && PROVISION+=(--spatial "${SPATIAL}")
+[[ -n "${MEANING}" ]] && PROVISION+=(--meaning "${MEANING}")
 
 # All 12 ZuCo v1 subjects, for the optional full leave-one-subject-out sweep in Study C.
 LOSO_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
@@ -58,7 +66,8 @@ run_seeded() {
   [[ -n "${DRIVE_BACKUP}" ]] && backup=(--drive-backup "${DRIVE_BACKUP}")
   # --resume makes each run idempotent: finished runs are skipped, interrupted ones continue.
   "${PY}" -m zte.cli.run --config "${config}" "${SRC_ARGS[@]}" \
-    --seed "${seed}" --out-root "${OUT_ROOT}" --resume "${backup[@]+"${backup[@]}"}"
+    --seed "${seed}" --out-root "${OUT_ROOT}" --resume \
+    "${PROVISION[@]+"${PROVISION[@]}"}" "${backup[@]+"${backup[@]}"}"
 }
 
 # =========================================================================== #
@@ -100,7 +109,7 @@ study_loso_sweep() {
     for seed in ${SEEDS}; do
       "${PY}" -m zte.cli.run --config experiments/sota_loso.yaml "${SRC_ARGS[@]}" \
         --loso-holdout "${subj}" --seed "${seed}" --out-root "${OUT_ROOT}" --resume \
-        ${DRIVE_BACKUP:+--drive-backup "${DRIVE_BACKUP}"}
+        "${PROVISION[@]+"${PROVISION[@]}"}" ${DRIVE_BACKUP:+--drive-backup "${DRIVE_BACKUP}"}
     done
   done
 }

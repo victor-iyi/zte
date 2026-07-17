@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from scipy.io import loadmat
 
 from zte.config import MissingConfig
@@ -14,6 +15,7 @@ from zte.data.dataset import ZuCoDataset
 from zte.data.mat_loader import _raw_window
 from zte.data.missing import MissingValueImputer
 from zte.data.schema import BANDS, ET_MEASURES, N_CHANNELS, band_feature_name
+from zte.data.torch_dataset import make_dataloader
 
 
 def _obj_array(items: list) -> np.ndarray:
@@ -95,6 +97,26 @@ def test_dataset_builds_with_aligned_shapes(small_dataset: ZuCoDataset) -> None:
     assert ds.presence.shape == (n,)
     assert ds.raw_eeg.shape[0] == n and ds.raw_eeg.shape[1] == N_CHANNELS
     assert not np.isnan(ds.features).any(), 'features must be finite after imputation'
+
+
+def test_raw_path_sanitises_nan_and_normalises(small_dataset: ZuCoDataset) -> None:
+    """Raw EEG with NaN / extreme samples (as in real ZuCo) yields a finite, z-scored batch.
+
+    Regression: unlike the band-power path (imputed + FeatureNormalizer-scaled), raw EEG carries
+    NaN (rejected samples/channels) and is unscaled. Without read-time sanitisation the raw path fed
+    those straight to the conformer, making the contrastive loss NaN from the first step.
+    """
+    ds = small_dataset
+    assert ds.raw_eeg is not None
+    rng = np.random.default_rng(0)
+    ds.raw_eeg[rng.random(ds.raw_eeg.shape) < 0.1] = np.nan  # scattered rejected samples
+    ds.raw_eeg[0] = np.nan  # a fully-rejected word
+    ds.raw_eeg[1, :, :3] = 1e6  # extreme unscaled amplitude
+
+    loader = make_dataloader(ds.to_torch(representation='raw'), batch_size=8, num_workers=0, seed=0)
+    raw = next(iter(loader))['raw']
+    assert torch.isfinite(raw).all(), 'raw batch must be finite (no NaN/inf reaches the model)'
+    assert abs(float(raw.mean())) < 0.5 and float(raw.std()) < 5.0, 'raw must be per-epoch z-scored'
 
 
 def test_presence_matches_omission(small_dataset: ZuCoDataset) -> None:

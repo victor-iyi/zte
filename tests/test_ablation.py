@@ -11,6 +11,7 @@ from zte.config import ZTEConfig
 from zte.evaluation.ablation import (
     _set_dotted,
     diff_scoreboards,
+    grid_configs,
     single_variable_configs,
 )
 
@@ -45,6 +46,43 @@ def test_single_variable_configs_sweep_and_coerce() -> None:
     # numeric coercion
     p = single_variable_configs(base, 'objective.meaning_distill_weight', ['0', '0.5'])
     assert p[1][1].objective.meaning_distill_weight == 0.5
+
+
+def test_grid_configs_takes_cartesian_product() -> None:
+    """A multi-knob grid emits one config per value combination, differing only in the swept fields."""
+    base = ZTEConfig()
+    base.run_name = 'sota'
+    pairs = grid_configs(
+        base,
+        [
+            ('model.spatial_encoding', ['none', 'spherical_harmonics']),
+            ('objective.meaning_distill_weight', ['0', '0.5']),
+        ],
+    )
+    assert len(pairs) == 4  # 2 x 2
+    tags = [t for t, _ in pairs]
+    assert tags[0] == 'model_spatial_encoding=none__objective_meaning_distill_weight=0'
+    # Each arm sets exactly its combination; nothing else moved off the base.
+    by_tag = {t: c for t, c in pairs}
+    hi = by_tag['model_spatial_encoding=spherical_harmonics__objective_meaning_distill_weight=0.5']
+    assert hi.model.spatial_encoding == 'spherical_harmonics'
+    assert hi.objective.meaning_distill_weight == 0.5
+    assert hi.run_name == (
+        'sota__model_spatial_encoding=spherical_harmonics__objective_meaning_distill_weight=0.5'
+    )
+    assert hi.train == base.train  # untouched sections identical
+    # The base is never mutated by the sweep.
+    assert base.model.spatial_encoding == 'none'
+
+
+def test_grid_configs_single_knob_matches_single_variable() -> None:
+    """One (knob, values) spec is exactly the single-variable sweep."""
+    base = ZTEConfig()
+    base.run_name = 'sota'
+    grid = grid_configs(base, [('model.factored', ['false', 'true'])])
+    single = single_variable_configs(base, 'model.factored', ['false', 'true'])
+    assert [t for t, _ in grid] == [t for t, _ in single]
+    assert [c.run_name for _, c in grid] == [c.run_name for _, c in single]
 
 
 def _write_metrics(path: Path, retr_top1: float, lift_word_len: float, effrank: float) -> None:

@@ -7,6 +7,7 @@ Rows are L2-normalised for cosine distillation; out-of-vocabulary words fall bac
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -105,6 +106,27 @@ def build_meaning_matrix(
     return (mat / np.clip(norms, 1e-8, None)).astype(np.float32)
 
 
+def _hf_cache_path(
+    model_name: str,
+    layer: int,
+    skey: np.ndarray,
+    widx: np.ndarray,
+    warr: np.ndarray,
+    cache_dir: str,
+) -> Path:
+    """Deterministic cache file for a contextual meaning matrix, keyed by (model, layer, occurrences).
+
+    The key hashes the exact per-occurrence identity -- `(stimulus_key, word_idx, word)` for every row,
+    in order -- so it is stable across LOSO held-out subjects and ablation arms (which all pass the same
+    full `dataset.words`), yet changes the moment the corpus or the model/layer changes.
+    """
+    h = hashlib.sha1()
+    h.update(f'{model_name}|{layer}|{len(warr)}'.encode())
+    for s, wi, w in zip(skey, widx, warr):
+        h.update(f'{s}\x1f{wi}\x1f{w}\x00'.encode('utf-8', 'ignore'))
+    return Path(cache_dir) / f'meaning_hf_{h.hexdigest()[:16]}.npy'
+
+
 def build_meaning_matrix_hf(
     words: pd.DataFrame,
     model_name: str = 'bert-base-uncased',
@@ -112,6 +134,7 @@ def build_meaning_matrix_hf(
     layer: int = -1,
     device: str = 'cpu',
     max_length: int = 256,
+    cache_dir: str = 'res/cache/meaning',
 ) -> tuple[np.ndarray | None, int]:
     """Builds a per-*occurrence* contextual meaning target aligned row-for-row with `words`.
 
@@ -132,11 +155,44 @@ def build_meaning_matrix_hf(
         layer (int): Hidden-state layer index (`-1` = last; a middle layer ~7-9 aligns best with brain data).
         device (str): Torch device for the encoder pass.
         max_length (int): Tokeniser truncation length.
+        cache_dir (str): Shared directory for the on-disk matrix cache. The frozen encoder pass is the
+            expensive step, so a matching cache (same corpus + model + layer) is loaded instead of
+            recomputed -- reused across every LOSO subject and ablation arm, and even without
+            `transformers` installed once the cache exists.
 
     Returns:
         tuple[np.ndarray | None, int]: `((n_words, hidden) float32 with NaN for uncovered rows, hidden)`,
             or `(None, 0)` when `transformers` is unavailable (the caller falls back to the static path).
     """
+    n = len(words)
+    # Build the occurrence identity first (no torch needed) -- it is both the encoder input and the
+    # cache key, so a cache hit short-circuits before any heavy import.
+    if 'stimulus_key' in words.columns:
+        skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
+    else:
+        skey = (words['task'].astype(str) + '|' + words['sentence_idx'].astype(str)).to_numpy()
+    widx = (words['word_idx'].to_numpy() if 'word_idx' in words.columns else np.arange(n)).astype(
+        int
+    )
+    warr = words['word'].fillna('').astype(str).to_numpy() if 'word' in words.columns else None
+    if warr is None:
+        _LOG.warning('words table has no `word` column; cannot build a contextual target.')
+        return None, 0
+
+    cache = _hf_cache_path(model_name, layer, skey, widx, warr, cache_dir)
+    if cache.is_file():
+        mat = np.load(cache).astype(np.float32)
+        if len(mat) == n:
+            _LOG.info(
+                'Loaded cached contextual meaning %s (%s layer %d, %d word rows, dim %d).',
+                cache.name,
+                model_name,
+                layer,
+                n,
+                mat.shape[1],
+            )
+            return mat, int(mat.shape[1])
+
     try:
         from collections import defaultdict
 
@@ -153,20 +209,7 @@ def build_meaning_matrix_hf(
     tok = AutoTokenizer.from_pretrained(model_name)
     enc = AutoModel.from_pretrained(model_name, output_hidden_states=True).eval().to(device)
     hidden = int(enc.config.hidden_size)
-    n = len(words)
     out = np.full((n, hidden), np.nan, dtype=np.float32)
-
-    if 'stimulus_key' in words.columns:
-        skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
-    else:
-        skey = (words['task'].astype(str) + '|' + words['sentence_idx'].astype(str)).to_numpy()
-    widx = (words['word_idx'].to_numpy() if 'word_idx' in words.columns else np.arange(n)).astype(
-        int
-    )
-    warr = words['word'].fillna('').astype(str).to_numpy() if 'word' in words.columns else None
-    if warr is None:
-        _LOG.warning('words table has no `word` column; cannot build a contextual target.')
-        return None, 0
 
     key_to_rows: dict[str, list[int]] = defaultdict(list)
     for i in range(n):
@@ -210,13 +253,18 @@ def build_meaning_matrix_hf(
     norms = np.linalg.norm(np.nan_to_num(out), axis=1, keepdims=True)
     out = out / np.clip(norms, 1e-8, None)
     out[~seen] = np.nan
+    out = out.astype(np.float32)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.save(cache, out)
     _LOG.info(
-        'Contextual meaning target: %s layer %d over %d unique sentences -> %d/%d word rows covered (dim %d).',
+        'Contextual meaning target: %s layer %d over %d unique sentences -> %d/%d word rows covered '
+        '(dim %d) -> cached %s.',
         model_name,
         layer,
         n_sent,
         int(seen.sum()),
         n,
         hidden,
+        cache.name,
     )
-    return out.astype(np.float32), hidden
+    return out, hidden

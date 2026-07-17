@@ -14,6 +14,7 @@ The CLI (`zte-ablate`) drives both: `generate` writes the config sweep to run, `
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -81,11 +82,44 @@ def single_variable_configs(
         list[tuple[str, ZTEConfig]]: One entry per value; the run name encodes the knob=value
         so the sweep is self-labelling.
     """
+    return grid_configs(base, [(knob, values)])
+
+
+def grid_configs(
+    base: ZTEConfig, specs: list[tuple[str, list[str]]]
+) -> list[tuple[str, ZTEConfig]]:
+    """Builds `(label, config)` pairs for the **Cartesian product** of several knobs' values.
+
+    With one `(knob, values)` spec this is exactly `single_variable_configs` (a clean single-variable
+    sweep). With several, it emits one config per value combination -- e.g. `spatial_encoding` x
+    `meaning_contextual` -- so an ablation can explore how knobs interact, not just each in isolation.
+    Every config still differs from `base` in only the swept fields, and the run name encodes the full
+    combination so the sweep is self-labelling.
+
+    Args:
+        base (ZTEConfig): The shared base configuration.
+        specs (list[tuple[str, list[str]]]): `(dotted_knob, values)` pairs; the product of the value
+            lists is taken. Each value is parsed to bool/int/float/None/str.
+
+    Returns:
+        list[tuple[str, ZTEConfig]]: One entry per value combination.
+
+    Raises:
+        ValueError: If `specs` is empty or a knob path is not a valid `section.field`.
+    """
+    if not specs:
+        raise ValueError('grid_configs needs at least one (knob, values) spec.')
+    knobs = [k for k, _ in specs]
+    value_lists = [vals for _, vals in specs]
     out: list[tuple[str, ZTEConfig]] = []
-    for v in values:
-        parsed = _coerce(v)
-        cfg = _set_dotted(base, knob, parsed)
-        tag = f'{knob.replace(".", "_")}={v}'
+    for combo in itertools.product(*value_lists):
+        cfg = base
+        tag_parts: list[str] = []
+        for knob, value in zip(knobs, combo):
+            cfg = _set_dotted(cfg, knob, _coerce(value))  # each call deep-copies its input
+            tag_parts.append(f'{knob.replace(".", "_")}={value}')
+        tag = '__'.join(tag_parts)
+        cfg = copy.deepcopy(cfg)
         cfg.run_name = f'{base.run_name}__{tag}'
         out.append((tag, cfg))
     return out

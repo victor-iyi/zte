@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from zte.cli.provision import add_provision_args, provision_from_args
 from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
@@ -54,6 +55,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--config', type=str, required=True, help='Experiment YAML (a ZTEConfig).')
     add_data_source_args(parser, include_synthetic=True)
     add_extract_dir(parser)
+    add_provision_args(parser)
 
     parser.add_argument(
         '--name', type=str, default=None, help='Run name (default: config run_name).'
@@ -245,6 +247,12 @@ def _run(args: argparse.Namespace) -> None:
     manifest['dataset'] = dataset.analyze()
     _save_overview(dataset, run_dir / 'figures')
 
+    # 1b) Provision heavy ingredients on demand (--spatial / --meaning): build the exact montage and/or
+    #     the meaning-distillation target and wire them into the config, so runs pick them with one flag
+    #     instead of the old manual export-montage + hand-edit ritual. Runs after the bundle is built so
+    #     --meaning static can restrict the GloVe file to the actual training vocabulary.
+    _apply_provisioning(config, args, dataset)
+
     # 2) Train (resumes from the last checkpoint when --resume).
     _LOG.info(
         '[2/4] Training (%s / %s / pos=%s)%s ...',
@@ -297,6 +305,19 @@ def _run(args: argparse.Namespace) -> None:
     )
     _catalogue(Path(args.out_root), config.run_name, manifest)
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
+
+
+def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: ZuCoDataset) -> None:
+    """Builds + wires the `--spatial` / `--meaning` ingredients into `config` (see `zte.cli.provision`).
+
+    The training word set is pulled from the built dataset so `--meaning static` writes only the GloVe
+    rows this dataset needs; provisioning is otherwise a no-op when both flags are left at `keep`.
+    """
+    vocab: set[str] | None = None
+    words = getattr(dataset, 'words', None)
+    if words is not None and 'word' in getattr(words, 'columns', []):
+        vocab = {w.lower() for w in words['word'].dropna().astype(str) if w}
+    provision_from_args(config, args, vocab=vocab)
 
 
 def _last_completed_epoch(ckpt_dir: Path) -> int:
