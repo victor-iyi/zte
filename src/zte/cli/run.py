@@ -315,8 +315,21 @@ def _run(args: argparse.Namespace) -> None:
             _LOG.info('[4/4] Exploring brain regions + eye-tracking ...')
             from zte.cli.explore import run_exploration
 
-            summary = run_exploration(dataset, run_dir / 'exploration')
+            summary = run_exploration(
+                dataset, run_dir / 'exploration', montage_csv=config.dataset.montage_csv
+            )
             manifest['region_map_approximate'] = summary['region_map_approximate']
+    elif not args.skip_explore:
+        # Say so rather than silently producing no exploration at all: region/eye-tracking exploration
+        # needs band power, which `representation: raw` never loads.
+        _LOG.warning(
+            '[4/4] Skipped: exploration needs band power, but representation=%r loads none. '
+            "Use representation: 'both' to explore regions for a raw frontend.",
+            config.dataset.representation,
+        )
+        manifest['exploration_skipped'] = (
+            f'no band power (representation={config.dataset.representation})'
+        )
 
     (run_dir / 'manifest.json').write_text(
         json.dumps(manifest, indent=2, default=str), encoding='utf-8'

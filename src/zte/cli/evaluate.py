@@ -16,12 +16,17 @@ import pandas as pd
 from zte.cli.extract import load_dataset
 from zte.cli.sources import add_data_source_args, add_extract_dir
 from zte.data.dataset import ZuCoDataset
+from zte.data.transforms import band_power_from_raw
 from zte.device import resolve_device
 from zte.evaluation.report import evaluate_representation
 from zte.inference.embed import ZTEEmbedder
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.evaluate')
+
+#: Raw-EEG rows embedded per block. Raw windows are ~147 KB each (105 x 350 x 4 B), so the full present
+#: set is tens of GB -- streaming keeps peak memory at one block plus the compact outputs.
+_EVAL_BLOCK: int = 2048
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -96,9 +101,21 @@ def collect_embeddings(
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
     if embedder.model.uses_raw:
-        raw_windows = dataset.raw_eeg[present]  # type: ignore[index]
-        word_emb = embedder.embed_signals(raw=raw_windows)
-        raw_word_feats = raw_windows.reshape(len(raw_windows), -1)
+        # Stream in blocks. `dataset.raw_eeg[present]` materialises a full copy of the raw signal
+        # (~21 GB at raw_window=350, and it would un-memory-map a mmap-backed bundle), and the flattened
+        # window it used to feed the probes was the time-domain signal at n_channels * time_steps dims --
+        # mislabelled as band power and far too wide for ridge (a d x d Gram). `band_power_from_raw` is
+        # the classical-feature control the label promises, at ~840 dims. Peak here is one block plus the
+        # two compact outputs.
+        rows = np.flatnonzero(present)
+        emb_parts: list[np.ndarray] = []
+        bp_parts: list[np.ndarray] = []
+        for start in range(0, len(rows), _EVAL_BLOCK):
+            block = np.asarray(dataset.raw_eeg[rows[start : start + _EVAL_BLOCK]])  # type: ignore[index]
+            emb_parts.append(np.asarray(embedder.embed_signals(raw=block)))
+            bp_parts.append(band_power_from_raw(block))
+        word_emb = np.concatenate(emb_parts, axis=0)
+        raw_word_feats = np.concatenate(bp_parts, axis=0)
     else:
         # dataset.features are already normalised and carry the exact model input
         # width (band power + any appended eye-tracking dims), so feed them straight
@@ -158,8 +175,20 @@ def phase_shuffled_word_emb(
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
-    scrambled = phase_scramble(dataset.raw_eeg[present], axis=-1)  # (n, channels, time)
-    return embedder.embed_signals(raw=scrambled)
+    # Scramble + embed one block at a time: the full slice is a ~21 GB copy and phase_scramble promotes
+    # it again internally, so materialising it would OOM long before the encoder ran.
+    rows = np.flatnonzero(present)
+    parts = [
+        np.asarray(
+            embedder.embed_signals(
+                raw=phase_scramble(
+                    np.asarray(dataset.raw_eeg[rows[start : start + _EVAL_BLOCK]]), axis=-1
+                )
+            )
+        )
+        for start in range(0, len(rows), _EVAL_BLOCK)
+    ]
+    return np.concatenate(parts, axis=0)
 
 
 def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:

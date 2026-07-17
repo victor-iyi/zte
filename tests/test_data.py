@@ -14,8 +14,9 @@ from zte.config import MissingConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.mat_loader import _raw_window
 from zte.data.missing import MissingValueImputer
-from zte.data.schema import BANDS, ET_MEASURES, N_CHANNELS, band_feature_name
+from zte.data.schema import BANDS, ET_MEASURES, N_CHANNELS, SAMPLING_RATE_HZ, band_feature_name
 from zte.data.torch_dataset import make_dataloader
+from zte.data.transforms import band_power_from_raw
 
 
 def _obj_array(items: list) -> np.ndarray:
@@ -134,6 +135,33 @@ def test_raw_windows_are_sanitised_at_source(small_dataset: ZuCoDataset, tmp_pat
     assert np.isfinite(reloaded.raw_eeg).all(), 'load must sanitise pre-fix bundles'
     assert abs(float(reloaded.raw_eeg.mean())) < 0.5, 'raw must be per-epoch z-scored'
     assert float(reloaded.raw_eeg.std()) < 5.0, 'raw must be per-epoch z-scored'
+
+
+def test_band_power_from_raw_localises_frequency_and_is_probe_sized() -> None:
+    """Band power from raw lands a tone in the right band and stays narrow enough to probe.
+
+    Regression: the raw frontend's eval baseline used to be the flattened time-domain window
+    (n_channels * time_steps = 36,750 dims), mislabelled 'raw band-power'. Ridge forms a `d x d` Gram
+    from it (~10.8 GB) and MemoryErrors, so eval could never finish for a raw config.
+    """
+    rng = np.random.default_rng(0)
+    n, t = 40, 350
+    tone = 10.0  # Hz -> falls in a1 (8.5-10.0)
+    raw = (rng.standard_normal((n, N_CHANNELS, t)) * 0.1).astype(np.float32)
+    raw += (3.0 * np.sin(2 * np.pi * tone * (np.arange(t) / SAMPLING_RATE_HZ))).astype(np.float32)
+
+    bp = band_power_from_raw(raw)
+    assert bp.shape == (n, N_CHANNELS * len(BANDS)), (
+        'must match the band-power representation width'
+    )
+    assert np.isfinite(bp).all()
+    per_band = bp.reshape(n, N_CHANNELS, len(BANDS)).mean(axis=(0, 1))
+    assert BANDS[int(np.argmax(per_band))] == 'a1', 'a 10 Hz tone must dominate the a1 band'
+
+    # A window too short to resolve the low bands reports zero power, never NaN from an empty mean.
+    short = band_power_from_raw(rng.standard_normal((3, N_CHANNELS, 32)).astype(np.float32))
+    assert np.isfinite(short).all()
+    assert float(short.reshape(3, N_CHANNELS, len(BANDS))[..., 0].sum()) == 0.0
 
 
 def test_presence_matches_omission(small_dataset: ZuCoDataset) -> None:

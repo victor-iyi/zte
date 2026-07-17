@@ -214,11 +214,14 @@ def knn_probe(
     k: int = 10,
     n_splits: int = 3,
     seed: int = 0,
+    max_n: int = 20000,
 ) -> dict[str, float | list[float]]:
-    """Cross-validated kNN (cosine) probe of an embedding's predictiveness.
+    """Cross-validated kNN (cosine geometry) probe of an embedding's predictiveness.
 
     Folds are shuffled with a fixed seed (`KFold`/`StratifiedKFold`) so the split is
-    reproducible and independent of row order; the cosine neighbour metric is kept.
+    reproducible and independent of row order. Neighbours are cosine: rows are L2-normalised and scored
+    with squared euclidean, which is rank-equivalent (`d^2 = 2 - 2cos`) and keeps sklearn on its fast
+    neighbour path.
 
     Args:
         embeddings (np.ndarray): Array `(n_samples, embed_dim)`.
@@ -226,7 +229,10 @@ def knn_probe(
         task (ProbeTask): `classification` (accuracy) or `regression` (R^2).
         k (int): Neighbour count.
         n_splits (int): Cross-validation folds.
-        seed (int): Seed for the shuffled fold splitter.
+        seed (int): Seed for the shuffled fold splitter (and the subsample).
+        max_n (int): Row cap; above it a seeded subsample is drawn (stratified for classification).
+            kNN is quadratic, so the full ZuCo word set costs ~30 min per probe block for a point
+            estimate the cap already resolves to ~0.003.
 
     Returns:
         dict[str, float | list[float]]: `score`, chance/mean `baseline`, the per-fold
@@ -249,6 +255,29 @@ def knn_probe(
     except ImportError:  # pragma: no cover
         return nan_out
 
+    # kNN is quadratic in n, so at ZuCo word scale (~160k rows) the probe block costs ~30 minutes for a
+    # point estimate whose standard error is already ~0.003 at 20k rows -- far below any effect size this
+    # table is read for. Subsample, stratified for classification so the rarest class still populates the
+    # folds. `linear_probe` is deliberately NOT capped: it is cheap and its per-fold scores feed the
+    # bootstrap effect-size verdict, which should see every row.
+    if len(embeddings) > max_n:
+        rng = np.random.default_rng(seed)
+        if task == 'classification':
+            keep: list[np.ndarray] = []
+            share = max_n / len(embeddings)
+            for cls in np.unique(targets):
+                rows = np.flatnonzero(targets == cls)
+                take = max(1, int(round(len(rows) * share)))
+                keep.append(rng.choice(rows, size=min(take, len(rows)), replace=False))
+            idx = np.sort(np.concatenate(keep))
+        else:
+            idx = np.sort(rng.choice(len(embeddings), size=max_n, replace=False))
+        embeddings, targets = embeddings[idx], targets[idx]
+    # Rows are L2-normalised so squared euclidean is a monotone function of cosine distance
+    # (d^2 = 2 - 2cos): identical neighbours and identical scores, but euclidean stays on sklearn's fast
+    # ArgKmin path, which 'cosine' falls off.
+    embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12)
+
     k = min(k, len(embeddings) - 1)
     if task == 'classification':
         if len(np.unique(targets)) < 2:
@@ -258,12 +287,12 @@ def knn_probe(
         if n_eff < 2:
             return {**nan_out, 'baseline': 1.0}
         splitter: Any = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
-        model: Any = KNeighborsClassifier(n_neighbors=k, metric='cosine')
+        model: Any = KNeighborsClassifier(n_neighbors=k, metric='euclidean')
         scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='accuracy')
         baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
     else:
         splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
-        model = KNeighborsRegressor(n_neighbors=k, metric='cosine')
+        model = KNeighborsRegressor(n_neighbors=k, metric='euclidean')
         scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='r2')
         baseline = 0.0
     return {
@@ -271,6 +300,11 @@ def knn_probe(
         'baseline': baseline,
         'scores': [float(s) for s in scores],
         'score_std': float(np.std(scores)),
+        # Disclosed because it is load-bearing: a kNN score rises with gallery density, so a capped run
+        # reports a systematically LOWER absolute score than an uncapped one. Every representation in a
+        # comparison is capped identically, so the within-table verdict (does ZTE beat the noise floor?)
+        # stays sound -- but scores are only comparable ACROSS runs at equal `n_used`.
+        'n_used': float(len(embeddings)),
     }
 
 
@@ -552,8 +586,13 @@ def bootstrap_ci(
     if values.size == 1:
         return (point, point, point)
     rng = np.random.default_rng(seed)
-    idx = rng.integers(0, values.size, size=(n_boot, values.size))
-    boot = np.array([statistic(values[row]) for row in idx], dtype=np.float64)
+    # Draw each resample as it is consumed. Materialising the whole (n_boot, n) int64 index at once costs
+    # n_boot * n * 8 bytes -- 14 GB for the 1.77M analogy queries at ZuCo word scale -- for no benefit,
+    # since the rows are used one at a time anyway.
+    n = values.size
+    boot = np.array(
+        [statistic(values[rng.integers(0, n, size=n)]) for _ in range(n_boot)], dtype=np.float64
+    )
     lo = float(np.quantile(boot, alpha / 2.0))
     hi = float(np.quantile(boot, 1.0 - alpha / 2.0))
     return (point, lo, hi)

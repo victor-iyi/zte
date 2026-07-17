@@ -11,7 +11,7 @@ import numpy as np
 from scipy.signal import butter, filtfilt
 
 from zte.config import Normalization
-from zte.data.schema import SAMPLING_RATE_HZ
+from zte.data.schema import BAND_RANGES_HZ, BANDS, SAMPLING_RATE_HZ, Band
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.transforms')
@@ -103,6 +103,53 @@ def normalize_raw_epoch(epoch: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     return ((epoch - mean) / (std + eps)).astype(np.float32)
 
 
+def band_power_from_raw(
+    raw: np.ndarray,
+    bands: tuple[Band, ...] = BANDS,
+    fs: float = SAMPLING_RATE_HZ,
+    chunk: int = 1024,
+) -> np.ndarray:
+    """Per-channel band power for each raw EEG window -> `(n_epochs, n_channels * n_bands)`.
+
+    Recomputes, straight from the raw signal, the classical feature the band-power representation carries:
+    a real FFT per epoch with power integrated over each ZuCo band (:data:`~zte.data.schema.BAND_RANGES_HZ`).
+
+    This is the honest *classical-feature control* for a raw frontend. The alternative -- flattening the
+    window to `n_channels * time_steps` -- is not a band-power baseline at all (it is the time-domain signal),
+    and at 105 x 350 = 36,750 dims no probe can consume it: ridge regression forms a `d x d` Gram matrix
+    (~10.8 GB here) and standardisation copies the whole matrix to float64. Band power keeps the same
+    information a band-power pipeline would extract, in ~840 dims.
+
+    Bands too low to resolve in a short window (no FFT bin falls inside the range) yield a zero column
+    rather than a `NaN` from an empty mean -- with `raw_window=32` at 500 Hz the resolution is ~15.6 Hz, so
+    every band below beta is unresolvable and honestly reports zero power.
+
+    Args:
+        raw (np.ndarray): Raw windows `(n_epochs, n_channels, time_steps)`; may be a read-only memmap.
+        bands (tuple[Band, ...]): Bands to integrate, in output order.
+        fs (float): Sampling rate in Hz.
+        chunk (int): Epochs per block (bounds peak temporary memory).
+
+    Returns:
+        np.ndarray: `(n_epochs, n_channels * n_bands)` float32 band power, `(channel, band)`-major.
+    """
+    x = np.asarray(raw)
+    n, n_ch, n_t = x.shape
+    freqs = np.fft.rfftfreq(n_t, d=1.0 / fs)
+    masks = [(freqs >= BAND_RANGES_HZ[b][0]) & (freqs <= BAND_RANGES_HZ[b][1]) for b in bands]
+    out = np.empty((n, n_ch * len(bands)), dtype=np.float32)
+    for start in range(0, n, chunk):
+        block = np.asarray(x[start : start + chunk], dtype=np.float32)
+        spec = np.fft.rfft(block, axis=-1)  # complex64 for float32 input
+        power = np.square(spec.real) + np.square(spec.imag)  # (b, n_ch, n_freq)
+        cols = [
+            power[..., m].mean(axis=-1) if m.any() else np.zeros(power.shape[:-1], dtype=np.float32)
+            for m in masks
+        ]
+        out[start : start + len(block)] = np.stack(cols, axis=-1).reshape(len(block), -1)
+    return out
+
+
 def sanitize_raw_windows(raw: np.ndarray, eps: float = 1e-6, chunk: int = 4096) -> np.ndarray:
     """Makes raw EEG windows model-safe **in place**: NaN/inf -> 0, then per-channel z-score per epoch.
 
@@ -123,9 +170,16 @@ def sanitize_raw_windows(raw: np.ndarray, eps: float = 1e-6, chunk: int = 4096) 
         np.ndarray: The sanitised, per-channel z-scored windows (float32).
     """
     x = np.asarray(raw, dtype=np.float32)
-    np.nan_to_num(x, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    if not x.flags.writeable:  # a read-only memmap must be sanitised at write time, not here
+        raise ValueError(
+            'sanitize_raw_windows writes in place but got a read-only array. A bundle whose raw windows '
+            'are already sanitised must skip this call rather than re-run it on a memory-mapped array.'
+        )
     for start in range(0, len(x), chunk):
         block = x[start : start + chunk]
+        # nan_to_num must stay INSIDE the loop: it builds full-size boolean masks internally, so calling
+        # it on the whole array costs several GB of temporaries on a multi-GB bundle.
+        np.nan_to_num(block, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         mean = block.mean(axis=-1, keepdims=True)
         std = block.std(axis=-1, keepdims=True)
         block -= mean

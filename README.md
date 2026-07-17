@@ -70,7 +70,7 @@ uv sync --group all          # + Google Drive (gdown), TensorBoard, seaborn
 uv sync --no-default-groups  # core only, without the `dev` group
 ```
 
-> **Python**: requires **3.12+** (`requires-python = '>=3.12'`, ruff `target-version = py312`). The code uses 3.12 features such as PEP 695 `type` aliases together with modern (`list[T]`, `X | None`, `Literal[...]`) typing throughout.
+> **Python**: requires **3.14+** (`requires-python = '>=3.14'`, ruff `target-version = py314`). The code uses PEP 695 `type` aliases and PEP 758 parenthesis-free `except A, B:` together with modern (`list[T]`, `X | None`, `Literal[...]`) typing throughout. 3.14 is a hard floor, not a preference: the `except` form is a `SyntaxError` on older interpreters.
 > **PyTorch / accelerators**: install the right build for your hardware. CPU and **Apple-silicon (MPS)** use the default wheel; for **Nvidia CUDA** install the matching CUDA wheel from the official index. ZTE auto-detects the device at runtime (see below).
 
 ---
