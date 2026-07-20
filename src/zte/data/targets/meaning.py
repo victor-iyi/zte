@@ -1,8 +1,6 @@
-"""Frozen word-meaning vectors: the word-meaning distillation target.
+"""Frozen word-meaning vectors: the distillation target, word-type-keyed or per-occurrence contextual.
 
-Builds a word -> vector matrix aligned to the training vocabulary, from either a real embedding file
-(GloVe/fastText `word v1 v2 …` text, or `.npy` + `.vocab`) or a deterministic per-word hash (mechanism verification only, no semantics).
-Rows are L2-normalised for cosine distillation; out-of-vocabulary words fall back to the mean.
+Rows are L2-normalised for cosine distillation; out-of-vocabulary words fall back to the corpus mean.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ def _hash_vector(word: str, dim: int) -> np.ndarray:
 
 
 def _load_vectors_file(path: Path) -> tuple[dict[str, int], np.ndarray]:
-    """Loads a `word v1 v2 …` text file or an `.npy` matrix + `.vocab` sidecar."""
+    """Loads a `word v1 v2 ...` text file or an `.npy` matrix plus its `.vocab` sidecar."""
     if path.suffix == '.npy':
         mat = np.load(path).astype(np.float32)
         vocab_path = path.with_suffix('.vocab')
@@ -59,8 +57,7 @@ def build_meaning_matrix(
     """Builds a `(len(vocab), dim)` frozen, L2-normalised meaning matrix aligned to `vocab`.
 
     Args:
-        vocab (dict[str, int]): Word→row-id map (e.g. the training word vocabulary). Row `i`
-            of the returned matrix is the vector for the word whose id is `i`.
+        vocab (dict[str, int]): Word to row-id map; row `i` holds the vector for the word whose id is `i`.
         source (str | None): Path to a vectors file, or `None`/`'hash'` for the deterministic hash embedding.
         dim (int): Vector dimensionality (ignored when a file sets its own width).
 
@@ -116,9 +113,8 @@ def _hf_cache_path(
 ) -> Path:
     """Deterministic cache file for a contextual meaning matrix, keyed by (model, layer, occurrences).
 
-    The key hashes the exact per-occurrence identity -- `(stimulus_key, word_idx, word)` for every row,
-    in order -- so it is stable across LOSO held-out subjects and ablation arms (which all pass the same
-    full `dataset.words`), yet changes the moment the corpus or the model/layer changes.
+    Hashing the per-occurrence identity keeps the key stable across LOSO subjects and ablation arms, which all pass the
+    same full `dataset.words`, while changing the moment the corpus or the model/layer does.
     """
     h = hashlib.sha1()
     h.update(f'{model_name}|{layer}|{len(warr)}'.encode())
@@ -136,17 +132,14 @@ def build_meaning_matrix_hf(
     max_length: int = 256,
     cache_dir: str = 'res/cache/meaning',
 ) -> tuple[np.ndarray | None, int]:
-    """Builds a per-*occurrence* contextual meaning target aligned row-for-row with `words`.
+    """Builds a per-occurrence contextual meaning target aligned row-for-row with `words`.
 
-    Unlike `build_meaning_matrix` (one static vector per word *type*), each row is the word's contextual hidden state from a frozen HuggingFace
-    encoder run on the whole sentence it belongs to, with sub-word pieces mean-pooled per word. This disambiguates polysemy the static
-    target collapses, and the brain-alignment literature is clear that contextual middle-layer representations predict neural activity
-    far better than static word vectors (Toneva & Wehbe 2019; Caucheteux & King 2022).  Rows are L2-normalised; rows never covered
-    (truncation, empty tokens) stay `NaN` so the distillation loss masks them.
+    Where `build_meaning_matrix` gives one static vector per word type, each row here is the word's contextual hidden
+    state from a frozen encoder run on its whole sentence, sub-word pieces mean-pooled, which disambiguates the
+    polysemy the static target collapses. Uncovered rows (truncation, empty tokens) stay `NaN` so the loss masks them.
 
-    Because the linguistic content of a word occurrence is subject-independent, the encoder is run once per unique sentence text (`stimulus_key`)
-    and the resulting per-position vectors are broadcast to every subject's reading of that word -- a ~12x saving over per-reading encoding,
-    and exactly the subject-invariant target LOSO wants.
+    A word occurrence's linguistic content is subject-independent, so the encoder runs once per unique sentence text
+    and broadcasts to every subject's reading of that word -- ~12x cheaper, and the subject-invariant target LOSO wants.
 
     Args:
         words (pd.DataFrame): The word-level table (`ZuCoDataset.words`) with `word` and `word_idx`, and
@@ -155,18 +148,16 @@ def build_meaning_matrix_hf(
         layer (int): Hidden-state layer index (`-1` = last; a middle layer ~7-9 aligns best with brain data).
         device (str): Torch device for the encoder pass.
         max_length (int): Tokeniser truncation length.
-        cache_dir (str): Shared directory for the on-disk matrix cache. The frozen encoder pass is the
-            expensive step, so a matching cache (same corpus + model + layer) is loaded instead of
-            recomputed -- reused across every LOSO subject and ablation arm, and even without
-            `transformers` installed once the cache exists.
+        cache_dir (str): Directory for the on-disk matrix cache. The frozen encoder pass is the expensive step, so a
+            matching cache is reused across LOSO subjects and ablation arms, even without `transformers` installed.
 
     Returns:
         tuple[np.ndarray | None, int]: `((n_words, hidden) float32 with NaN for uncovered rows, hidden)`,
             or `(None, 0)` when `transformers` is unavailable (the caller falls back to the static path).
     """
     n = len(words)
-    # Build the occurrence identity first (no torch needed) -- it is both the encoder input and the
-    # cache key, so a cache hit short-circuits before any heavy import.
+
+    # The occurrence identity is both encoder input and cache key, so build it before any heavy import.
     if 'stimulus_key' in words.columns:
         skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
     else:
@@ -215,6 +206,7 @@ def build_meaning_matrix_hf(
     for i in range(n):
         key_to_rows[skey[i]].append(i)
 
+    # One encoder pass per unique sentence, broadcast back to every row that read it.
     n_sent = 0
     for row_group in key_to_rows.values():
         rows = sorted(row_group, key=lambda i: widx[i])
@@ -238,7 +230,7 @@ def build_meaning_matrix_hf(
         for sub, wp in enumerate(enc_in.word_ids(0)):
             if wp is not None and wp < len(positions):
                 pooled[wp].append(hs[sub])
-        # .float(): a bf16 encoder (some run in bfloat16 on GPU) has no numpy dtype; cast before numpy.
+        # numpy has no bfloat16 dtype, which is how some encoders run on GPU.
         vec_by_pos = {
             positions[wp]: torch.stack(vecs).mean(0).float().cpu().numpy()
             for wp, vecs in pooled.items()
@@ -249,6 +241,7 @@ def build_meaning_matrix_hf(
                 out[i] = v
         n_sent += 1
 
+    # L2-normalise the covered rows, restoring NaN on the rest.
     seen = np.isfinite(out).all(axis=1)
     norms = np.linalg.norm(np.nan_to_num(out), axis=1, keepdims=True)
     out = out / np.clip(norms, 1e-8, None)

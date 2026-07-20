@@ -1,16 +1,9 @@
 """Scalp-region grouping of EEG channels and region-level importance analysis.
 
-ZuCo band-power tensors are `(n_words, n_bp_features, n_channels)` with `n_channels = 105` (the EGI HydroCel-128 net after the 23 outer
-artefact electrodes are removed).  A single channel is hard to interpret; grouping channels into **scalp regions** (anterior -> posterior bands)
-turns "which channel" into "which part of the cortex" -- the question of *which brain areas encode thought vs reading* that motivates ZTE.
-
-The default `RegionMap` partitions the 105 channels into anterior->posterior regions. Because the results `.mat` files
-do not ship electrode coordinates, this default is an **approximation** of the montage's rostro-caudal organisation and is
-meant to be *overridden* with the exact per-channel labels when a montage file is available (`RegionMap.from_csv`). Every
-downstream analysis is exact for whatever mapping is supplied; only the default channel->region assignment is approximate.
-
-Reading is a visual task (occipito-parietal word-form and eye-movement systems), while imagined/inner language leans on
-fronto-central and temporal language areas; region-level importance makes that contrast measurable and plottable.
+Grouping channels into anterior->posterior regions turns "which channel" into "which part of the cortex", separating the
+occipito-parietal systems reading uses from the fronto-central language areas inner speech leans on. The `.mat` files
+ship no electrode coordinates, so the default map only approximates the montage; `RegionMap.from_csv` supplies an exact
+one and every downstream analysis is exact for whatever mapping it is given.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -53,9 +46,8 @@ REGION_DESCRIPTIONS: dict[str, str] = {
     'occipital': 'Occipital (O) -- visual word form',
 }
 
-#: Relative anterior->posterior extents of each default region (sum need not be 1;
-#: normalised at build time). Frontal and occipital areas carry more electrodes in
-#: the EGI net, so their bands are wider.
+#: Relative anterior->posterior extent of each default region, normalised at build time. Frontal and occipital areas
+#: carry more electrodes in the EGI net, so their bands are wider.
 _DEFAULT_REGION_WEIGHTS: dict[str, float] = {
     'frontopolar': 0.9,
     'frontal': 1.5,
@@ -74,8 +66,8 @@ class RegionMap:
 
     Attributes:
         names (tuple[str, ...]): Region names in canonical (anterior -> posterior) order.
-        channel_region (np.ndarray): `(n_channels,)` int array; entry `c` is the index into `names` of the region that channel `c` belongs to.
-        approximate (bool): Whether this is the coordinate-free default (`True`) or an exact montage-derived mapping loaded from a file (`False`).
+        channel_region (np.ndarray): `(n_channels,)` int array indexing `names` for each channel.
+        approximate (bool): `True` for the coordinate-free default, `False` for a montage-derived mapping.
     """
 
     names: tuple[str, ...]
@@ -99,7 +91,7 @@ class RegionMap:
             region (str): A region name present in `names`.
 
         Returns:
-            Integer channel indices belonging to the region.
+            np.ndarray: Integer channel indices belonging to the region.
 
         Raises:
             KeyError: If `region` is not a known region name.
@@ -117,11 +109,11 @@ class RegionMap:
         """Collapses per-channel band power into per-region band power.
 
         Args:
-            band_power (np.ndarray): Array `(n_words, n_bp_features, n_channels)` (`NaN` for omitted words is tolerated).
+            band_power (np.ndarray): Array `(n_words, n_bp_features, n_channels)`; `NaN` for omitted words is tolerated.
             method (RegionReduce): `mean` (NaN-aware), `max` or `l2` over the channels of each region.
 
         Returns:
-            Array `(n_words, n_bp_features, n_regions)` of region-reduced band power.
+            np.ndarray: Region-reduced band power `(n_words, n_bp_features, n_regions)`.
         """
         import warnings
 
@@ -164,15 +156,15 @@ class RegionMap:
     def from_csv(cls, path: str | Path, n_channels: int = N_CHANNELS) -> RegionMap:
         """Loads an exact channel -> region mapping from a CSV montage file.
 
-        The CSV must have a header and two columns: `channel` (0-based channel index into the band-power tensor) and `region`
-        (a region label). Regions are ordered by first appearance. Channels absent from the file are assigned to a trailing `unassigned` region.
+        The CSV needs a header plus `channel` (0-based index into the band-power tensor) and `region` columns. Regions
+        are ordered by first appearance and any channel absent from the file lands in a trailing `unassigned` region.
 
         Args:
             path (str | Path): Path to the montage CSV.
             n_channels (int): Expected channel count.
 
         Returns:
-            An exact (`approximate=False`) `RegionMap`.
+            RegionMap: An exact (`approximate=False`) mapping.
         """
         import csv
 
@@ -195,18 +187,16 @@ class RegionMap:
 
 
 def default_region_map(n_channels: int = N_CHANNELS) -> RegionMap:
-    """Builds the default anterior->posterior `RegionMap`.
+    """Partitions channels into contiguous bands whose widths follow `_DEFAULT_REGION_WEIGHTS`.
 
-    Channels are partitioned into contiguous anterior->posterior bands whose widths follow `_DEFAULT_REGION_WEIGHTS`.
-    This assumes the channel axis is ordered roughly rostro-caudally (the common EGI convention); supply an exact montage via
+    Assumes the channel axis is ordered roughly rostro-caudally, the common EGI convention; supply an exact montage via
     `RegionMap.from_csv` when precision matters.
 
     Args:
-        n_channels (int): Number of channels to cover (default 105).
+        n_channels (int): Number of channels to cover.
 
     Returns:
-        The default, approximate `RegionMap`.
-
+        RegionMap: The default, approximate mapping.
     """
     weights = np.array([_DEFAULT_REGION_WEIGHTS[name] for name in SCALP_REGIONS], dtype=np.float64)
     edges = np.concatenate([[0.0], np.cumsum(weights) / weights.sum()])
@@ -223,11 +213,10 @@ def region_feature_names(bp_feature_names: list[str], region_names: tuple[str, .
 
     Args:
         bp_feature_names (list[str]): The `n_bp_features` `(measure, band)` names.
-        region_names (tuple[str, ...]): The `n_regions` region names in canonical (anterior -> posterior) order.
+        region_names (tuple[str, ...]): The `n_regions` region names in anterior -> posterior order.
 
     Returns:
-        A list of `n_bp_features * n_regions` names like `'TRT_t1::frontal'`.
-
+        list[str]: `n_bp_features * n_regions` names like `'TRT_t1::frontal'`.
     """
     return [f'{name}::{region}' for name in bp_feature_names for region in region_names]
 
@@ -241,11 +230,8 @@ def region_importance(
 ) -> list[dict[str, object]]:
     """Scores how informative each scalp region is for each target attribute.
 
-    Note:
-        For every target the per-region band-power (averaged over that region's channels and its frequency bands) is scored against
-        the target and the scores are normalised to sum to 1 across regions -- so the result reads as "region `r` carries `x%` of
-        the decodable information about this attribute". Contrasting a reading target (e.g. eye-tracking / word length) with a cognitive
-        target (e.g.  task or content identity) reveals which regions matter for reading vs thought.
+    Per-region band power is scored against each target and normalised to sum to 1 across regions, so a row reads as
+    "region `r` carries `x%` of the decodable information about this attribute".
 
     Args:
         band_power (np.ndarray): Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words.
@@ -255,8 +241,7 @@ def region_importance(
         method (Literal['mutual_info', 'f_score']): Per-feature scorer -- mutual information or ANOVA F-score.
 
     Returns:
-        One row per (target, region) with `target`, `region`, `importance` (normalised) and `score` (raw), suitable for a tidy table or heatmap.
-
+        list[dict[str, object]]: One row per (target, region) with `target`, `region`, `importance` and raw `score`.
     """
     region_map = region_map or default_region_map(band_power.shape[-1])
     if region_map.approximate:
@@ -265,14 +250,16 @@ def region_importance(
             '(no montage); region labels are indicative. Supply RegionMap.from_csv '
             'for exact per-channel regions.'
         )
-    region_bp = region_map.reduce(band_power, method='mean')  # (n_words, n_bp_features, n_regions)
+
+    # Reduce to `(n_words, n_bp_features * n_regions)`, band-major, NaN-filled so omitted rows cannot break the scorer.
+    region_bp = region_map.reduce(band_power, method='mean')
     n, _, r = region_bp.shape
-    flat = region_bp.reshape(n, -1)  # (n_words, n_bp_features * n_regions), band-major
-    # NaN-fill by column mean so omitted rows never break the scorer.
+    flat = region_bp.reshape(n, -1)
     col_mean = np.nan_to_num(np.nanmean(np.where(np.isnan(flat), np.nan, flat), axis=0))
     flat = np.where(np.isnan(flat), col_mean[None, :], flat)
     region_of_col = np.tile(np.arange(r), flat.shape[1] // r)
 
+    # Score each target, then average the per-column scores within each region.
     rows: list[dict[str, object]] = []
     for target_name, (values, task) in targets.items():
         x, y = flat, np.asarray(values)

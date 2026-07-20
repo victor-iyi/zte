@@ -1,18 +1,7 @@
-"""Configurable missing-value imputation for word-level EEG features.
+"""Missing-value imputation for word-level EEG features, per `MissingConfig.method`.
 
-Natural reading means readers skip words: those words carry *no* EEG and surface as empty arrays (`NaN` after stacking).
-Treating those zero/NaN rows as real signal is the single biggest source of leakage in word-level ZuCo modelling,
-so every strategy here also returns a per-token **presence mask** that downstream objectives use to ignore filled entries.
-
-Supported methods (see `MissingConfig`):
-
-- `zero` / `mask_only` -- fill with `0` (rely on the mask).
-- `row_mean` -- fill from each token's own non-missing features.
-- `col_mean` / `global_mean` / `median` -- fill from column/global stats.
-- `knn` -- `sklearn.impute.KNNImputer`.
-- `iterative` -- model-based prediction via `sklearn.impute.IterativeImputer`.
-- `ffill` / `interpolate` -- sequence-aware fills along reading order.
-- `drop` -- no fill; the mask marks which rows callers should drop.
+Readers skip words, and those words carry no EEG. Treating the resulting NaN rows as real signal is the biggest source
+of leakage in word-level ZuCo modelling, so every strategy also returns a presence mask for objectives to gate on.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -29,13 +18,11 @@ _LOG = get_logger('data.missing')
 class MissingValueImputer:
     """Applies a configured missing-value strategy to a 2-D feature matrix.
 
-    Note:
-        The imputer is stateful for the column/global statistics methods so the same fill learned
-        on the training split can be re-applied to validation/test splits via `transform`.
+    Stateful for the column/global statistics methods, so the fill learned on the training split can be re-applied to
+    validation/test via `transform` without leaking.
 
     Attributes:
-        config (MissingConfig): The `MissingConfig` driving behaviour.
-
+        config (MissingConfig): The configuration driving behaviour.
     """
 
     def __init__(self, config: MissingConfig) -> None:
@@ -43,7 +30,6 @@ class MissingValueImputer:
 
         Args:
             config (MissingConfig): Missing-value configuration.
-
         """
         self.config = config
         self._stats: np.ndarray | None = None
@@ -72,7 +58,7 @@ class MissingValueImputer:
                 by sequence-aware methods (`ffill`/`interpolate`) so fills never cross sentence boundaries.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: A tuple `(imputed (n_words, n_features) float32, presence_mask (n_words,) bool)`.
+            tuple[np.ndarray, np.ndarray]: `(imputed (n_words, n_features) float32, presence_mask (n_words,) bool)`.
         """
         x = np.asarray(x, dtype=np.float32)
         mask = self.presence_mask(x)
@@ -102,8 +88,7 @@ class MissingValueImputer:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Re-applies a previously fitted fill to new data where possible.
 
-        Stateless methods simply re-run; column/global/median and sklearn methods
-        reuse fitted statistics. Sequence and row methods recompute per call.
+        Column/global/median and sklearn methods reuse their fitted statistics; sequence and row methods recompute.
 
         Args:
             x (np.ndarray): Feature matrix `(n_words, n_features)` with `NaN` for missing entries.
@@ -115,7 +100,7 @@ class MissingValueImputer:
         x = np.asarray(x, dtype=np.float32)
         mask = self.presence_mask(x)
 
-        # If we have fitted statistics, use them to fill missing values.
+        # Reuse the statistics fitted on the training split.
         if self._stats is not None and self.config.method in {
             'col_mean',
             'global_mean',
@@ -124,12 +109,11 @@ class MissingValueImputer:
             out = np.where(np.isnan(x), self._stats[np.newaxis, :], x)
             return np.nan_to_num(out, nan=0.0).astype(np.float32), mask
 
-        # If we have fitted a sklearn imputer, use it to fill missing values.
         if self._sklearn_imputer is not None and self.config.method in {'knn', 'iterative'}:
             out = self._sklearn_imputer.transform(x)  # type: ignore[attr-defined]
             return np.nan_to_num(out, nan=0.0).astype(np.float32), mask
 
-        # Otherwise, fit new statistics and return.
+        # Stateless methods have nothing to reuse.
         return self.fit_transform(x, group_ids)
 
     def _fill_row_mean(self, x: np.ndarray) -> np.ndarray:
@@ -141,7 +125,6 @@ class MissingValueImputer:
             warnings.simplefilter('ignore', category=RuntimeWarning)
             row_means = np.nanmean(x, axis=1)
 
-        # Fill missing values with the row mean.
         row_means = np.nan_to_num(row_means, nan=0.0)
         return np.where(np.isnan(x), row_means[:, np.newaxis], x)
 

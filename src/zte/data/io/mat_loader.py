@@ -213,7 +213,7 @@ def extract_file(
         eeg_probe (tuple[EyeTrackingMeasure, Band]): `(measure, band)` used as the per-word EEG presence probe.
 
     Returns:
-        A populated :class:`FileExtract`.
+        A populated `FileExtract`.
     """
     subject, task = parse_subject_task(Path(path))
     mat = load_mat(path)

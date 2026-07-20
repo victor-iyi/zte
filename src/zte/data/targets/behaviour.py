@@ -1,10 +1,7 @@
-"""Reading-behaviour targets: reading-behaviour privileged supervision.
+"""Per-word eye-tracking as a target matrix, so an auxiliary head can predict reading difficulty from the embedding.
 
-Turns ZuCo's per-word eye-tracking into a model-ready target matrix so an auxiliary head can predict reading difficulty
-from the embedding — a lexically-driven, meaning-adjacent signal.
-
-Supports the duration measures (`FFD`/`SFD`/`GD`/`GPT`/`TRT`), derived `regression_time` (`GPT - GD`), `n_fixations`/`mean_pupil`,
-and binary `is_omitted` (skipping). Duration/count targets are log1p-then-z-scored; missing-by-design cells are `NaN` and masked by the auxiliary head.
+Covers the duration measures, derived `regression_time` (`GPT - GD`), `n_fixations`/`mean_pupil` and binary
+`is_omitted`. Duration and count targets are log1p-then-z-scored; missing-by-design cells stay `NaN` and are masked.
 """
 
 from __future__ import annotations
@@ -47,9 +44,9 @@ def build_behaviour_matrix(
         targets (tuple[str, ...]): Which behaviour signals to include.
 
     Returns:
-        tuple: `(matrix, names, is_binary)` where `matrix` is `(n_words, n_targets)` float32
-        (NaN where missing), `names` the resolved target names (unavailable ones dropped),
-        and `is_binary` a bool array marking classification targets.
+        tuple[np.ndarray, list[str], np.ndarray]: `(matrix, names, is_binary)` -- a `(n_words, n_targets)` float32
+            matrix (NaN where missing), the resolved names with unavailable targets dropped, and a bool array
+            marking the classification targets.
     """
     cols: list[np.ndarray] = []
     names: list[str] = []
@@ -61,7 +58,7 @@ def build_behaviour_matrix(
         if t in _BINARY:
             col = raw.astype(np.float32)
         else:
-            # log1p compresses the right skew; z-score over the finite (present) rows only.
+            # log1p compresses the right skew; the z-score uses the finite (present) rows only.
             finite = np.isfinite(raw)
             logv = np.where(finite, np.log1p(np.clip(raw, 0.0, None)), np.nan)
             mu = np.nanmean(logv)

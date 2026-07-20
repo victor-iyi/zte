@@ -1,7 +1,7 @@
 """Data layer: ZuCo parsing, synthetic generation, processing and torch bridges.
 
-Heavy exports are exposed lazily via module `__getattr__` so that importing the lightweight `zte.data.schema`
-(which `zte.config` depends on) does not eagerly pull in `zte.data.dataset` and create an import cycle.
+Heavy exports resolve lazily via `__getattr__` so importing `zte.data.schema` (a `zte.config` dependency)
+does not pull in `zte.data.dataset` and create an import cycle.
 """
 
 # pylint: disable=undefined-all-variable, import-outside-toplevel
@@ -21,7 +21,6 @@ def __getattr__(name: str) -> object:
 
     Raises:
         AttributeError: If `name` is not a known lazy export.
-
     """
     if name == 'ZuCoDataset':
         from zte.data.dataset import ZuCoDataset

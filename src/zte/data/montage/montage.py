@@ -1,16 +1,8 @@
-"""Build an exact electrode-coordinate montage CSV -- the scalp geometry for spatial encoding + regions.
+"""Build the `channel,x,y,z,label,region` montage CSV that `dataset.montage_csv` points at.
 
-Electrode spatial encoding (`model.spatial_encoding='spherical_harmonics'`) is mathematically exact for whatever coordinates it is given;
-the only approximation is in the coordinates themselves. This module writes a `channel,x,y,z,label,region` CSV -- the format
-`zte.models.spatial.ScalpGeometry.from_csv` consumes and that `dataset.montage_csv` points at -- from an MNE standard montage, so the
-encoding uses the true scalp geometry instead of the coordinate-free fallback, and the eval's region-importance analysis becomes exact too.
-
-ZuCo v1/v2 recorded with the 129-channel EGI HydroCel Geodesic Sensor Net in **standard EGI channel ordering**; after preprocessing
-105 scalp channels are retained (the outer face/neck artefact ring is dropped). `zuco105=True` reproduces that retained set directly,
-in native E-number order -- the order ZuCo's band-power tensors use.
-
-This is the importable core shared by `scripts/export_montage.py` and the `zte-run --spatial exact` flag; it requires
-the optional dependency `mne` (`pip install mne` or `uv add --group spatial mne) only when it must read coordinates from a standard montage.
+Spatial encoding is exact for whatever coordinates it is given, so the only approximation is in the coordinates; reading
+them from an MNE standard montage replaces the coordinate-free fallback and makes region importance exact too. Requires
+the optional `mne` dependency, but only when no cached CSV exists.
 """
 
 from __future__ import annotations
@@ -27,13 +19,10 @@ DEFAULT_MONTAGE: str = 'GSN-HydroCel-129'
 
 
 def zuco105_labels(montage: str = DEFAULT_MONTAGE) -> list[str]:
-    """Returns ZuCo's 105 retained electrodes -- standard EGI net, standard ordering.
+    """Returns ZuCo's 105 retained electrodes, in the native E-number order its band-power tensors use.
 
-    ZuCo v1/v2 use the EGI HydroCel net with standard channel ordering (confirmed from the dataset docs), keeping 105 scalp channels
-    after the outer face/neck artefact ring is dropped. That ring is exactly the lowest-elevation electrodes, so -- starting from the E1..E128
-    scalp electrodes (the Cz vertex reference is excluded automatically, being the montage's only non-`E` label) -- we drop the 23 lowest-z
-    and keep the remaining 105 in native E-number order, the order ZuCo's band-power tensors use. This reproduces ZuCo's retained set;
-    only per-channel scalp attribution assumes the standard reduction, which the standard-ordering guarantee underwrites.
+    The face/neck ring ZuCo drops is exactly the lowest-elevation electrodes, so dropping the 23 lowest-z of E1..E128
+    reproduces the retained set. The Cz vertex reference is excluded automatically as the only non-`E` label.
     """
     import mne  # type: ignore[import-untyped]
 
@@ -47,17 +36,17 @@ def zuco105_labels(montage: str = DEFAULT_MONTAGE) -> list[str]:
 def regions_from_geometry(xyz: object) -> list[str]:
     """Assigns each electrode an anterior->posterior scalp region from its front-back (y) position.
 
-    In head coordinates the y-axis runs posterior (-) to anterior (+), so ranking electrodes by y
-    and splitting into the 8 `SCALP_REGIONS` bands gives a real, coordinate-derived region map -- the
-    same anterior->posterior partition the analysis expects, but exact for this montage.
+    In head coordinates y runs posterior (-) to anterior (+), so ranking by y and splitting into the 8 `SCALP_REGIONS`
+    bands gives the partition the analysis expects, exact for this montage.
     """
     import numpy as np
 
     from zte.data.montage.regions import SCALP_REGIONS
 
     y = np.asarray(xyz, dtype=np.float64)[:, 1]
-    # Rank -> quantile bin; most-anterior (largest y) = frontopolar, most-posterior = occipital.
-    order = np.argsort(-y)  # anterior first
+
+    # Rank into a quantile bin: largest y (most anterior) is frontopolar, smallest is occipital.
+    order = np.argsort(-y)
     rank = np.empty(len(y), dtype=int)
     rank[order] = np.arange(len(y))
     bin_idx = (rank * len(SCALP_REGIONS) // max(len(y), 1)).clip(0, len(SCALP_REGIONS) - 1)
@@ -74,18 +63,15 @@ def build_montage_csv(
 ) -> Path:
     """Writes a `channel,x,y,z,label,region` montage CSV and returns its path.
 
-    Coordinates (`x,y,z`) drive the spatial encoding; `region` drives the eval's region-importance
-    analysis. Emitting both lets one CSV serve the whole pipeline.
+    Coordinates drive the spatial encoding and `region` drives region-importance analysis, so one CSV serves both.
 
     Args:
         out (str | Path): Destination CSV path (parent dirs created).
         montage (str): MNE standard montage name (ZuCo uses the 129-net).
-        zuco105 (bool): Auto-select ZuCo's 105 scalp electrodes (drop the outer ring). Ignored when
-            an explicit `keep` list is given.
-        keep (list[str] | None): Electrode labels to retain, in EEG-channel-axis order. Overrides
-            `zuco105`. `None` with `zuco105=False` keeps the full net in its own (unaligned) order.
-        overwrite (bool): Rebuild even when `out` already exists. Default `False` reuses the cached CSV
-            (the montage is fixed for a given net, so a rerun needs neither `mne` nor a rebuild).
+        zuco105 (bool): Auto-select ZuCo's 105 scalp electrodes; ignored when `keep` is given.
+        keep (list[str] | None): Electrode labels to retain, in EEG-channel-axis order. Overrides `zuco105`;
+            `None` with `zuco105=False` keeps the full net in its own unaligned order.
+        overwrite (bool): Rebuild even when `out` exists. The montage is fixed per net, so reuse needs no `mne`.
 
     Returns:
         Path: The written (or reused) CSV path.
@@ -105,7 +91,8 @@ def build_montage_csv(
 
     geo = ScalpGeometry.from_mne(montage, keep=keep)
     labels = geo.labels or tuple(f'ch{c:03d}' for c in range(geo.n_channels))
-    regions = regions_from_geometry(geo.xyz)  # anterior->posterior band per electrode (from y)
+    regions = regions_from_geometry(geo.xyz)
+
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open('w', newline='', encoding='utf-8') as fh:
         writer = csv.writer(fh)

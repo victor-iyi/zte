@@ -1,15 +1,9 @@
-"""Frozen sentence-text embeddings: the CLIP alignment target (`objective.name='clip'`).
+"""Frozen sentence-text embeddings: the CLIP alignment target for `objective.name='clip'`.
 
-Each unique ZuCo sentence is embedded once with a *frozen* text encoder, and the EEG encoder is trained to align its sentence vector
-to this target via a symmetric InfoNCE loss. Two backends are supported so the text encoder can be A/B'd:
-
-- **sentence-transformers** — purpose-built sentence embeddings (E5, BGE, MiniLM, ...).
-  The right granularity and strongest semantics for a sentence-level target.
-- **hf mean-pool** — any raw HuggingFace model, mean-pooled over the attention mask.
-  This is how a decoder LLM (e.g. Qwen) is turned into a sentence embedder for fast local iteration.
-
-Embeddings are L2-normalised and cached to disk keyed by (model, backend, prefix, corpus), so a rerun never re-encodes. When neither optional
-dependency is available the builder returns `None` and the caller falls back to a deterministic hash target (mechanism verification only, no semantics).
+Two backends let the text encoder be A/B'd: sentence-transformers for purpose-built sentence embeddings, and hf
+mean-pool to turn a decoder LLM into a sentence embedder. Embeddings are L2-normalised and cached on disk keyed by
+(model, backend, prefix, corpus). With neither optional dependency the builder returns `None` and the caller falls
+back to a deterministic hash target that carries no semantics.
 """
 
 from __future__ import annotations
@@ -69,7 +63,7 @@ def _l2norm(mat: np.ndarray) -> np.ndarray:
 def _encode_sentence_transformers(
     texts: list[str], source: str, prefix: str, device: str
 ) -> np.ndarray:
-    """Encodes with a sentence-transformers model (E5/BGE/…)."""
+    """Encodes with a sentence-transformers model (E5/BGE/...)."""
     from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 
     model = SentenceTransformer(source, device=device)
@@ -87,8 +81,7 @@ def _encode_sentence_transformers(
 def _encode_hf_meanpool(texts: list[str], source: str, prefix: str, device: str) -> np.ndarray:
     """Encodes with a raw HuggingFace model, mean-pooling the last hidden state over the attention mask.
 
-    This is the path for decoder LLMs (Qwen etc.): a generative model has no sentence head, so its
-    contextual token states are mean-pooled into a sentence vector.
+    The path for decoder LLMs, which have no sentence head, so their contextual token states are pooled instead.
     """
     import torch
     from transformers import AutoModel, AutoTokenizer  # type: ignore[import-untyped]
@@ -96,25 +89,22 @@ def _encode_hf_meanpool(texts: list[str], source: str, prefix: str, device: str)
     tok = AutoTokenizer.from_pretrained(source)
     if tok.pad_token is None and tok.eos_token is not None:  # decoder LLMs often lack a pad token
         tok.pad_token = tok.eos_token
-    # Load the model and set it to evaluation mode.
     model = AutoModel.from_pretrained(source).eval().to(device)
     hidden = int(model.config.hidden_size)
     out = np.zeros((len(texts), hidden), dtype=np.float32)
     inputs = [prefix + t for t in texts] if prefix else texts
-    # Encode the sentences in chunks of 32 to avoid memory issues.
+
+    # Chunked to bound peak memory.
     with torch.no_grad():
         for start in range(0, len(inputs), 32):
             chunk = inputs[start : start + 32]
-            # Tokenize the sentences.
             enc = tok(chunk, padding=True, truncation=True, max_length=256, return_tensors='pt').to(
                 device
             )
-            # Get the last hidden state and the attention mask.
             hs = model(**enc).last_hidden_state  # (b, seq, hidden)
             mask = enc['attention_mask'].unsqueeze(-1).to(hs.dtype)  # (b, seq, 1)
             pooled = (hs * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
-            # .float(): decoder LLMs (Qwen etc.) load in bfloat16 on a GPU, and numpy has no bfloat16 --
-            # cast the pooled sentence vectors to float32 before leaving the device.
+            # numpy has no bfloat16, which is how decoder LLMs load on a GPU.
             out[start : start + len(chunk)] = pooled.float().cpu().numpy()
     return out
 
@@ -144,6 +134,8 @@ def build_sentence_text_matrix(
     """
     if not source or source == 'hash':
         return None, 0
+
+    # Reuse the cached matrix whenever it still matches the corpus length.
     resolved = _resolve_backend(source, backend)
     cache = _cache_path(texts, source, resolved, prefix, cache_dir)
     if cache.is_file():
@@ -156,6 +148,7 @@ def build_sentence_text_matrix(
                 mat.shape[1],
             )
             return _l2norm(mat), int(mat.shape[1])
+
     try:
         if resolved == 'sentence-transformers':
             raw = _encode_sentence_transformers(texts, source, prefix, device)
@@ -171,7 +164,6 @@ def build_sentence_text_matrix(
         )
         return None, 0
 
-    # Save the embeddings to disk.
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache, raw)
     _LOG.info(
@@ -186,49 +178,41 @@ def build_sentence_text_matrix(
 
 
 def mine_hard_negatives(texts: list[str], text_matrix: np.ndarray, k: int = 8) -> np.ndarray:
-    """Mines *semantically-hard* negatives per sentence: surface-similar but semantically distinct.
+    """Mines semantically-hard negatives per sentence: surface-similar but semantically distinct.
 
-    Note:
-        For each sentence it ranks the others by `surface_overlap - semantic_cosine` -- high word-token Jaccard overlap
-        (they *look* alike) but low frozen-text-embedding cosine (they *mean* different things). Co-locating these in a CLIP
-        batch forces the encoder to represent meaning rather than surface form, which is the novelty lever of the recipe
-        (a distractor set no random sampler would produce). Runs on the small ZuCo sentence set (~hundreds of unique sentences),
-        so the O(n^2) scan is cheap; it is computed once and cached with the text matrix.
+    Sentences are ranked by `surface_overlap - semantic_cosine`, so they look alike but mean different things.
+    Co-locating them in a CLIP batch forces the encoder to represent meaning rather than surface form. The O(n^2) scan
+    is cheap on ZuCo's few hundred unique sentences and is cached with the text matrix.
 
     Args:
         texts (list[str]): Unique sentence strings (row `i` aligns with `text_matrix[i]`).
         text_matrix (np.ndarray): L2-normalised sentence embeddings `(n, dim)`.
-        k (int, optional): Number of hard negatives per sentence. Defaults to 8.
+        k (int): Number of hard negatives per sentence.
 
     Returns:
         np.ndarray: `(n, k)` int array of hard-negative sentence ids (`-1` padding when fewer exist).
     """
     n = len(texts)
-    # Tokenize the sentences.
     tokens = [set(t.lower().split()) for t in texts]
-
-    # Compute the semantic similarity matrix.
     sem = np.asarray(text_matrix, dtype=np.float32) @ np.asarray(text_matrix, dtype=np.float32).T
     out = np.full((n, k), -1, dtype=np.int64)
 
-    # Rank the sentences by surface-similarity and semantic distinctness.
     for i in range(n):
         ti = tokens[i]
         if not ti:
             continue
 
-        # Compute the word-token Jaccard similarity.
+        # Word-token Jaccard overlap against every other sentence.
         jac = np.fromiter(
             (len(ti & tj) / max(len(ti | tj), 1) for tj in tokens), dtype=np.float32, count=n
         )
 
-        # Compute the score as the difference between the word-token Jaccard similarity and the semantic similarity.
-        score = jac - sem[i]  # surface-similar (high jac) AND semantically distinct (low sem)
+        # High overlap minus high cosine: surface-similar and semantically distinct.
+        score = jac - sem[i]
         score[i] = -np.inf
         kk = min(k, n - 1)
         if kk <= 0:
             continue
-        # Get the top k sentences by score.
         top = np.argpartition(-score, kk - 1)[:kk]
         out[i, :kk] = top[np.argsort(-score[top])]
     return out

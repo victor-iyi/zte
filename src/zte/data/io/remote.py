@@ -1,13 +1,6 @@
-"""Remote (Google Drive) load/save for datasets and checkpoints.
+"""Google Drive load/save for datasets and checkpoints, via a mounted path, `gdown` or PyDrive2.
 
-Three transport mechanisms are supported, tried in order of convenience:
-
-1. **Mounted Drive path** -- on Colab (`drive.mount('/content/drive')`) or any machine where Drive is mounted as a folder,
-    reads/writes are ordinary file copies. This is the most reliable path.
-2. **gdown** -- downloads public/shared files and folders by id or URL (e.g. `uv add 'zte[drive]'` or `pip install 'zte[drive]'`). Download-only.
-3. **PyDrive2 / service account** -- authenticated uploads when configured.
-
-Every function degrades gracefully with an actionable error rather than a stack trace when an optional dependency or credential is missing.
+A missing optional dependency or credential raises an actionable error rather than a stack trace.
 """
 
 # pylint: disable=import-outside-toplevel

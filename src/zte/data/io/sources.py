@@ -1,14 +1,6 @@
-"""Resolve a dataset *source* (local dir, zip archives, or Google Drive) to `.mat`.
+"""Normalise any dataset source -- extracted directory, `.zip` archives or a Drive link -- into one local `.mat` root.
 
-The one thing every entry point needs is a local directory that contains the ZuCo `results<SUBJECT>_<TASK>.mat` files.
-Users have them in different shapes:
-
-- an already-extracted directory (`res/data/zuco_extracted`);
-- one or more `.zip` archives (`task2 - NR.zip` ...), or a folder of them;
-- a Google Drive folder / shareable link (downloaded via `zte.data.io.remote`).
-
-`resolve_source` normalises all of these into a single extracted directory, unzipping as needed and skipping work that is
-already done, so the rest of the pipeline only ever deals with a plain local root.
+Unzipping is idempotent, so the rest of the pipeline only ever deals with a plain local directory.
 """
 
 from __future__ import annotations
@@ -23,8 +15,7 @@ from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.sources')
 
-# ZuCo per-word files are named `results<SUBJECT>_<TASK>.mat` (e.g. `resultsZAB_SR.mat`), so the
-# subject and task are readable straight from the filename — no reliance on how a zip is named.
+# Subject and task read straight from the filename, so nothing depends on how a zip is named.
 _MAT_RE: Pattern[str] = re.compile(
     r'results(?P<subj>[A-Za-z0-9]+)_(?P<task>TSR|NR|SR)\.mat$', re.IGNORECASE
 )
@@ -36,7 +27,7 @@ def _has_mat(directory: Path) -> bool:
 
 
 def _parse_mat(member: str) -> tuple[str | None, str | None]:
-    """Parses `(subject, task)` from a `.mat` member/file name, or `(None, None)``."""
+    """Parses `(subject, task)` from a `.mat` member/file name, or `(None, None)`."""
     m = _MAT_RE.search(member.rsplit('/', 1)[-1])
     return (m.group('subj').upper(), m.group('task').upper()) if m else (None, None)
 
@@ -113,15 +104,9 @@ def resolve_source(
 ) -> Path:
     """Turns any supported source `spec` into a local directory of `.mat` files.
 
-    Resolution order:
-
-    1. **A `.zip` file, or a directory containing `.zip` files** -> the needed `.mat` members are extracted into `extract_dir` (idempotently) and returned.
-    2. **Directory already holding `.mat` files** -> returned unchanged.
-    3. **A Google Drive id / URL** -> downloaded via `download_to_dir`, then resolved recursively.
-
-    Extraction is **selective**: only archives (and, within them, only the `.mat` files) matching the requested `tasks` / `subjects`
-    are unpacked, so e.g. selecting `SR,NR` never unzips `task3 - TSR.zip`, and unrelated archives (`scripts.zip`) are skipped.
-    Already-extracted files are reused unless `overwrite` is set.
+    A Drive id/URL is downloaded then resolved recursively; a directory already holding `.mat` files is returned
+    unchanged; otherwise archives are unzipped into `extract_dir`. Extraction is selective -- only archives, and within
+    them only the `.mat` members, matching the requested `tasks`/`subjects` are unpacked.
 
     Args:
         spec (str | Path): A local directory, a `.zip` path, a directory of zips, or a Drive id/URL.
@@ -132,18 +117,17 @@ def resolve_source(
         overwrite (bool): Re-extract files even when they already exist in `extract_dir`.
 
     Returns:
-        A local directory containing the ZuCo `.mat` files.
+        Path: A local directory containing the ZuCo `.mat` files.
 
     Raises:
         FileNotFoundError: If resolution produced no `.mat` files.
-
     """
     extract_dir = Path(extract_dir)
     spec_str = str(spec)
     tset = {t.upper() for t in tasks} if tasks else None
     sset = {s.upper() for s in subjects} if subjects else None
 
-    # 3) Remote Google Drive id / URL.
+    # A Drive spec is downloaded first, then re-resolved as a local path.
     from zte.data.io.remote import (  # pylint: disable=import-outside-toplevel
         download_to_dir,
         is_drive_spec,
@@ -170,11 +154,11 @@ def resolve_source(
             _extract_selected(archives, extract_dir, tasks=tset, subjects=sset, overwrite=overwrite)
         )
 
-    # 1) A zip, or a directory of zips (checked before .mat so staging dirs extract to extract_dir).
+    # Zips are checked before `.mat` so that a staging directory extracts into `extract_dir`.
     if path.is_file() and path.suffix == '.zip':
         return _extract([path])
     if path.is_dir():
-        # Already-extracted .mat next to some zips? Prefer the data as-is; don't re-unpack.
+        # Extracted `.mat` sitting beside zips means the data is already usable as-is.
         if _has_mat(path):
             _LOG.info('Using extracted ZuCo data at %s', path)
             return path
@@ -190,7 +174,6 @@ def resolve_source(
         if data_zips:
             return _extract(data_zips)
 
-    # 2) Already-extracted directory.
     if path.is_dir() and _has_mat(path):
         _LOG.info('Using extracted ZuCo data at %s', path)
         return path

@@ -1,10 +1,7 @@
 """Sentence-category labels and corpus word frequency for stratified evaluation.
 
-Real ZuCo stimuli carry natural *sentence categories* that let us ask "does the thought embedding work equally well across sentence types?":
-
-- **SR** (sentiment reading) sentences are POSITIVE / NEGATIVE / NEUTRAL.
-- **TSR** (task-specific reading) sentences belong to a semantic *relation* type (e.g. `AWARD`, `EMPLOYER`, `WIFE`).
-- **NR** (normal reading) has no intrinsic label; sentences fall back to a length band so every sentence still has a reproducible category.
+SR sentences carry a sentiment label and TSR sentences a semantic relation type; NR has no intrinsic label, so those
+sentences fall back to a length band and every sentence still gets a reproducible category.
 """
 
 from __future__ import annotations
@@ -47,7 +44,7 @@ def normalise_text(text: str) -> str:
         text (str): A raw sentence string.
 
     Returns:
-        A normalised key (lower-case, single-spaced, punctuation-stripped).
+        str: A normalised key (lower-case, single-spaced, punctuation-stripped).
     """
     return ' '.join(_WORD_RE.findall(str(text).lower()))
 
@@ -59,7 +56,7 @@ def length_band(n_words: int) -> str:
         n_words (int): Number of words in the sentence.
 
     Returns:
-        `short` (<=7), `medium` (8-15) or `long` (>15).
+        str: `short` (<=7), `medium` (8-15) or `long` (>15).
     """
     if n_words <= 7:
         return 'short'
@@ -69,17 +66,13 @@ def length_band(n_words: int) -> str:
 
 
 def corpus_frequencies(words: pd.Series) -> pd.Series:
-    """Computes normalised term frequencies over the loaded corpus.
-
-    Frequency is `count(word) / count(most_common_word)` on lower-cased, punctuation-stripped tokens,
-    so the commonest token scores `1.0` and rarer tokens tail toward `0` -- a real, reproducible replacement
-    for the length proxy when building from the actual corpus.
+    """Computes `count(word) / count(most_common_word)` over lower-cased, punctuation-stripped tokens.
 
     Args:
         words (pd.Series): Series of surface word forms (one per row).
 
     Returns:
-        A float Series aligned to `words` in `(0, 1]`.
+        pd.Series: Floats in `(0, 1]` aligned to `words`, the commonest token scoring `1.0`.
     """
     keys = words.astype(str).str.lower().map(lambda w: ''.join(_WORD_RE.findall(w)))
     counts = Counter(k for k in keys if k)
@@ -92,14 +85,14 @@ def corpus_frequencies(words: pd.Series) -> pd.Series:
 def _scan_label_files(root: Path) -> dict[str, str]:
     """Best-effort scan of ZuCo label CSVs -> `{normalised_text: LABEL}`.
 
-    Tolerant of ZuCo's irregular delimiters: every CSV under `root` is sniffed; any cell that is a known
-    sentiment/relation token labels the longest text cell in its row. Absent or unparseable files simply contribute nothing.
+    Delimiters are sniffed per file to tolerate ZuCo's irregular CSVs; any cell holding a known sentiment/relation
+    token labels the longest text cell in its row, and unparseable files contribute nothing.
 
     Args:
         root (Path): Dataset root to search recursively for `*.csv` files.
 
     Returns:
-        A mapping from normalised sentence text to an upper-case label.
+        dict[str, str]: Normalised sentence text to upper-case label.
     """
     mapping: dict[str, str] = {}
     for csv_path in sorted(root.rglob('*.csv')):
@@ -125,19 +118,17 @@ def _scan_label_files(root: Path) -> dict[str, str]:
 
 
 def sentence_categories(sentences: pd.DataFrame, root: str | Path | None = None) -> pd.DataFrame:
-    """Adds `category` and `length_band` columns to a sentence table.
+    """Adds `category`, `category_scheme` and `length_band` columns to a sentence table.
 
-    `category` is, in priority order: a real sentiment/relation label joined from the corpus label files
-    (when `root` is given and they parse), otherwise the task code (`SR`/`NR`/`TSR`). `length_band` is always derived from
-    `n_words`. The function never raises on malformed label files; it degrades to the task-level category.
+    `category` prefers a sentiment/relation label joined from the corpus label files and degrades to the task code, so
+    malformed label files never raise. `length_band` always comes from `n_words`.
 
     Args:
         sentences (pd.DataFrame): Sentence metadata with `task`, `text` and `n_words`.
         root (str | Path | None): Optional dataset root to search for label CSVs.
 
     Returns:
-        The same frame with `category`, `category_scheme` and `length_band` columns added.
-
+        pd.DataFrame: The same frame with the three columns added.
     """
     out = sentences.copy()
     n_words = out['n_words'] if 'n_words' in out else out.get('text', '').str.split().str.len()
@@ -150,6 +141,7 @@ def sentence_categories(sentences: pd.DataFrame, root: str | Path | None = None)
         except OSError:
             labels = {}
 
+    # Join on normalised text, falling back to the task code wherever no label matched.
     keys = out['text'].map(normalise_text) if 'text' in out else pd.Series([''] * len(out))
     joined = keys.map(labels.get)
     out['category'] = joined.where(joined.notna(), out['task'].astype(str))
