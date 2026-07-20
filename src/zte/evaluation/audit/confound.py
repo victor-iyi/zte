@@ -1,23 +1,4 @@
-"""Confound audit -- *how entangled are the factors ZTE tries to separate?*
-
-Before any invariance objective is designed, this module quantifies the thing that governs whether that objective is safe: **how
-correlated the nuisance factors (subject, task) are with the content the model is supposed to keep (word length, frequency, meaning),
-and with the behaviour it records (fixations, regressions, skipping).**
-
-The motivating diagnosis: an invariance adversary only ever pushes a nuisance *down*; it never pulls
-content *up*. So if the nuisance and the content are correlated, deleting the nuisance deletes content with it.  The sharpest case is *task*:
-in ZuCo, normal-reading (NR) and sentiment-reading (SR) use **disjoint sentence sets**, so "task" is very nearly an alias for "which stimulus",
-and a task/stimulus adversary is partly a content-deletion operator.
-
-Everything here is model-free -- it reads the word-level metadata table (`ZuCoDataset.words`), so it runs anywhere the dataset builds, on
-synthetic or real ZuCo alike. Three association measures put every relationship on one comparable `[0, 1]` scale:
-
-- **Cramer's V** (bias-corrected, Bergsma 2013) for categorical x categorical.
-- **Correlation ratio eta** for categorical x continuous.
-- **|Spearman rho|** for continuous x continuous (monotonic, robust to the non-linear frequency->fixation relationship).
-
-Associations involving eye-tracking durations use pairwise-complete rows, because a skipped word has no fixation and those cells are missing by design, not by error.
-"""
+"""Model-free confound audit: how entangled are the nuisance factors with the content an invariance loss would delete?"""
 
 from __future__ import annotations
 
@@ -60,8 +41,8 @@ def _codes(values: np.ndarray) -> np.ndarray:
 def cramers_v(a: np.ndarray, b: np.ndarray) -> float:
     """Bias-corrected Cramer's V between two categorical vectors, in `[0, 1]`.
 
-    Uses the Bergsma (2013) small-sample correction so that two independent columns score near 0 even with many categories and
-    modest n -- important here because `subject` and `stimulus_key` have many levels.
+    Uses the Bergsma small-sample correction so two independent columns score near 0 even with many
+    categories and modest n -- `subject` and `stimulus_key` have many levels.
 
     Args:
         a (np.ndarray): First categorical vector `(n,)`.
@@ -69,7 +50,6 @@ def cramers_v(a: np.ndarray, b: np.ndarray) -> float:
 
     Returns:
         float: Corrected V in `[0, 1]` (0 when either column is constant).
-
     """
     ca, cb = _codes(a), _codes(b)
     r, k = int(ca.max()) + 1 if ca.size else 0, int(cb.max()) + 1 if cb.size else 0
@@ -95,8 +75,8 @@ def cramers_v(a: np.ndarray, b: np.ndarray) -> float:
 def correlation_ratio(categories: np.ndarray, values: np.ndarray) -> float:
     """Correlation ratio eta (categorical -> continuous) in `[0, 1]`.
 
-    eta^2 is the fraction of the continuous variable's variance explained by the group means; eta is its root,
-    comparable to a correlation. Rows where `values` is NaN are dropped (pairwise-complete).
+    eta is the root of the variance share explained by the group means, so it is comparable to a
+    correlation. Rows where `values` is NaN are dropped (pairwise-complete).
 
     Args:
         categories (np.ndarray): Categorical grouping `(n,)`.
@@ -104,7 +84,6 @@ def correlation_ratio(categories: np.ndarray, values: np.ndarray) -> float:
 
     Returns:
         float: eta in `[0, 1]` (0 when fewer than two populated groups).
-
     """
     values = np.asarray(values, dtype=np.float64)
     finite = np.isfinite(values)
@@ -176,7 +155,6 @@ def association(df: 'pd.DataFrame', a: str, b: str) -> tuple[float, str]:
 
     Returns:
         tuple[float, str]: `(association, measure_name)`.
-
     """
     cat_a, cat_b = _is_categorical(df, a), _is_categorical(df, b)
     va, vb = df[a].to_numpy(), df[b].to_numpy()
@@ -208,7 +186,6 @@ def task_stimulus_overlap(df: 'pd.DataFrame') -> dict:
 
     Returns:
         dict: Counts, shared-stimulus fraction, `cramers_v(task, stimulus_key)`, and a plain-English verdict.
-
     """
     if 'stimulus_key' not in df.columns or 'task' not in df.columns:
         return {'available': False}
@@ -260,9 +237,8 @@ def confound_report(df: 'pd.DataFrame') -> dict:
         df (pd.DataFrame): `ZuCoDataset.words` (or any word-level metadata table).
 
     Returns:
-        dict: task/stimulus overlap, the association matrix, and the two targeted cross-tabs (nuisance->content, behaviour->lexical)
-            that drive the plan's design decisions.
-
+        dict: task/stimulus overlap, the association matrix, and the two targeted cross-tabs
+            (nuisance->content, behaviour->lexical) that drive the design decisions.
     """
     d = _with_derived(df)
     all_factors = list(

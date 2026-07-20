@@ -1,19 +1,4 @@
-"""Honesty add-ons: permutation nulls, held-out cross-subject decoding, and anchor calibration.
-
-The core evaluation reports bootstrap CIs against *analytic* chance. This module adds the three things reviewers ask for when
-a paper claims "above chance":
-
-1. **Permutation null** (`retrieval_permutation_test`) — shuffle the content labels many times and recompute the statistic to
-    get an *empirical* null and a p-value, rather than trusting an analytic chance rate.
-2. **Held-out cross-subject decoding** (`cross_subject_decode`) — the honest generalization test: train a linear probe on N-1
-    subjects and score it on the held-out subject, one fold per subject. If content decodes on a brain the probe never saw,
-    the space carries transferable content — not just per-subject structure.
-3. **Anchor calibration lift** (`anchor_calibration_lift`) — a metrics-side version of the explorer's "calibrate a new brain"
-    fit an orthogonal Procrustes map from a few shared *anchor* words that aligns a held-out subject into the others' frame, then
-    measure whether the same-word cross-subject cohesion improves on *held-out* (non-anchor) words. This quantifies whether a
-    stranger's brain can be snapped into the shared space with a tiny calibration — the project's central open question — without
-    any retraining.
-"""
+"""Honesty add-ons: permutation nulls, held-out cross-subject decoding, and anchor calibration."""
 
 from __future__ import annotations
 
@@ -40,10 +25,9 @@ def retrieval_permutation_test(
 ) -> dict[str, Any]:
     """Empirical permutation p-value for same-group top-1 nearest-neighbour retrieval.
 
-    For each item, its nearest neighbour (cosine, excluding itself) is found once. The observed
-    statistic is the fraction of items whose nearest neighbour shares their group id. The null is
-    built by shuffling the group ids ``n_perm`` times and re-scoring against the *same* fixed
-    neighbour structure, so the geometry is held constant and only the labels move.
+    The observed statistic is the fraction of items whose nearest neighbour shares their group id.
+    The null shuffles the group ids against the same fixed neighbour structure, so the geometry is
+    held constant and only the labels move.
 
     Args:
         emb (np.ndarray): Embeddings `(n, d)` (e.g. sentence embeddings).
@@ -62,7 +46,8 @@ def retrieval_permutation_test(
     if n < 4:
         return {'applicable': False, 'reason': 'need >= 4 items'}
     rng = np.random.default_rng(seed)
-    # If the number of items is greater than the maximum number of items, subsample the items.
+
+    # The pairwise similarity is quadratic in n, so cap the item count.
     if n > max_n:
         keep = np.sort(rng.choice(n, size=max_n, replace=False))
         emb, group_ids = emb[keep], group_ids[keep]
@@ -71,25 +56,20 @@ def retrieval_permutation_test(
     if counts.max() < 2:
         return {'applicable': False, 'reason': 'no group has >= 2 members'}
 
-    # Normalize the embeddings and compute the similarity matrix.
+    # Neighbours are found once, so the permutation moves labels over fixed geometry.
     x = _l2norm(emb)
     sims = x @ x.T
     np.fill_diagonal(sims, -np.inf)
-
-    # Find the nearest neighbour for each item.
     nn = np.argmax(sims, axis=1)
-
-    # Get the group id of the nearest neighbour.
     nn_group = group_ids[nn]
     observed = float(np.mean(nn_group == group_ids))
 
-    # Compute the null distribution by shuffling the group ids and recomputing the statistic.
+    # Empirical null: reshuffle the group ids and re-score against the same neighbours.
     null = np.empty(n_perm, dtype=np.float64)
     for i in range(n_perm):
         perm = rng.permutation(group_ids)
         null[i] = np.mean(perm[nn] == perm)
 
-    # Compute the p-value.
     p = (1.0 + int(np.sum(null >= observed))) / (n_perm + 1.0)
 
     return {
@@ -123,14 +103,12 @@ def _fit_score(
         return None
     scaler = StandardScaler().fit(xtr)
     xtr_s, xte_s = scaler.transform(xtr), scaler.transform(xte)
-    # Suppress warnings about convergence and linear algebra.
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', ConvergenceWarning)
         warnings.simplefilter('ignore', LinAlgWarning)
-        # Fit the model and predict the held-out subject.
         if task == 'regression':
             model: object = Ridge(alpha=1.0).fit(xtr_s, ytr)
-            # R^2 on the held-out subject
+            # R^2 on the held-out subject.
             pred = model.predict(xte_s)  # type: ignore[attr-defined]
             ss_res = float(np.sum((yte - pred) ** 2))
             ss_tot = float(np.sum((yte - yte.mean()) ** 2)) or 1.0
@@ -154,10 +132,9 @@ def cross_subject_decode(
 ) -> dict[str, Any]:
     """Leave-one-subject-out linear decoding of content from the frozen embeddings.
 
-    For every subject in turn, a probe is trained on all *other* subjects and scored on that
-    held-out subject. The reported number per target is the mean over folds with a bootstrap CI,
-    against an honest chance baseline (test-set majority class for classification, 0 for R²). A
-    target "generalises" only if the CI lower bound clears chance.
+    For every subject in turn, a probe is trained on all other subjects and scored on that held-out
+    subject, against an honest chance baseline (test-set majority class for classification, 0 for
+    R^2). A target "generalises" only if the bootstrap CI lower bound clears chance.
 
     Args:
         word_emb (np.ndarray): Word embeddings `(n, d)`.
@@ -173,24 +150,21 @@ def cross_subject_decode(
     """
     from zte.evaluation.metrics import bootstrap_ci
 
-    # Check if the metadata has a subject column.
     if 'subject' not in word_meta.columns:
         return {'applicable': False, 'reason': 'no subject column'}
 
     subjects = word_meta['subject'].astype(str).to_numpy()
     uniq = np.unique(subjects)
-
-    # Check if the number of unique subjects is greater than the minimum number of subjects.
     if len(uniq) < min_subjects:
         return {'applicable': False, 'reason': f'need >= {min_subjects} subjects'}
 
     rng = np.random.default_rng(seed)
     out_targets: dict[str, Any] = {}
-    # Iterate over the targets.
     for tgt in targets:
         if tgt not in word_meta.columns:
             continue
 
+        # One leave-one-subject-out fold per subject.
         task = 'regression' if tgt in ('word_len', 'log_freq') else 'classification'
         y_all = (
             pd.to_numeric(word_meta[tgt], errors='coerce').to_numpy(dtype=float)
@@ -222,16 +196,14 @@ def cross_subject_decode(
             else:
                 chances.append(0.0)
 
-        # If there are less than 2 scores, continue.
         if len(scores) < 2:
             continue
 
-        # Compute the bootstrap CI.
+        # Aggregate the folds into a point estimate with a bootstrap CI over chance.
         arr = np.asarray(scores, dtype=float)
         point, lo, hi = bootstrap_ci(arr, seed=seed)
         chance = float(np.mean(chances)) if chances else 0.0
 
-        # Add the target to the output targets.
         out_targets[tgt] = {
             'task': task,
             'mean': float(point),
@@ -250,14 +222,9 @@ def _procrustes(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, n
     Solves `min_R ||(A - mean_a) R - (B - mean_b)||` over orthogonal `R`. A point `x` in A's frame is
     mapped to B's frame by `(x - mean_a) @ R + mean_b`.
     """
-    # Compute the mean of the embeddings.
     ma, mb = a.mean(axis=0), b.mean(axis=0)
-
-    # Compute the centered embeddings.
     ac, bc = a - ma, b - mb
     u, _, vt = np.linalg.svd(ac.T @ bc, full_matrices=False)
-
-    # Compute the rotation matrix.
     r = u @ vt
     return r, ma, mb
 
@@ -271,12 +238,8 @@ def _cohesion(h_vecs: list[np.ndarray], o_vecs: list[np.ndarray]) -> float:
     """Mean cosine between paired held-out and pooled-other centroids."""
     if not h_vecs:
         return float('nan')
-
-    # Normalize the held-out and pooled-other centroids.
     h = _l2norm(np.asarray(h_vecs, dtype=np.float32))
     o = _l2norm(np.asarray(o_vecs, dtype=np.float32))
-
-    # Compute the mean cosine between the held-out and pooled-other centroids.
     return float(np.mean(np.sum(h * o, axis=1)))
 
 
@@ -295,26 +258,26 @@ def _calibrate_one(
     # Words this subject shares with at least one other subject.
     h_words = {w: np.where(is_h & (words == w))[0] for w in np.unique(words[is_h]) if w}
     shared = []
-
-    # Iterate over the shared words.
     for w, h_idx in h_words.items():
         o_idx = np.where((~is_h) & (words == w))[0]
         if len(h_idx) and len(o_idx):
             shared.append((w, h_idx, o_idx, min(len(h_idx), len(o_idx))))
-
-    # If there are less than the minimum number of shared words, return None.
     if len(shared) < max(min_shared, 4):
         return None
+
+    # The most-shared words become anchors; the rest are the held-out test words.
     shared.sort(key=lambda t: t[3], reverse=True)
     k = max(3, min(n_anchors, len(shared) - 1))
     anchors, tests = shared[:k], shared[k:]
     if not tests:
         tests = anchors  # tiny data: fall back to in-sample (flagged by n_test == n_anchors)
 
+    # Fit the alignment on the anchors only.
     a = np.asarray([emb[h].mean(axis=0) for _w, h, _o, _c in anchors], dtype=np.float32)
     b = np.asarray([emb[o].mean(axis=0) for _w, _h, o, _c in anchors], dtype=np.float32)
     r, ma, mb = _procrustes(a, b)
 
+    # Cohesion on the test words, before vs after the map.
     h_before, h_after, o_c = [], [], []
     for _w, h, o, _c in tests:
         hc = emb[h].mean(axis=0)
@@ -344,24 +307,23 @@ def anchor_calibration_lift(
 ) -> dict[str, Any]:
     """Does aligning a held-out subject from a few anchor words improve cross-subject cohesion?
 
-    Content is keyed by word identity (the same word read by different people). For each held-out
-    subject, an orthogonal Procrustes map is fit from the ``n_anchors`` most-shared words and
-    applied to that subject's embeddings; cohesion (mean cosine of same-word cross-subject
-    centroids) is measured on the remaining *held-out* words before vs after. A positive mean lift
-    means a stranger's brain can be pulled toward the shared frame with a tiny calibration.
+    An orthogonal Procrustes map is fit from the `n_anchors` most-shared words and applied to the
+    held-out subject; cohesion (mean cosine of same-word cross-subject centroids) is measured on the
+    remaining held-out words. A positive lift means a stranger's brain can be pulled toward the
+    shared frame without retraining.
 
     Args:
-        word_emb (np.ndarray): Word embeddings ``(n, d)``.
-        word_meta (pd.DataFrame): Metadata with ``subject`` and ``word`` columns.
-        holdout (str | None): A specific held-out subject (e.g. the LOSO subject). ``None`` averages
+        word_emb (np.ndarray): Word embeddings `(n, d)`.
+        word_meta (pd.DataFrame): Metadata with `subject` and `word` columns.
+        holdout (str | None): A specific held-out subject (e.g. the LOSO subject). `None` averages
             over every subject in turn.
         n_anchors (int): Number of anchor words used to fit the alignment.
         min_shared (int): Minimum shared words required to calibrate a subject.
         seed (int): Unused placeholder for API symmetry / future stochastic variants.
 
     Returns:
-        dict: ``{applicable, holdout, n_anchors, per_subject: [...], mean_cohesion_before,
-        mean_cohesion_after, mean_lift, helps}`` or ``{applicable: False, reason}``.
+        dict: `{applicable, holdout, n_anchors, per_subject: [...], mean_cohesion_before,
+            mean_cohesion_after, mean_lift, helps}` or `{applicable: False, reason}`.
     """
     if 'subject' not in word_meta.columns or 'word' not in word_meta.columns:
         return {'applicable': False, 'reason': 'need subject and word columns'}

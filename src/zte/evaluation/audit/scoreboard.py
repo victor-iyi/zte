@@ -1,15 +1,4 @@
-"""The honest scoreboard -- *the held-out number, stated as a lift over raw*.
-
-The full evaluation computes geometry, probes and retrieval over **every** embedding, which for a LOSO run
-mixes the 11 training subjects with the 1 held-out stranger and dilutes the only number that matters.
-
-1. **On the held-out subject alone**, does the space stay healthy (effective rank, anisotropy) and
-    does it stop spending itself on identity (variance budget)?
-2. **Is every probe/retrieval number a lift over the raw band-power control?** Raw band power currently
-    beats the learned embedding on a stranger, so an absolute score is meaningless -- only `ZTE - raw` is progress.
-3. **Can the content probe even detect content in principle?** A positive control: the raw features must expose
-    word length / frequency, or "content 0%" is a dead probe, not a meaningful absence.
-"""
+"""The honest scoreboard: the held-out subject's numbers, each stated as a lift over the raw band-power control."""
 
 from __future__ import annotations
 
@@ -23,12 +12,10 @@ from zte.evaluation.neurons import neuron_report
 if TYPE_CHECKING:
     import pandas as pd
 
-# Probe targets that count as content (a meaning/lexical code should carry these) and
-# identity (a thought code should NOT). Mirrors zte.evaluation.neurons.
+# Probe targets a meaning code should carry, and those a thought code should not; mirrors zte.evaluation.neurons.
 _CONTENT_TARGETS: tuple[str, ...] = ('word_len', 'log_freq', 'category')
 _IDENTITY_TARGETS: tuple[str, ...] = ('subject',)
-# The positive-control floor: raw band power must expose lexical content at least this
-# well (linear R2), or the content probe is not trustworthy. The bake-off saw ~0.09-0.14.
+# Positive-control floor: below this linear R2 on raw band power the content probe is not trustworthy.
 _CONTENT_PROBE_FLOOR: float = 0.02
 
 
@@ -41,7 +28,7 @@ def holdout_subject(config: Any | None) -> str | None:
 
 
 def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
-    """Turns the probe-comparison rows into per-target `ZTE − raw` lifts.
+    """Turns the probe-comparison rows into per-target `ZTE - raw` lifts.
 
     Args:
         comparison (list[dict]): Rows from `metrics.representation_comparison`, each with
@@ -50,7 +37,6 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
     Returns:
         dict: `{target: {metric, zte, raw, noise, lift_linear, lift_knn}}` plus a
         `content_probe` positive-control block.
-
     """
     by_target: dict[str, dict[str, Any]] = {}
     for row in comparison:
@@ -102,10 +88,7 @@ def _sub(a: float | None, b: float | None) -> float | None:
 def held_out_geometry(
     word_emb: np.ndarray, word_meta: 'pd.DataFrame', holdout: str
 ) -> dict[str, Any] | None:
-    """Geometry + variance budget computed on the held-out subject's rows *only*.
-
-    This is the honest "does the space work for a stranger" number, undiluted by the training subjects that share the same run.
-    """
+    """Geometry + variance budget over the held-out subject's rows only, undiluted by the training subjects."""
     if 'subject' not in word_meta.columns:
         return None
     mask = (word_meta['subject'] == holdout).to_numpy()
@@ -146,19 +129,16 @@ def cross_subject_holdout_retrieval(
     Returns:
         dict | None: `top{k}`, `mrr`, `chance_top1`, `n_queries`, `lift_top1` (top1 - chance),
             or `None` when the run has too few subjects/queries to be meaningful.
-
     """
     subjects = np.asarray(subjects)
     content_ids = np.asarray(content_ids)
     if len(np.unique(subjects)) < 2:
         return None
-
-    # Check if the number of queries is greater than the minimum number of queries.
     q_mask = subjects == holdout
     if q_mask.sum() < 2:
         return None
 
-    # Normalize the embeddings.
+    # Cosine similarity over the whole sentence set; the gallery is masked per query.
     emb = np.asarray(sent_emb, dtype=np.float64)
     emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
     sims = emb @ emb.T  # cosine, (n, n)
@@ -171,17 +151,12 @@ def cross_subject_holdout_retrieval(
     n_scored = 0
 
     for i in q_idx:
-        # Get the indices of the other subjects.
         cross = subjects != subjects[i]  # gallery: other people only
-
-        # If there are no other subjects, continue.
         if not cross.any():
             continue
 
         cand = np.where(cross)[0]
         order = cand[np.argsort(-sims[i, cand])]
-
-        # Check if the content ids are the same.
         same = content_ids[order] == content_ids[i]
         if not same.any():
             # Still counts as a query (a miss); chance uses this query's gallery.
@@ -190,26 +165,21 @@ def cross_subject_holdout_retrieval(
             n_scored += 1
             continue
 
-        # Iterate over the top-K cut-offs.
         for k in ks:
             out[f'top{k}'] += float(same[:k].any())
 
-        # Compute the MRR, chance top1, rank percentile, number of queries and lift top1.
         rr += 1.0 / (np.argmax(same) + 1)
         rank = int(np.argmax(same)) + 1
         percentiles.append(1.0 - (rank - 1) / max(len(order) - 1, 1))
         chances.append(float((content_ids[cand] == content_ids[i]).mean()))
         n_scored += 1
 
-    # If there are no scored queries, return None.
     if n_scored == 0:
         return None
 
-    # Compute the top-K cut-offs.
+    # Pool the per-query counters into rates.
     for k in ks:
         out[f'top{k}'] /= n_scored
-
-    # Compute the MRR, chance top1, rank percentile, number of queries and lift top1.
     out['mrr'] = rr / n_scored
     out['chance_top1'] = float(np.mean(chances)) if chances else float('nan')
     out['rank_percentile'] = float(np.mean(percentiles)) if percentiles else float('nan')
@@ -230,15 +200,14 @@ def build_scoreboard(
 ) -> dict[str, Any]:
     """Assembles the honest scoreboard from already-computed evaluation artefacts."""
     holdout = holdout_subject(config)
-    # For a factored model the *thought code* is the content subspace, so the
-    # geometry/retrieval headline is judged on those dims, not the full embedding.
+
+    # A factored model's thought code is the content subspace, so the headline is judged on those dims.
     model_cfg = getattr(config, 'model', None)
     if model_cfg is not None and getattr(model_cfg, 'factored', False):
         cdim = int(getattr(model_cfg, 'content_dim', word_emb.shape[1]))
         word_emb = np.asarray(word_emb)[:, :cdim]
         sent_emb = np.asarray(sent_emb)[:, :cdim]
 
-    # Build the scoreboard.
     board: dict[str, Any] = {
         'is_loso': holdout is not None,
         'holdout_subject': holdout,
@@ -246,18 +215,14 @@ def build_scoreboard(
         'lift_over_raw': lift_over_raw(comparison),
     }
 
-    # If there is a held-out subject, build the held-out geometry and retrieval.
+    # The LOSO block: geometry and cross-subject retrieval for the stranger alone.
     if holdout is not None:
         board['held_out_geometry'] = held_out_geometry(word_emb, word_meta, holdout)
-
-        # Get the subjects.
         subjects = (
             sent_meta['subject'].to_numpy()
             if sent_meta is not None and 'subject' in sent_meta.columns
             else None
         )
-
-        # Build the held-out retrieval.
         board['held_out_retrieval'] = (
             cross_subject_holdout_retrieval(sent_emb, sent_content_ids, subjects, holdout)
             if subjects is not None
@@ -325,16 +290,20 @@ def render_markdown(board: dict[str, Any]) -> str:
 
 
 def _num(v: float | None) -> str:
+    """Formats a score, or a dash when missing."""
     return '—' if v is None else f'{v:.3f}'
 
 
 def _signed(v: float | None) -> str:
+    """Formats a delta with an explicit sign, or a dash when missing."""
     return '—' if v is None else f'{v:+.3f}'
 
 
 def _pct(v: float | None) -> str:
+    """Formats a fraction as a percentage, or a dash when missing."""
     return '—' if v is None else f'{100 * v:.1f}%'
 
 
 def _signed_pct(v: float | None) -> str:
+    """Formats a fraction as signed percentage points, or a dash when missing."""
     return '—' if v is None else f'{100 * v:+.2f}pp'
