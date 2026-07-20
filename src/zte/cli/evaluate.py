@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from zte.cli.extract import load_dataset
-from zte.cli.sources import add_data_source_args, add_extract_dir
+from zte.cli.support.sources import add_data_source_args, add_extract_dir
 from zte.data.dataset import ZuCoDataset
-from zte.data.transforms import band_power_from_raw
+from zte.data.features.transforms import band_power_from_raw
 from zte.device import resolve_device
 from zte.evaluation.report import evaluate_representation
 from zte.inference.embed import ZTEEmbedder
@@ -24,8 +25,8 @@ from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.evaluate')
 
-#: Raw-EEG rows embedded per block. Raw windows are ~147 KB each (105 x 350 x 4 B), so the full present
-#: set is tens of GB -- streaming keeps peak memory at one block plus the compact outputs.
+# Raw-EEG rows embedded per block. Raw windows are ~147 KB each (105 x 350 x 4 B), so the full present
+# set is tens of GB -- streaming keeps peak memory at one block plus the compact outputs.
 _EVAL_BLOCK: int = 2048
 
 
@@ -44,7 +45,7 @@ def parse_arguments() -> argparse.Namespace:
     add_data_source_args(parser, include_bundle=True)
     add_extract_dir(parser)
 
-    parser.add_argument('--out', type=str, default='res/evaluation')
+    parser.add_argument('--out', type=Path, default=Path('res/evaluation'))
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--run-name', type=str, default='zte-eval')
     parser.add_argument(
@@ -64,7 +65,9 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Skip the self-contained interactive HTML embedding explorer.',
     )
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
@@ -82,13 +85,12 @@ def collect_embeddings(
     Args:
         embedder (ZTEEmbedder): The restored embedder.
         dataset (ZuCoDataset): A built dataset.
-        indices (np.ndarray | None): Optional word-row indices restricting embedding
-            to a split (e.g. the held-out test set); `None` embeds every present word.
+        indices (np.ndarray | None): Optional word-row indices restricting embedding to a split (e.g. the held-out test set);
+            `None` embeds every present word.
 
     Returns:
-        tuple: `(word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, sent_meta, word_band_power)`,
-            where `sent_meta` is the merged sentence metadata and `word_band_power` holds per-word band power
-            (or `None` when the model consumes raw signals or no band power is available).
+        tuple: `(word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, sent_meta, word_band_power)`, where `sent_meta` is the merged
+            sentence metadata and `word_band_power` holds per-word band power (or `None` when the model consumes raw signals or no band power is available).
 
     """
     present = (
@@ -101,12 +103,10 @@ def collect_embeddings(
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
     if embedder.model.uses_raw:
-        # Stream in blocks. `dataset.raw_eeg[present]` materialises a full copy of the raw signal
-        # (~21 GB at raw_window=350, and it would un-memory-map a mmap-backed bundle), and the flattened
-        # window it used to feed the probes was the time-domain signal at n_channels * time_steps dims --
-        # mislabelled as band power and far too wide for ridge (a d x d Gram). `band_power_from_raw` is
-        # the classical-feature control the label promises, at ~840 dims. Peak here is one block plus the
-        # two compact outputs.
+        # Stream in blocks. `dataset.raw_eeg[present]` materialises a full copy of the raw signal (~21 GB at raw_window=350,
+        # and it would un-memory-map a mmap-backed bundle), and the flattened window it used to feed the probes was the time-domain
+        # signal at n_channels * time_steps dims -- mislabelled as band power and far too wide for ridge (a d x d Gram).
+        # `band_power_from_raw` is the classical-feature control the label promises, at ~840 dims. Peak here is one block plus the two compact outputs.
         rows = np.flatnonzero(present)
         emb_parts: list[np.ndarray] = []
         bp_parts: list[np.ndarray] = []
@@ -117,10 +117,8 @@ def collect_embeddings(
         word_emb = np.concatenate(emb_parts, axis=0)
         raw_word_feats = np.concatenate(bp_parts, axis=0)
     else:
-        # dataset.features are already normalised and carry the exact model input
-        # width (band power + any appended eye-tracking dims), so feed them straight
-        # in with the normaliser disabled -- this stays aligned to `present` order
-        # and is agnostic to the eye-tracking toggle.
+        # dataset.features are already normalised and carry the exact model input width (band power + any appended eye-tracking dims),
+        # so feed them straight in with the normaliser disabled -- this stays aligned to `present` order and is agnostic to the eye-tracking toggle.
         feats = dataset.features[present]  # type: ignore[index]
         word_emb = embedder.embed_signals(band_power=feats, apply_normalizer=False)
         raw_word_feats = feats
@@ -149,10 +147,9 @@ def phase_shuffled_word_emb(
 ) -> np.ndarray | None:
     """Embeds phase-scrambled EEG through the trained encoder (a signal-destroyed control).
 
-    Passing FFT-phase-randomised raw EEG through the *same* trained encoder tests whether the encoder
-    invents structure from destroyed signal. Only meaningful for a raw frontend: band-power features are
-    (near-)phase-invariant, so scrambling raw EEG barely moves them -- for band-power models this returns
-    `None` rather than presenting an identical-looking baseline as if it destroyed signal.
+    Passing FFT-phase-randomised raw EEG through the *same* trained encoder tests whether the encoder invents structure from destroyed signal.
+    Only meaningful for a raw frontend: band-power features are (near-)phase-invariant, so scrambling raw EEG barely moves them.
+    For band-power models this returns `None` rather than presenting an identical-looking baseline as if it destroyed signal.
 
     Args:
         embedder (ZTEEmbedder): The restored embedder.
@@ -164,7 +161,7 @@ def phase_shuffled_word_emb(
     """
     if not embedder.model.uses_raw or dataset.raw_eeg is None:
         return None
-    from zte.data.transforms import phase_scramble
+    from zte.data.features.transforms import phase_scramble
 
     present = (
         np.ones(len(dataset.words), dtype=bool)
@@ -175,8 +172,8 @@ def phase_shuffled_word_emb(
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
-    # Scramble + embed one block at a time: the full slice is a ~21 GB copy and phase_scramble promotes
-    # it again internally, so materialising it would OOM long before the encoder ran.
+    # Scramble + embed one block at a time: the full slice is a ~21 GB copy and phase_scramble promotes it again internally,
+    # so materialising it would OOM long before the encoder ran.
     rows = np.flatnonzero(present)
     parts = [
         np.asarray(

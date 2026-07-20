@@ -10,10 +10,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.datasets import synthetic_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
-from zte.data.synthetic import generate_synthetic_zuco
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.pipeline import run_training
 
@@ -112,8 +112,7 @@ def load_dataset(args: argparse.Namespace, config: ZTEConfig) -> ZuCoDataset:
             )
         return ZuCoDataset.load(args.bundle)
     if args.synthetic:
-        generate_synthetic_zuco(args.synthetic_out)
-        root = args.synthetic_out
+        root = synthetic_root(out=args.synthetic_out)
     else:
         root = resolve_data_root(args)
     ds_config = DatasetConfig(

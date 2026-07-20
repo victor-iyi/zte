@@ -1,13 +1,10 @@
-"""Turn-key provisioning of the two heavy, hand-wired experiment ingredients: exact scalp geometry and
-the word-meaning target.
+"""Turn-key provisioning of the two heavy, hand-wired experiment ingredients: exact scalp geometry and the word-meaning target.
 
-Both used to be manual, per-run rituals -- run `scripts/export_montage.py`, then edit `dataset.montage_csv`;
-or edit `objective.meaning_contextual`/`meaning_context_layer`/`meaning_dim` by hand. This module folds each into a
-single multiple-choice flag that (a) builds the artifact if needed and (b) wires the config, so a run just says what
-it wants:
 
-    zte-run --config … --spatial exact --meaning contextual
-    zte-run --config … --spatial attention --meaning static
+Usage::
+
+    zte-run --config ... --spatial exact --meaning contextual
+    zte-run --config ... --spatial attention --meaning static
 
 `--spatial` bundles the electrode-geometry knobs (`model.spatial_encoding` + `dataset.montage_csv`):
 
@@ -24,15 +21,14 @@ it wants:
     static     word-type GloVe vectors, restricted to the dataset vocabulary (built + wired here)
     contextual per-occurrence contextual target from a frozen encoder (e.g. BERT mid-layer)
 
-The same `add_provision_args` / `provision_from_args` pair is reused by `zte-run` and `zte-ablate`, so a provisioning
-choice means the same thing everywhere and can be baked into an ablation base before a knob sweep.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
-from typing import Literal
+from pathlib import Path
+from typing import Final, Literal
 
 from zte.config import ZTEConfig
 from zte.logging_utils import get_logger
@@ -42,26 +38,24 @@ _LOG = get_logger('cli.provision')
 type SpatialChoice = Literal['keep', 'off', 'approx', 'exact', 'attention']
 type MeaningChoice = Literal['keep', 'hash', 'static', 'contextual']
 
-SPATIAL_CHOICES: tuple[SpatialChoice, ...] = ('keep', 'off', 'approx', 'exact', 'attention')
-MEANING_CHOICES: tuple[MeaningChoice, ...] = ('keep', 'hash', 'static', 'contextual')
+SPATIAL_CHOICES: Final[tuple[SpatialChoice, ...]] = ('keep', 'off', 'approx', 'exact', 'attention')
+MEANING_CHOICES: Final[tuple[MeaningChoice, ...]] = ('keep', 'hash', 'static', 'contextual')
 
 # The exact-montage choices need coordinates built from a standard montage.
-_EXACT_SPATIAL: frozenset[str] = frozenset({'exact', 'attention'})
-_SPATIAL_ENCODING: dict[str, str] = {
+_EXACT_SPATIAL: Final[frozenset[str]] = frozenset({'exact', 'attention'})
+_SPATIAL_ENCODING: Final[dict[str, str]] = {
     'off': 'none',
     'approx': 'spherical_harmonics',
     'exact': 'spherical_harmonics',
     'attention': 'spatial_attention',
 }
 
-# These defaults match the paths the shipped experiment configs already point at (`dataset.montage_csv`,
-# `objective.meaning_source`), so `--spatial exact` / `--meaning static` build the artifact exactly where
-# a no-flag sweep run expects to find it -- one cached build serves both.
-DEFAULT_MONTAGE_OUT: str = 'res/montage_gsn105.csv'
-DEFAULT_MEANING_OUT: str = 'res/vectors/glove.300d.txt'
-DEFAULT_CONTEXTUAL_MODEL: str = 'bert-base-uncased'
-DEFAULT_CONTEXTUAL_LAYER: int = 8
-DEFAULT_CONTEXTUAL_DIM: int = 768
+# Default paths for the montage and meaning files.
+DEFAULT_MONTAGE_OUT: Final[Path] = Path('res/montage_gsn105.csv')
+DEFAULT_MEANING_OUT: Final[Path] = Path('res/vectors/glove.300d.txt')
+DEFAULT_CONTEXTUAL_MODEL: Final[str] = 'bert-base-uncased'
+DEFAULT_CONTEXTUAL_LAYER: Final[int] = 8
+DEFAULT_CONTEXTUAL_DIM: Final[int] = 768
 
 
 def add_provision_args(parser: argparse.ArgumentParser) -> None:
@@ -83,6 +77,7 @@ def add_provision_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         '--montage-out',
+        type=Path,
         default=DEFAULT_MONTAGE_OUT,
         help='Where --spatial exact/attention writes (and reads) the montage CSV.',
     )
@@ -121,7 +116,7 @@ def apply_spatial(
     config: ZTEConfig,
     choice: str,
     *,
-    montage_out: str = DEFAULT_MONTAGE_OUT,
+    montage_out: Path = DEFAULT_MONTAGE_OUT,
     montage_name: str | None = None,
 ) -> None:
     """Wires `model.spatial_encoding` + `dataset.montage_csv` for a `--spatial` choice (building the CSV if needed).
@@ -134,7 +129,7 @@ def apply_spatial(
     config.model.spatial_encoding = _SPATIAL_ENCODING[choice]  # type: ignore[assignment]
     if choice in _EXACT_SPATIAL:
         try:
-            from zte.data.montage import DEFAULT_MONTAGE, build_montage_csv
+            from zte.data.montage.montage import DEFAULT_MONTAGE, build_montage_csv
 
             path = build_montage_csv(
                 montage_out, montage=montage_name or DEFAULT_MONTAGE, zuco105=True
@@ -165,7 +160,7 @@ def apply_meaning(
     *,
     model: str | None = None,
     layer: int = DEFAULT_CONTEXTUAL_LAYER,
-    meaning_out: str = DEFAULT_MEANING_OUT,
+    meaning_out: Path = DEFAULT_MEANING_OUT,
     weight: float | None = None,
     vocab: Iterable[str] | None = None,
 ) -> None:
@@ -176,7 +171,7 @@ def apply_meaning(
         choice (str): One of `MEANING_CHOICES`.
         model (str | None): Override model id (GloVe name for `static`, HF encoder for `contextual`).
         layer (int): Contextual hidden layer.
-        meaning_out (str): Destination/lookup path for the `static` GloVe file.
+        meaning_out (Path): Destination/lookup path for the `static` GloVe file.
         weight (float | None): If given, set `objective.meaning_distill_weight`.
         vocab (Iterable[str] | None): Training vocabulary to restrict the `static` GloVe file to (keeps it tiny).
     """
@@ -188,7 +183,7 @@ def apply_meaning(
     if choice == 'hash':
         obj.meaning_source, obj.meaning_contextual = 'hash', None
     elif choice == 'static':
-        from zte.data.glove import DEFAULT_MODEL, provision_glove
+        from zte.data.targets.glove import DEFAULT_MODEL, provision_glove
 
         path, dim = provision_glove(meaning_out, vocab=vocab, model=model or DEFAULT_MODEL)
         obj.meaning_source, obj.meaning_dim, obj.meaning_contextual = str(path), dim, None
@@ -218,15 +213,25 @@ def provision_from_args(
 ) -> None:
     """Applies both `--spatial` and `--meaning` (from parsed args) to `config`, in place.
 
-    `vocab` (the training word set) is used only to shrink the `--meaning static` GloVe file; it is safe
-    to omit (the top-N words are kept instead).
+    Note:
+        `vocab` (the training word set) is used only to shrink the `--meaning static` GloVe file; it is safe
+        to omit (the top-N words are kept instead).
+
+    Args:
+        config (ZTEConfig): The config to mutate in place.
+        args (argparse.Namespace): The parsed arguments.
+        vocab (Iterable[str] | None): Training vocabulary to restrict the `static` GloVe file to (keeps it tiny).
+
     """
+    # Apply the spatial choice.
     apply_spatial(
         config,
         getattr(args, 'spatial', 'keep'),
         montage_out=getattr(args, 'montage_out', DEFAULT_MONTAGE_OUT),
         montage_name=getattr(args, 'montage_name', None),
     )
+
+    # Apply the meaning choice.
     apply_meaning(
         config,
         getattr(args, 'meaning', 'keep'),

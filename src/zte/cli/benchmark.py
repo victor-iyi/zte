@@ -20,7 +20,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.datasets import synthetic_root
+from zte.cli.support.render import dataframe_to_markdown
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.evaluation import metrics as M
@@ -82,10 +84,7 @@ def parse_arguments() -> argparse.Namespace:
 def _dataset_for(args: argparse.Namespace, include_et: bool) -> ZuCoDataset:
     """Builds (and caches) the band-power dataset for an eye-tracking setting."""
     if args.synthetic:
-        from zte.data.synthetic import generate_synthetic_zuco
-
-        root = 'res/data/synthetic_zuco'
-        generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
+        root = synthetic_root(tuple(args.tasks.split(',')))
     else:
         root = resolve_data_root(args)
     cfg = DatasetConfig(
@@ -128,9 +127,8 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
     if word_meta['subject'].nunique() > 1:
         tgts['subject'] = (pd.factorize(word_meta['subject'])[0], 'classification')
     comparison = M.representation_comparison(reps, tgts)
-    # A target "beats noise" only if the per-fold ZTE-minus-noise linear-probe gap has
-    # a bootstrap 95% CI lower bound above an effect-size floor (folds are paired via a
-    # shared seed) -- not merely a positive point difference.
+    # A target "beats noise" only if the per-fold ZTE-minus-noise linear-probe gap has a bootstrap 95% CI lower bound
+    # above an effect-size floor (folds are paired via a shared seed) -- not merely a positive point difference.
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise'}
     effect_floor = 0.01
@@ -217,14 +215,11 @@ def main() -> None:
 
 def _render_markdown(frame: pd.DataFrame) -> str:
     """Renders the benchmark table as a Markdown document (no extra deps)."""
-    cols = list(frame.columns)
-    head = '| ' + ' | '.join(cols) + ' |\n| ' + ' | '.join(['---'] * len(cols)) + ' |\n'
-    body = ''.join('| ' + ' | '.join(str(v) for v in row) + ' |\n' for row in frame.to_numpy())
     header = (
         '# ZTE benchmark\n\nEach row is a fixed-seed, reproducible run; sorted by '
         'subject-transfer lift (higher = more subject-agnostic).\n\n'
     )
-    return header + head + body
+    return header + dataframe_to_markdown(frame)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 """`zte-explore` -- which brain regions (and does eye-tracking) encode thought?
 
 This is the exploratory counterpart to training: working directly from the band-power tensor (no trained model needed),
-it answers two questions the project cares about.
+it answers two questions:
 
 1. **Which scalp regions carry which information?** Region-level importance is scored for *reading* targets (word length, lexical frequency)
     and *cognitive* targets (task, subject identity), so you can see, e.g., posterior/visual dominance for reading vs fronto-central involvement for task.
@@ -22,9 +22,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.datasets import synthetic_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.data.dataset import ZuCoDataset
-from zte.data.regions import RegionMap, default_region_map, region_importance
+from zte.data.montage.regions import RegionMap, default_region_map, region_importance
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.metrics import linear_probe
 
@@ -46,7 +47,7 @@ def parse_arguments() -> argparse.Namespace:
     add_extract_dir(parser)
 
     parser.add_argument('--tasks', type=str, default='SR,NR')
-    parser.add_argument('--out', type=str, default='res/exploration')
+    parser.add_argument('--out', type=Path, default=Path('res/exploration'))
     parser.add_argument(
         '--montage-csv',
         type=str,
@@ -54,7 +55,9 @@ def parse_arguments() -> argparse.Namespace:
         help='Exact channel->region CSV (else the default anterior-posterior map).',
     )
     parser.add_argument('--method', choices=['mutual_info', 'f_score'], default='mutual_info')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
@@ -65,10 +68,7 @@ def _load_dataset(args: argparse.Namespace) -> ZuCoDataset:
     if args.bundle:
         return ZuCoDataset.load(args.bundle)
     if args.synthetic:
-        from zte.data.synthetic import generate_synthetic_zuco
-
-        root = 'res/data/synthetic_zuco'
-        generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
+        root = synthetic_root(tuple(args.tasks.split(',')))
     else:
         root = resolve_data_root(args)
     cfg = DatasetConfig(

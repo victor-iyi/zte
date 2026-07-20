@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 
-from zte.evaluation.compare import build_comparison
+from zte.evaluation.interactive import build_comparison
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.compare')

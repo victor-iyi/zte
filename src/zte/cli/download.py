@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
-from zte.cli.sources import add_extract_dir
-from zte.data.remote import download_to_dir, parse_drive_spec
+from zte.cli.support.sources import add_extract_dir
+from zte.data.io.remote import download_to_dir, parse_drive_spec
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.download')
@@ -21,7 +22,7 @@ def parse_arguments() -> argparse.Namespace:
         '--drive', type=str, required=True, help='Google Drive folder id or shareable URL.'
     )
     parser.add_argument(
-        '--out', type=str, default='res/data/_downloads', help='Download directory.'
+        '--out', type=Path, default=Path('res/data/_downloads'), help='Download directory.'
     )
     add_extract_dir(parser)
     parser.add_argument('--log-level', default='INFO')

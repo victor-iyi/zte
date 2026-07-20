@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.inference.embed import ZTEEmbedder
@@ -97,7 +97,7 @@ def main() -> None:
         _LOG.info('Linear probe (%s): %s', args.probe_target, json.dumps(score))
 
     if args.drive_dir:
-        from zte.data.remote import upload_directory
+        from zte.data.io.remote import upload_directory
 
         upload_directory(out.parent, args.drive_dir)
     _LOG.info('Wrote %d embeddings to %s', len(embeddings), out.resolve())

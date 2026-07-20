@@ -1,18 +1,14 @@
 """`zte-visualize` -- build the flagship interactive Thought-Space Explorer.
 
-Produces a single self-contained `.html` (Plotly inlined, fully offline) over
-word-level ZTE embeddings, wiring five live views: one subject / many words, one
-word across many brains (with a cross-subject cosine statistic), thought
-arithmetic `emb(t,A) - centroid(A) + centroid(B)`, an eye-tracking vs EEG-only
-toggle, and real-time colour / subject / word / dimension controls.
+Produces a single self-contained `.html` (Plotly inlined, fully offline) over word-level ZTE embeddings, wiring five live views:
+one subject / many words, one word across many brains (with a cross-subject cosine statistic), thought arithmetic
+`emb(t,A) - centroid(A) + centroid(B)`, an eye-tracking vs EEG-only toggle, and real-time colour / subject / word / dimension controls.
 
 Two data paths:
 
-* ``--run res/experiments/<name>`` re-embeds a catalogued run's bundle with its
-  own checkpoint and visualises those real ZTE embeddings.
-* ``--synthetic`` fabricates a tiny ZuCo tree, trains two fast models -- one on
-  EEG + eye-tracking, one EEG-only -- embeds both (aligned row-for-row) and
-  produces the explorer with the view-4 toggle and probe bar populated.
+* `--run res/experiments/<name>` re-embeds a catalogued run's bundle with its own checkpoint and visualises those real ZTE embeddings.
+* `--synthetic` fabricates a tiny ZuCo tree, trains two fast models -- one on EEG + eye-tracking, one EEG-only -- embeds both
+  (aligned row-for-row) and produces the explorer with the view-4 toggle and probe bar populated.
 
 Examples::
 
@@ -51,13 +47,14 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Fabricate a tiny dataset and train two quick models.',
     )
-    parser.add_argument('--out', type=str, default='res/explorer/thought_space_explorer.html')
+    parser.add_argument(
+        '--out', type=Path, default=Path('res/explorer/thought_space_explorer.html')
+    )
     parser.add_argument(
         '--kind',
         choices=['explorer', 'atlas', 'both'],
         default='explorer',
-        help='Which interactive HTML(s) to emit: the Thought-Space Explorer, the Neuron '
-        'Atlas, or both.',
+        help='Which interactive HTML(s) to emit: the Thought-Space Explorer, the Neuron Atlas, or both.',
     )
     parser.add_argument(
         '--atlas',
@@ -68,7 +65,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--max-points', type=int, default=6000)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
@@ -83,7 +82,7 @@ def _add_categories(meta: pd.DataFrame, sentences: pd.DataFrame, root: str | Non
     Returns:
         pd.DataFrame: `meta` with `category` and `length_band` columns added.
     """
-    from zte.data.categories import sentence_categories
+    from zte.data.targets.categories import sentence_categories
 
     if not {'subject', 'task', 'sentence_idx'}.issubset(meta.columns):
         return meta
@@ -256,7 +255,7 @@ def _from_synthetic(args: argparse.Namespace) -> dict:
     }
 
 
-def _atlas_out_path(out: str, kind: str) -> Path:
+def _atlas_out_path(out: str | Path, kind: str) -> Path:
     """Chooses the atlas output path, avoiding a clash with the explorer when both run."""
     p = Path(out)
     if kind == 'both':
@@ -264,7 +263,7 @@ def _atlas_out_path(out: str, kind: str) -> Path:
     return p
 
 
-def _build_atlas(inputs: dict, out: str, kind: str) -> Path:
+def _build_atlas(inputs: dict, out: Path, kind: str) -> Path:
     """Computes a neuron report from the collected embeddings and writes the Neuron Atlas."""
     from zte.data.schema import BANDS
     from zte.evaluation.interactive import neuron_atlas_html

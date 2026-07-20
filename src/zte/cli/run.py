@@ -32,8 +32,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from zte.cli.provision import add_provision_args, provision_from_args
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.io import read_json, write_json
+from zte.cli.support.provision import add_provision_args, provision_from_args
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.logging_utils import configure_logging, get_logger
@@ -60,10 +61,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--name', type=str, default=None, help='Run name (default: config run_name).'
     )
-    parser.add_argument('--out-root', type=str, default='res/experiments')
+    parser.add_argument('--out-root', type=Path, default=Path('res/experiments'))
     parser.add_argument(
         '--data-cache',
-        type=str,
+        type=Path,
         default=None,
         dest='data_cache',
         help='Shared directory for the PROCESSED dataset bundle, content-addressed by the dataset '
@@ -146,16 +147,18 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--skip-explore', action='store_true')
     parser.add_argument('--no-tensorboard', action='store_true')
     parser.add_argument('--no-interactive', action='store_true')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
-def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
+def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> Path:
     """Resolves the data source to a local directory of `.mat` files."""
     if args.synthetic:
         from zte.data.synthetic import generate_synthetic_zuco
 
-        root = 'res/data/synthetic_zuco'
+        root = Path('res/data/synthetic_zuco')
         generate_synthetic_zuco(root, tasks=config.dataset.tasks)
         return root
     return resolve_data_root(
@@ -331,9 +334,7 @@ def _run(args: argparse.Namespace) -> None:
             f'no band power (representation={config.dataset.representation})'
         )
 
-    (run_dir / 'manifest.json').write_text(
-        json.dumps(manifest, indent=2, default=str), encoding='utf-8'
-    )
+    write_json(run_dir / 'manifest.json', manifest, default=str)
     (run_dir / 'README.md').write_text(
         _render_run_readme(config, manifest, run_dir), encoding='utf-8'
     )
@@ -342,7 +343,7 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: ZuCoDataset) -> None:
-    """Builds + wires the `--spatial` / `--meaning` ingredients into `config` (see `zte.cli.provision`).
+    """Builds + wires the `--spatial` / `--meaning` ingredients into `config` (see `zte.cli.support.provision`).
 
     The training word set is pulled from the built dataset so `--meaning static` writes only the GloVe
     rows this dataset needs; provisioning is otherwise a no-op when both flags are left at `keep`.
@@ -384,7 +385,7 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
         # Exploration only runs when band power is available; absence of the marker is only
         # decisive when the run could have produced it. A prior manifest confirms it did/should.
         if (run_dir / 'manifest.json').exists():
-            manifest = json.loads((run_dir / 'manifest.json').read_text(encoding='utf-8'))
+            manifest = read_json(run_dir / 'manifest.json')
             if 'region_map_approximate' not in manifest:
                 return True  # this run legitimately has no exploration stage
         return False
@@ -393,7 +394,7 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
 
 def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
     """Rebuilds the manifest evaluation summary from an existing `metrics.json` (resume path)."""
-    metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
+    metrics = read_json(metrics_path)
     return {
         'verdict': metrics.get('verdict'),
         'sentence_retrieval_top1': metrics.get('sentence_retrieval', {}).get('top1'),
@@ -414,17 +415,20 @@ def _evaluate(
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )
+
     # Opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
     phase_emb = (
         phase_shuffled_word_emb(embedder, dataset)
         if getattr(config.objective, 'eval_phase_shuffle', False)
         else None
     )
+
     train_vocab = (
         training_vocab(dataset, config)
         if getattr(config.objective, 'eval_seen_novel', False)
         else None
     )
+
     metrics = evaluate_representation(
         word_emb,
         word_meta,
@@ -441,6 +445,7 @@ def _evaluate(
         phase_word_emb=phase_emb,
         train_vocab=train_vocab,
     )
+
     return {
         'verdict': metrics['verdict'],
         'sentence_retrieval_top1': metrics['sentence_retrieval'].get('top1'),

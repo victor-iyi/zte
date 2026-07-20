@@ -10,7 +10,7 @@ import argparse
 import json
 from pathlib import Path
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.synthetic import generate_synthetic_zuco
