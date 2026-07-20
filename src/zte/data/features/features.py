@@ -17,7 +17,8 @@ from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.features')
 
-SelectionMethod = Literal['variance', 'f_score', 'mutual_info', 'rf_importance']
+type SelectionMethod = Literal['variance', 'f_score', 'mutual_info', 'rf_importance']
+"""The method used to score features."""
 
 
 def channel_mean_features(band_power: np.ndarray) -> np.ndarray:
@@ -58,8 +59,8 @@ def flat_feature_names(bp_feature_names: list[str], n_channels: int) -> list[str
     """Builds names for the flattened band-power matrix.
 
     Args:
-        bp_feature_names: The `(measure, band)` names, length `n_bp_features`.
-        n_channels: Number of channels.
+        bp_feature_names (list[str]): The `(measure, band)` names, length `n_bp_features`.
+        n_channels (int): Number of channels.
 
     Returns:
         `n_bp_features * n_channels` names like `'TRT_t1::ch007'` in flatten order.
@@ -69,19 +70,16 @@ def flat_feature_names(bp_feature_names: list[str], n_channels: int) -> list[str
 
 @dataclass(slots=True)
 class SelectionResult:
-    """Outcome of a feature-selection pass.
-
-    Attributes:
-        indices: Selected column indices into the (flattened) feature matrix.
-        scores: Importance score per *input* feature (length = n input features).
-        names: Names of the selected features, if names were supplied.
-        method: The selection method used.
-    """
+    """Outcome of a feature-selection pass."""
 
     indices: np.ndarray
+    """Selected column indices into the (flattened) feature matrix."""
     scores: np.ndarray
+    """Importance score per *input* feature (length = n input features)."""
     names: list[str] | None
+    """Names of the selected features, if names were supplied."""
     method: SelectionMethod
+    """The selection method used."""
 
 
 class FeatureSelector:
@@ -128,19 +126,23 @@ class FeatureSelector:
                 so omitted words never drive the ranking.
 
         Returns:
-            A :class:`SelectionResult`.
+            A `SelectionResult` containing the selected column indices, scores, names, and method.
 
         Raises:
             ValueError: If a supervised method is chosen without `y`.
         """
         x = np.asarray(x, dtype=np.float32)
+        # Apply mask if provided.
         if sample_mask is not None:
             x = x[sample_mask]
             if y is not None:
                 y = np.asarray(y)[sample_mask]
+
+        # Fill missing values with the column mean.
         col_mean = np.nan_to_num(np.nanmean(np.where(np.isnan(x), np.nan, x), axis=0))
         x = np.where(np.isnan(x), col_mean[np.newaxis, :], x)
 
+        # Compute scores using the selected method.
         if self.method == 'variance':
             scores = x.var(axis=0)
         else:
@@ -148,9 +150,11 @@ class FeatureSelector:
                 raise ValueError(f'Method {self.method!r} requires a target y.')
             scores = self._supervised_scores(x, np.asarray(y))
 
+        # Sort features by importance and select the top-k.
         order = np.argsort(scores)[::-1]
         indices = order if self.k is None else order[: self.k]
         sel_names = None if names is None else [names[i] for i in indices]
+
         _LOG.info(
             'Selected %d/%d features via %s (top score=%.4g)',
             len(indices),
@@ -176,7 +180,8 @@ class FeatureSelector:
 
             func = mutual_info_regression if self.task == 'regression' else mutual_info_classif
             return np.nan_to_num(func(x, y, random_state=0))
-        # rf_importance
+
+        # Random forest importance.
         if self.task == 'regression':
             from sklearn.ensemble import RandomForestRegressor
 

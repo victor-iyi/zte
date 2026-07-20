@@ -7,6 +7,8 @@ split can be re-applied verbatim to validation/test splits, preventing informati
 # pylint: disable=import-outside-toplevel,protected-access
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 from scipy.signal import butter, filtfilt
 
@@ -20,18 +22,10 @@ _LOG = get_logger('data.transforms')
 def phase_scramble(x: np.ndarray, *, axis: int = -1, seed: int = 0) -> np.ndarray:
     """Phase-randomised surrogate: destroys temporal/phase structure, preserves the power spectrum.
 
-    FFTs each channel along `axis`, replaces the Fourier phases with i.i.d. uniform angles (keeping DC
-    and the Nyquist bin real so the inverse is real-valued), and inverts. The result has the *same
-    per-channel power spectrum* as the input but no meaningful temporal or cross-channel structure -- the
-    honest "spectrum-matched but meaningless" null input. Embedding phase-scrambled EEG through the
-    *trained* encoder shows whether the encoder invents structure from destroyed signal: a genuine
-    temporal encoder should collapse toward noise on it, while a purely band-power feature is essentially
-    unchanged (so this control is informative for raw frontends, and a no-op-by-construction for band power).
-
     Args:
         x (np.ndarray): Real signal, e.g. raw EEG `(..., n_channels, n_times)`; scrambled along `axis`.
         axis (int): Time axis to scramble.
-        seed (int): RNG seed.
+        seed (int): Random number generator seed.
 
     Returns:
         np.ndarray: Phase-scrambled real signal, same shape as `x` (float32).
@@ -111,18 +105,19 @@ def band_power_from_raw(
 ) -> np.ndarray:
     """Per-channel band power for each raw EEG window -> `(n_epochs, n_channels * n_bands)`.
 
-    Recomputes, straight from the raw signal, the classical feature the band-power representation carries:
-    a real FFT per epoch with power integrated over each ZuCo band (:data:`~zte.data.schema.BAND_RANGES_HZ`).
+    Note:
+        Recomputes, straight from the raw signal, the classical feature the band-power representation carries:
+        a real FFT per epoch with power integrated over each ZuCo band (`zte.data.schema.BAND_RANGES_HZ`).
 
-    This is the honest *classical-feature control* for a raw frontend. The alternative -- flattening the
-    window to `n_channels * time_steps` -- is not a band-power baseline at all (it is the time-domain signal),
-    and at 105 x 350 = 36,750 dims no probe can consume it: ridge regression forms a `d x d` Gram matrix
-    (~10.8 GB here) and standardisation copies the whole matrix to float64. Band power keeps the same
-    information a band-power pipeline would extract, in ~840 dims.
+        This is the honest *classical-feature control* for a raw frontend. The alternative -- flattening the
+        window to `n_channels * time_steps` -- is not a band-power baseline at all (it is the time-domain signal),
+        and at 105 x 350 = 36,750 dims no probe can consume it: ridge regression forms a `d x d` Gram matrix
+        (~10.8 GB here) and standardisation copies the whole matrix to float64. Band power keeps the same
+        information a band-power pipeline would extract, in ~840 dims.
 
-    Bands too low to resolve in a short window (no FFT bin falls inside the range) yield a zero column
-    rather than a `NaN` from an empty mean -- with `raw_window=32` at 500 Hz the resolution is ~15.6 Hz, so
-    every band below beta is unresolvable and honestly reports zero power.
+        Bands too low to resolve in a short window (no FFT bin falls inside the range) yield a zero column
+        rather than a `NaN` from an empty mean -- with `raw_window=32` at 500 Hz the resolution is ~15.6 Hz, so
+        every band below beta is unresolvable and honestly reports zero power.
 
     Args:
         raw (np.ndarray): Raw windows `(n_epochs, n_channels, time_steps)`; may be a read-only memmap.
@@ -153,13 +148,14 @@ def band_power_from_raw(
 def sanitize_raw_windows(raw: np.ndarray, eps: float = 1e-6, chunk: int = 4096) -> np.ndarray:
     """Makes raw EEG windows model-safe **in place**: NaN/inf -> 0, then per-channel z-score per epoch.
 
-    ZuCo's `rawEEG` carries `NaN` for rejected samples/channels and is stored in unscaled microvolts.
-    Unlike band power -- which is imputed and `FeatureNormalizer`-scaled -- raw signals reach the frontend exactly as parsed,
-    so a single `NaN` propagates through the convolution and makes the whole contrastive batch (and any exported embedding) `NaN`.
-    This applies the `normalize_raw_epoch` treatment plus sanitisation, and is the single choke point every raw consumer relies on.
+    Note:
+        ZuCo's `rawEEG` carries `NaN` for rejected samples/channels and is stored in unscaled microvolts.
+        Unlike band power -- which is imputed and `FeatureNormalizer`-scaled -- raw signals reach the frontend exactly as parsed,
+        so a single `NaN` propagates through the convolution and makes the whole contrastive batch (and any exported embedding) `NaN`.
+        This applies the `normalize_raw_epoch` treatment plus sanitisation, and is the single choke point every raw consumer relies on.
 
-    Idempotent: re-applying to already-standardised windows is a no-op up to `eps`. Operates in place and
-    in chunks so multi-GB arrays never allocate a full-size temporary.
+        Idempotent: re-applying to already-standardised windows is a no-op up to `eps`. Operates in place and
+        in chunks so multi-GB arrays never allocate a full-size temporary.
 
     Args:
         raw (np.ndarray): Float array `(n_epochs, n_channels, time_steps)`, modified in place when float32.
@@ -195,17 +191,15 @@ class FeatureNormalizer:
         eps: Numerical floor for divisions.
 
     Note:
-        Mode `zscore_subject` fits and stores a **per-subject** per-column mean/std keyed by
-        subject code, and applies each row using its own subject's statistics. This removes the
-        constant per-subject offset that otherwise makes subject identity the cheapest thing for
-        the encoder to latch onto. `fit`/`transform` take an optional `subjects` array (one label
-        per row); at transform time any row whose subject was unseen at fit (e.g. a default
-        inference subject) falls back to a **global pooled** mean/std computed at fit time.
+        Mode `zscore_subject` fits and stores a **per-subject** per-column mean/std keyed by subject code, and applies each row using its
+        own subject's statistics. This removes the constant per-subject offset that otherwise makes subject identity the cheapest thing
+        for the encoder to latch onto. `fit`/`transform` take an optional `subjects` array (one label per row); at transform time any row
+        whose subject was unseen at fit (e.g. a default inference subject) falls back to a **global pooled** mean/std computed at fit time.
+
     """
 
-    # Above this feature width, per-subject covariance whitening (O(d^3)) is skipped and
-    # `riemannian` degrades to `zscore_subject` with a warning.
-    _RIEMANN_MAX_DIM = 2048
+    # Above this feature width, per-subject covariance whitening (O(d^3)) is skipped and `riemannian` degrades to `zscore_subject` with a warning.
+    _RIEMANN_MAX_DIM: ClassVar[int] = 2048
 
     def __init__(
         self, mode: Normalization = 'zscore_channel', eps: float = 1e-6, shrinkage: float = 0.1

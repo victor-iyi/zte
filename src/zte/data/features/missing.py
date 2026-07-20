@@ -29,8 +29,9 @@ _LOG = get_logger('data.missing')
 class MissingValueImputer:
     """Applies a configured missing-value strategy to a 2-D feature matrix.
 
-    The imputer is stateful for the column/global statistics methods so the same fill learned
-    on the training split can be re-applied to validation/test splits via `transform`.
+    Note:
+        The imputer is stateful for the column/global statistics methods so the same fill learned
+        on the training split can be re-applied to validation/test splits via `transform`.
 
     Attributes:
         config (MissingConfig): The `MissingConfig` driving behaviour.
@@ -109,10 +110,12 @@ class MissingValueImputer:
             group_ids (np.ndarray | None): Optional group ids for sequence-aware methods.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: `(imputed, presence_mask)` as in :meth:`fit_transform`.
+            tuple[np.ndarray, np.ndarray]: `(imputed, presence_mask)` as in `fit_transform`.
         """
         x = np.asarray(x, dtype=np.float32)
         mask = self.presence_mask(x)
+
+        # If we have fitted statistics, use them to fill missing values.
         if self._stats is not None and self.config.method in {
             'col_mean',
             'global_mean',
@@ -120,9 +123,13 @@ class MissingValueImputer:
         }:
             out = np.where(np.isnan(x), self._stats[np.newaxis, :], x)
             return np.nan_to_num(out, nan=0.0).astype(np.float32), mask
+
+        # If we have fitted a sklearn imputer, use it to fill missing values.
         if self._sklearn_imputer is not None and self.config.method in {'knn', 'iterative'}:
             out = self._sklearn_imputer.transform(x)  # type: ignore[attr-defined]
             return np.nan_to_num(out, nan=0.0).astype(np.float32), mask
+
+        # Otherwise, fit new statistics and return.
         return self.fit_transform(x, group_ids)
 
     def _fill_row_mean(self, x: np.ndarray) -> np.ndarray:
@@ -133,6 +140,8 @@ class MissingValueImputer:
             # All-NaN rows (omitted words) produce an intentional NaN row mean.
             warnings.simplefilter('ignore', category=RuntimeWarning)
             row_means = np.nanmean(x, axis=1)
+
+        # Fill missing values with the row mean.
         row_means = np.nan_to_num(row_means, nan=0.0)
         return np.where(np.isnan(x), row_means[:, np.newaxis], x)
 
