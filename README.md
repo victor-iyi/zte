@@ -104,7 +104,7 @@ res/experiments/<run_name>/
 res/experiments/INDEX.md          # a growing catalogue of every run + headline metrics
 ```
 
-The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte.data.sources.resolve_source`: an already-extracted directory is used as-is, a `.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive id/URL is downloaded to `res/data/_downloads` then unzipped into `--extract-dir`.  Every CLI that loads raw ZuCo data accepts the same flags (`--root`, `--drive`, `--extract-dir`), so "load from Drive or locally, unzip, prepare, cache, train, evaluate" is a single command either way.
+The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte.data.io.sources.resolve_source`: an already-extracted directory is used as-is, a `.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive id/URL is downloaded to `res/data/_downloads` then unzipped into `--extract-dir`.  Every CLI that loads raw ZuCo data accepts the same flags (`--root`, `--drive`, `--extract-dir`), so "load from Drive or locally, unzip, prepare, cache, train, evaluate" is a single command either way.
 
 ### The 5 flagship experiments
 
@@ -436,7 +436,7 @@ The project's anti-"BLEU-trap" controls are first-class:
 - `zte.evaluation.embedding_health` — effective rank, uniformity, alignment, anisotropy, dead dims (collapse check).
 - `zte.evaluation.breakdown` — the same metrics stratified by subject, task and sentence category.
 - `zte.evaluation.analogy` — subject/task vector-arithmetic transfer (the `king − man + woman` test for thoughts) vs a raw-feature control.
-- `zte.data.regions.region_importance` — which scalp regions carry which information (reading vs cognitive).
+- `zte.data.montage.regions.region_importance` — which scalp regions carry which information (reading vs cognitive).
 - `zte.evaluation.interactive` / `zte.evaluation.tensorboard` — self-contained interactive HTML + a maximally-used TensorBoard (projector, HParams, histograms, figures).
 - `zte.inference.retrieval.NearestNeighborIndex` — temporary nearest-neighbour decoder/probe over a labelled embedding bank.
 - `zte.training.metrics.noise_matched` — Gaussian control matched to the data's mean/variance: a real encoder must beat it.
@@ -450,16 +450,23 @@ zte/
 ├── pyproject.toml            # uv + ruff (single quotes) + deps
 ├── experiments/              # the 5 flagship experiment configs (+ README)
 ├── src/zte/
-│   ├── config.py             # typed, YAML-serialisable configs (eye-tracking, pos-encoding, ...)
+│   ├── config/               # typed, YAML-serialisable configs (dataset · model · objective · train · types)
 │   ├── device.py             # CPU/CUDA/MPS + autocast + seeding
 │   ├── logging_utils.py      # rich logging + tqdm progress
-│   ├── data/                 # schema, mat_loader, synthetic, missing, transforms, features,
-│   │                         #   dataset, torch_dataset, remote, viz, sources, categories, regions
-│   ├── models/               # frontends, embedding (ZTEModel), transformer (RoPE/ALiBi), objectives, heads
+│   ├── data/                 # schema, dataset, torch_dataset, synthetic, viz  (+ subpackages)
+│   │   ├── io/               #   mat_loader, sources, remote, drive_download
+│   │   ├── features/         #   transforms, features, missing
+│   │   ├── targets/          #   meaning, glove, text, behaviour, categories
+│   │   └── montage/          #   montage, regions
+│   ├── models/               # embedding (ZTEModel), transformer (RoPE/ALiBi), heads, spatial
+│   │   ├── frontends/        #   band_power, raw_conformer (+ build_frontend)
+│   │   └── objectives/       #   skipgram, cbow, masked, cpc, clip (+ base, losses)
 │   ├── training/             # trainer (+TensorBoard), checkpoint, scheduler, metrics, pipeline
 │   ├── inference/            # embed (ZTEEmbedder), retrieval
-│   ├── evaluation/           # metrics, breakdown, analogy, regions-eval, plots, interactive, tensorboard, report
-│   └── cli/                  # zte-run · prepare · train · extract · evaluate · explore · benchmark · download
+│   ├── evaluation/           # metrics, breakdown, analogy, neurons, plots, report, tensorboard
+│   │   ├── audit/            #   confound, honesty, scoreboard (is the signal real?)
+│   │   └── interactive/      #   explorer · classic · atlas · scoreboard · compare (+ web/ html·css·js)
+│   └── cli/                  # zte-run · prepare · train · extract · evaluate · … (+ support/ helpers)
 ├── tests/                    # synthetic schema, dataset, missing, models, evaluation, e2e
 ├── docs/                     # architecture, dataset, training, results, evaluation (mermaid + figures)
 └── res/                      # all generated resources (gitignored)

@@ -2,7 +2,7 @@
 
 The methods behind ZTE's second-generation thought embedding. The approach turns the EEG recorded while a person reads a word into a 768-dimensional code that depends on *what* was read rather than *who* read it, by treating the signal as a superposition of generative factors, disentangling them, and aligning them across brains.
 
-Configuration: `experiments/sota_loso.yaml`. Every method is an independent, config-gated lever, so each is validated in isolation with `zte-ablate` against the held-out-LOSO scoreboard (`zte.evaluation.scoreboard`).
+Configuration: `experiments/sota_loso.yaml`. Every method is an independent, config-gated lever, so each is validated in isolation with `zte-ablate` against the held-out-LOSO scoreboard (`zte.evaluation.audit.scoreboard`).
 
 ---
 
@@ -32,7 +32,7 @@ The v1 failure — the space encoding identity, not meaning — follows directly
 
 **Config:** `model.factored`, `model.content_dim`.
 
-**Code:** `models/objectives.py` (`_content_slice`, adversary routing), `evaluation/scoreboard.py` (judges the content slice).
+**Code:** `models/objectives/` (`_content_slice`, adversary routing), `evaluation/audit/scoreboard.py` (judges the content slice).
 
 ## 2. Lexical Meaning Distillation
 
@@ -50,7 +50,7 @@ with $W$ a learned projection sized to the teacher width.
 
 **Config:** `objective.meaning_distill_weight`, `meaning_source` (GloVe/fastText/LM file; hash fallback for mechanism tests), `meaning_dim`.
 
-**Code:** `data/meaning.py`, `objectives.py`. Provision real vectors with `scripts/build_meaning_vectors.py`.
+**Code:** `data/targets/meaning.py`, `objectives.py`. Provision real vectors with `scripts/build_meaning_vectors.py`.
 
 ## 3. Confound-Matched Contrastive Negatives
 
@@ -86,7 +86,7 @@ $$
 
 **Config:** `dataset.normalize='riemannian'`.
 
-**Code:** `data/transforms.py`.
+**Code:** `data/features/transforms.py`.
 
 ## 5. Oculomotor Privileged Supervision
 
@@ -102,7 +102,7 @@ $$
 
 **Config:** `objective.behaviour_weight`, `behaviour_targets`.
 
-**Code:** `data/behaviour.py`, `objectives.py`.
+**Code:** `data/targets/behaviour.py`, `objectives.py`.
 
 ## 6. Band-Family Routing
 
@@ -112,7 +112,7 @@ $$
 
 **Config:** `model.band_routing`.
 
-**Code:** `models/frontends.py::BandRoutedMLP`.
+**Code:** `models/frontends/::BandRoutedMLP`.
 
 ## 7. Electrode Spatial Encoding
 
@@ -138,7 +138,7 @@ $$
 
 ## Evaluation & proof
 
-- **Scoreboard** (`zte.evaluation.scoreboard`) — held-out-only geometry, cross-subject held-out retrieval (query = the stranger, gallery = trained-on people), every probe stated as $\text{ZTE} - \text{raw}$, and a content-probe positive control. Rendered at the top of every `report.md`.
+- **Scoreboard** (`zte.evaluation.audit.scoreboard`) — held-out-only geometry, cross-subject held-out retrieval (query = the stranger, gallery = trained-on people), every probe stated as $\text{ZTE} - \text{raw}$, and a content-probe positive control. Rendered at the top of every `report.md`.
 - **Confound audit** (`zte-audit`) — the factor-entanglement table that motivates the confound-matched negatives (Section 3).
 - **Ablation** (`zte-ablate`) — one-knob sweeps + scoreboard diff, so each method's held-out LOSO contribution is attributable. A method is kept only if it moves the north-star.
 

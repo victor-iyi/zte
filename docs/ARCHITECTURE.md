@@ -12,28 +12,28 @@ Everything is driven by one typed config (`ZTEConfig`) and flows left-to-right: 
 ```mermaid
 flowchart TB
     subgraph io[I/O & config]
-        cfg[config.py<br/>ZTEConfig]
-        rem[remote.py<br/>Drive load/save]
-        src[sources.py<br/>resolve local/zip/Drive]
+        cfg[config/<br/>ZTEConfig]
+        rem[data/io/remote.py<br/>Drive load/save]
+        src[data/io/sources.py<br/>resolve local/zip/Drive]
     end
     subgraph data[Data layer]
         sch[schema.py<br/>105ch · 8 bands · 5 ET]
-        mat[mat_loader.py]
+        mat[io/mat_loader.py]
         syn[synthetic.py]
-        mis[missing.py]
-        tr[transforms.py]
-        fs[features.py]
-        cat[categories.py<br/>corpus freq + sentence class]
+        mis[features/missing.py]
+        tr[features/transforms.py]
+        fs[features/features.py]
+        cat[targets/categories.py<br/>corpus freq + sentence class]
         dset[dataset.py — ZuCoDataset]
         td[torch_dataset.py]
         viz[viz.py]
-        reg[regions.py<br/>scalp region map]
+        reg[montage/regions.py<br/>scalp region map]
     end
     subgraph model[Model layer]
-        fe[frontends.py]
+        fe[frontends/<br/>band_power · raw_conformer]
         emb[embedding.py — ZTEModel]
         tfm[transformer.py<br/>RoPE / ALiBi / sinusoidal]
-        obj[objectives.py]
+        obj[objectives/<br/>skipgram · cbow · masked · cpc · clip]
         hd[heads.py]
     end
     subgraph train[Training layer]
@@ -50,7 +50,8 @@ flowchart TB
     subgraph eval[Evaluation]
         evm[metrics · breakdown · analogy]
         rep[report.py — evaluate_representation]
-        itv[interactive · tensorboard · plots]
+        itv[interactive/ · tensorboard · plots]
+        aud[audit/ · confound · honesty · scoreboard]
     end
     cfg --> dset
     src --> dset
@@ -101,7 +102,7 @@ See [DATASET.md] for every knob and the analysis helpers.
 
 ### Data source resolution
 
-`data/sources.py` normalises every supported input into a local directory of `.mat` files: an already-extracted tree, a `.zip` (or folder of task archives), or a Google Drive folder id/URL (downloaded via `data/remote.py` + `gdown` into `res/data/_downloads`, then unzipped into `--extract-dir`). Every CLI that loads raw ZuCo data shares the same flags through `cli/sources.py` (`--root`, `--drive`, `--extract-dir`).
+`data/io/sources.py` normalises every supported input into a local directory of `.mat` files: an already-extracted tree, a `.zip` (or folder of task archives), or a Google Drive folder id/URL (downloaded via `data/io/remote.py` + `gdown` into `res/data/_downloads`, then unzipped into `--extract-dir`). Every CLI that loads raw ZuCo data shares the same flags through `cli/support/sources.py` (`--root`, `--drive`, `--extract-dir`).
 
 ## 3. The ZTE model
 

@@ -35,11 +35,11 @@ Similarity + symmetric loss:
 
 `multipos_infonce(S, pos)` per anchor row = `logsumexp(S over valid columns) − logsumexp(S over positive columns)` — standard InfoNCE generalised to ≥1 positives. Because the **same sentence read by different subjects shares a `text_id`**, every EEG reading of a text is a positive for that text, so subject identity is pushed out of the aligned space *for free* (this is why the cross-subject-positives sampler and the CLIP multi-positive mask reinforce each other).
 
-Insertion points: `zte.models.objectives.SentenceClipObjective` (`_sentence_vectors`, `compute`, `_clip_direction`), `zte.data.text.build_sentence_text_matrix`, `zte.data.torch_dataset` (`sentence_text_id` in collate; `SemanticHardNegativeSampler`), `zte.training.pipeline` (build + attach).
+Insertion points: `zte.models.objectives.SentenceClipObjective` (`_sentence_vectors`, `compute`, `_clip_direction`), `zte.data.targets.text.build_sentence_text_matrix`, `zte.data.torch_dataset` (`sentence_text_id` in collate; `SemanticHardNegativeSampler`), `zte.training.pipeline` (build + attach).
 
 ## Semantic-hard negatives
 
-Random distractors let the encoder win on surface form. `zte.data.text.mine_hard_negatives` ranks, per sentence, the others by `surface_overlap − semantic_cosine` — high word-token Jaccard (they *look* alike) but low frozen-text cosine (they *mean* different things) — and `SemanticHardNegativeSampler` co-locates each anchor with those hard negatives (and its cross-subject positives) in the same batch. Verified: for "the cat sat on the mat", the miner picks "the dog sat on the rug" and rejects a semantically-identical paraphrase. Toggle with `objective.semantic_hard_negatives`, `objective.hard_negative_pool`.
+Random distractors let the encoder win on surface form. `zte.data.targets.text.mine_hard_negatives` ranks, per sentence, the others by `surface_overlap − semantic_cosine` — high word-token Jaccard (they *look* alike) but low frozen-text cosine (they *mean* different things) — and `SemanticHardNegativeSampler` co-locates each anchor with those hard negatives (and its cross-subject positives) in the same batch. Verified: for "the cat sat on the mat", the miner picks "the dog sat on the rug" and rejects a semantically-identical paraphrase. Toggle with `objective.semantic_hard_negatives`, `objective.hard_negative_pool`.
 
 ## Config surface
 
@@ -75,7 +75,7 @@ uv run zte-run --config experiments/exp8_clip_qwen.yaml --root "<ZuCo>" --loso-h
 uv run zte-compare --experiments res/experiments
 ```
 
-In the Colab notebook, add the two configs to the `SPOTLIGHT` list in cell 5-iv and run 5-iv → 5-v.
+In the Colab notebook, add the two configs to the `SPOTLIGHT` list in cell 5-iv and run 5-iv -> 5-v.
 
 ## The honest win condition
 

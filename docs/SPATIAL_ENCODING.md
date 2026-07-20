@@ -73,7 +73,7 @@ dataset:
 Without a montage the module uses a smooth, well‑separated **Fibonacci‑cap** placeholder and logs `approximate=True` (mirroring `RegionMap`). This makes the encoding *usable* but not geometrically true. For real accuracy, supply the electrode coordinates of the ZuCo EGI net:
 
 ```sh
-# Requires `mne` (uv sync --group assets). ZuCo uses standard EGI ordering, so --zuco105
+# Requires `mne` (uv sync --group spatial). ZuCo uses standard EGI ordering, so --zuco105
 # reproduces the retained 105-channel montage with no manual channel list:
 python scripts/export_montage.py --out res/montage_gsn105.csv --zuco105
 ```
