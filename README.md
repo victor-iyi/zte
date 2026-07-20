@@ -474,21 +474,3 @@ zte/
     └── experiments/          #   one self-contained folder per run + INDEX.md catalogue
         └── <run_name>/       #     config · bundle · checkpoints · evaluation · exploration · tb · manifest
 ```
-
-> **Resources live under `res/`.** Every generated artefact — extracted/synthetic data, the feature cache, dataset bundles, checkpoints, embeddings and figures — defaults to a subfolder of `res/` (which is gitignored). Override any of these via the CLI flags (`--out`, `--cache-dir`, `--ckpt-dir`, …) or the matching `DatasetConfig`/`TrainConfig` fields.
-
----
-
-## Roadmap — toward a device/subject/task-agnostic brain representation
-
-ZTE v1 is intentionally subject/task-aware. The path to invariance (documented in `docs/ARCHITECTURE.md`):
-
-1. **Subject-invariance** — adversarial subject head / domain confusion; SPD-tangent-space features.
-2. **Task/device-invariance** — multi-corpus pretraining; channel-set adapters for differing montages.
-3. **Cross-modal alignment** — feed ZTE embeddings into `EEG-OT-CLIP` (InfoNCE + Sinkhorn OT + Gromov-Wasserstein) against a frozen LLM, evaluated by noise-anchored LOSO retrieval.
-
----
-
-## References
-
-ZuCo: Hollenstein et al. (2018, *Sci. Data*; 2020, *LREC*). Self-supervised EEG: BENDR (Kostas et al. 2021), MAEEG (2021), data2vec (Baevski et al. 2022), wav2vec 2.0 (Baevski et al. 2020), EEG2Rep (2024). Word embeddings: word2vec (Mikolov et al. 2013). See `docs/` for the full bibliography and the parent project's mathematical framework.

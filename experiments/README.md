@@ -1,6 +1,6 @@
 # ZTE experiments
 
-Every file here is a plain, editable [`ZTEConfig`](../src/zte/config.py) YAML. Run any of them end to end with **one command**; everything lands under `res/experiments/<run_name>/` (config, checkpoints, `evaluation/report.md`, figures, the interactive dashboards, and a `manifest.json` verdict).
+Every file here is a plain, editable [`ZTEConfig`](../src/zte/config/) YAML. Run any of them end to end with **one command**; everything lands under `res/experiments/<run_name>/` (config, checkpoints, `evaluation/report.md`, figures, the interactive dashboards, and a `manifest.json` verdict).
 
 ```sh
 # Synthetic smoke test (no data) → a real run → straight from Google Drive:
@@ -37,7 +37,7 @@ These are the current best recipes. All are LOSO (held out on `ZAB` by default) 
 
 ### What the flagship recipe is made of
 
-`sota_loso` stacks these, each targeting a specific failure mode. The full derivations (with math) are in [`../docs/SOTA_IMPLEMENTATION.md`](../docs/SOTA_IMPLEMENTATION.md); the summary:
+`sota_loso` stacks these, each targeting a specific failure mode. The full derivations (with math) are in [`../docs/METHODS.md`](../docs/METHODS.md); the summary:
 
 - **Per-subject Riemannian normalisation** (`dataset.normalize: riemannian`) — re-centres and whitens each
   person's feature covariance, removing the constant per-subject offset that otherwise makes *who is

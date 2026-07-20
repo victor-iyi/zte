@@ -81,7 +81,7 @@ $$
 **Math.** the SPD inverse square root comes from the symmetric eigendecomposition $\Sigma = V \Lambda V^{\top}$, giving $\Sigma^{-1/2} = V \Lambda^{-1/2} V^{\top}$, with Ledoit–Wolf shrinkage for conditioning:
 
 $$
-\Sigma \;\leftarrow\; (1-\gamma)\,\Sigma \;+\; \gamma\,\frac{\operatorname{tr}\Sigma}{d}\,I .
+\Sigma \;\leftarrow\; (1-\gamma)\,\Sigma \;+\; \gamma\,\frac{\mathrm{tr}\,\Sigma}{d}\,I .
 $$
 
 **Config:** `dataset.normalize='riemannian'`.
@@ -97,7 +97,7 @@ $$
 **Math.** a masked multi-target loss over difficulty signals $y_k$ (regression, or BCE for the binary *skipped* target), summing only over cells present by design:
 
 $$
-\mathcal{L}_{\text{behaviour}} \;=\; \sum_{k} \mathbb{1}[\,y_k \text{ finite}\,]\;\ell_k\!\big(\text{head}(z_c),\, y_k\big).
+\mathcal{L}_{\text{behaviour}} \;=\; \sum_{k} \mathbf{1}[\,y_k \text{ finite}\,]\;\ell_k\!\big(\text{head}(z_c),\, y_k\big).
 $$
 
 **Config:** `objective.behaviour_weight`, `behaviour_targets`.
@@ -166,5 +166,3 @@ The **retrieval-and-honesty layer** is the implemented fix, layered on top of th
   controls; rank-percentile / median-rank reporting).
 
 Two flagship configs run it: `experiments/sota_loso.yaml` (geometry-fixed spherical-harmonic SOTA) and `experiments/exp7_sota_geom_invariance.yaml` (spatial-attention + FiLM + shrunk `content_dim` A/B). The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).
-
-**Full write-up — hypotheses, citations, exact config keys, code locations, and confirming metrics for every lever — in [SOTA_IMPLEMENTATION.md](./SOTA_IMPLEMENTATION.md).**

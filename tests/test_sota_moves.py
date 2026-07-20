@@ -1,4 +1,4 @@
-"""Tests for the Report B "road to SOTA" moves (docs/SOTA_IMPLEMENTATION.md).
+"""Tests for the "road to SOTA" moves (docs/METHODS.md).
 
 Covers the geometry fix (all-but-the-top + CSLS), rank-percentile / frequency-matched retrieval,
 the sharpened contrastive terms (alignment, debiased InfoNCE), the collapse-proof data2vec auxiliary,
