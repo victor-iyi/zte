@@ -109,21 +109,18 @@ def is_mounted_path(spec: str) -> bool:
 def download_to_dir(remote_spec: str, local_dir: str | Path, *, resume: bool = True) -> Path:
     """Downloads a Drive file/folder (or copies a mounted path) into `local_dir`.
 
-    Folder downloads are **resumable**: each file is fetched individually with `gdown`'s `resume=True`, completed files
-    are recorded in `.zte_drive_manifest.json`, and re-running the same command skips finished files and continues
-    partial `.part` transfers. Interrupt with Ctrl+C at any time and run again to continue.
-
-    Per-file byte progress is shown via `gdown`/`tqdm`; overall file progress uses the package progress bar.
+    Note:
+        Folder downloads are **resumable**: each file is fetched individually with `gdown`'s `resume=True`, completed files
+        are recorded in `.zte_drive_manifest.json`, and re-running the same command skips finished files and continues
+        partial `.part` transfers. Interrupt with Ctrl+C at any time and run again to continue.
 
     Args:
         remote_spec (str): A Drive file/folder id, a shareable URL, or a local path.
         local_dir (str | Path): Local destination directory (created if missing).
+        resume (bool): Whether to resume partial downloads.
 
     Returns:
         The local directory containing the downloaded bundle.
-
-    Raises:
-        RuntimeError: If a network download is required but `gdown` is absent.
 
     """
     dest = Path(local_dir)
@@ -141,7 +138,7 @@ def download_to_dir(remote_spec: str, local_dir: str | Path, *, resume: bool = T
         kind, drive_id = parsed
         _LOG.info('Downloading Google Drive %s: %s', kind, drive_id)
         if kind == 'folder':
-            from zte.data.drive_download import download_drive_folder_resumable
+            from zte.data.io.drive_download import download_drive_folder_resumable
 
             download_drive_folder_resumable(gdown, drive_id, dest)
             return dest
@@ -194,13 +191,19 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
             'Drive upload requires either a mounted Drive path or PyDrive2 (uv add pydrive2) with configured credentials.'
         ) from exc
 
+    # Authenticate with Google
     gauth = GoogleAuth()
     gauth.LocalWebserverAuth()
     drive = GoogleDrive(gauth)
+
+    # Create a zip archive of the local directory
     archive = shutil.make_archive(str(local), 'zip', root_dir=local)
+
+    # Upload the archive to the remote directory
     file = drive.CreateFile({'title': Path(archive).name, 'parents': [{'id': remote_dir}]})
     file.SetContentFile(archive)
     file.Upload()
+
     _LOG.info('Uploaded %s to Drive folder %s', archive, remote_dir)
     return f'drive://{remote_dir}/{Path(archive).name}'
 

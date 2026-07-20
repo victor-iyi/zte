@@ -1,17 +1,9 @@
-"""Parsing of ZuCo MATLAB `.mat` files into aligned NumPy/record structures.
-
-ZuCo ships dense, nested MATLAB structs. Pre-v7.3 files are read with :func:`scipy.io.loadmat` (`squeeze_me=True, struct_as_record=False`)
-which exposes structs as attribute-style objects; v7.3 (HDF5) files fall back to :mod:`h5py`.
-The public entry point is :func:`extract_file`, which flattens one file into sentence rows, word rows,
-a band-power tensor and (optionally) a raw EEG tensor -- all index-aligned so the dataset layer can stack them directly.
-"""
-
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Pattern
 
 import numpy as np
 from scipy.io import loadmat
@@ -21,40 +13,39 @@ from zte.data.schema import (
     N_CHANNELS,
     Band,
     EyeTrackingMeasure,
+    Subject,
+    Task,
     band_feature_name,
 )
 
-_FILENAME_RE = re.compile(r'results([A-Za-z0-9]+)_([A-Za-z]+)')
+_FILENAME_RE: Pattern[str] = re.compile(r'results([A-Za-z0-9]+)_([A-Za-z]+)')
 
 
 @dataclass(slots=True)
 class FileExtract:
-    """The flattened contents of a single ZuCo `.mat` file.
+    """The flattened contents of a single ZuCo `.mat` file."""
 
-    Attributes:
-        subject: Subject code parsed from the filename (e.g. `'ZAB'`).
-        task: Task code parsed from the filename (e.g. `'SR'`).
-        sentence_rows: One metadata dict per sentence.
-        word_rows: One metadata/scalar dict per word (sentence order preserved).
-        band_power: Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words / rejected epochs, or `None` if not requested.
-        bp_feature_names: Names (`'<measure>_<band>'`) for the band-power axis.
-        raw_eeg: Array `(n_words, n_channels, time_steps)` or `None`.
-    """
-
-    subject: str
-    task: str
+    subject: Subject
+    """The subject code parsed from the filename (e.g. `'ZAB'`)."""
+    task: Task
+    """The task code parsed from the filename (e.g. `'SR'`, `'NR'`, `'TSR'`)."""
     sentence_rows: list[dict[str, Any]]
+    """One metadata dict per sentence."""
     word_rows: list[dict[str, Any]]
+    """One metadata/scalar dict per word (sentence order preserved)."""
     band_power: np.ndarray | None
+    """Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words / rejected epochs, or `None` if not requested."""
     bp_feature_names: list[str]
+    """Names (`'<measure>_<band>'`) for the band-power axis."""
     raw_eeg: np.ndarray | None
+    """Array `(n_words, n_channels, time_steps)` or `None`."""
 
 
 def parse_subject_task(path: Path) -> tuple[str, str]:
     """Extracts subject and task codes from a ZuCo `.mat` filename.
 
     Args:
-        path (Path): Path such as `resultsZAB_SR.mat`.
+        path (Path): Path such as `resultsZAB_SR.mat` (results<SUBJECT>_<TASK>.mat).
 
     Returns:
         `(subject, task)`, or `('?', stem)` when the name does not match.
@@ -70,8 +61,7 @@ def parse_subject_task(path: Path) -> tuple[str, str]:
 def scalar_or_nan(value: object) -> float:
     """Returns a feature as a float, mapping empty arrays to `NaN`.
 
-    Word-level features are empty for words that received no fixation; those are
-    treated as missing.
+    Word-level features are empty for words that received no fixation; those are treated as missing.
 
     Args:
         value (object): A scipy-loaded scalar or (possibly empty) array.
@@ -87,7 +77,7 @@ def feature_present(value: object) -> bool:
     """Returns whether a feature array is non-empty (not rejected/omitted).
 
     Args:
-        value: A scipy-loaded feature value.
+        value (object): A scipy-loaded feature value.
 
     Returns:
         `True` if the underlying array holds any data.
@@ -118,12 +108,12 @@ def _channel_vector(value: object, n_channels: int = N_CHANNELS) -> np.ndarray:
 def _coerce_raw_2d(value: object) -> np.ndarray:
     """Coerces a raw-EEG value to a numeric 2-D array, tolerating a ragged cell of segments.
 
-    ZuCo's per-word `rawEEG` is usually a `(channels, time)` matrix, but a word with several
-    fixations can arrive as a **cell array of per-fixation segments** of different lengths — which
-    `scipy.io.loadmat` returns as an object ndarray. A plain `np.asarray(..., dtype=float32)` then
-    raises "setting an array element with a sequence". This picks the largest convertible segment
-    (the most raw signal), which the caller pads/truncates to the fixed window, so extraction never
-    crashes on ragged raw EEG.
+    Note:
+        ZuCo's per-word `rawEEG` is usually a `(channels, time)` matrix, but a word with several fixations can arrive as a
+        **cell array of per-fixation segments** of different lengths — which `scipy.io.loadmat` returns as an object ndarray.
+        A plain `np.asarray(..., dtype=float32)` then raises "setting an array element with a sequence". This picks the largest
+        convertible segment (the most raw signal), which the caller pads/truncates to the fixed window, so extraction never
+        crashes on ragged raw EEG.
 
     Args:
         value (object): A scipy-loaded raw-EEG field (a matrix, a cell of segments, or empty).
@@ -210,8 +200,7 @@ def extract_file(
 ) -> FileExtract:
     """Flattens one ZuCo `.mat` file into aligned rows and tensors.
 
-    The whole file (raw EEG included) is loaded eagerly by scipy, so callers
-    should process one file at a time and let it be garbage-collected.
+    The whole file (raw EEG included) is loaded eagerly by scipy, so callers should process one file at a time and let it be garbage-collected.
 
     Args:
         path (str | Path): Path to a v5/v6 ZuCo `.mat` file.

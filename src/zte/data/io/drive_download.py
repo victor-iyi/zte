@@ -1,18 +1,16 @@
-"""Resumable Google Drive folder downloads with per-file progress."""
-
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.drive_download')
 
-MANIFEST_NAME = '.zte_drive_manifest.json'
+MANIFEST_NAME: Final[str] = '.zte_drive_manifest.json'
 
 
 @dataclass(slots=True)
@@ -20,8 +18,11 @@ class DriveFileEntry:
     """One file inside a Drive folder listing."""
 
     id: str
+    """The file's unique Drive ID."""
     name: str
+    """The file's name."""
     local_path: Path
+    """The file's local path."""
 
 
 class DriveManifest:

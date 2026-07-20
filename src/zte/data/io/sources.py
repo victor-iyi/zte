@@ -4,8 +4,8 @@ The one thing every entry point needs is a local directory that contains the ZuC
 Users have them in different shapes:
 
 - an already-extracted directory (`res/data/zuco_extracted`);
-- one or more `.zip` archives (`task1 - SR.zip` ...), or a folder of them;
-- a Google Drive folder / shareable link (downloaded via :mod:`zte.data.remote`).
+- one or more `.zip` archives (`task2 - NR.zip` ...), or a folder of them;
+- a Google Drive folder / shareable link (downloaded via `zte.data.io.remote`).
 
 `resolve_source` normalises all of these into a single extracted directory, unzipping as needed and skipping work that is
 already done, so the rest of the pipeline only ever deals with a plain local root.
@@ -17,6 +17,7 @@ import re
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Pattern
 
 from zte.logging_utils import get_logger, progress
 
@@ -24,7 +25,9 @@ _LOG = get_logger('data.sources')
 
 # ZuCo per-word files are named `results<SUBJECT>_<TASK>.mat` (e.g. `resultsZAB_SR.mat`), so the
 # subject and task are readable straight from the filename — no reliance on how a zip is named.
-_MAT_RE = re.compile(r'results(?P<subj>[A-Za-z0-9]+)_(?P<task>TSR|NR|SR)\.mat$', re.IGNORECASE)
+_MAT_RE: Pattern[str] = re.compile(
+    r'results(?P<subj>[A-Za-z0-9]+)_(?P<task>TSR|NR|SR)\.mat$', re.IGNORECASE
+)
 
 
 def _has_mat(directory: Path) -> bool:
@@ -70,13 +73,7 @@ def _extract_selected(
     subjects: set[str] | None,
     overwrite: bool,
 ) -> Path:
-    """Extracts only the needed `.mat` members from each archive (idempotent unless `overwrite`).
-
-    Only the archives (and, within them, only the `.mat` files) that match the requested tasks /
-    subjects are unpacked — so selecting `SR,NR` never unzips `task3 - TSR.zip`, and unrelated
-    archives (`scripts.zip`) are skipped entirely. Already-extracted files are left in place unless
-    `overwrite` is set.
-    """
+    """Extracts only the needed `.mat` members from each archive (idempotent unless `overwrite`)."""
     extract_dir.mkdir(parents=True, exist_ok=True)
     for archive in progress(archives, description='unzipping'):
         members = _mat_members(archive)
@@ -147,7 +144,7 @@ def resolve_source(
     sset = {s.upper() for s in subjects} if subjects else None
 
     # 3) Remote Google Drive id / URL.
-    from zte.data.remote import (  # pylint: disable=import-outside-toplevel
+    from zte.data.io.remote import (  # pylint: disable=import-outside-toplevel
         download_to_dir,
         is_drive_spec,
     )
