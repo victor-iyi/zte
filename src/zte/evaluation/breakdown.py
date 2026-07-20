@@ -1,12 +1,4 @@
-"""Stratified evaluation: does the thought code work equally well everywhere?
-
-A single global score hides *where* an encoder is strong or weak. For a code meant
-to transfer across people, tasks and content, the honest question is per-stratum:
-how well does it probe word attributes, retrieve matching content, and fill its
-dimensions, broken down **by subject, by task and by sentence category**? This
-module slices aligned word/sentence embeddings by any metadata column and reports a
-compact metric block per stratum, plus cross-subject retrieval within each category.
-"""
+"""Stratified evaluation by subject, task and sentence category -- a global score hides where an encoder is weak."""
 
 from __future__ import annotations
 

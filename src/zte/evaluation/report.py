@@ -1,9 +1,4 @@
-"""Orchestrates the ZTE evaluation: metrics + figures + a written report.
-
-`evaluate_representation` takes aligned word/sentence embeddings and their metadata and produces, in one call: a `metrics.json`,
-a `comparison.csv` table, a set of figures, and a human-readable `report.md` with a pass/fail-style verdict. It is decoupled from training/inference
-so it can be unit-tested with arrays alone; `zte.cli.evaluate` wires it to a checkpoint + dataset.
-"""
+"""Orchestrates the ZTE evaluation: embeddings in, `metrics.json` + tables + figures + `report.md` out."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -27,26 +22,12 @@ _LOG = get_logger('evaluation.report')
 
 
 def _encode(values: np.ndarray) -> np.ndarray:
-    """Encodes categorical values to integer codes.
-
-    Args:
-        values (np.ndarray): Categorical labels.
-
-    Returns:
-        np.ndarray: Integer codes `(n_samples,)`.
-    """
+    """Encodes categorical values to integer codes `(n_samples,)`."""
     return pd.factorize(pd.Series(values))[0]
 
 
 def _adjacency_pairs(word_meta: pd.DataFrame) -> np.ndarray:
-    """Builds positive pairs of adjacent words within each sentence (for alignment).
-
-    Args:
-        word_meta (pd.DataFrame): Word metadata with subject/task/sentence_idx/word_idx.
-
-    Returns:
-        np.ndarray: Integer pairs `(n_pairs, 2)` of row indices into the embeddings.
-    """
+    """Builds `(n_pairs, 2)` row-index pairs of adjacent words within each sentence, for alignment."""
     wm = word_meta.reset_index(drop=True)
     pairs: list[tuple[int, int]] = []
     for _, grp in wm.groupby(['subject', 'task', 'sentence_idx']):
@@ -56,14 +37,7 @@ def _adjacency_pairs(word_meta: pd.DataFrame) -> np.ndarray:
 
 
 def _word_targets(word_meta: pd.DataFrame) -> dict[str, tuple[np.ndarray, str]]:
-    """Builds the supervised probe targets available from word metadata.
-
-    Args:
-        word_meta (pd.DataFrame): Word metadata.
-
-    Returns:
-        dict[str, tuple[np.ndarray, str]]: target name -> (values, task).
-    """
+    """Builds the `name -> (values, task)` probe targets available from the word metadata."""
     targets: dict[str, tuple[np.ndarray, str]] = {}
     if 'word_len' in word_meta:
         targets['word_len'] = (word_meta['word_len'].to_numpy(), 'regression')
@@ -77,14 +51,7 @@ def _word_targets(word_meta: pd.DataFrame) -> dict[str, tuple[np.ndarray, str]]:
 
 
 def _markdown_table(rows: list[dict[str, Any]]) -> str:
-    """Renders comparison rows as a Markdown table.
-
-    Args:
-        rows (list[dict[str, Any]]): Comparison rows.
-
-    Returns:
-        str: A Markdown table.
-    """
+    """Renders the probe-comparison rows as a Markdown table."""
     head = '| target | representation | metric | linear | kNN | baseline |\n'
     head += '| --- | --- | --- | --- | --- | --- |\n'
     body = ''.join(
@@ -113,12 +80,14 @@ def evaluate_representation(
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
 
-    Beyond the global probes/retrieval/health, this computes **per-subject / per-task / per-category** breakdowns, **vector-arithmetic transfer**
-    analogies, and (when band power is supplied) **scalp-region importance**, then emits an interactive HTML explorer and a rich TensorBoard log.
+    Beyond the global probes/retrieval/health this adds per-subject / per-task / per-category
+    breakdowns, vector-arithmetic transfer analogies and (given band power) scalp-region importance,
+    then emits the interactive HTML explorers and a TensorBoard log.
 
     Args:
         word_emb (np.ndarray): Word-level ZTE embeddings `(n_words, embed_dim)`.
-        word_meta (pd.DataFrame): Aligned word metadata (word/word_len/log_freq/ subject/task/category/sentence_idx/word_idx), length `n_words`.
+        word_meta (pd.DataFrame): Aligned word metadata (word/word_len/log_freq/subject/task/category/
+            sentence_idx/word_idx), length `n_words`.
         raw_word_feats (np.ndarray): Aligned raw band-power features `(n_words, n_features)` for the baseline comparison.
         sent_emb (np.ndarray): Sentence-level embeddings `(n_sentences, embed_dim)`.
         sent_content_ids (np.ndarray): Content/group id per sentence `(n_sentences,)` (same stimulus across subjects shares an id).
@@ -127,9 +96,11 @@ def evaluate_representation(
         sent_meta (pd.DataFrame | None): Aligned sentence metadata (with `category`) enabling per-category retrieval breakdowns and projector colouring.
         word_band_power (np.ndarray | None): Aligned per-word band power
             `(n_words, n_bands, n_channels)` for scalp-region importance (skipped when `None`).
-        config (Any | None): The run :class:`~zte.config.ZTEConfig` for HParams logging.
+        config (Any | None): The run `ZTEConfig` for HParams logging.
         tensorboard (bool | str): `True` (write under `out/tb/run_name`), a path string, or `False` to disable TensorBoard logging.
         interactive (bool): Whether to write the interactive HTML explorer.
+        phase_word_emb (np.ndarray | None): Embeddings of phase-scrambled EEG, added as a control representation.
+        train_vocab (set[str] | None): Word types seen in training, enabling the seen-vs-novel retrieval split.
 
     Returns:
         dict[str, Any]: The full metrics dictionary (also written to `metrics.json`).
@@ -138,12 +109,9 @@ def evaluate_representation(
     fig_dir = out / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # 0) Label-free geometry post-processing of the ZTE embeddings — the anti-cone / anti-hubness fix.
-    #    Both are label-free, so every metric below is honestly recomputed on the corrected space (we
-    #    see whether content survives the geometry fix, not just that anisotropy/hubness dropped). Order
-    #    matters: whiten (equalise variance across dims) THEN all-but-the-top (strip residual shared axes).
-    #    A raw copy is snapshotted first so report.md can show the geometry before vs after.
+    # 0) Label-free geometry post-processing; order matters: whiten, THEN all-but-the-top.
     obj_cfg = getattr(config, 'objective', None)
+    # A raw snapshot, so report.md can show the geometry before vs after.
     word_emb_raw = np.asarray(word_emb, dtype=np.float32).copy()
     if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
         word_emb = M.whiten_features(word_emb)
@@ -164,15 +132,14 @@ def evaluate_representation(
             csls_k,
         )
 
-    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control (+ an optional phase-shuffled ZTE control).
-    #    The phase control must get the SAME whiten/ABTT as ZTE or the comparison is rigged;
-    #    embedding the phase-scrambled EEG happened at the export site (the caller).
+    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control vs phase-shuffled ZTE.
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),
         'raw band-power': np.asarray(raw_word_feats, dtype=np.float32),
         'noise (matched)': noise_matched(np.asarray(raw_word_feats, dtype=np.float32)),
     }
     if phase_word_emb is not None:
+        # The control must get the same post-processing as ZTE or the comparison is rigged.
         phase_word_emb = np.asarray(phase_word_emb, dtype=np.float32)
         if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
             phase_word_emb = M.whiten_features(phase_word_emb)
@@ -187,7 +154,6 @@ def evaluate_representation(
     health = M.embedding_health(word_emb, pairs=pairs)
 
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
-    #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then strip it so it never bloats the persisted metrics.
     sent_ret = M.content_retrieval(
         sent_emb,
         np.asarray(sent_content_ids),
@@ -196,6 +162,7 @@ def evaluate_representation(
         csls=use_csls,
         csls_k=csls_k,
     )
+    # Popped, not kept: the per-query vectors feed the CI verdict but would bloat metrics.json.
     sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
     sent_ranks = sent_ret.pop('ranks', [])  # per-query ranks for the rank-distribution figure
     word_ret = M.content_retrieval(
@@ -203,8 +170,7 @@ def evaluate_representation(
     )
     eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
     eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
-    # 3.2c) Seen vs novel WORD TYPES: does cross-subject retrieval hold for words absent from the training split?
-    #       Novelty is type-level (in LOSO the held-out subject reads the same stimuli, so the novel bucket is small -- disclosed as such, not oversold).
+    # 3.2c) Seen vs novel word types: does retrieval hold for types absent from the training split?
     word_ret_by_novelty: dict[str, Any] = {}
     if eval_seen_novel and train_vocab is not None and 'word' in word_meta.columns:
         words_arr = word_meta['word'].astype(str).to_numpy()
@@ -215,8 +181,7 @@ def evaluate_representation(
                 word_ret_by_novelty[label] = M.content_retrieval(
                     word_emb[mask], word_codes[mask], csls=use_csls, csls_k=csls_k
                 )
-    # 3.2d) Frequency/length-matched distractors: restrict each query's bank to its own bin, so a hit
-    #       reflects content, not a lexical-frequency shortcut. Chance is recomputed per bin (higher).
+    # 3.2d) Frequency-matched distractors, so a hit cannot be a lexical-frequency shortcut.
     word_ret_freq_matched: dict[str, float] | None = None
     if eval_freq_matched:
         freq_col = 'corpus_log_freq' if 'corpus_log_freq' in word_meta else 'log_freq'
@@ -286,9 +251,8 @@ def evaluate_representation(
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
     metrics['honesty'] = honesty
 
-    # 4d) The honest scoreboard: the held-out number stated as a lift over the raw control, plus the content-probe positive control.
-    #     Every headline metric must clear the raw baseline to count as progress.
-    from zte.evaluation.scoreboard import build_scoreboard
+    # 4d) The honest scoreboard: every headline metric stated as a lift over the raw control.
+    from zte.evaluation.audit.scoreboard import build_scoreboard
 
     metrics['scoreboard'] = build_scoreboard(
         word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
@@ -297,8 +261,7 @@ def evaluate_representation(
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
         metrics['verdict']['retrieval_above_chance_perm'] = perm['above_chance']
-        # Gate the headline on BOTH the bootstrap-CI lift AND the empirical permutation null -- a single check can no longer carry the verdict.
-        # When the permutation is inapplicable (too few items / no multi-member group) the CI verdict stands alone (the guard above), so this only ever demotes, never promotes.
+        # The headline needs both the bootstrap-CI lift and the permutation null; this only demotes.
         metrics['verdict']['retrieval_above_chance'] = bool(
             metrics['verdict']['retrieval_above_chance'] and perm['above_chance']
         )
@@ -331,8 +294,7 @@ def evaluate_representation(
             metrics.get('scoreboard'), out, run_name
         )
 
-    # 6b) Persist the full neuron report (the per-dimension arrays are large, so they live in
-    #     their own file; only the compact summary is embedded in metrics.json).
+    # 6b) The per-dimension arrays are large, so only the compact summary goes in metrics.json.
     (out / 'neurons.json').write_text(
         json.dumps(neurons, indent=2, default=float), encoding='utf-8'
     )
@@ -348,8 +310,7 @@ def evaluate_representation(
     (out / 'metrics.json').write_text(
         json.dumps(metrics, indent=2, default=float), encoding='utf-8'
     )
-    # `linear_scores` (per-fold provenance for the CIs) stays in metrics.json but is
-    # dropped from the flat CSV so the table keeps one scalar per cell.
+    # `linear_scores` is dropped from the flat CSV so the table keeps one scalar per cell.
     pd.DataFrame([{k: v for k, v in r.items() if k != 'linear_scores'} for r in comparison]).to_csv(
         out / 'comparison.csv', index=False
     )
@@ -371,13 +332,8 @@ def _honesty_block(
     sent_content_ids: np.ndarray,
     config: Any | None,
 ) -> dict[str, Any]:
-    """Computes the permutation / held-out-decode / calibration add-ons (guarded, best-effort).
-
-    Runs only when the embedding set spans >= 2 subjects (cross-subject work is undefined
-    otherwise). Each add-on degrades to `{'applicable': False, ...}` on too-little data, so this
-    never aborts a run.
-    """
-    from zte.evaluation.honesty import (
+    """Computes the permutation / held-out-decode / calibration add-ons; each degrades rather than aborting."""
+    from zte.evaluation.audit.honesty import (
         anchor_calibration_lift,
         cross_subject_decode,
         retrieval_permutation_test,
@@ -410,20 +366,17 @@ def _honesty_block(
 def _load_region_map(config: Any | None) -> Any | None:
     """Loads an exact `RegionMap` from `config.dataset.montage_csv` when available.
 
-    Returns `None` when no config, no montage path, or the file cannot be read -- the
-    caller then falls back to the approximate coordinate-free default and softens all
-    region-importance wording accordingly.
-
     Args:
         config (Any | None): The run config; only `dataset.montage_csv` is consulted.
 
     Returns:
-        Any | None: An exact `RegionMap`, or `None` to signal the approximate fallback.
+        Any | None: An exact `RegionMap`, or `None` to signal the approximate coordinate-free
+            fallback (which also softens the region-importance wording in the report).
     """
     montage = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
     if not montage or not Path(montage).is_file():
         return None
-    from zte.data.regions import RegionMap
+    from zte.data.montage.regions import RegionMap
 
     try:
         region_map = RegionMap.from_csv(montage)
@@ -451,7 +404,7 @@ def _region_importance(
     """
     if word_band_power is None:
         return []
-    from zte.data.regions import region_importance
+    from zte.data.montage.regions import region_importance
 
     targets: dict[str, tuple[np.ndarray, str]] = {}
     if 'word_len' in word_meta:
@@ -476,11 +429,8 @@ def _write_interactive(
 ) -> str | None:
     """Writes the interactive explorers, returning the flagship explorer path relative to `out`.
 
-    Emits both the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`
-    (one-subject/many-words, many-subjects/one-word with the cross-subject cosine stat, thought
-    arithmetic, auto-analogy leaderboard, and real-time controls). Passing `emergence` lets the
-    explorer show the authoritative full-space clustering numbers in its verdict banners. The
-    flagship path is returned when available.
+    Emits the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`; passing
+    `emergence` lets the latter quote the authoritative full-space clustering numbers.
     """
     from zte.evaluation.interactive import embedding_explorer_html, thought_space_explorer_html
 
@@ -616,16 +566,15 @@ def _neuron_summary(neurons: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write_scoreboard_html(board: dict[str, Any] | None, out: Path, run_name: str) -> str | None:
-    """Writes the interactive held-out scoreboard dashboard, returning its path relative to `out`.
+    """Writes the held-out ("new brain") scoreboard dashboard, returning its path relative to `out`.
 
-    The dashboard visualises the BLOCKING held-out ("new brain") numbers -- effective rank, anisotropy,
-    content lift over raw, identity leak, cross-subject retrieval vs chance, and rank-percentile -- each
-    against its named reference line. Degrades to `None` on failure so a run never aborts here.
+    Each held-out number is plotted against its named reference line. Degrades to `None` on failure so
+    a run never aborts here.
     """
     if not board:
         return None
     try:
-        from zte.evaluation.scoreboard_viz import scoreboard_html
+        from zte.evaluation.interactive import scoreboard_html
     except ImportError:  # pragma: no cover
         return None
     try:
@@ -662,8 +611,7 @@ def _render_sota_figures(
     montage_csv: str | None,
     fig_dir: Path,
 ) -> list[Path]:
-    """Renders the evaluation figures (geometry before/after, rank distribution, variance
-    budget, subject-similarity, neuron selectivity, scalp topomap), skipping any that fail."""
+    """Renders the geometry, rank-distribution, variance-budget, neuron and scalp figures; skips any that fail."""
     import matplotlib.pyplot as plt
 
     written: list[Path] = []
@@ -729,9 +677,8 @@ def _scalp_topomap_data(
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Per-channel lexical-frequency importance + 2-D electrode coordinates for the scalp topomap.
 
-    Importance is the per-channel absolute correlation between mean band power and log word frequency,
-    averaged over bands -- a "which electrodes carry lexical information" map. Coordinates come from the
-    montage geometry (exact when a montage CSV was supplied, else the approximate fallback).
+    Importance is the per-channel absolute correlation between mean band power and log word frequency;
+    coordinates come from the montage geometry, exact only when a montage CSV was supplied.
 
     Returns:
         tuple[np.ndarray, np.ndarray] | None: `(per_channel_importance (C,), coords_2d (C, 2))`, or
@@ -932,15 +879,7 @@ def _render_figures(
 
 
 def _logfreq_scatter(word_emb: np.ndarray, word_meta: pd.DataFrame) -> Any:
-    """Builds a kNN leave-one-out predicted-vs-true scatter for log frequency.
-
-    Args:
-        word_emb (np.ndarray): Word embeddings.
-        word_meta (pd.DataFrame): Word metadata containing `log_freq`.
-
-    Returns:
-        Figure: The predicted-vs-true scatter.
-    """
+    """Builds a kNN leave-one-out predicted-vs-true scatter for log frequency."""
     index = NearestNeighborIndex(word_emb, word_meta[['log_freq']].reset_index(drop=True))
     pred = index.predict(
         word_emb, 'log_freq', k=10, task='regression', self_indices=np.arange(len(word_emb))
@@ -962,13 +901,8 @@ def _verdict(
 ) -> dict[str, Any]:
     """Derives headline checks backed by bootstrap effect-size confidence intervals.
 
-    Sign-only tests (``score > baseline + epsilon``) call any positive fluctuation a
-    pass; here each check must clear a bootstrap 95% CI lower bound:
-
-    - *beats noise*: the per-fold ZTE-minus-noise linear-probe difference (folds are
-      paired via a shared seed) must have a CI lower bound above `effect_floor`.
-    - *retrieval / subject-arithmetic above chance*: the per-query Top-1 hit vector,
-      minus its random-chance rate, must have a CI lower bound above 0.
+    Every check must clear a bootstrap 95% CI lower bound: `effect_floor` for the per-fold
+    ZTE-minus-noise probe gap, and 0 for a Top-1 hit rate minus its random-chance rate.
 
     Args:
         comparison (list[dict[str, Any]]): Probe comparison rows (with `linear_scores`).
@@ -988,6 +922,7 @@ def _verdict(
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise (matched)'}
 
+    # Per-target probe gap over the noise control, paired fold by fold.
     beats_noise: list[str] = []
     beats_noise_ci: dict[str, list[float]] = {}
     for t, z_row in zte.items():
@@ -1002,6 +937,7 @@ def _verdict(
         if lo > effect_floor:
             beats_noise.append(t)
 
+    # Retrieval lift over its query-weighted chance rate.
     ret_chance = float(sent_ret.get('chance_top1', float('nan')))
     ret_point, ret_lo, ret_hi = _diff_ci(sent_top1_hits, ret_chance, seed=seed)
     retrieval_pass = bool(np.isfinite(ret_lo) and ret_lo > 0.0)
@@ -1077,7 +1013,7 @@ def _render_report(
         '',
     ]
     if metrics.get('scoreboard'):
-        from zte.evaluation.scoreboard import render_markdown as _render_scoreboard
+        from zte.evaluation.audit.scoreboard import render_markdown as _render_scoreboard
 
         lines.append(_render_scoreboard(metrics['scoreboard']))
         lines.append('')

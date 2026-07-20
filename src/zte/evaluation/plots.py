@@ -212,7 +212,7 @@ def region_importance_heatmap(
     """Heatmap of normalised region importance (regions x targets).
 
     Args:
-        rows (list[dict[str, Any]]): Output of `zte.data.regions.region_importance`.
+        rows (list[dict[str, Any]]): Output of `zte.data.montage.regions.region_importance`.
         title (str): Figure title.
 
     Returns:

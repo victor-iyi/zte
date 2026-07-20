@@ -1,29 +1,4 @@
-"""Emergent-property metrics -- *do similar thoughts cluster across people?*
-
-The north-star property for ZTE is the one word2vec has for text: items with related meaning should sit
-near each other **regardless of who produced them**. A working thought code would put the same word read
-by different subjects together, would put semantically-related words (same category) closer than random,
-and would let `emb(t, A) - centroid(A) + centroid(B)` land on `t` read by B.
-
-This module measures those properties directly and honestly, without a trained decoder or an external
-language model. It uses only what the corpus already provides -- the word surface form and its
-sentence *category* (sentiment / relation / length band) as a coarse "meaning" label -- so the numbers
-are reproducible and label-free of anything ZTE was trained on.
-
-The metrics are deliberately blunt so a reader can trust them:
-
-- **Cross-subject same-word clustering** -- mean cosine of the *same word read by different subjects*
-  vs a random-pair baseline. This is the cleanest "does WHO wash out?" test.
-- **Cross-subject same-meaning clustering** -- same idea using the sentence *category* as the meaning
-  proxy: are cross-subject same-category pairs closer than random cross-subject pairs?
-- **Semantic-neighbourhood coherence** -- for a sample of tokens, what fraction of each token's nearest
-  neighbours share its word / category (vs chance), and what fraction come from a *different* subject.
-- **Subject-transfer analogy** -- the aggregate hit-rate of the parallelogram analogy plus a few worked
-  examples, so the "higher-order math" is a measured property, not a hand-picked demo.
-
-For ZTE v1 these will sit near zero (the space encodes identity); the point is to make the gap to the
-goal visible and to let the invariance-stack studies show whether they *move* it.
-"""
+"""Emergent-property metrics: do similar thoughts cluster across people, regardless of who produced them?"""
 
 from __future__ import annotations
 
@@ -151,7 +126,7 @@ def semantic_neighbourhood(
 
     Returns:
         dict[str, Any]: neighbourhood purities (same word / same category vs chance) and the fraction
-        of neighbours drawn from a *different* subject (high = subject-invariant).
+        of neighbours drawn from a different subject (high = subject-invariant).
     """
     from zte.inference.retrieval import NearestNeighborIndex
 
@@ -163,9 +138,11 @@ def semantic_neighbourhood(
 
     import pandas as pd
 
+    # Neighbourhoods of the sampled query tokens, self excluded.
     index = NearestNeighborIndex(word_emb, pd.DataFrame({'_i': np.arange(n)}))
     idx, _ = index.query(word_emb[q], k=k, self_indices=q)  # (n_q, k) neighbour row ids
 
+    # Purity: how often a neighbour shares the query's word, and how often it comes from someone else.
     words = word_meta['word'].astype(str).to_numpy()
     subject = word_meta['subject'].to_numpy() if 'subject' in word_meta.columns else np.zeros(n)
     same_word = np.mean(words[idx] == words[q][:, None])
@@ -182,6 +159,8 @@ def semantic_neighbourhood(
             'subject-invariant neighbourhoods)'
         ),
     }
+
+    # Category purity is only meaningful against the majority-category prior.
     if 'category' in word_meta.columns and word_meta['category'].nunique() > 1:
         cats = word_meta['category'].astype(str).to_numpy()
         same_cat = float(np.mean(cats[idx] == cats[q][:, None]))

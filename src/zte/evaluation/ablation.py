@@ -1,15 +1,4 @@
-"""Single-variable ablation harness -- the proof engine.
-
-Historically only the VICReg comparison changed one variable at a time; every other claim bundled several settings,
-so no contribution could be attributed cleanly.  This module makes the clean ablation the default unit of evidence:
-
-1. `single_variable_configs` takes a base `ZTEConfig` and *one* dotted knob (e.g.  `objective.subject_adversary_weight`) with a list of values,
-    and emits configs that differ in exactly that field — nothing else — so any metric delta is caused by that knob alone.
-2. `diff_scoreboards` reads two runs' `metrics.json` and reports the delta on the honest scoreboard: lift-over-raw per target,
-    held-out geometry, and the cross-subject held-out retrieval north-star. That delta *is* the knob's contribution.
-
-The CLI (`zte-ablate`) drives both: `generate` writes the config sweep to run, `diff` compares two finished runs.
-"""
+"""Single-variable ablation harness: emit configs differing in one knob, then diff the two runs' scoreboards."""
 
 from __future__ import annotations
 
@@ -88,13 +77,11 @@ def single_variable_configs(
 def grid_configs(
     base: ZTEConfig, specs: list[tuple[str, list[str]]]
 ) -> list[tuple[str, ZTEConfig]]:
-    """Builds `(label, config)` pairs for the **Cartesian product** of several knobs' values.
+    """Builds `(label, config)` pairs for the Cartesian product of several knobs' values.
 
-    With one `(knob, values)` spec this is exactly `single_variable_configs` (a clean single-variable
-    sweep). With several, it emits one config per value combination -- e.g. `spatial_encoding` x
-    `meaning_contextual` -- so an ablation can explore how knobs interact, not just each in isolation.
-    Every config still differs from `base` in only the swept fields, and the run name encodes the full
-    combination so the sweep is self-labelling.
+    One spec is a clean single-variable sweep; several explore how knobs interact. Every config
+    differs from `base` in only the swept fields, and the run name encodes the full combination so
+    the sweep is self-labelling.
 
     Args:
         base (ZTEConfig): The shared base configuration.
@@ -132,7 +119,7 @@ def _scoreboard(metrics_path: Path) -> dict[str, Any]:
 
 
 def diff_scoreboards(baseline: Path, variant: Path) -> dict[str, Any]:
-    """Computes the single-variable scoreboard delta `variant − baseline`.
+    """Computes the single-variable scoreboard delta `variant - baseline`.
 
     Args:
         baseline (Path): The baseline run's `metrics.json`.
@@ -207,4 +194,5 @@ def render_diff(knob: str, baseline_tag: str, variant_tag: str, diff: dict[str, 
 
 
 def _fmt(v: float | None) -> str:
+    """Formats a delta with an explicit sign, or a dash when missing."""
     return '—' if v is None else f'{v:+.4f}'
