@@ -1,4 +1,4 @@
-"""PyTorch `Dataset`/`DataLoader` adapters over a processed :class:`ZuCoDataset`.
+"""PyTorch `Dataset`/`DataLoader` adapters over a processed `ZuCoDataset`.
 
 The self-supervised objectives (skip-gram, CBOW, masked, CPC) all consume a *sentence as a sequence of word-EEG tokens*, so the dataset's atomic item is a
 sentence. Each item carries the per-word band-power vector and/or raw EEG window, a **presence mask** (`False` for omitted words -- the key anti-leakage signal),
@@ -136,7 +136,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         """Builds the sequence index over (a subset of) the dataset's words.
 
         Args:
-            dataset (ZuCoDataset): A built :class:`ZuCoDataset`.
+            dataset (ZuCoDataset): A built `ZuCoDataset`.
             indices (np.ndarray | None): Optional word-row indices selecting a split. A sentence is
                 kept (restricted to its in-split words) when at least `min_length` of its words fall inside `indices`.
             representation (str | None): Override the emitted representation.
@@ -185,7 +185,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         self.behaviour_names: list[str] = []
         self.behaviour_binary: np.ndarray = np.zeros(0, dtype=bool)
         if behaviour_targets:
-            from zte.data.behaviour import build_behaviour_matrix
+            from zte.data.targets.behaviour import build_behaviour_matrix
 
             self._behaviour, self.behaviour_names, self.behaviour_binary = build_behaviour_matrix(
                 dataset.words, behaviour_targets
@@ -197,7 +197,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         self._meaning: np.ndarray | None = None
         self.meaning_dim: int = 0
         if meaning_contextual:
-            from zte.data.meaning import build_meaning_matrix_hf
+            from zte.data.targets.meaning import build_meaning_matrix_hf
 
             self._meaning, self.meaning_dim = build_meaning_matrix_hf(
                 dataset.words, meaning_contextual, layer=meaning_context_layer
@@ -277,7 +277,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             idx (int): Sentence position within this split.
 
         Returns:
-            SentenceSample: A :class:`SentenceSample`.
+            SentenceSample: A `SentenceSample`.
         """
         rows = self._sequences[idx]
         ds = self._ds
@@ -317,14 +317,13 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
 
 
 def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) -> dict[str, Any]:
-    """Pads a list of :class:`SentenceSample` into a batched tensor dict.
+    """Pads a list of `SentenceSample` into a batched tensor dict.
 
     Args:
         batch (list[SentenceSample]): Sentence samples of varying length.
-        pad_to (int | None): If set, pad the sequence axis to at least this fixed length (for static
-            shapes on XLA/TPU, which avoid recompilation). `None` pads to the per-batch maximum (the
-            default; smallest tensors on GPU/CPU/MPS). Never truncates — a sample longer than `pad_to`
-            still fits.
+        pad_to (int | None): If set, pad the sequence axis to at least this fixed length (for static shapes on XLA/TPU,
+            which avoid recompilation). `None` pads to the per-batch maximum (the default; smallest tensors on GPU/CPU/MPS).
+            Never truncates — a sample longer than `pad_to` still fits.
 
     Returns:
         dict[str, Any]: A dict with keys:
@@ -343,10 +342,13 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
     max_len = max(int(lengths.max().item()), pad_to or 0)
     batch_size = len(batch)
 
+    # Create the padding mask, presence mask, content id and word id tensors.
     pad_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
     presence = torch.zeros(batch_size, max_len, dtype=torch.bool)
     content_id = torch.full((batch_size, max_len), -1, dtype=torch.long)
     word_id = torch.full((batch_size, max_len), -1, dtype=torch.long)
+
+    # Fill the padding mask, presence mask, content id and word id tensors.
     for i, sample in enumerate(batch):
         pad_mask[i, : sample.length] = True
         presence[i, : sample.length] = sample.presence
@@ -355,6 +357,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         if sample.word_id is not None:
             word_id[i, : sample.length] = sample.word_id
 
+    # Create the features tensor.
     features = None
     if batch[0].features is not None:
         dim = batch[0].features.shape[-1]
@@ -362,6 +365,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             features[i, : sample.length] = sample.features
 
+    # Create the raw tensor.
     raw = None
     if batch[0].raw is not None:
         c, t = batch[0].raw.shape[-2:]
@@ -369,6 +373,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             raw[i, : sample.length] = sample.raw
 
+    # Create the behaviour tensor.
     behaviour = None
     if batch[0].behaviour is not None:
         n_beh = batch[0].behaviour.shape[-1]
@@ -377,6 +382,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             behaviour[i, : sample.length] = sample.behaviour
 
+    # Create the meaning tensor.
     meaning = None
     if batch[0].meaning is not None:
         n_dim = batch[0].meaning.shape[-1]
@@ -404,9 +410,10 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
 class StimulusBatchSampler(Sampler[list[int]]):
     """Batch sampler that co-locates sentences of the same stimulus (across subjects).
 
-    Sentences sharing a normalised-text `stimulus_key` are the same sentence read by different
-    subjects. Grouping them into the same batch is what makes cross-subject positives actually
-    available to the contrastive loss (otherwise `content_id` matches would rarely co-occur).
+    Note:
+        Sentences sharing a normalised-text `stimulus_key` are the same sentence read by different
+        subjects. Grouping them into the same batch is what makes cross-subject positives actually
+        available to the contrastive loss (otherwise `content_id` matches would rarely co-occur).
 
     Attributes:
         batch_size (int): Target sentences per batch.
@@ -471,7 +478,7 @@ class SemanticHardNegativeSampler(Sampler[list[int]]):
     """Batch sampler that co-locates each sentence with its semantically-hard negatives (and positives).
 
     For the CLIP objective: each batch is seeded with a sentence and filled first with readings of its *hard-negative* sentence texts
-    (surface-similar, semantically distinct; see `zte.data.text.mine_hard_negatives`) and its *same-text* cross-subject readings (the positives),
+    (surface-similar, semantically distinct; see `zte.data.targets.text.mine_hard_negatives`) and its *same-text* cross-subject readings (the positives),
     then topped up from the remaining pool. So the in-batch negatives are hard and the positives are present, which is exactly what a symmetric
     InfoNCE needs to learn meaning over surface form.  Each sentence is yielded once per epoch.
 
@@ -518,9 +525,12 @@ class SemanticHardNegativeSampler(Sampler[list[int]]):
         order = list(range(self._n))
         if self.shuffle:
             rng.shuffle(order)
+        # Create the used and queue lists.
         used = [False] * self._n
         queue = deque(order)
+        # Create the batch and pool lists.
         while queue:
+            # Pop a sentence from the queue.
             seed = queue.popleft()
             if used[seed]:
                 continue
@@ -528,28 +538,36 @@ class SemanticHardNegativeSampler(Sampler[list[int]]):
             used[seed] = True
             text = self._text_ids[seed]
             cand_texts = [text]
+
+            # Add the hard negatives to the candidate texts.
             if 0 <= text < len(self._hard):
                 cand_texts += [int(x) for x in self._hard[text] if x >= 0]
             pool = [i for ct in cand_texts for i in self._by_text.get(ct, []) if not used[i]]
             if self.shuffle:
                 rng.shuffle(pool)
+
+            # Add the sentences to the batch.
             for i in pool:
                 if len(batch) >= self.batch_size:
                     break
                 if not used[i]:
                     batch.append(i)
                     used[i] = True
+
+            # Add the remaining sentences to the batch.
             while len(batch) < self.batch_size and queue:
                 i = queue.popleft()
                 if not used[i]:
                     batch.append(i)
                     used[i] = True
+
+            # If the batch is smaller than the batch size and we are not dropping the last batch, break.
             if self.drop_last and len(batch) < self.batch_size:
                 break
             yield batch
 
     def __len__(self) -> int:
-        """Number of batches per epoch."""
+        """Returns the number of batches per epoch."""
         if self.drop_last:
             return self._n // self.batch_size
         return (self._n + self.batch_size - 1) // self.batch_size
@@ -570,7 +588,7 @@ def make_dataloader(
     """Creates a :class:`~torch.utils.data.DataLoader` with the padding collate.
 
     Args:
-        torch_dataset (ZuCoTorchDataset): A :class:`ZuCoTorchDataset`.
+        torch_dataset (ZuCoTorchDataset): A `ZuCoTorchDataset`.
         batch_size (int): Sentences per batch.
         shuffle (bool): Whether to shuffle each epoch.
         num_workers (int): Worker processes (0 = main process; safest cross-platform).
@@ -609,11 +627,8 @@ def make_dataloader(
             drop_last=drop_last,
             seed=seed,
         )
-    # Worker start method: on Linux with > 0 workers, use `fork` so the (potentially multi-GB, e.g. raw
-    # EEG) dataset is shared copy-on-write instead of pickled to each worker. Python 3.14 defaults to
-    # `forkserver` on Linux, which pickles the whole dataset per worker -- that truncates / OOMs on the
-    # large raw-signal arrays. Workers only do CPU-side loading, so `fork` is safe with CUDA in the
-    # main process. Left at the platform default (spawn) on macOS/Windows.
+
+    # Set the multiprocessing context.
     mp_ctx = 'fork' if (num_workers > 0 and sys.platform.startswith('linux')) else None
     common: dict[str, Any] = {
         'num_workers': num_workers,
@@ -624,6 +639,7 @@ def make_dataloader(
         common['multiprocessing_context'] = mp_ctx
     if batch_sampler is not None:
         return DataLoader(torch_dataset, batch_sampler=batch_sampler, **common)
+
     return DataLoader(
         torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common
     )

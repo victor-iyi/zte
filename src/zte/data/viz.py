@@ -1,10 +1,3 @@
-"""Matplotlib visualisations for a `ZuCoDataset`.
-
-These mirror the analyses in the exploration notebook -- missingness, eye-tracking distributions and correlations,
-omission-vs-length, EEG availability and per-word band-power heatmaps -- but as reusable functions that return `Figure`
-objects and can be dumped to disk in one call via `save_overview`. Seaborn is used when present for nicer styling but is never required.
-"""
-
 # pylint: disable=wrong-import-position
 from __future__ import annotations
 
@@ -44,15 +37,20 @@ def plot_missingness(ds: ZuCoDataset) -> Figure:
     fig, ax = plt.subplots(figsize=(8, 4.5))
     width = 0.8 / max(len(tasks), 1)
     x = np.arange(len(measures))
+    # Plot the missing-rate per eye-tracking measure, split by task.
     for i, task in enumerate(tasks):
         sub = w[w['task'] == task]
         rates = [float(sub[m].isna().mean()) for m in measures]
         ax.bar(x + i * width, rates, width, label=task)
+
+    # Set the x-ticks and labels.
     ax.set_xticks(x + width * (len(tasks) - 1) / 2)
     ax.set_xticklabels(measures)
     ax.set_ylabel('missing rate')
+
     ax.set_title('Word-level missingness by eye-tracking measure')
     ax.legend(title='task')
+
     fig.tight_layout()
     return fig
 

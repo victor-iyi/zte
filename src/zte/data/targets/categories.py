@@ -5,10 +5,6 @@ Real ZuCo stimuli carry natural *sentence categories* that let us ask "does the 
 - **SR** (sentiment reading) sentences are POSITIVE / NEGATIVE / NEUTRAL.
 - **TSR** (task-specific reading) sentences belong to a semantic *relation* type (e.g. `AWARD`, `EMPLOYER`, `WIFE`).
 - **NR** (normal reading) has no intrinsic label; sentences fall back to a length band so every sentence still has a reproducible category.
-
-The corpus itself also yields a real, dependency-free **word frequency** (term frequency over the loaded sentences),
-which replaces the length-based proxy when building from real data. Both are joined by a normalised surface form so the same
-stimulus lines up across subjects.
 """
 
 from __future__ import annotations
@@ -40,15 +36,15 @@ RELATION_TYPES: tuple[str, ...] = (
     'WIFE',
 )
 
-_LABEL_TOKENS = {s.upper() for s in SENTIMENT_LABELS} | set(RELATION_TYPES)
-_WORD_RE = re.compile(r"[a-z0-9']+")
+_LABEL_TOKENS: set[str] = {s.upper() for s in SENTIMENT_LABELS} | set(RELATION_TYPES)
+_WORD_RE: re.Pattern[str] = re.compile(r"[a-z0-9']+")
 
 
 def normalise_text(text: str) -> str:
     """Lower-cases and collapses whitespace/punctuation for robust text joins.
 
     Args:
-        text: A raw sentence string.
+        text (str): A raw sentence string.
 
     Returns:
         A normalised key (lower-case, single-spaced, punctuation-stripped).
@@ -60,7 +56,7 @@ def length_band(n_words: int) -> str:
     """Maps a sentence word count to a fixed, reproducible length band.
 
     Args:
-        n_words: Number of words in the sentence.
+        n_words (int): Number of words in the sentence.
 
     Returns:
         `short` (<=7), `medium` (8-15) or `long` (>15).
@@ -80,7 +76,7 @@ def corpus_frequencies(words: pd.Series) -> pd.Series:
     for the length proxy when building from the actual corpus.
 
     Args:
-        words: Series of surface word forms (one per row).
+        words (pd.Series): Series of surface word forms (one per row).
 
     Returns:
         A float Series aligned to `words` in `(0, 1]`.
@@ -100,7 +96,7 @@ def _scan_label_files(root: Path) -> dict[str, str]:
     sentiment/relation token labels the longest text cell in its row. Absent or unparseable files simply contribute nothing.
 
     Args:
-        root: Dataset root to search recursively for `*.csv` files.
+        root (Path): Dataset root to search recursively for `*.csv` files.
 
     Returns:
         A mapping from normalised sentence text to an upper-case label.

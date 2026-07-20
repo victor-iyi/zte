@@ -4,9 +4,9 @@ ZuCo band-power tensors are `(n_words, n_bp_features, n_channels)` with `n_chann
 artefact electrodes are removed).  A single channel is hard to interpret; grouping channels into **scalp regions** (anterior -> posterior bands)
 turns "which channel" into "which part of the cortex" -- the question of *which brain areas encode thought vs reading* that motivates ZTE.
 
-The default :class:`RegionMap` partitions the 105 channels into anterior->posterior regions. Because the results `.mat` files
+The default `RegionMap` partitions the 105 channels into anterior->posterior regions. Because the results `.mat` files
 do not ship electrode coordinates, this default is an **approximation** of the montage's rostro-caudal organisation and is
-meant to be *overridden* with the exact per-channel labels when a montage file is available (:meth:`RegionMap.from_csv`). Every
+meant to be *overridden* with the exact per-channel labels when a montage file is available (`RegionMap.from_csv`). Every
 downstream analysis is exact for whatever mapping is supplied; only the default channel->region assignment is approximate.
 
 Reading is a visual task (occipito-parietal word-form and eye-movement systems), while imagined/inner language leans on
@@ -27,7 +27,7 @@ from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.regions')
 
-RegionReduce = Literal['mean', 'max', 'l2']
+type RegionReduce = Literal['mean', 'max', 'l2']
 
 #: Anterior -> posterior scalp regions used by the default mapping.
 SCALP_REGIONS: tuple[str, ...] = (

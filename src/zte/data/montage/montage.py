@@ -10,7 +10,7 @@ ZuCo v1/v2 recorded with the 129-channel EGI HydroCel Geodesic Sensor Net in **s
 in native E-number order -- the order ZuCo's band-power tensors use.
 
 This is the importable core shared by `scripts/export_montage.py` and the `zte-run --spatial exact` flag; it requires
-the optional dependency `mne` (`pip install mne`) only when it must read coordinates from a standard montage.
+the optional dependency `mne` (`pip install mne` or `uv add --group spatial mne) only when it must read coordinates from a standard montage.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def regions_from_geometry(xyz: object) -> list[str]:
     """
     import numpy as np
 
-    from zte.data.regions import SCALP_REGIONS
+    from zte.data.montage.regions import SCALP_REGIONS
 
     y = np.asarray(xyz, dtype=np.float64)[:, 1]
     # Rank -> quantile bin; most-anterior (largest y) = frontopolar, most-posterior = occipital.

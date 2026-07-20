@@ -2,18 +2,15 @@
 
 The meaning-distillation target must carry real semantics to attack `content = 0%`; the built-in hash fallback only
 verifies the mechanism. This module downloads a standard static GloVe embedding and writes it in the GloVe text
-format (`word v1 v2 …` per line) that `zte.data.meaning.build_meaning_matrix` consumes.
-
-It fetches directly from the public `gensim-data` release files (plain gzipped word2vec text) with the Python
-standard library only -- **no `gensim` dependency**, which does not build on Python 3.14 (its bundled Cython C code
-still references the removed `PyDictObject.ma_version_tag`).
+format (`word v1 v2 …` per line) that `zte.data.targets.meaning.build_meaning_matrix` consumes.
 
 Restricting with a `vocab` set to the words that actually occur in a dataset (the ZuCo vocabulary is tiny) yields a
 file of a few thousand rows; otherwise `top` keeps the N most frequent words. This is the importable core shared by
 `scripts/build_meaning_vectors.py` and the `zte-run --meaning static` flag.
 
-Available model names (dimension is the trailing number):
-    glove-wiki-gigaword-50 / -100 / -200 / -300   ·   glove-twitter-25 / -50 / -100 / -200
+Available model names (dimension is the trailing number) are:
+    - glove-wiki-gigaword-50 / -100 / -200 / -300
+    - glove-twitter-25 / -50 / -100 / -200
 """
 
 from __future__ import annotations
@@ -76,7 +73,7 @@ def provision_glove(
         out (str | Path): Destination `.txt` (GloVe format); parent dirs are created.
         vocab (Iterable[str] | None): If given, keep only these words (matched case-insensitively) -- the
             tiny ZuCo-only file. When `None`, keep the `top` most frequent words instead.
-        model (str): gensim-data GloVe model name (dimension is the trailing number).
+        model (str): GloVe model name from gensim-data (dimension is the trailing number).
         top (int): Keep the N most frequent words when `vocab` is `None` (0 = all).
         overwrite (bool): Rebuild even when `out` already exists. Default `False` reuses the cached file
             (the vectors are corpus-independent, so a rerun never re-downloads or re-filters).

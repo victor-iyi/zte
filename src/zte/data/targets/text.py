@@ -1,10 +1,9 @@
 """Frozen sentence-text embeddings: the CLIP alignment target (`objective.name='clip'`).
 
 Each unique ZuCo sentence is embedded once with a *frozen* text encoder, and the EEG encoder is trained to align its sentence vector
-to this target via a symmetric InfoNCE loss (Radford et al., 2021, CLIP;
-Défossez et al., 2023 for non-invasive brain signals). Two backends are supported so the text encoder can be A/B'd:
+to this target via a symmetric InfoNCE loss. Two backends are supported so the text encoder can be A/B'd:
 
-- **sentence-transformers** — purpose-built sentence embeddings (E5, BGE, MiniLM, …).
+- **sentence-transformers** — purpose-built sentence embeddings (E5, BGE, MiniLM, ...).
   The right granularity and strongest semantics for a sentence-level target.
 - **hf mean-pool** — any raw HuggingFace model, mean-pooled over the attention mask.
   This is how a decoder LLM (e.g. Qwen) is turned into a sentence embedder for fast local iteration.
@@ -97,16 +96,20 @@ def _encode_hf_meanpool(texts: list[str], source: str, prefix: str, device: str)
     tok = AutoTokenizer.from_pretrained(source)
     if tok.pad_token is None and tok.eos_token is not None:  # decoder LLMs often lack a pad token
         tok.pad_token = tok.eos_token
+    # Load the model and set it to evaluation mode.
     model = AutoModel.from_pretrained(source).eval().to(device)
     hidden = int(model.config.hidden_size)
     out = np.zeros((len(texts), hidden), dtype=np.float32)
     inputs = [prefix + t for t in texts] if prefix else texts
+    # Encode the sentences in chunks of 32 to avoid memory issues.
     with torch.no_grad():
         for start in range(0, len(inputs), 32):
             chunk = inputs[start : start + 32]
+            # Tokenize the sentences.
             enc = tok(chunk, padding=True, truncation=True, max_length=256, return_tensors='pt').to(
                 device
             )
+            # Get the last hidden state and the attention mask.
             hs = model(**enc).last_hidden_state  # (b, seq, hidden)
             mask = enc['attention_mask'].unsqueeze(-1).to(hs.dtype)  # (b, seq, 1)
             pooled = (hs * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
@@ -167,6 +170,8 @@ def build_sentence_text_matrix(
             exc.name,
         )
         return None, 0
+
+    # Save the embeddings to disk.
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache, raw)
     _LOG.info(
@@ -183,37 +188,47 @@ def build_sentence_text_matrix(
 def mine_hard_negatives(texts: list[str], text_matrix: np.ndarray, k: int = 8) -> np.ndarray:
     """Mines *semantically-hard* negatives per sentence: surface-similar but semantically distinct.
 
-    For each sentence it ranks the others by ``surface_overlap - semantic_cosine`` -- high word-token
-    Jaccard overlap (they *look* alike) but low frozen-text-embedding cosine (they *mean* different
-    things). Co-locating these in a CLIP batch forces the encoder to represent meaning rather than
-    surface form, which is the novelty lever of the recipe (a distractor set no random sampler would
-    produce). Runs on the small ZuCo sentence set (~hundreds of unique sentences), so the O(n^2) scan
-    is cheap; it is computed once and cached with the text matrix.
+    Note:
+        For each sentence it ranks the others by `surface_overlap - semantic_cosine` -- high word-token Jaccard overlap
+        (they *look* alike) but low frozen-text-embedding cosine (they *mean* different things). Co-locating these in a CLIP
+        batch forces the encoder to represent meaning rather than surface form, which is the novelty lever of the recipe
+        (a distractor set no random sampler would produce). Runs on the small ZuCo sentence set (~hundreds of unique sentences),
+        so the O(n^2) scan is cheap; it is computed once and cached with the text matrix.
 
     Args:
         texts (list[str]): Unique sentence strings (row `i` aligns with `text_matrix[i]`).
         text_matrix (np.ndarray): L2-normalised sentence embeddings `(n, dim)`.
-        k (int): Number of hard negatives per sentence.
+        k (int, optional): Number of hard negatives per sentence. Defaults to 8.
 
     Returns:
         np.ndarray: `(n, k)` int array of hard-negative sentence ids (`-1` padding when fewer exist).
     """
     n = len(texts)
+    # Tokenize the sentences.
     tokens = [set(t.lower().split()) for t in texts]
+
+    # Compute the semantic similarity matrix.
     sem = np.asarray(text_matrix, dtype=np.float32) @ np.asarray(text_matrix, dtype=np.float32).T
     out = np.full((n, k), -1, dtype=np.int64)
+
+    # Rank the sentences by surface-similarity and semantic distinctness.
     for i in range(n):
         ti = tokens[i]
         if not ti:
             continue
+
+        # Compute the word-token Jaccard similarity.
         jac = np.fromiter(
             (len(ti & tj) / max(len(ti | tj), 1) for tj in tokens), dtype=np.float32, count=n
         )
+
+        # Compute the score as the difference between the word-token Jaccard similarity and the semantic similarity.
         score = jac - sem[i]  # surface-similar (high jac) AND semantically distinct (low sem)
         score[i] = -np.inf
         kk = min(k, n - 1)
         if kk <= 0:
             continue
+        # Get the top k sentences by score.
         top = np.argpartition(-score, kk - 1)[:kk]
         out[i, :kk] = top[np.argsort(-score[top])]
     return out

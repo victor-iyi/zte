@@ -27,8 +27,7 @@ import numpy as np
 import pandas as pd
 
 from zte.config import DatasetConfig
-from zte.data import mat_loader
-from zte.data.features import (
+from zte.data.features.features import (
     FeatureSelector,
     SelectionMethod,
     SelectionResult,
@@ -36,9 +35,10 @@ from zte.data.features import (
     flat_feature_names,
     flatten_band_power,
 )
-from zte.data.missing import MissingValueImputer
+from zte.data.features.missing import MissingValueImputer
+from zte.data.features.transforms import FeatureNormalizer, bandpass_filter, sanitize_raw_windows
+from zte.data.io import mat_loader
 from zte.data.schema import N_CHANNELS
-from zte.data.transforms import FeatureNormalizer, bandpass_filter, sanitize_raw_windows
 from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.dataset')
@@ -71,7 +71,7 @@ class ZuCoDataset:
         raw_eeg (np.ndarray | None): `(n_words, n_channels, time_steps)` raw EEG windows, or `None`.
         feature_names (list[str]): Names for the `n_bp_features * n_channels` flattened band-power columns.
         bp_feature_names (list[str]): Names for the `n_bp_features` `(measure, band)` features.
-        normalizer (FeatureNormalizer | None): The fitted :class:`~zte.data.transforms.FeatureNormalizer`.
+        normalizer (FeatureNormalizer | None): The fitted :class:`~zte.data.features.transforms.FeatureNormalizer`.
     """
 
     def __init__(self, config: DatasetConfig | None = None) -> None:
@@ -294,7 +294,7 @@ class ZuCoDataset:
 
     def _add_linguistic_features(self) -> None:
         """Adds word length, frequency, relative position and omission flags."""
-        from zte.data.categories import corpus_frequencies
+        from zte.data.targets.categories import corpus_frequencies
 
         w = self.words
         w['word_len'] = w['word'].str.len().fillna(0).astype(int)
@@ -323,7 +323,7 @@ class ZuCoDataset:
         keep a stimulus wholly on one side (train XOR test) and what the torch bridge hashes into a cross-subject `content_id`.
 
         """
-        from zte.data.categories import normalise_text, sentence_categories
+        from zte.data.targets.categories import normalise_text, sentence_categories
 
         self.sentences = sentence_categories(self.sentences, root=self.config.root)
         self.sentences['stimulus_key'] = self.sentences['text'].map(normalise_text)
@@ -720,13 +720,13 @@ class ZuCoDataset:
         """Saves the bundle locally then uploads it to Google Drive.
 
         Args:
-            remote_dir (str): Destination Drive folder id or path (see `zte.data.remote`).
+            remote_dir (str): Destination Drive folder id or path (see `zte.data.io.remote`).
             local_tmp (str | Path): Local staging directory for the bundle.
 
         Returns:
             The remote location string returned by the uploader.
         """
-        from zte.data.remote import upload_directory
+        from zte.data.io.remote import upload_directory
 
         local = self.save(local_tmp)
         return upload_directory(local, remote_dir)
@@ -742,7 +742,7 @@ class ZuCoDataset:
         Returns:
             The loaded `ZuCoDataset`.
         """
-        from zte.data.remote import download_to_dir
+        from zte.data.io.remote import download_to_dir
 
         local = download_to_dir(remote_spec, local_tmp)
         return cls.load(local)

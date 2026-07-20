@@ -8,10 +8,6 @@ to hard-code magic strings. The numbers below are taken from the ZuCo data paper
 - EEG power is split into `8` frequency bands (`t1` ... `g2`).
 - Five eye-tracking measures are provided per word.
 - Word-level EEG features are named `<measure>_<band>` (e.g. `TRT_t1`) and each is a `105`-dimensional vector (one value per channel).
-
-References:
-    Hollenstein et al. (2018), *ZuCo, a simultaneous EEG and eye-tracking resource for natural sentence reading*, Scientific Data.
-    Hollenstein et al. (2020), *ZuCo 2.0*, LREC.
 """
 
 from __future__ import annotations
@@ -115,8 +111,8 @@ def band_feature_name(measure: EyeTrackingMeasure, band: Band) -> str:
     """Returns the ZuCo word-level EEG field name for a measure/band pair.
 
     Args:
-        measure: One of the five eye-tracking measures (e.g. `'TRT'`).
-        band: One of the eight frequency bands (e.g. `'t1'`).
+        measure (EyeTrackingMeasure): One of the five eye-tracking measures (e.g. `'TRT'`).
+        band (Band): One of the eight frequency bands (e.g. `'t1'`).
 
     Returns:
         The `<measure>_<band>` field name, e.g. `'TRT_t1'`.
@@ -132,7 +128,7 @@ def sentence_band_field(band: Band) -> str:
     """Returns the sentence-level mean-EEG field name for a band.
 
     Args:
-        band: One of the eight frequency bands.
+        band (Band): One of the eight frequency bands.
 
     Returns:
         The `mean_<band>` field name, e.g. `'mean_t1'`.

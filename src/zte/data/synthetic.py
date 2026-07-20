@@ -192,12 +192,15 @@ def _build_word(
                 fields[band_feature_name(measure, band)] = empty
         return fields
 
+    # Compute the eye-tracking scalars.
     ffd = float(np.clip(rng.normal(180 + 12 * word_len, 35), 80, 600))
     gd = ffd + float(np.clip(rng.normal(40 + 6 * word_len, 30), 0, 400))
     trt = gd + float(np.clip(rng.normal(50, 40), 0, 500))
+    # Compute the number of fixations, mean pupil size and raw EEG segment.
     fields['nFixations'] = np.array(max(1.0, round(trt / 220.0)), dtype=np.float32)
     fields['meanPupilSize'] = np.array(rng.normal(700, 40), dtype=np.float32)
     fields['rawEEG'] = _raw_segment(word_len, subject_gain, rng)
+    # Compute the band-power vectors.
     scalars = {'FFD': ffd, 'SFD': ffd, 'GD': gd, 'GPT': gd, 'TRT': trt}
     for measure in ET_MEASURES:
         fields[measure] = np.array(scalars[measure], dtype=np.float32)
@@ -238,19 +241,24 @@ def generate_subject_file(
     sent_dt = _sentence_dtype()
     sentence_data = np.zeros((len(sentences),), dtype=sent_dt)
 
+    # Build the sentence data.
     for s_idx, text in enumerate(sentences):
+        # Tokenize the sentence.
         tokens = text.split()
         word_arr = np.zeros((len(tokens),), dtype=word_dt)
         n_omitted = 0
+        # Build the word data.
         for w_idx, token in enumerate(tokens):
             freq = _word_frequency(token)
             p_omit = float(np.clip(0.55 * freq + 0.1, 0.05, 0.85))
             omitted = bool(rng.random() < p_omit)
             n_omitted += int(omitted)
             word_fields = _build_word(token, omitted, subject_gain, measures, bands, rng)
+            # Assign the word fields to the word array.
             for key, value in word_fields.items():
                 word_arr[w_idx][key] = value
 
+        # Assign the sentence fields to the sentence array.
         sentence_data[s_idx]['content'] = text
         sentence_data[s_idx]['word'] = word_arr
         sentence_data[s_idx]['omissionRate'] = np.array(
@@ -259,11 +267,14 @@ def generate_subject_file(
         sentence_data[s_idx]['rawData'] = rng.normal(
             0.0, subject_gain, size=(N_CHANNELS, max(8, 4 * len(tokens)))
         ).astype(np.float32)
+
+        # Assign the mean band power to the sentence array.
         for band in bands:
             sentence_data[s_idx][f'mean_{band}'] = _band_power_vector(
                 band, len(text), 0.5, subject_gain, rng
             )
 
+    # Save the sentence data to disk.
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     savemat(str(out), {'sentenceData': sentence_data}, do_compression=True)
@@ -302,12 +313,14 @@ def generate_synthetic_zuco(
     """
     out_dir = Path(out_dir)
     rng = np.random.default_rng(seed)
+    # Sample the sentences for each task.
     task_sentences: dict[str, tuple[str, ...]] = {}
     for task in tasks:
         corpus = _CORPUS_SR if task == 'SR' else _CORPUS_NR
         idx = rng.integers(0, len(corpus), size=n_sentences)
         task_sentences[task] = tuple(corpus[j] for j in idx)
 
+    # Generate the synthetic ZuCo files.
     jobs = [(subj, task) for subj in subjects for task in tasks]
     paths: list[Path] = []
 
