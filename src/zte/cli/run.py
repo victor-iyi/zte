@@ -1,28 +1,4 @@
-"""`zte-run` -- one command from data source to catalogued experiment.
-
-This is the easy, reproducible front door. Given an experiment YAML (a `ZTEConfig`) and a data source,
-it runs the whole pipeline and writes every artifact under `res/experiments/<run_name>/`::
-
-    experiments/<run_name>/
-      config.yaml         # the exact, resolved config (re-run with this)
-      bundle/             # processed, cached ZuCoDataset (arrays + tables + normaliser)
-      checkpoints/        # best.pt / last.pt / rotating + training curves
-      figures/            # dataset overview figures
-      evaluation/         # metrics.json, report.md, figures, interactive HTML
-      exploration/        # brain-region + eye-tracking analysis
-      tb/                 # TensorBoard (training + evaluation, incl. projector)
-      manifest.json       # data source, headline metrics, verdict, paths
-      README.md           # human summary of this run
-
-The data source may be a local extracted directory, one or more `.zip` archives, a Google Drive id/URL, or `--synthetic`
-for a no-data smoke run -- all normalised by `resolve_source`.
-
-Examples::
-
-    zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
-    zte-run --config experiments/exp2_masked_eegonly.yaml --drive <folder-id-or-url>
-    zte-run --config experiments/exp1_skipgram_rope_et.yaml --synthetic --epochs 5
-"""
+"""`zte-run` -- prepare, train, evaluate and catalogue one experiment under `res/experiments/<run_name>/`."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -32,7 +8,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.io import read_json, write_json
+from zte.cli.support.provision import add_provision_args, provision_from_args
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.logging_utils import configure_logging, get_logger
@@ -45,7 +23,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Run a full, catalogued ZTE experiment from a config + data source.',
@@ -54,11 +31,22 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--config', type=str, required=True, help='Experiment YAML (a ZTEConfig).')
     add_data_source_args(parser, include_synthetic=True)
     add_extract_dir(parser)
+    add_provision_args(parser)
 
     parser.add_argument(
         '--name', type=str, default=None, help='Run name (default: config run_name).'
     )
-    parser.add_argument('--out-root', type=str, default='res/experiments')
+    parser.add_argument('--out-root', type=Path, default=Path('res/experiments'))
+    parser.add_argument(
+        '--data-cache',
+        type=Path,
+        default=None,
+        dest='data_cache',
+        help='Shared directory for the PROCESSED dataset bundle, content-addressed by the dataset '
+        'config. Point it at a persistent/Drive path to build the bundle ONCE and reuse it across '
+        'every run and session: on a cache hit the expensive `.mat` load + processing is skipped '
+        'entirely. Default: a per-run cache under the run directory (no cross-run reuse).',
+    )
     parser.add_argument(
         '--drive-backup',
         type=str,
@@ -134,16 +122,18 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--skip-explore', action='store_true')
     parser.add_argument('--no-tensorboard', action='store_true')
     parser.add_argument('--no-interactive', action='store_true')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
-def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
+def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> Path:
     """Resolves the data source to a local directory of `.mat` files."""
     if args.synthetic:
         from zte.data.synthetic import generate_synthetic_zuco
 
-        root = 'res/data/synthetic_zuco'
+        root = Path('res/data/synthetic_zuco')
         generate_synthetic_zuco(root, tasks=config.dataset.tasks)
         return root
     return resolve_data_root(
@@ -169,7 +159,7 @@ def main() -> None:
 
 def _run(args: argparse.Namespace) -> None:
     """The pipeline body (separated so `main` can wrap it for clean pause/resume)."""
-
+    # CLI overrides, applied before anything derives from the config.
     config = ZTEConfig.from_yaml(args.config)
     if args.seed is not None:
         config.train.seed = args.seed
@@ -210,40 +200,43 @@ def _run(args: argparse.Namespace) -> None:
 
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
-    # Point every output at the run directory so the experiment is self-contained.
+    # Every output goes under the run directory; only `--data-cache` moves the bundle to a shared store.
     config.dataset.root = _resolve_root(args, config)
-    config.dataset.cache_dir = str(run_dir / 'cache')
+    config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
-    # Continuous checkpoint mirror to Drive: train fast on the local disk, but copy best/last.pt to
-    # a mounted Drive path after every epoch so a lost runtime never loses trainable progress. The
-    # mirror is best-effort (a Drive hiccup won't crash training). `--drive-backup <root>` points at
-    # a per-session Drive folder; each run mirrors to <root>/<run_name>/checkpoints.
     if args.drive_backup:
-        # The checkpoint manager copies its `checkpoints/` dir *into* drive_backup_dir, so point it at
-        # the run's Drive folder -> checkpoints land at <root>/<run_name>/checkpoints.
+        # The checkpoint manager copies its `checkpoints/` dir into this path, so it must be per-run.
         config.train.drive_backup_dir = str(Path(args.drive_backup) / config.run_name)
 
     manifest: dict[str, Any] = {
         'run_name': config.run_name,
         'data_root': config.dataset.root,
-        # Records whether this run used --synthetic (a schema-faithful fake tree). Lets tooling
-        # exclude smoke/synthetic runs from Drive backups (zte-pack --skip-synthetic).
+        # Lets tooling exclude smoke runs from backups (zte-pack --skip-synthetic).
         'synthetic': bool(args.synthetic),
     }
 
+    # A shared cache already holds the processed bundle, making the per-run copy redundant.
     bundle_dir = run_dir / 'bundle'
+    shared_cache = args.data_cache is not None
 
     # 1) Prepare (build + cache + save bundle + overview figures). On --resume, reuse the bundle.
-    if args.resume and (bundle_dir / 'meta.json').exists() and not args.force:
+    if args.resume and not shared_cache and (bundle_dir / 'meta.json').exists() and not args.force:
         _LOG.info('[1/4] Resume: loading cached dataset bundle (skipping prepare) ...')
         dataset = ZuCoDataset.load(bundle_dir)
     else:
-        _LOG.info('[1/4] Preparing dataset ...')
-        dataset = ZuCoDataset(config.dataset).build()
-        dataset.save(bundle_dir)
+        _LOG.info(
+            '[1/4] Preparing dataset%s ...',
+            f' (shared cache: {args.data_cache})' if shared_cache else '',
+        )
+        dataset = ZuCoDataset(config.dataset).build(force=args.force)
+        if not shared_cache:
+            dataset.save(bundle_dir)
     manifest['dataset'] = dataset.analyze()
     _save_overview(dataset, run_dir / 'figures')
+
+    # 1b) Provision --spatial / --meaning after the bundle, so the GloVe file can be vocab-restricted.
+    _apply_provisioning(config, args, dataset)
 
     # 2) Train (resumes from the last checkpoint when --resume).
     _LOG.info(
@@ -262,8 +255,7 @@ def _run(args: argparse.Namespace) -> None:
     )
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
 
-    # 3) Evaluate (skipped on --resume only if metrics are at least as new as the checkpoint, so a
-    #    run whose training advanced this invocation is always re-evaluated on the fresh model).
+    # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
     metrics_path = run_dir / 'evaluation' / 'metrics.json'
     best_ckpt = run_dir / 'checkpoints' / 'best.pt'
     eval_fresh = metrics_path.exists() and (
@@ -286,17 +278,41 @@ def _run(args: argparse.Namespace) -> None:
             _LOG.info('[4/4] Exploring brain regions + eye-tracking ...')
             from zte.cli.explore import run_exploration
 
-            summary = run_exploration(dataset, run_dir / 'exploration')
+            summary = run_exploration(
+                dataset, run_dir / 'exploration', montage_csv=config.dataset.montage_csv
+            )
             manifest['region_map_approximate'] = summary['region_map_approximate']
+    elif not args.skip_explore:
+        # Exploration needs band power, which `representation: raw` never loads.
+        _LOG.warning(
+            '[4/4] Skipped: exploration needs band power, but representation=%r loads none. '
+            "Use representation: 'both' to explore regions for a raw frontend.",
+            config.dataset.representation,
+        )
+        manifest['exploration_skipped'] = (
+            f'no band power (representation={config.dataset.representation})'
+        )
 
-    (run_dir / 'manifest.json').write_text(
-        json.dumps(manifest, indent=2, default=str), encoding='utf-8'
-    )
+    # Catalogue: manifest, per-run README and the shared index row.
+    write_json(run_dir / 'manifest.json', manifest, default=str)
     (run_dir / 'README.md').write_text(
         _render_run_readme(config, manifest, run_dir), encoding='utf-8'
     )
     _catalogue(Path(args.out_root), config.run_name, manifest)
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
+
+
+def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: ZuCoDataset) -> None:
+    """Builds + wires the `--spatial` / `--meaning` ingredients into `config`.
+
+    The training word set is pulled from the built dataset so `--meaning static` writes only the GloVe
+    rows this dataset needs; a no-op when both flags are left at `keep`.
+    """
+    vocab: set[str] | None = None
+    words = getattr(dataset, 'words', None)
+    if words is not None and 'word' in getattr(words, 'columns', []):
+        vocab = {w.lower() for w in words['word'].dropna().astype(str) if w}
+    provision_from_args(config, args, vocab=vocab)
 
 
 def _last_completed_epoch(ckpt_dir: Path) -> int:
@@ -307,9 +323,6 @@ def _last_completed_epoch(ckpt_dir: Path) -> int:
 
 def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace) -> bool:
     """Whether a run has finished every stage, so `--resume` can skip it without loading anything.
-
-    Checks training (last checkpoint at the final epoch) and, unless skipped, evaluation
-    (`metrics.json`) and exploration (`exploration/report.md`) outputs.
 
     Args:
         run_dir (Path): The run directory.
@@ -326,10 +339,9 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
     if not args.skip_eval and not (run_dir / 'evaluation' / 'metrics.json').exists():
         return False
     if not args.skip_explore and not (run_dir / 'exploration' / 'report.md').exists():
-        # Exploration only runs when band power is available; absence of the marker is only
-        # decisive when the run could have produced it. A prior manifest confirms it did/should.
+        # Exploration only runs when band power is available, so a prior manifest is the arbiter.
         if (run_dir / 'manifest.json').exists():
-            manifest = json.loads((run_dir / 'manifest.json').read_text(encoding='utf-8'))
+            manifest = read_json(run_dir / 'manifest.json')
             if 'region_map_approximate' not in manifest:
                 return True  # this run legitimately has no exploration stage
         return False
@@ -338,7 +350,7 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
 
 def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
     """Rebuilds the manifest evaluation summary from an existing `metrics.json` (resume path)."""
-    metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
+    metrics = read_json(metrics_path)
     return {
         'verdict': metrics.get('verdict'),
         'sentence_retrieval_top1': metrics.get('sentence_retrieval', {}).get('top1'),
@@ -351,7 +363,7 @@ def _evaluate(
     config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
     """Embeds the best checkpoint and runs the full evaluation suite."""
-    from zte.cli.evaluate import collect_embeddings
+    from zte.cli.evaluate import collect_embeddings, phase_shuffled_word_emb, training_vocab
     from zte.evaluation.report import evaluate_representation
     from zte.inference.embed import ZTEEmbedder
 
@@ -359,6 +371,20 @@ def _evaluate(
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )
+
+    # Opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
+    phase_emb = (
+        phase_shuffled_word_emb(embedder, dataset)
+        if getattr(config.objective, 'eval_phase_shuffle', False)
+        else None
+    )
+
+    train_vocab = (
+        training_vocab(dataset, config)
+        if getattr(config.objective, 'eval_seen_novel', False)
+        else None
+    )
+
     metrics = evaluate_representation(
         word_emb,
         word_meta,
@@ -372,7 +398,10 @@ def _evaluate(
         config=config,
         tensorboard=str(run_dir / 'tb' / 'eval') if not args.no_tensorboard else False,
         interactive=not args.no_interactive,
+        phase_word_emb=phase_emb,
+        train_vocab=train_vocab,
     )
+
     return {
         'verdict': metrics['verdict'],
         'sentence_retrieval_top1': metrics['sentence_retrieval'].get('top1'),

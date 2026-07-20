@@ -1,10 +1,3 @@
-"""Matplotlib visualisations for a `ZuCoDataset`.
-
-These mirror the analyses in the exploration notebook -- missingness, eye-tracking distributions and correlations,
-omission-vs-length, EEG availability and per-word band-power heatmaps -- but as reusable functions that return `Figure`
-objects and can be dumped to disk in one call via `save_overview`. Seaborn is used when present for nicer styling but is never required.
-"""
-
 # pylint: disable=wrong-import-position
 from __future__ import annotations
 
@@ -35,8 +28,7 @@ def plot_missingness(ds: ZuCoDataset) -> Figure:
         ds (ZuCoDataset): A built dataset.
 
     Returns:
-        Figure: The created `Figure`.
-
+        Figure: The created figure.
     """
     w = ds.words
     measures = [m for m in ET_MEASURES if m in w]
@@ -48,11 +40,14 @@ def plot_missingness(ds: ZuCoDataset) -> Figure:
         sub = w[w['task'] == task]
         rates = [float(sub[m].isna().mean()) for m in measures]
         ax.bar(x + i * width, rates, width, label=task)
+
     ax.set_xticks(x + width * (len(tasks) - 1) / 2)
     ax.set_xticklabels(measures)
     ax.set_ylabel('missing rate')
+
     ax.set_title('Word-level missingness by eye-tracking measure')
     ax.legend(title='task')
+
     fig.tight_layout()
     return fig
 
@@ -64,8 +59,7 @@ def plot_et_distributions(ds: ZuCoDataset) -> Figure:
         ds (ZuCoDataset): A built dataset.
 
     Returns:
-        Figure: The created `Figure`.
-
+        Figure: The created figure.
     """
     w = ds.words
     measures = [m for m in ET_MEASURES if m in w]
@@ -89,8 +83,7 @@ def plot_correlations(ds: ZuCoDataset) -> Figure:
         ds (ZuCoDataset): A built dataset.
 
     Returns:
-        Figure: The created `Figure`.
-
+        Figure: The created figure.
     """
     w = ds.words
     measures = [m for m in ET_MEASURES if m in w]
@@ -117,7 +110,7 @@ def plot_omission_by_length(ds: ZuCoDataset) -> Figure:
         ds (ZuCoDataset): A built dataset.
 
     Returns:
-        Figure: The created `Figure`.
+        Figure: The created figure.
     """
     w = ds.words
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
@@ -142,7 +135,7 @@ def plot_eeg_availability(ds: ZuCoDataset, max_words: int = 600) -> Figure:
         max_words (int): Cap on the number of flattened word columns shown.
 
     Returns:
-        Figure: The created `Figure`.
+        Figure: The created figure.
     """
     w = ds.words.copy()
     if ds.presence is not None:
@@ -172,7 +165,7 @@ def plot_channel_importance(scores: np.ndarray, title: str = 'Channel importance
         title (str): Figure title.
 
     Returns:
-        Figure: The created `Figure`.
+        Figure: The created figure.
     """
     fig, ax = plt.subplots(figsize=(10, 3.5))
     ax.plot(scores, color='purple', lw=1.3)
@@ -189,7 +182,7 @@ def plot_training_curves(history: dict[str, list[float]]) -> Figure:
         history (dict[str, list[float]]): Mapping of metric name to a per-step/epoch list of values.
 
     Returns:
-        Figure: The created `Figure`.
+        Figure: The created figure.
     """
     fig, ax = plt.subplots(figsize=(8, 4.5))
     for name, values in history.items():
@@ -210,8 +203,7 @@ def save_overview(ds: ZuCoDataset, out_dir: str | Path) -> list[Path]:
         out_dir (str | Path): Destination directory (created if needed).
 
     Returns:
-        list[Path]: Paths of the written `Figure`s.
-
+        list[Path]: Paths of the written figures.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

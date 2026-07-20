@@ -1,12 +1,10 @@
 """End-to-end ZTE evaluation on synthetic data: train -> embed -> evidence.
 
-Produces figures, tables and a Markdown report showing the encoder turns EEG into
-a structured, re-purposable space -- transfer probes (vs raw features and a noise
-control), geometry/health (no collapse), and cross-subject content retrieval.
+Produces figures, tables and a Markdown report showing the encoder turns EEG into a structured, re-purposable space -- transfer
+probes (vs raw features and a noise control), geometry/health (no collapse), and cross-subject content retrieval.
 
-If `--ckpt` is omitted a small model is trained on synthetic ZuCo first, so this
-runs end-to-end with no downloads. Point `--ckpt`/`--root` at real artifacts to
-evaluate a real run.
+If `--ckpt` is omitted a small model is trained on synthetic ZuCo first, so this runs end-to-end with no downloads.
+Point `--ckpt`/`--root` at real artifacts to evaluate a real run.
 
 Example:
     >>> # uv run python examples/evaluate_zte.py --out res/evaluation

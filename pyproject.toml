@@ -1,6 +1,6 @@
 [project]
 name = 'zte'
-version = "0.2.1"
+version = "0.3.0"
 description = 'ZuCo Thought Embedding (ZTE): a tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG embedding pipeline for the Cross-Modal Transfer Learning project.'
 readme = 'README.md'
 requires-python = '>=3.14'
@@ -10,7 +10,7 @@ keywords = ['eeg', 'zuco', 'bci', 'self-supervised', 'embeddings', 'pytorch', 'n
 
 dependencies = [
   'h5py>=3.16.0',
-  'matplotlib>=3.11.0',
+  'matplotlib>=3.11.1',
   'numpy>=2.5.1',
   'pandas>=3.0.3',
   'pyyaml>=6.0.3',
@@ -18,7 +18,7 @@ dependencies = [
   'scikit-learn>=1.9.0',
   'scipy>=1.18.0',
   'torch>=2.13.0',
-  'tqdm>=4.68.4',
+  'tqdm>=4.69.0',
 ]
 
 [dependency-groups]
@@ -32,16 +32,24 @@ viz = [
   'seaborn>=0.13.2',
   'plotly>=6.9.0',
 ]
-# Optional: only needed to fetch real electrode coordinates for spherical-harmonic
-# spatial encoding (ScalpGeometry.from_mne / scripts/export_montage.py). The core
-# encoding works without it via a montage CSV or the coordinate-free fallback.
-montage = [
+# Optional real-data provisioning for the MOSAIC levers (docs/METHODS.md):
+#   * `mne` fetches real electrode coordinates for spherical-harmonic spatial encoding
+#     (ScalpGeometry.from_mne / scripts/export_montage.py --zuco105).
+spatial = [
   'mne>=1.12.1',
 ]
+# Optional contextual meaning target (Report B): a frozen HuggingFace encoder (e.g. BERT middle # layer)
+# supplies a per-occurrence distillation target via `data.meaning.build_meaning_matrix_hf`.
+# Opt-in — `transformers` is heavy and the static GloVe/fastText path needs nothing extra;
+# enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
+meaning = [
+  'transformers>=4.44.0',
+  'sentence-transformers>=3.0.0',
+]
 dev = [
-  'ruff>=0.15.21',
+  'ruff>=0.15.22',
   'pytest>=9.1.1',
-  'mypy>=2.2.0',
+  'mypy>=2.3.0',
 ]
 
 all = [
@@ -58,6 +66,8 @@ zte-evaluate = 'zte.cli.evaluate:main'
 zte-explore = 'zte.cli.explore:main'
 zte-benchmark = 'zte.cli.benchmark:main'
 zte-run = 'zte.cli.run:main'
+zte-audit = 'zte.cli.audit:main'
+zte-ablate = 'zte.cli.ablate:main'
 zte-download = 'zte.cli.download:main'
 zte-visualize = 'zte.cli.visualize:main'
 zte-compare = 'zte.cli.compare:main'
@@ -69,6 +79,13 @@ build-backend = 'hatchling.build'
 
 [tool.hatch.build.targets.wheel]
 packages = ['src/zte']
+# The interactive explorers ship their front-end sources as data files (loaded at runtime by
+# zte.evaluation.interactive._assets.load_page); keep them in the wheel alongside the package.
+artifacts = [
+  'src/zte/evaluation/interactive/web/*/*.html',
+  'src/zte/evaluation/interactive/web/*/*.css',
+  'src/zte/evaluation/interactive/web/*/*.js',
+]
 
 [tool.uv]
 package = true

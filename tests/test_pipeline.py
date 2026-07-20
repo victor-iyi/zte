@@ -77,7 +77,7 @@ def test_embed_new_signals_in_memory(synthetic_dir: Path, tmp_path: Path) -> Non
     import numpy as np
 
     from zte.config import DatasetConfig, MissingConfig
-    from zte.data.features import flatten_band_power
+    from zte.data.features.features import flatten_band_power
 
     eeg_only = ZuCoDataset(
         DatasetConfig(

@@ -1,15 +1,10 @@
-"""`zte-compare` — combine every catalogued run into one interactive comparison dashboard.
-
-Scans `res/experiments/` (or a folder you pass), reads each run's `evaluation/metrics.json` + `manifest.json` + `config.yaml`, scores them against
-a transparent in-page rubric, and writes a single offline HTML: a pass/fail scorecard matrix, a sortable metric table with CI bars, per-run cards that
-link out to each run's own explorer / neuron atlas / report, and a "best run" verdict. Regenerate it any time — it just reflects whatever runs are on disk.
-"""
+"""`zte-compare` -- combine every catalogued run into one offline interactive comparison dashboard."""
 
 from __future__ import annotations
 
 import argparse
 
-from zte.evaluation.compare import build_comparison
+from zte.evaluation.interactive import build_comparison
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.compare')

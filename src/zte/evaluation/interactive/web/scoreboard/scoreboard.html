@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__ — held-out scoreboard</title>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div>
+          <h1 id="run"></h1>
+          <div class="verdict" id="verdict"></div>
+        </div>
+        <button
+          class="themebtn"
+          id="themebtn"
+          aria-label="Toggle light / dark theme"
+        >
+          ◐ Theme
+        </button>
+      </header>
+
+      <div class="probe" id="probe" style="display: none"></div>
+      <div class="seg" id="seg" style="display: none"></div>
+
+      <div class="section" id="cardsSection">
+        <h2 id="cardsHead">Headline metrics</h2>
+        <div class="grid" id="grid"></div>
+      </div>
+
+      <div class="section" id="liftSection">
+        <h2>Lift over the raw band-power control (ZTE − raw)</h2>
+        <div class="card">
+          <div class="lift" id="liftBody"></div>
+          <div class="lift-legend" id="liftLegend"></div>
+        </div>
+      </div>
+
+      <div class="section" id="emptySection" style="display: none">
+        <div class="card empty">
+          No scoreboard data was available for this run.
+        </div>
+      </div>
+    </div>
+
+    <script id="data" type="application/json">
+      __DATA__
+    </script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

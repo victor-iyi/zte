@@ -1,4 +1,20 @@
-"""Command-line entry points: `zte-prepare`, `zte-train`, `zte-extract`, `zte-evaluate`, `zte-explore`, `zte-benchmark` and `zte-run`."""
+"""Command-line entry points.
+
+- `zte.cli.run` -- `zte-run`: the whole pipeline, catalogued under `res/experiments/`.
+- `zte.cli.prepare` -- `zte-prepare`: build a processed dataset bundle.
+- `zte.cli.train` -- `zte-train`: pretrain a model with one objective.
+- `zte.cli.extract` -- `zte-extract`: export embeddings from a checkpoint.
+- `zte.cli.evaluate` -- `zte-evaluate`: probes, retrieval and geometry for a checkpoint.
+- `zte.cli.explore` -- `zte-explore`: brain-region and eye-tracking analysis.
+- `zte.cli.audit` -- `zte-audit`: confound audit of the word table.
+- `zte.cli.ablate` -- `zte-ablate`: ablation sweeps and scoreboard diffs.
+- `zte.cli.benchmark` -- `zte-benchmark`: fixed-seed sweep over the main knobs.
+- `zte.cli.visualize` -- `zte-visualize`: the interactive explorer and neuron atlas.
+- `zte.cli.compare` -- `zte-compare`: cross-run comparison dashboard.
+- `zte.cli.download` -- `zte-download`: resumable Google Drive download.
+- `zte.cli.pack` -- `zte-pack`: archive, unpack and delete runs.
+- `zte.cli.support` -- shared argparse groups and provisioning helpers.
+"""
 
 from __future__ import annotations
 

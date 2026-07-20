@@ -92,7 +92,7 @@ sequenceDiagram
 
 ## Configuration reference (`DatasetConfig`)
 
-Defaults come straight from `src/zte/config.py`.
+Defaults come straight from `src/zte/config/`.
 
 | Field                        | Default                                     | Meaning                                                   |
 | ---------------------------- | ------------------------------------------- | --------------------------------------------------------- |

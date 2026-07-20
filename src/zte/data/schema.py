@@ -1,18 +1,4 @@
-"""Canonical ZuCo dataset schema constants and helpers.
-
-This module encodes the *verified* structural facts about the Zurich Cognitive Language Processing Corpus (ZuCo 1.0 / 2.0) so the rest of the package never has
-to hard-code magic strings. The numbers below are taken from the ZuCo data papers and confirmed against the project's own exploration notebook:
-
-- High-density EEG was recorded with a 128-channel EGI Geodesic Hydrocel system at `500 Hz` (band-pass `0.1-100 Hz`).
-  The 23 outermost electrodes (cheeks and neck) are dropped during preprocessing, leaving `105` channels for every word-/sentence-level EEG feature.
-- EEG power is split into `8` frequency bands (`t1` ... `g2`).
-- Five eye-tracking measures are provided per word.
-- Word-level EEG features are named `<measure>_<band>` (e.g. `TRT_t1`) and each is a `105`-dimensional vector (one value per channel).
-
-References:
-    Hollenstein et al. (2018), *ZuCo, a simultaneous EEG and eye-tracking resource for natural sentence reading*, Scientific Data.
-    Hollenstein et al. (2020), *ZuCo 2.0*, LREC.
-"""
+"""Canonical ZuCo schema constants, so the rest of the package never hard-codes magic strings."""
 
 from __future__ import annotations
 
@@ -23,7 +9,7 @@ from typing import Final, Literal
 #: EEG sampling rate in Hz (eye-tracker shares the same rate).
 SAMPLING_RATE_HZ: Final[float] = 500.0
 
-#: Number of EEG channels retained after artefact electrodes are removed.
+#: EEG channels retained after the 23 outermost (cheek/neck) electrodes are dropped from the 128-channel cap.
 N_CHANNELS: Final[int] = 105
 
 #: Hardware band-pass applied during acquisition (Hz).
@@ -83,6 +69,9 @@ WORD_SCALAR_FIELDS: Final[tuple[str, ...]] = ('nFixations', 'meanPupilSize')
 
 type Task = Literal['SR', 'NR', 'TSR']
 
+#: A subject code such as `'ZAB'`. Left open rather than a `Literal` so ZuCo 1.0, 2.0 and synthetic cohorts share one type.
+type Subject = str
+
 #: ZuCo reading tasks. `SR` = sentiment reading (task 1), `NR` = normal reading (task 2), `TSR` = task-specific reading (task 3).
 TASKS: Final[tuple[Task, ...]] = ('SR', 'NR', 'TSR')
 
@@ -115,11 +104,11 @@ def band_feature_name(measure: EyeTrackingMeasure, band: Band) -> str:
     """Returns the ZuCo word-level EEG field name for a measure/band pair.
 
     Args:
-        measure: One of the five eye-tracking measures (e.g. `'TRT'`).
-        band: One of the eight frequency bands (e.g. `'t1'`).
+        measure (EyeTrackingMeasure): One of the five eye-tracking measures (e.g. `'TRT'`).
+        band (Band): One of the eight frequency bands (e.g. `'t1'`).
 
     Returns:
-        The `<measure>_<band>` field name, e.g. `'TRT_t1'`.
+        str: The `<measure>_<band>` field name, e.g. `'TRT_t1'`.
 
     Example:
         >>> band_feature_name('TRT', 't1')
@@ -132,15 +121,14 @@ def sentence_band_field(band: Band) -> str:
     """Returns the sentence-level mean-EEG field name for a band.
 
     Args:
-        band: One of the eight frequency bands.
+        band (Band): One of the eight frequency bands.
 
     Returns:
-        The `mean_<band>` field name, e.g. `'mean_t1'`.
+        str: The `mean_<band>` field name, e.g. `'mean_t1'`.
 
     Example:
         >>> sentence_band_field('g2')
         'mean_g2'
-
     """
     return f'mean_{band}'
 
@@ -156,7 +144,6 @@ def all_word_band_fields(
         bands (tuple[Band, ...]): Frequency bands to include. Defaults to all eight.
 
     Returns:
-        A `list` of field names in measure-major, band-minor order.
-
+        list[str]: Field names in measure-major, band-minor order.
     """
     return [band_feature_name(m, b) for m in measures for b in bands]

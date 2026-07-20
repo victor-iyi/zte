@@ -5,24 +5,24 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from zte.data.sources import _zip_has_mat, resolve_source
+from zte.data.io.sources import _zip_has_mat, resolve_source
 
 
 def _zip(path: Path, members: dict[str, bytes]) -> Path:
-    """Writes a zip with the given ``{name: bytes}`` members."""
+    """Writes a zip with the given `{name: bytes}` members."""
     with zipfile.ZipFile(path, 'w') as zf:
         for name, data in members.items():
             zf.writestr(name, data)
     return path
 
 
-def test_zip_has_mat_reads_index_only(tmp_path: Path):
+def test_zip_has_mat_reads_index_only(tmp_path: Path) -> None:
     assert _zip_has_mat(_zip(tmp_path / 'a.zip', {'resultsZAB_SR.mat': b'x'}))
     assert not _zip_has_mat(_zip(tmp_path / 'b.zip', {'run.py': b'print(1)'}))
     assert not _zip_has_mat(tmp_path / 'missing.zip')  # unreadable -> False, not a crash
 
 
-def test_resolve_source_extracts_only_data_zips(tmp_path: Path):
+def test_resolve_source_extracts_only_data_zips(tmp_path: Path) -> None:
     src = tmp_path / 'ZuCo Dataset'
     src.mkdir()
     _zip(src / 'task1_SR.zip', {'resultsZAB_SR.mat': b'MATLAB5.0 fake'})
@@ -47,7 +47,7 @@ def _zuco_folder(root: Path) -> Path:
     return src
 
 
-def test_task_selective_extraction_skips_unneeded_tasks(tmp_path: Path):
+def test_task_selective_extraction_skips_unneeded_tasks(tmp_path: Path) -> None:
     src = _zuco_folder(tmp_path)
     ext = tmp_path / 'zuco_extracted'
     resolve_source(src, extract_dir=ext, tasks=['SR', 'NR'])
@@ -62,14 +62,14 @@ def test_task_selective_extraction_skips_unneeded_tasks(tmp_path: Path):
     assert not (ext / 'run.py').exists()  # scripts.zip never unpacked
 
 
-def test_subject_and_task_filters_compose(tmp_path: Path):
+def test_subject_and_task_filters_compose(tmp_path: Path) -> None:
     src = _zuco_folder(tmp_path)
     ext = tmp_path / 'zuco_extracted'
     resolve_source(src, extract_dir=ext, tasks=['SR'], subjects=['ZAB'])
     assert {p.name for p in ext.rglob('*.mat')} == {'resultsZAB_SR.mat'}
 
 
-def test_extraction_is_idempotent_unless_overwrite(tmp_path: Path):
+def test_extraction_is_idempotent_unless_overwrite(tmp_path: Path) -> None:
     src = _zuco_folder(tmp_path)
     ext = tmp_path / 'zuco_extracted'
     resolve_source(src, extract_dir=ext, tasks=['SR'])
@@ -81,7 +81,7 @@ def test_extraction_is_idempotent_unless_overwrite(tmp_path: Path):
     assert target.read_bytes() == b'x'
 
 
-def test_resolve_source_prefers_extracted_mat_over_stray_zip(tmp_path: Path):
+def test_resolve_source_prefers_extracted_mat_over_stray_zip(tmp_path: Path) -> None:
     src = tmp_path / 'data'
     src.mkdir()
     (src / 'resultsZAB_SR.mat').write_bytes(b'MATLAB5.0 fake')

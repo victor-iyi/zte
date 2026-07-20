@@ -1,28 +1,4 @@
-"""Neuron-level interpretability for ZTE embeddings -- *which dimensions fire, and what they encode*.
-
-The 768-d "thought embedding" is opaque as a whole, but each dimension is a neuron with a story:
-some carry a lot of variance (they *fire*), most may be near-silent (*negligible*), and each one is,
-to some degree, *selective* for an attribute -- the reader's identity, the task, the word's length or
-frequency. This module makes that legible without a trained decoder:
-
-- **Importance** -- per-dimension standard deviation and its share of the total embedding variance,
-  ranked most-active to negligible, with a dead-neuron count. This is the collapse story at neuron
-  resolution.
-- **Selectivity** -- for every dimension, the *fraction of its variance explained* by each known
-  attribute: r^2 for continuous targets (word length, log-frequency) and eta^2 for categorical ones
-  (subject, task, category). Both are on the same 0..1 scale, so each neuron's *dominant* attribute is
-  a fair argmax across them.
-- **Budget** -- the headline discovery: what share of the space's *variance* is spent encoding
-  "who" (subject) versus "what" (lexical content). A subject-dominated space spends most of its
-  variance on identity -- exactly the ZTE v1 failure mode, now quantified per neuron.
-- **Exemplars** -- the words that most (and least) activate each top neuron, so "neuron 42" gets a
-  human-readable meaning.
-- **Scalp / band attribution** -- which frequency band x scalp region drives each top neuron, tying
-  a dimension back to the brain (and exposing gaze-driven neurons when eye-tracking is included).
-
-Everything here is model-free: it reads the exported embeddings and metadata, so it works anywhere the
-evaluation does. Attribution is correlational (not a causal saliency map) and is labelled as such.
-"""
+"""Neuron-level interpretability: which embedding dimensions fire, and what attribute each one encodes."""
 
 from __future__ import annotations
 
@@ -33,7 +9,7 @@ import numpy as np
 if TYPE_CHECKING:
     import pandas as pd
 
-    from zte.data.regions import RegionMap
+    from zte.data.montage.regions import RegionMap
 
 # Continuous vs categorical probe targets, if present in the word metadata.
 _CONTINUOUS = ('word_len', 'log_freq')
@@ -129,11 +105,11 @@ def neuron_report(
         top_k (int): How many of the most-important neurons to describe in detail.
         n_exemplars (int): How many top/bottom activating words to list per detailed neuron.
         active_quantile (float): A neuron counts as "active" if its std exceeds this quantile-scaled
-            threshold (see below); also used for the dead-neuron count.
+            threshold; also used for the dead-neuron count.
 
     Returns:
         dict[str, Any]: A JSON-serialisable report with `importance`, `selectivity`, `summary`,
-        `top_neurons` and `meta` blocks (see module docstring for the semantics).
+        `top_neurons` and `meta` blocks.
     """
     x = np.asarray(emb, dtype=np.float64)
     n, d = x.shape
@@ -152,8 +128,6 @@ def neuron_report(
     active = std >= active_threshold
 
     # --- Selectivity ------------------------------------------------------ #
-    # Every score is a fraction of a neuron's variance explained by the target, so continuous
-    # (r^2) and categorical (eta^2) scores are on the same scale and comparable in the argmax.
     scores: dict[str, np.ndarray] = {}
     for col in _CONTINUOUS:
         if col in meta.columns:
@@ -163,6 +137,7 @@ def neuron_report(
             scores[col] = _eta_squared(x, meta[col].to_numpy())
     targets = list(scores.keys())
 
+    # r^2 and eta^2 are both variance-explained, so the argmax across them is fair.
     if targets:
         score_stack = np.vstack([scores[t] for t in targets])  # (T, d)
         dom_idx = score_stack.argmax(axis=0)
@@ -229,9 +204,7 @@ def neuron_report(
             ]
         top_neurons.append(entry)
 
-    # Alternative importance orderings: the default ranks by how much a neuron *fires* (variance);
-    # a per-target ranking instead surfaces the neurons most *selective for* that attribute. This is
-    # the answer to "importance to what?" -- you choose the axis.
+    # Importance is axis-dependent: rank by how much a neuron fires, or by what it is selective for.
     rankings = {'variance': order.tolist()}
     for t in targets:
         rankings[f'selectivity:{t}'] = np.argsort(-scores[t]).tolist()
@@ -245,9 +218,7 @@ def neuron_report(
             'attribution_note': 'correlational (not a causal saliency map)',
         },
         'importance': {
-            # A neuron "fires" when it VARIES across words; its importance is the share of the total
-            # embedding variance it carries: var_share[d] = std[d]^2 / sum_j std[j]^2. `order` ranks
-            # dimensions most-active -> least; a "dead" neuron is near-constant (std < 1e-4).
+            # A neuron "fires" when it varies across words; a dead one is near-constant (std < 1e-4).
             'definition': 'var_share[d] = std[d]^2 / sum(std^2); rank 0 = highest-variance (fires most)',
             'std': std.tolist(),
             'var_share': var_share.tolist(),
@@ -316,7 +287,7 @@ def _region_features(
     bp = np.asarray(band_power, dtype=np.float32)
     if bp.ndim != 3:
         return None, []
-    from zte.data.regions import default_region_map
+    from zte.data.montage.regions import default_region_map
 
     rmap = region_map or default_region_map(bp.shape[2])
     reduced = rmap.reduce(bp, method='mean')  # (n_words, n_bands, n_regions)

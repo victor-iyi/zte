@@ -64,7 +64,7 @@ uv run zte-train --synthetic --objective masked --epochs 5
 
 ## Config-driven runs
 
-Every knob is a field on a typed, YAML-serialisable `ZTEConfig` (`src/zte/config.py`). A YAML file only needs to set what differs from the defaults:
+Every knob is a field on a typed, YAML-serialisable `ZTEConfig` (`src/zte/config/`). A YAML file only needs to set what differs from the defaults:
 
 ```yaml
 # config.yaml

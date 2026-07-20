@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__</title>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hd">
+        <div class="brand">
+          <span class="dot"></span>
+          <h1>__TITLE__</h1>
+        </div>
+        <span class="spacer"></span>
+        <div class="ctl" id="colorbyctl">
+          <label>Colour by</label
+          ><select id="colorby"></select>
+        </div>
+        <div class="seg" id="themeseg">
+          <button type="button" data-t="light" class="on">Light</button>
+          <button type="button" data-t="dark">Dark</button>
+        </div>
+      </header>
+      <div class="card"><div class="plotcard">__FIGURE__</div></div>
+      <div class="legend" id="legend"></div>
+      <p class="cap">__CAPTION__</p>
+    </div>
+    <script id="cfg" type="application/json">
+      __DATA__
+    </script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

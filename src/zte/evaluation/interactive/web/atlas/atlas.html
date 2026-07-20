@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__ATLAS_TITLE__</title>
+    <script>/*__ATLAS_PLOTLY_JS__*/</script>
+    <style>/*__CSS__*/</style>
+  </head>
+  <body>
+    <aside class="rail">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>Neuron Atlas</h1>
+      </div>
+      <div class="sub">
+        Every dimension of the ZTE embedding is a neuron with a story: some
+        <b>fire</b> (carry variance), most are <b>negligible</b>, and each is more or less
+        <b>selective</b> for an attribute. Click a bar to inspect a neuron.
+      </div>
+      <div class="group">
+        <h3>Ranked chart</h3>
+        <div class="row">
+          <label class="lab">Sort neurons by</label>
+          <select id="sortby"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Colour bars by</label>
+          <select id="colorby"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Bar height</label>
+          <select id="metric">
+            <option value="var_share">variance share</option>
+            <option value="std">std (spread)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label class="chk">
+            <input type="checkbox" id="hidedead">
+            Hide negligible (inactive) neurons
+          </label>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Inspect a neuron</h3>
+        <div class="row">
+          <label class="lab">Jump to neuron #</label>
+          <div class="searchrow">
+            <input type="number" id="search" min="0" placeholder="dim index">
+            <button class="btn" id="searchbtn">Go</button>
+          </div>
+        </div>
+        <div class="note">
+          Detailed exemplars, histogram and scalp attribution exist for the
+          top neurons; importance &amp; selectivity are shown for every dimension.
+        </div>
+      </div>
+      <div class="group">
+        <button class="btn" id="themebtn">Toggle light / dark</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="tiles" id="tiles"></div>
+      <div class="legend" id="legend"></div>
+      <div class="card">
+        <h2>Ranked importance &mdash; every neuron</h2>
+        <div class="cap" id="rankedcap">
+          Each bar is one dimension, ordered most-important first and
+          coloured by its dominant attribute. Bars below the dashed line are the negligible tail.
+          Hover for detail; click to inspect.
+        </div>
+        <div id="ranked"></div>
+      </div>
+      <div class="card">
+        <h2 id="detail-title"></h2>
+        <div class="detail-grid">
+          <div class="panel">
+            <h3>Selectivity per target</h3>
+            <div id="selbar"></div>
+          </div>
+          <div class="panel" id="attrwrap">
+            <h3>Scalp / band attribution (correlational)</h3>
+            <div id="headwrap">
+              <svg id="headmap"
+                   viewBox="0 0 220 250"
+                   role="img"
+                   aria-label="Scalp head map">
+                <defs><clipPath id="headclip"><ellipse cx="110" cy="128" rx="86" ry="108" /></clipPath></defs>
+                <g clip-path="url(#headclip)">
+                <rect class="hzone" id="hz-frontopolar" x="0" y="20" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-frontal" x="0" y="47" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-frontocentral" x="0" y="74" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-central" x="0" y="101" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-centroparietal" x="0" y="128" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-parietal" x="0" y="155" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-parieto_occipital" x="0" y="182" width="220" height="27"><title></title></rect>
+                <rect class="hzone" id="hz-occipital" x="0" y="209" width="220" height="27"><title></title></rect>
+                </g>
+                <path class="hm-outline" d="M110 6 l11 19 l-22 0 z" />
+                <ellipse class="hm-outline" cx="20" cy="126" rx="9" ry="19" />
+                <ellipse class="hm-outline" cx="200" cy="126" rx="9" ry="19" />
+                <ellipse class="hm-outline" cx="110" cy="128" rx="86" ry="108" />
+                <g aria-hidden="true">
+                <text class="hlab" x="110" y="37">FP</text>
+                <text class="hlab" x="110" y="64">F</text>
+                <text class="hlab" x="110" y="91">FC</text>
+                <text class="hlab" x="110" y="118">C</text>
+                <text class="hlab" x="110" y="145">CP</text>
+                <text class="hlab" x="110" y="172">P</text>
+                <text class="hlab" x="110" y="199">PO</text>
+                <text class="hlab" x="110" y="226">O</text>
+                </g>
+              </svg>
+              <div class="headcap">
+                <b>Where on the scalp this neuron reads from</b> (correlational).
+                Anterior (nose) at top; each zone shaded by aggregated |r|. Hover a zone for its score.
+              </div>
+            </div>
+            <div id="attrbar"></div>
+          </div>
+        </div>
+        <div id="exemplars">
+          <div class="panel" style="margin-top:6px">
+            <h3>Activation histogram</h3>
+            <div id="acthist"></div>
+          </div>
+          <div class="words">
+            <div class="panel">
+              <h3>Top activating words</h3>
+              <table class="wt" id="topwords">
+              </table>
+            </div>
+            <div class="panel">
+              <h3>Bottom activating words</h3>
+              <table class="wt" id="botwords">
+              </table>
+            </div>
+          </div>
+        </div>
+        <div id="detail-note"></div>
+      </div>
+    </main>
+    <script>/*__JS__*/</script>
+  </body>
+</html>

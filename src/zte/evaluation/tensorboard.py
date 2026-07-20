@@ -1,16 +1,4 @@
-"""A rich TensorBoard reporter for ZTE embeddings, metrics and figures.
-
-TensorBoard is the natural home for *interactive* inspection of a thought code, so ZTE uses as much of it as possible:
-
-- the **Embedding Projector** (`add_embedding`) -- rotate/zoom the space in 3-D, colour by subject / task / sentence category,
-    search for a word, and run PCA/t-SNE/UMAP live;
-- **HParams** -- every run's knobs joined to its headline metrics for sortable comparison across experiments;
-- **Scalars** -- health, retrieval, analogy and per-stratum numbers;
-- **Histograms** -- embedding value + per-dimension norm distributions (collapse check); and
-- **Images / Text** -- every evaluation figure and the Markdown report inline.
-
-The whole module degrades gracefully: if `tensorboard` is not installed the reporter becomes a no-op so callers never need to guard.
-"""
+"""TensorBoard reporter for ZTE embeddings, metrics and figures; a no-op when `tensorboard` is missing."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -44,8 +32,8 @@ class TensorBoardReporter:
     """Thin, optional-dependency wrapper over `SummaryWriter`.
 
     Attributes:
-        writer: The underlying `SummaryWriter` or `None` when unavailable.
-        log_dir: Directory the events are written to.
+        writer (Any | None): The underlying `SummaryWriter`, or `None` when unavailable.
+        log_dir (Path): Directory the events are written to.
     """
 
     def __init__(self, log_dir: str | Path) -> None:
@@ -53,7 +41,6 @@ class TensorBoardReporter:
 
         Args:
             log_dir (str | Path): Destination directory for the event files.
-
         """
         self.log_dir = Path(log_dir)
         self.writer: Any | None = None
@@ -77,7 +64,6 @@ class TensorBoardReporter:
             prefix (str): Scalar-tag prefix (e.g. `health`).
             values (dict[str, Any]): Mapping of name -> value (non-numeric entries are skipped).
             step (int): Global step for the scalars.
-
         """
         if not self.writer:
             return
@@ -100,12 +86,11 @@ class TensorBoardReporter:
 
         Args:
             emb (np.ndarray): Embeddings `(n_samples, embed_dim)`.
-            meta (pd.DataFrame): Aligned metadata; the intersection with `columns` is used as the projector's labels.
+            meta (pd.DataFrame): Aligned metadata; the intersection with `columns` labels the points.
             tag (str): Projector tag.
             columns (tuple[str, ...]): Metadata columns to expose (missing ones are dropped).
             max_points (int): Subsample cap (the projector is slow above a few thousand).
             seed (int): Sampling seed.
-
         """
         if not self.writer or len(emb) == 0:
             return
@@ -136,7 +121,6 @@ class TensorBoardReporter:
             tag (str): Histogram tag.
             values (np.ndarray): Array of values.
             step (int): Global step.
-
         """
         if not self.writer:
             return

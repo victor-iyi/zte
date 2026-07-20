@@ -212,7 +212,7 @@ def region_importance_heatmap(
     """Heatmap of normalised region importance (regions x targets).
 
     Args:
-        rows (list[dict[str, Any]]): Output of `zte.data.regions.region_importance`.
+        rows (list[dict[str, Any]]): Output of `zte.data.montage.regions.region_importance`.
         title (str): Figure title.
 
     Returns:
@@ -333,5 +333,387 @@ def probe_scatter(y_true: np.ndarray, y_pred: np.ndarray, title: str) -> Figure:
     corr = float(np.corrcoef(y_true, y_pred)[0, 1]) if len(y_true) > 1 else float('nan')
     ax.set(xlabel='true', ylabel='predicted (kNN)', title=f'{title}  (r={corr:.2f})')
     ax.grid(alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def retrieval_rank_distribution(
+    ranks: np.ndarray,
+    n_bank: int,
+    chance_top1: float,
+    title: str = 'Retrieval rank distribution',
+) -> Figure:
+    """Headline honesty figure: rank histogram and rank-percentile CDF.
+
+    A healthy retrieval space piles probability mass at rank 1 (left panel) and
+    its rank-percentile CDF bows above the chance diagonal (right panel).
+
+    Args:
+        ranks (np.ndarray): 1-based rank of the correct match per query `(n_queries,)`.
+        n_bank (int): Size of the retrieval bank (max possible rank).
+        chance_top1 (float): Random-chance Top-1 accuracy reference.
+        title (str): Figure suptitle.
+
+    Returns:
+        Figure: The created figure.
+    """
+    ranks = np.asarray(ranks, dtype=float).ravel()
+    ranks = ranks[np.isfinite(ranks)]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
+    if ranks.size == 0 or n_bank <= 0:
+        for ax in (ax1, ax2):
+            ax.text(0.5, 0.5, 'no ranks', ha='center', va='center', transform=ax.transAxes)
+        fig.suptitle(title)
+        fig.tight_layout()
+        return fig
+
+    n_bins = int(min(40, max(1, np.ceil(ranks.max()))))
+    ax1.hist(ranks, bins=n_bins, color='#4C78A8', alpha=0.85)
+    ax1.axvline(1.0, color='crimson', linestyle='dashed', linewidth=1, label='rank 1')
+    ax1.set(xlabel='rank of correct match', ylabel='queries', title='Rank histogram')
+    ax1.legend()
+    ax1.grid(axis='y', alpha=0.3)
+
+    pct = np.sort(ranks / float(n_bank))
+    cdf = np.arange(1, pct.size + 1) / pct.size
+    ax2.plot(
+        [0.0, 1.0],
+        [0.0, 1.0],
+        color='gray',
+        linestyle='dashed',
+        linewidth=1,
+        label='chance diagonal',
+    )
+    ax2.plot(pct, cdf, color='#54A24B', linewidth=1.8, label='ZTE retrieval')
+    ax2.axhline(
+        chance_top1,
+        color='crimson',
+        linestyle='dotted',
+        linewidth=1,
+        label=f'chance Top-1 ({chance_top1:.2%})',
+    )
+    ax2.set(
+        xlabel='rank percentile',
+        ylabel='cumulative fraction',
+        title='Rank-percentile CDF',
+        xlim=(0, 1),
+        ylim=(0, 1.02),
+    )
+    ax2.legend(fontsize=8)
+    ax2.grid(alpha=0.3)
+    fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
+
+def variance_budget_pie(
+    summary: dict[str, Any], title: str = 'Variance budget: who vs what'
+) -> Figure:
+    """Pie of the variance budget (which attribute each dimension serves).
+
+    Args:
+        summary (dict[str, Any]): The `neurons` summary block with keys `variance_budget`
+            (attr -> share in [0, 1]), `who_variance` and `what_variance`.
+        title (str): Figure title (annotated with who/what shares).
+
+    Returns:
+        Figure: The created figure.
+    """
+    budget = dict(summary.get('variance_budget') or {})
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    if not budget:
+        ax.text(0.5, 0.5, 'no variance budget', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    palette = {
+        'subject': '#eda100',
+        'word_len': '#2a78d6',
+        'log_freq': '#1baf7a',
+        'category': '#4a3aa7',
+        'task': '#008300',
+        'none': '#b8b6ad',
+    }
+    fallback = '#8c8c8c'
+    attrs = list(budget)
+    shares = [float(budget[a]) for a in attrs]
+    colors = [palette.get(a, fallback) for a in attrs]
+    ax.pie(shares, labels=attrs, colors=colors, autopct='%1.0f%%', startangle=90)
+    ax.set_aspect('equal')
+    who = float(summary.get('who_variance', np.nan))
+    what = float(summary.get('what_variance', np.nan))
+    ax.set_title(f'{title}\nwho={who:.0%} what={what:.0%}')
+    fig.tight_layout()
+    return fig
+
+
+def variance_budget_bars(rows: list[dict[str, Any]], title: str = 'Who vs what by run') -> Figure:
+    """Grouped bars of who-variance vs what-variance across runs.
+
+    Args:
+        rows (list[dict[str, Any]]): List of `{'run': str, 'who': float, 'what': float}`.
+        title (str): Figure title.
+
+    Returns:
+        Figure: The created bar chart.
+    """
+    fig, ax = plt.subplots(figsize=(1.4 * max(len(rows), 1) + 3, 4.5))
+    if not rows:
+        ax.text(0.5, 0.5, 'no runs', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    labels = [str(r.get('run', i)) for i, r in enumerate(rows)]
+    who = [float(r.get('who', np.nan)) for r in rows]
+    what = [float(r.get('what', np.nan)) for r in rows]
+    x = np.arange(len(labels))
+    ax.bar(x - 0.2, who, 0.4, label='who (identity)', color='#eda100')
+    ax.bar(x + 0.2, what, 0.4, label='what (content)', color='#1baf7a')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=25, ha='right')
+    ax.set(ylabel='share of variance', title=title)
+    ax.legend()
+    ax.grid(axis='y', alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def geometry_before_after(
+    before: np.ndarray,
+    after: np.ndarray,
+    group_ids: np.ndarray,
+    label_before: str = 'raw',
+    label_after: str = 'whiten+ABTT',
+    title: str = 'Geometry before vs after',
+) -> Figure:
+    """Same-vs-different cosine histograms before and after the geometry fix.
+
+    Visualises the anti-cone / anti-hubness fix honestly: each panel is annotated
+    with its anisotropy so a shrinking cone is legible.
+
+    Args:
+        before (np.ndarray): Raw embeddings `(n_samples, embed_dim)`.
+        after (np.ndarray): Post-fix embeddings `(n_samples, embed_dim)`.
+        group_ids (np.ndarray): Content/group id per row `(n_samples,)`.
+        label_before (str): Panel title for the `before` embeddings.
+        label_after (str): Panel title for the `after` embeddings.
+        title (str): Figure suptitle.
+
+    Returns:
+        Figure: The created figure.
+    """
+    from zte.evaluation import metrics as M
+
+    group_ids = np.asarray(group_ids)
+    rng = np.random.default_rng(0)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharex=True)
+
+    def _panel(ax: Any, emb: np.ndarray, label: str) -> None:
+        x = np.asarray(emb, dtype=np.float32)
+        if x.ndim != 2 or x.shape[0] < 2:
+            ax.text(0.5, 0.5, 'too few points', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(label)
+            return
+        x = x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-8)
+        n = len(x)
+        a = rng.integers(0, n, size=20000)
+        b = rng.integers(0, n, size=20000)
+        keep = a != b
+        a, b = a[keep], b[keep]
+        sims = np.sum(x[a] * x[b], axis=1)
+        same = group_ids[a] == group_ids[b]
+        if same.any():
+            ax.hist(
+                sims[same], bins=40, alpha=0.6, density=True, label='same content', color='#4C78A8'
+            )
+        if (~same).any():
+            ax.hist(
+                sims[~same],
+                bins=40,
+                alpha=0.6,
+                density=True,
+                label='different content',
+                color='#E45756',
+            )
+        ax.set(
+            xlabel='cosine similarity',
+            ylabel='density',
+            title=f'{label}  (anisotropy={M.anisotropy(x):.2f})',
+        )
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    _panel(axes[0], before, label_before)
+    _panel(axes[1], after, label_after)
+    fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
+
+def subject_similarity_heatmap(
+    emb: np.ndarray, subjects: np.ndarray, title: str = 'Cross-subject centroid cosine'
+) -> Figure:
+    """Subject x subject cosine matrix of per-subject centroids.
+
+    A hubness / identity diagnostic: strong off-diagonal structure means the
+    space encodes who rather than what.
+
+    Args:
+        emb (np.ndarray): Embeddings `(n_samples, embed_dim)`.
+        subjects (np.ndarray): Subject code per row `(n_samples,)`.
+        title (str): Figure title.
+
+    Returns:
+        Figure: The created heatmap.
+    """
+    subjects = np.asarray(subjects)
+    codes = list(np.unique(subjects))
+    fig, ax = plt.subplots(figsize=(0.6 * max(len(codes), 1) + 3, 0.6 * max(len(codes), 1) + 2))
+    if len(codes) == 0 or np.asarray(emb).ndim != 2:
+        ax.text(0.5, 0.5, 'no subjects', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    x = np.asarray(emb, dtype=np.float64)
+    centroids = np.stack([x[subjects == c].mean(axis=0) for c in codes])
+    centroids = centroids / (np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-8)
+    mat = centroids @ centroids.T
+
+    im = ax.imshow(mat, cmap='magma', vmin=-1.0, vmax=1.0)
+    ax.set_xticks(range(len(codes)))
+    ax.set_xticklabels([str(c) for c in codes], rotation=20, ha='right')
+    ax.set_yticks(range(len(codes)))
+    ax.set_yticklabels([str(c) for c in codes])
+    for i in range(len(codes)):
+        for j in range(len(codes)):
+            ax.text(
+                j,
+                i,
+                f'{mat[i, j]:.2f}',
+                ha='center',
+                va='center',
+                color='white' if mat[i, j] < mat.max() * 0.6 else 'black',
+                fontsize=8,
+            )
+    fig.colorbar(im, ax=ax, label='cosine')
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
+
+
+def scalp_topomap(
+    values: np.ndarray,
+    coords_2d: np.ndarray,
+    title: str = 'Scalp map',
+    label: str = 'importance',
+) -> Figure:
+    """Interpolated scalp topography of per-channel values.
+
+    Args:
+        values (np.ndarray): Per-channel scalar `(n_channels,)`.
+        coords_2d (np.ndarray): Channel positions `(n_channels, 2)` in `[0, 1]^2`
+            (azimuthal-equidistant projection; +y is front).
+        title (str): Figure title.
+        label (str): Colourbar caption.
+
+    Returns:
+        Figure: The created figure.
+    """
+    values = np.asarray(values, dtype=float).ravel()
+    coords = np.asarray(coords_2d, dtype=float)
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title(title)
+
+    finite = (
+        np.isfinite(values) & np.isfinite(coords[:, 0]) & np.isfinite(coords[:, 1])
+        if coords.ndim == 2 and coords.shape[1] == 2 and len(coords) == len(values)
+        else np.zeros(len(values), dtype=bool)
+    )
+    xs, ys, vs = coords[finite, 0], coords[finite, 1], values[finite]
+
+    # Head outline: unit circle centred at (0.5, 0.5) radius 0.5 with a nose triangle.
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(0.5 + 0.5 * np.cos(theta), 0.5 + 0.5 * np.sin(theta), color='#888888', linewidth=1)
+    ax.plot([0.45, 0.5, 0.55], [0.98, 1.06, 0.98], color='#888888', linewidth=1)
+
+    if finite.sum() < 4:
+        if vs.size:
+            sc = ax.scatter(xs, ys, c=vs, cmap='magma', s=40, edgecolors='k', linewidths=0.4)
+            fig.colorbar(sc, ax=ax, label=label, fraction=0.046, pad=0.04)
+        else:
+            ax.text(0.5, 0.5, 'no channels', ha='center', va='center', transform=ax.transAxes)
+        fig.tight_layout()
+        return fig
+
+    tcf = ax.tricontourf(xs, ys, vs, levels=14, cmap='magma')
+    ax.scatter(xs, ys, c='k', s=8, alpha=0.6)
+    fig.colorbar(tcf, ax=ax, label=label, fraction=0.046, pad=0.04)
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 1.15)
+    fig.tight_layout()
+    return fig
+
+
+def neuron_selectivity_heatmap(
+    top_neurons: list[dict[str, Any]], title: str = 'Neuron selectivity (top dimensions)'
+) -> Figure:
+    """Heatmap of per-dimension selectivity across attributes.
+
+    Args:
+        top_neurons (list[dict[str, Any]]): List of dicts each with `dim` (int) and
+            `selectivity` (attr -> score in `[0, 1]`).
+        title (str): Figure title.
+
+    Returns:
+        Figure: The created heatmap.
+    """
+    fig, ax = plt.subplots(
+        figsize=(1.2 * max(len(top_neurons), 1) + 3, 0.5 * max(len(top_neurons), 1) + 2)
+    )
+    if not top_neurons:
+        ax.text(0.5, 0.5, 'no neurons', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    attrs: list[str] = []
+    for n in top_neurons:
+        for a in n.get('selectivity') or {}:
+            if a not in attrs:
+                attrs.append(a)
+    if not attrs:
+        ax.text(0.5, 0.5, 'no selectivity', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    dims = [int(n.get('dim', i)) for i, n in enumerate(top_neurons)]
+    mat = np.array(
+        [[float((n.get('selectivity') or {}).get(a, 0.0)) for a in attrs] for n in top_neurons],
+        dtype=float,
+    )
+    im = ax.imshow(mat, aspect='auto', cmap='viridis')
+    ax.set_xticks(range(len(attrs)))
+    ax.set_xticklabels(attrs, rotation=20, ha='right')
+    ax.set_yticks(range(len(dims)))
+    ax.set_yticklabels([f'#{d}' for d in dims])
+    for i in range(len(dims)):
+        for j in range(len(attrs)):
+            ax.text(
+                j,
+                i,
+                f'{mat[i, j]:.2f}',
+                ha='center',
+                va='center',
+                color='white' if mat[i, j] < mat.max() * 0.6 else 'black',
+                fontsize=8,
+            )
+    fig.colorbar(im, ax=ax, label='variance explained')
+    ax.set_title(title)
     fig.tight_layout()
     return fig

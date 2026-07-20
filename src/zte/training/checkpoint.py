@@ -1,9 +1,4 @@
-"""Checkpoint management: best/last tracking, rotation, resume and Drive backup.
-
-A `CheckpointManager` serialises everything needed to resume or to run inference later -- model weights, optimiser/scheduler/scaler state,
-the config, the fitted feature-normaliser state and the subject vocabulary -- and keeps the checkpoint directory tidy by rotating
-older "last" checkpoints. When a Google Drive backup directory is configured each saved checkpoint is mirrored remotely.
-"""
+"""Checkpoint management: best/last tracking, rotation, resume and Drive backup."""
 
 from __future__ import annotations
 
@@ -100,11 +95,7 @@ class CheckpointManager:
         return path
 
     def _rotate(self) -> None:
-        """Deletes the oldest epoch checkpoints beyond `keep_last`.
-
-        Tolerates filesystems that forbid `unlink` (some FUSE/Drive mounts):
-        the stale file is simply left in place rather than crashing the run.
-        """
+        """Deletes the oldest epoch checkpoints beyond `keep_last`, tolerating mounts that forbid `unlink`."""
         while len(self._last_paths) > self.keep_last:
             old = self._last_paths.pop(0)
             try:
@@ -117,7 +108,7 @@ class CheckpointManager:
         if not self.drive_backup_dir:
             return
         try:
-            from zte.data.remote import upload_directory
+            from zte.data.io.remote import upload_directory
 
             upload_directory(self.ckpt_dir, self.drive_backup_dir)
         except (RuntimeError, OSError) as exc:  # pragma: no cover - network/cred dependent

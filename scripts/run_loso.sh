@@ -19,6 +19,7 @@
 #   CONTROL=1 bash scripts/run_loso.sh            # also run the no-recipe control arm (A/B)
 #   DEVICE=cuda bash scripts/run_loso.sh          # force a device (else auto)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh   # restrict the held-out set
+#   FULL_CFG=experiments/sota_loso.yaml bash scripts/run_loso.sh   # run the SOTA stack instead of the old recipe
 #   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write ALL runs to Google Drive (persist everything)
 #   DRIVE_BACKUP="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh  # train local (fast) + mirror checkpoints to Drive each epoch
 # =============================================================================
@@ -30,8 +31,18 @@ PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive path to persist runs
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
-FULL_CFG="experiments/study_invariance_full_loso.yaml"       # the invariance recipe
-CTRL_CFG="experiments/study_invariance_baseline_loso.yaml"   # no-recipe control
+FULL_CFG="${FULL_CFG:-experiments/study_invariance_full_loso.yaml}"       # the invariance recipe (override: FULL_CFG=experiments/sota_loso.yaml)
+CTRL_CFG="${CTRL_CFG:-experiments/study_invariance_baseline_loso.yaml}"   # no-recipe control
+SPATIAL="${SPATIAL:-}"    # optional: provision spatial encoding per run (e.g. exact); empty = use each config as-is
+MEANING="${MEANING:-}"    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
+DATA_CACHE="${DATA_CACHE:-}"  # optional: shared PROCESSED-dataset cache dir (e.g. a Drive path); build once, reuse across all subjects/sessions
+
+# Built once and reused from cache across every held-out subject (montage, meaning and the processed
+# dataset bundle are all subject-independent, so --data-cache skips the .mat load + processing per subject).
+PROVISION=()
+[ -n "${SPATIAL}" ] && PROVISION+=(--spatial "${SPATIAL}")
+[ -n "${MEANING}" ] && PROVISION+=(--meaning "${MEANING}")
+[ -n "${DATA_CACHE}" ] && PROVISION+=(--data-cache "${DATA_CACHE}")
 
 # All 12 ZuCo v1 subjects; synthetic mode only has three.
 ALL_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
@@ -54,7 +65,8 @@ run_one() {   # cfg, holdout
   local backup=()
   [ -n "${DRIVE_BACKUP}" ] && backup=(--drive-backup "${DRIVE_BACKUP}")
   "${PY}" -m zte.cli.run --config "${cfg}" "${SRC[@]}" \
-      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore "${backup[@]+"${backup[@]}"}"
+      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore \
+      "${PROVISION[@]+"${PROVISION[@]}"}" "${backup[@]+"${backup[@]}"}"
   local code=$?
   if [ "${code}" = "130" ]; then
     echo "⏸  Paused during ${holdout}. Re-run this script to resume exactly here."

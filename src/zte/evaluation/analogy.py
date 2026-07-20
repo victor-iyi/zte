@@ -1,21 +1,4 @@
-"""Vector arithmetic on thought embeddings -- the word2vec analogy test for EEG.
-
-Word embeddings famously support `king - man + woman ~ queen`: an attribute is a
-*translation* in the space. If ZTE is to be a real thought code, the same structure
-should hold for the factors that ought to be *nuisances* -- **who** produced the
-signal and **which task** they were doing. Concretely, for the same stimulus token
-`t`::
-
-    emb(t, subject A) - centroid(A) + centroid(B)  ~  emb(t, subject B)
-
-i.e. "this thought, as if thought by B". When that arithmetic retrieves the *same
-stimulus* read by another subject far above chance, the subject identity is an
-additive offset the space can cancel -- the essence of a device-/subject-agnostic
-encoding. The same construction with the task centroid tests task-invariance.
-
-Everything here is pure NumPy over embeddings plus a metadata table, so it is
-unit-testable in isolation and reused by both the report and TensorBoard layers.
-"""
+"""Vector arithmetic on thought embeddings: `emb(t, A) - centroid(A) + centroid(B)` should retrieve `emb(t, B)`."""
 
 from __future__ import annotations
 
@@ -51,30 +34,23 @@ def transfer_analogy(
 ) -> dict[str, float]:
     """Cross-group translation analogy: `emb(t,A) - c(A) + c(B) -> emb(t,B)`.
 
-    For every ordered pair of groups `(A, B)` and every stimulus present in both,
-    the source embedding is translated by the group-centroid offset and matched
-    against `B`'s bank; a hit is retrieving the *same stimulus* under `B`.
-
-    Note:
-        The `contents` id must **exclude** whatever field `groups` encodes -- otherwise
-        every group's stimuli carry a group-specific tag and can never overlap (0
-        queries -> all-`nan`). For task-transfer, group by `task` and identify stimuli
-        by `subject|sentence_idx|word_idx`; for subject-transfer, group by `subject`
-        and identify stimuli by `task|sentence_idx|word_idx`.
+    For every ordered pair of groups `(A, B)` and every stimulus present in both, the source embedding
+    is translated by the group-centroid offset and matched against `B`'s bank; a hit retrieves the same
+    stimulus under `B`.
 
     Args:
-        emb: Embeddings `(n_samples, embed_dim)`.
-        groups: Group label per row `(n_samples,)` (e.g. subject or task).
-        contents: Stimulus id per row `(n_samples,)` (same content shares an id
-            across groups -- and must exclude the `groups` field).
-        ks: Top-K cut-offs.
-        max_pairs: Cap on evaluated source items (sampled) to bound cost.
-        seed: Sampling seed.
-        return_hits: When `True`, also return `top1_hits` (per-query Top-1 hit vector,
+        emb (np.ndarray): Embeddings `(n_samples, embed_dim)`.
+        groups (np.ndarray): Group label per row `(n_samples,)` (e.g. subject or task).
+        contents (np.ndarray): Stimulus id per row `(n_samples,)`. It must exclude whatever field
+            `groups` encodes, or no stimulus can overlap across groups (0 queries -> all-`nan`).
+        ks (tuple[int, ...]): Top-K cut-offs.
+        max_pairs (int): Cap on evaluated source items (sampled) to bound cost.
+        seed (int): Sampling seed.
+        return_hits (bool): When `True`, also return `top1_hits` (per-query Top-1 hit vector,
             0/1 floats) and `chances` (per-query random-chance Top-1) for bootstrap CIs.
 
     Returns:
-        `top{k}` for each `k`, `mrr`, `n_queries`, `chance_top1` and `n_groups`.
+        dict[str, float]: `top{k}` for each `k`, `mrr`, `n_queries`, `chance_top1` and `n_groups`.
         All-`nan` when no cross-group stimulus overlap exists.
     """
     emb = np.asarray(emb, dtype=np.float32)
@@ -109,8 +85,7 @@ def transfer_analogy(
                 overlap = rng.choice(overlap, size=max_pairs, replace=False)
             offset = centroids[dst] - centroids[src]
             target_j = np.array([bank_index[c] for c in contents[overlap].tolist()])
-            # Rank the *correct* bank item by counting strictly-more-similar items --
-            # top-k / MRR without an O(bank log bank) argsort over the whole bank.
+            # Counting strictly-more-similar items gives top-k / MRR without argsorting the bank.
             for start in range(0, len(overlap), chunk):
                 rows = overlap[start : start + chunk]
                 queries = _l2(emb[rows] + offset[None, :])
@@ -157,17 +132,17 @@ def analogy_examples(
     """Concrete `a - A + B` demonstrations for the report (king/queen style).
 
     Args:
-        emb: Embeddings `(n_samples, embed_dim)`.
-        meta: Aligned metadata with `group_col`, `content_col` and `label_col`.
-        group_col: Column whose centroid offset is added/subtracted (e.g. subject).
-        content_col: Stimulus-identity column (same content shares a value).
-        label_col: Human-readable label to print (e.g. the word).
-        n_examples: How many worked examples to return.
-        seed: Sampling seed.
+        emb (np.ndarray): Embeddings `(n_samples, embed_dim)`.
+        meta (pd.DataFrame): Aligned metadata with `group_col`, `content_col` and `label_col`.
+        group_col (str): Column whose centroid offset is added/subtracted (e.g. subject).
+        content_col (str): Stimulus-identity column (same content shares a value).
+        label_col (str): Human-readable label to print (e.g. the word).
+        n_examples (int): How many worked examples to return.
+        seed (int): Sampling seed.
 
     Returns:
-        Rows with `source`/`expression`/`retrieved`/`target`, a `hit` flag and the
-        cosine `similarity` -- ready to render as a table.
+        list[dict[str, Any]]: Rows with `source`/`expression`/`retrieved`/`target`, a `hit` flag and
+        the cosine `similarity` -- ready to render as a table.
     """
     emb = np.asarray(emb, dtype=np.float32)
     groups = meta[group_col].to_numpy()
@@ -214,25 +189,22 @@ def analogy_report(
 ) -> dict[str, Any]:
     """Runs subject- and task-transfer analogies (+ a raw-feature control).
 
-    The stimulus content id is chosen so it **excludes the field being cancelled**:
-    subject-transfer groups by subject and identifies stimuli by
-    `task|sentence_idx|word_idx` (subject-agnostic); task-transfer groups by task and
-    identifies stimuli by `subject|sentence_idx|word_idx` (task-agnostic). If the tasks
-    read genuinely disjoint stimuli (the usual ZuCo case -- SR and NR are different
-    sentences), no stimulus is shared across tasks and `task_transfer` is reported as a
-    structured not-applicable block (`reason='disjoint_stimuli'`), not a bare `nan`.
+    Each stimulus content id excludes the field being cancelled. In ZuCo the tasks usually read
+    disjoint sentences, so `task_transfer` is reported as a structured not-applicable block
+    (`reason='disjoint_stimuli'`) rather than a bare `nan`.
 
     Args:
-        emb: Word-level ZTE embeddings `(n_words, embed_dim)`.
-        meta: Aligned word metadata with `subject`, `task`, `sentence_idx`, `word_idx` and `word`.
-        raw_feats: Optional aligned raw features `(n_words, n_features)` for a control
-            showing the arithmetic is a property of the *learned* space, not the inputs.
-        return_hits: When `True`, `subject_transfer` also carries `top1_hits`/`chances`
+        emb (np.ndarray): Word-level ZTE embeddings `(n_words, embed_dim)`.
+        meta (pd.DataFrame): Aligned word metadata with `subject`, `task`, `sentence_idx`, `word_idx`
+            and `word`.
+        raw_feats (np.ndarray | None): Optional aligned raw features `(n_words, n_features)` for a
+            control showing the arithmetic is a property of the learned space, not the inputs.
+        return_hits (bool): When `True`, `subject_transfer` also carries `top1_hits`/`chances`
             for bootstrap CIs (the caller should strip them before serialising).
 
     Returns:
-        A dict with `subject_transfer` / `task_transfer` metric blocks, matched
-        raw-feature controls, and human-readable `examples`.
+        dict[str, Any]: `subject_transfer` / `task_transfer` metric blocks, matched raw-feature
+        controls, and human-readable `examples`.
     """
     meta = meta.reset_index(drop=True)
     # Subject-transfer id excludes subject; task-transfer id excludes task.
@@ -258,8 +230,7 @@ def analogy_report(
     if meta['task'].nunique() > 1:
         tt = transfer_analogy(emb, meta['task'].to_numpy(), stimulus_task_agnostic)
         if tt.get('n_queries', 0.0) == 0.0:
-            # No stimulus is read under more than one task -> arithmetic is undefined,
-            # not failed. Flag it so the verdict treats it as not-applicable.
+            # No stimulus read under more than one task: the arithmetic is undefined, not failed.
             tt = {
                 **tt,
                 'reason': 'disjoint_stimuli',
@@ -268,10 +239,14 @@ def analogy_report(
         else:
             tt = {**tt, 'applicable': True}
         report['task_transfer'] = tt
+
+    # Control: the same arithmetic on raw features, which ZTE should beat.
     if raw_feats is not None:
         report['subject_transfer_raw'] = transfer_analogy(
             np.asarray(raw_feats, dtype=np.float32), meta['subject'].to_numpy(), stimulus
         )
+
+    # Worked examples for the report table.
     report['examples'] = analogy_examples(
         emb,
         meta.assign(_stim=stimulus),

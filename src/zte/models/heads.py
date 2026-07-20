@@ -1,8 +1,4 @@
-"""Small reusable network blocks: projection head, predictor, EMA teacher and subject adversary.
-
-These are shared across the self-supervised objectives so the projection geometry, the data2vec teacher/predictor
-machinery, and the subject-invariance tools (gradient reversal + adversary) live in one place.
-"""
+"""Small reusable network blocks shared across the objectives: projection head, predictor, EMA teacher and subject adversary."""
 
 from __future__ import annotations
 
@@ -31,8 +27,8 @@ class _GradientReversal(torch.autograd.Function):
 def gradient_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
     """Applies a gradient-reversal layer to `x`.
 
-    Forward is the identity; in the backward pass the gradient is negated and scaled by `lambda_`. Placing this before an
-    adversary head makes the upstream encoder train to *fool* the adversary -- e.g. to become subject-invariant.
+    Forward is the identity; the backward gradient is negated and scaled by `lambda_`, so an encoder upstream of an adversary head
+    trains to fool it -- e.g. to become subject-invariant.
 
     Args:
         x (torch.Tensor): Any tensor on the encoder's gradient path.
@@ -47,9 +43,8 @@ def gradient_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
 class SubjectAdversary(nn.Module):
     """A subject classifier trained through a gradient-reversal layer (DANN).
 
-    The head learns to predict the subject from token hiddens; because its input passes through
-    :func:`gradient_reverse`, the *encoder* receives the negated gradient and is pushed to remove subject
-    identity from its representation -- directly attacking the "encodes who, not what" failure mode.
+    The head predicts the subject from token hiddens; its input passes through `gradient_reverse`, so the encoder is pushed to strip
+    subject identity from its representation.
 
     Attributes:
         net (nn.Sequential): The subject-classification MLP.
@@ -153,7 +148,7 @@ class Predictor(nn.Module):
 class EMATeacher:
     """An exponential-moving-average copy of a module (data2vec target network).
 
-    The teacher is not optimised by gradients; its weights track the student so it provides stable latent targets that the student predicts.
+    The teacher takes no gradients; its weights track the student, giving stable latent targets for the student to predict.
 
     Attributes:
         decay (float): EMA decay applied each update.
@@ -178,8 +173,7 @@ class EMATeacher:
 
         Args:
             student (nn.Module): The current student module.
-            decay (float | None): Override for this step's EMA decay (used to ramp the decay across training
-                per the data2vec schedule). Falls back to `self.decay` when `None`.
+            decay (float | None): Override for this step's EMA decay (the data2vec ramp); falls back to `self.decay`.
         """
         d = self.decay if decay is None else decay
         for teacher_param, student_param in zip(
@@ -197,7 +191,6 @@ class EMATeacher:
 
         Returns:
             EMATeacher: Self.
-
         """
         self.module.to(device)
         return self

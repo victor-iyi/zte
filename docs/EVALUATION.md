@@ -230,7 +230,7 @@ Rows are sorted by **subject-transfer lift** (higher = more subject-agnostic), t
 | `zte.evaluation.metrics`                       | probes, retrieval, geometry/health                   |
 | `zte.evaluation.breakdown`                     | per-subject / per-task / per-category stratification |
 | `zte.evaluation.analogy`                       | subject/task vector-arithmetic transfer              |
-| `zte.data.regions.region_importance`           | scalp-region information share                       |
+| `zte.data.montage.regions.region_importance`           | scalp-region information share                       |
 | `zte.evaluation.interactive`                   | self-contained interactive HTML explorer             |
 | `zte.evaluation.tensorboard`                   | projector + HParams + scalars + histograms + figures |
 | `zte.inference.retrieval.NearestNeighborIndex` | kNN decoder/probe over a labelled bank               |

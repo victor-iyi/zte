@@ -1,8 +1,4 @@
-"""`zte-extract` -- produce thought embeddings from a trained ZTE checkpoint.
-
-Loads a dataset bundle (or builds one from `.mat` files), restores a checkpoint, embeds at word or sentence level,
-runs an optional linear-probe sanity check, and exports an `.npz` of embeddings + aligned metadata (optionally to Google Drive).
-"""
+"""`zte-extract` -- export thought embeddings + aligned metadata from a trained checkpoint as `.npz`."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -10,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.inference.embed import ZTEEmbedder
@@ -24,15 +20,14 @@ _LOG = get_logger('cli.extract')
 def load_dataset(args: argparse.Namespace) -> ZuCoDataset:
     """Loads the bundle, or builds a dataset from `.mat` files matching the checkpoint.
 
-    When building from `--root`, the dataset's representation (and band/measure/raw settings) are taken from the checkpoint's
-    embedded config so the encoder's expected tensors are present -- otherwise a raw/`both` checkpoint would fail.
+    When building from `--root`, the representation and band/measure/raw settings come from the
+    checkpoint's embedded config, since otherwise a raw or `both` encoder would find no tensors.
 
     Args:
         args (argparse.Namespace): Parsed CLI arguments.
 
     Returns:
         ZuCoDataset: A built dataset ready for embedding.
-
     """
     if args.bundle:
         return ZuCoDataset.load(args.bundle)
@@ -56,7 +51,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Extract ZTE thought embeddings from a checkpoint.',
@@ -97,7 +91,7 @@ def main() -> None:
         _LOG.info('Linear probe (%s): %s', args.probe_target, json.dumps(score))
 
     if args.drive_dir:
-        from zte.data.remote import upload_directory
+        from zte.data.io.remote import upload_directory
 
         upload_directory(out.parent, args.drive_dir)
     _LOG.info('Wrote %d embeddings to %s', len(embeddings), out.resolve())

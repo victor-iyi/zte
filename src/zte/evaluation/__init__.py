@@ -2,7 +2,7 @@
 
 Combines label-free geometry/health metrics, supervised transfer probes (linear
 and kNN, vs raw features and a noise control), and content retrieval, plus the
-figures and a written report tying them together (:func:`evaluate_representation`).
+figures and a written report tying them together (`evaluate_representation`).
 """
 
 from __future__ import annotations

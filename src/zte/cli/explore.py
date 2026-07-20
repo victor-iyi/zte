@@ -1,15 +1,4 @@
-"""`zte-explore` -- which brain regions (and does eye-tracking) encode thought?
-
-This is the exploratory counterpart to training: working directly from the band-power tensor (no trained model needed),
-it answers two questions the project cares about.
-
-1. **Which scalp regions carry which information?** Region-level importance is scored for *reading* targets (word length, lexical frequency)
-    and *cognitive* targets (task, subject identity), so you can see, e.g., posterior/visual dominance for reading vs fronto-central involvement for task.
-2. **How much does eye-tracking actually help, and for what?** Linear probes compare an EEG-only representation, an eye-tracking-only representation,
-    and their union for a reading target vs a cognitive target -- quantifying the intuition that gaze behaviour helps reading far more than it helps imagined thought.
-
-Outputs a Markdown report, CSV tables, figures and (optionally) an interactive region-coloured embedding-space explorer.
-"""
+"""`zte-explore` -- score brain-region importance and eye-tracking's contribution, straight from band power."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -22,9 +11,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from zte.cli.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.datasets import synthetic_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
 from zte.data.dataset import ZuCoDataset
-from zte.data.regions import RegionMap, default_region_map, region_importance
+from zte.data.montage.regions import RegionMap, default_region_map, region_importance
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.metrics import linear_probe
 
@@ -36,7 +26,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Explore brain-region and eye-tracking contributions in ZuCo band power.',
@@ -46,7 +35,7 @@ def parse_arguments() -> argparse.Namespace:
     add_extract_dir(parser)
 
     parser.add_argument('--tasks', type=str, default='SR,NR')
-    parser.add_argument('--out', type=str, default='res/exploration')
+    parser.add_argument('--out', type=Path, default=Path('res/exploration'))
     parser.add_argument(
         '--montage-csv',
         type=str,
@@ -54,7 +43,9 @@ def parse_arguments() -> argparse.Namespace:
         help='Exact channel->region CSV (else the default anterior-posterior map).',
     )
     parser.add_argument('--method', choices=['mutual_info', 'f_score'], default='mutual_info')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     return parser.parse_args()
 
 
@@ -65,10 +56,7 @@ def _load_dataset(args: argparse.Namespace) -> ZuCoDataset:
     if args.bundle:
         return ZuCoDataset.load(args.bundle)
     if args.synthetic:
-        from zte.data.synthetic import generate_synthetic_zuco
-
-        root = 'res/data/synthetic_zuco'
-        generate_synthetic_zuco(root, tasks=tuple(args.tasks.split(',')))
+        root = synthetic_root(tuple(args.tasks.split(',')))
     else:
         root = resolve_data_root(args)
     cfg = DatasetConfig(
@@ -104,9 +92,10 @@ def eye_tracking_contribution(ds: ZuCoDataset, region_map: RegionMap) -> list[di
         region_map (RegionMap): Channel grouping used to build the compact EEG representation.
 
     Returns:
-        list[dict[str, Any]]: Tidy rows with `target`, `representation` and probe `score` -- showing eye-tracking's differential value across target types.
-
+        list[dict[str, Any]]: Tidy rows of `target`, `representation` and probe `score`, exposing
+            eye-tracking's differential value across target types.
     """
+    # Three representations to compare: regional EEG, gaze measures, and their union.
     present = ds.presence if ds.presence is not None else np.ones(len(ds.words), bool)
     region_bp = region_map.reduce(ds.band_power_raw, method='mean')
     eeg = np.nan_to_num(region_bp.reshape(len(region_bp), -1))[present]
@@ -115,6 +104,8 @@ def eye_tracking_contribution(ds: ZuCoDataset, region_map: RegionMap) -> list[di
     both = np.concatenate([eeg, et], axis=1)
 
     reps = {'EEG-only (regions)': eeg, 'eye-tracking-only': et, 'EEG + eye-tracking': both}
+
+    # One reading target and (where available) one cognitive target, probed for every representation.
     targets: dict[str, tuple[np.ndarray, str]] = {
         'word_len (reading)': (ds.words.loc[present, 'word_len'].to_numpy(), 'regression'),
     }
@@ -140,7 +131,7 @@ def run_exploration(
     """Runs the region + eye-tracking exploration and writes all artifacts.
 
     Args:
-        ds (ZuCoDataset): A built band-power :class:`ZuCoDataset`.
+        ds (ZuCoDataset): A built band-power `ZuCoDataset`.
         out (str | Path): Output directory for tables, figures and the report.
         montage_csv (str | None): Optional exact channel->region CSV (else the default map).
         method (str): Per-feature scorer (`'mutual_info'` or `'f_score'`).
@@ -150,7 +141,6 @@ def run_exploration(
 
     Raises:
         ValueError: If the dataset has no band-power tensor.
-
     """
     out = Path(out)
     (out / 'figures').mkdir(parents=True, exist_ok=True)
@@ -158,6 +148,8 @@ def run_exploration(
         raise ValueError(
             'Exploration needs band-power features; rebuild with representation band_power.'
         )
+
+    # Score regions, then quantify eye-tracking's contribution over the same channel grouping.
     region_map = (
         RegionMap.from_csv(montage_csv, ds.band_power_raw.shape[-1])
         if montage_csv
@@ -172,6 +164,7 @@ def run_exploration(
     )
     et_rows = eye_tracking_contribution(ds, region_map)
 
+    # Write the tables, figures and report.
     pd.DataFrame(region_rows).to_csv(out / 'region_importance.csv', index=False)
     pd.DataFrame(et_rows).to_csv(out / 'eye_tracking_contribution.csv', index=False)
     figures = _render_figures(region_rows, et_rows, out / 'figures')

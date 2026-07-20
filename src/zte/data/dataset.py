@@ -1,19 +1,4 @@
-"""The tunable :class:`ZuCoDataset` -- load, process, analyse, select, split, save.
-
-This is the high-level entry point most users touch. It scans ZuCo `.mat` files (or a synthetic tree),
-flattens them into a word/sentence table plus aligned band-power and raw EEG tensors,
-applies a configurable missing-value strategy and normaliser, and exposes everything needed downstream: analysis summaries,
-supervised feature selection, leakage-aware splits (including leave-one-subject-out), a cached on-disk bundle and a bridge to PyTorch.
-
-Lifecycle::
-
-    ds = ZuCoDataset(config).build()      # load (+cache) and process
-    ds.analyze()                          # summary statistics
-    ds.select_features(target='log_freq') # rank channels x bands
-    splits = ds.split('by_subject_loso')  # indices per split
-    torch_ds = ds.to_torch(split=splits['train'])
-    ds.save('res/bundle')                 # round-trips everything
-"""
+"""The tunable `ZuCoDataset`, whose lifecycle runs `build` -> `analyze`/`select_features` -> `split` -> `to_torch`."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -27,8 +12,7 @@ import numpy as np
 import pandas as pd
 
 from zte.config import DatasetConfig
-from zte.data import mat_loader
-from zte.data.features import (
+from zte.data.features.features import (
     FeatureSelector,
     SelectionMethod,
     SelectionResult,
@@ -36,24 +20,23 @@ from zte.data.features import (
     flat_feature_names,
     flatten_band_power,
 )
-from zte.data.missing import MissingValueImputer
+from zte.data.features.missing import MissingValueImputer
+from zte.data.features.transforms import FeatureNormalizer, bandpass_filter, sanitize_raw_windows
+from zte.data.io import mat_loader
 from zte.data.schema import N_CHANNELS
-from zte.data.transforms import FeatureNormalizer, bandpass_filter
 from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.dataset')
 
 
 def _word_freq_proxy(word: str) -> float:
-    """Dependency-free word-frequency proxy in `(0, 1]` (short words score high).
+    """Dependency-free word-frequency proxy in `(0, 1]` where short words score high.
 
     Args:
         word (str): Surface word form.
 
     Returns:
-        float: A frequency-like value consistent with the synthetic generator, so models
-          behave the same on synthetic and (after a real frequency table is supplied) real data.
-
+        float: A frequency-like value matching the synthetic generator, so models behave the same on both.
     """
     return float(np.clip(1.0 / (1.0 + 0.35 * len(word.strip('.,;:'))), 0.05, 1.0))
 
@@ -62,8 +45,8 @@ class ZuCoDataset:
     """A configurable, cache-backed view over ZuCo EEG/eye-tracking data.
 
     Attributes:
-        config: The :class:`~zte.config.DatasetConfig` controlling everything.
-        words (pd.DataFrame): Per-word metadata/scalar table (populated after :meth:`build`).
+        config (DatasetConfig): The configuration controlling everything.
+        words (pd.DataFrame): Per-word metadata/scalar table (populated after `build`).
         sentences (pd.DataFrame): Per-sentence metadata table.
         band_power_raw (np.ndarray | None): `(n_words, n_bp_features, n_channels)` band power with `NaN` for omissions.
         features (np.ndarray | None): `(n_words, n_features)` imputed and normalised band-power matrix.
@@ -71,15 +54,14 @@ class ZuCoDataset:
         raw_eeg (np.ndarray | None): `(n_words, n_channels, time_steps)` raw EEG windows, or `None`.
         feature_names (list[str]): Names for the `n_bp_features * n_channels` flattened band-power columns.
         bp_feature_names (list[str]): Names for the `n_bp_features` `(measure, band)` features.
-        normalizer (FeatureNormalizer | None): The fitted :class:`~zte.data.transforms.FeatureNormalizer`.
+        normalizer (FeatureNormalizer | None): The fitted `FeatureNormalizer`.
     """
 
     def __init__(self, config: DatasetConfig | None = None) -> None:
         """Initialises an empty dataset.
 
         Args:
-            config (DatasetConfig): Dataset configuration; defaults to :class:`DatasetConfig`.
-
+            config (DatasetConfig | None): Dataset configuration; `None` uses the defaults.
         """
         self.config = config or DatasetConfig()
         self.words: pd.DataFrame = pd.DataFrame()
@@ -103,7 +85,6 @@ class ZuCoDataset:
 
         Raises:
             FileNotFoundError: If the root does not exist or contains no matches.
-
         """
         root = Path(self.config.root)
         if not root.exists():
@@ -132,12 +113,11 @@ class ZuCoDataset:
             show_progress (bool): Show per-file progress bars.
 
         Returns:
-            The fully populated `ZuCoDataset`.
+            ZuCoDataset: The fully populated dataset.
 
         Raises:
-            NotImplementedError: If a reserved option is requested -- only `granularity='word'` and `cache_format='npz'` are implemented
-                (sentence-level embeddings are produced at inference time via `ZTEEmbedder(level='sentence')`).
-
+            NotImplementedError: If a reserved option is requested; only `granularity='word'` and `cache_format='npz'`
+                are implemented.
         """
         if self.config.granularity != 'word':
             raise NotImplementedError(
@@ -228,25 +208,22 @@ class ZuCoDataset:
         if self.raw_eeg is not None and self.config.bandpass is not None:
             low, high = self.config.bandpass
             self.raw_eeg = np.stack([bandpass_filter(epoch, low, high) for epoch in self.raw_eeg])
-        # Omitted words are physically removed when the missing strategy is 'drop'
-        # or when the caller opts out of keeping them as masked tokens.
+        if self.raw_eeg is not None:
+            # The raw counterpart of the band-power imputation above, so every consumer sees model-safe windows.
+            self.raw_eeg = sanitize_raw_windows(self.raw_eeg)
+
         if self.config.missing.method == 'drop' or not self.config.include_omitted:
             self._drop_missing_rows()
 
     def refit_normalizer(self, train_indices: np.ndarray) -> None:
         """Re-fits the feature normaliser (and eye-tracking fill) on train rows only.
 
-        :meth:`_process` fits the normaliser on *every* present token, which leaks val/test (and
-        held-out-subject) statistics into the training features. The training pipeline calls this
-        method **after** computing the split so the normaliser is honest: it re-fits using only the
-        given train word-row indices (intersected with present tokens), then re-transforms
-        :attr:`features` for *all* rows with those train-only statistics and updates
-        :attr:`normalizer` so the checkpoint contract (`dataset.normalizer.state`) reflects them.
+        `_process` fits on every present token, which leaks val/test statistics into the training features, so the
+        pipeline calls this once the split is known. Every row is then re-transformed with the train-only statistics
+        and `normalizer` updated, so the checkpoint contract reflects them.
 
-        The pre-normalisation matrix is recovered by inverting the current normaliser, so this works
-        equally on a freshly built dataset and one loaded from cache. The call is a **no-op** when
-        ``config.normalizer_fit == 'all'`` (legacy whole-dataset fit) or when there are no band-power
-        features, and is idempotent: the raw matrix is always re-derived from the original stats.
+        Inverting the current normaliser recovers the pre-normalisation matrix, which makes this idempotent and equally
+        valid on a freshly built or cached dataset. A no-op when `config.normalizer_fit == 'all'` or without band power.
 
         Args:
             train_indices (np.ndarray): Word-row indices belonging to the training split.
@@ -272,8 +249,7 @@ class ZuCoDataset:
             _LOG.warning('refit_normalizer: no present train rows; keeping existing statistics.')
             return
 
-        # Re-fit the eye-tracking column-mean fill on train-present rows only. This only affects
-        # absent (masked) rows -- present rows keep their real gaze scalars.
+        # Re-fit the eye-tracking fill on train-present rows; present rows keep their real gaze scalars either way.
         et_cols = [i for i, name in enumerate(self.feature_names) if name.startswith('ET::')]
         absent = ~presence
         if et_cols and absent.any():
@@ -292,14 +268,13 @@ class ZuCoDataset:
 
     def _add_linguistic_features(self) -> None:
         """Adds word length, frequency, relative position and omission flags."""
-        from zte.data.categories import corpus_frequencies
+        from zte.data.targets.categories import corpus_frequencies
 
         w = self.words
         w['word_len'] = w['word'].str.len().fillna(0).astype(int)
         w['freq'] = w['word'].map(_word_freq_proxy)
         w['log_freq'] = np.log10(w['freq'].astype(float))
-        # Real, corpus-derived term frequency (dependency-free) for real-data runs;
-        # falls back gracefully to the proxy scale on tiny/synthetic corpora.
+        # Corpus-derived term frequency, which degrades to the proxy scale on tiny/synthetic corpora.
         w['corpus_freq'] = corpus_frequencies(w['word']).to_numpy()
         w['corpus_log_freq'] = np.log10(np.clip(w['corpus_freq'].astype(float), 1e-6, None))
         w['is_omitted'] = w['FFD'].isna().astype(int)
@@ -314,15 +289,13 @@ class ZuCoDataset:
         w['rel_pos'] = (w['word_idx'] / (max_idx + 1)).astype(float)
 
     def _attach_categories(self) -> None:
-        """Labels sentences with a category + length band and propagates to words.
+        """Labels sentences with a category and length band, propagating both to words.
 
-        Also attaches a subject-agnostic ``stimulus_key`` -- the normalised sentence text -- onto
-        every word row. Because the key is the sentence *text* (not ``subject|task|sentence_idx``),
-        the same sentence read by different subjects shares one key, which is what lets the
-        ``by_stimulus`` split keep a stimulus wholly on one side (train XOR test) and what the torch
-        bridge hashes into a cross-subject ``content_id``.
+        Also attaches a subject-agnostic `stimulus_key`, the normalised sentence text, so the same sentence read by
+        different subjects shares one key. That is what lets `by_stimulus` keep a stimulus wholly on one side of the
+        split, and what the torch bridge hashes into a cross-subject `content_id`.
         """
-        from zte.data.categories import normalise_text, sentence_categories
+        from zte.data.targets.categories import normalise_text, sentence_categories
 
         self.sentences = sentence_categories(self.sentences, root=self.config.root)
         self.sentences['stimulus_key'] = self.sentences['text'].map(normalise_text)
@@ -350,9 +323,8 @@ class ZuCoDataset:
             presence (np.ndarray): Boolean `(n_words,)` present-word mask (used to fit the fill).
 
         Returns:
-            `(features, names)` -- unchanged when `include_eye_tracking` is `False` or no eye-tracking columns exist,
-                else the horizontally concatenated matrix and extended names (e.g. `ET::TRT`).
-
+            tuple[np.ndarray, list[str]]: `(features, names)` -- unchanged when `include_eye_tracking` is `False` or no
+                eye-tracking columns exist, else the concatenated matrix with `ET::`-prefixed names appended.
         """
         if not self.config.include_eye_tracking:
             _LOG.info('Eye-tracking excluded (EEG-only representation).')
@@ -418,8 +390,7 @@ class ZuCoDataset:
         Word indices within each group are ordered by `word_idx` so sequence models receive words in reading order.
 
         Returns:
-            list[tuple[tuple[str, str, int], np.ndarray]]: One `((subject, task, sentence_idx), word_row_indices)` pair per sentence.
-
+            list[tuple[tuple[str, str, int], np.ndarray]]: One pair per sentence.
         """
         if self._groups is None:
             self._groups = []
@@ -455,25 +426,19 @@ class ZuCoDataset:
         """Produces leakage-aware train/val (and optional test) row-index splits.
 
         Args:
-            strategy: Leakage-aware split strategy.
-                - `random`: Per-word random split.
-                - `by_sentence`: Whole sentences kept together (keyed on `subject|task|sentence_idx`,
-                  so the *same text* read by different subjects can still land on both sides).
-                - `by_stimulus`: Whole *stimuli* kept together, keyed on the normalised sentence
-                  text (`stimulus_key`). The same sentence read by any subject always lands on the
-                  same side (train XOR test), closing the cross-subject text leak `by_sentence` allows.
-                - `by_subject_loso`: Hold out one subject (that subject becomes `val`).
-                - `by_task`: Hold out one task. Defaults to `by_sentence`.
+            strategy (str | None): Split strategy, defaulting to `by_sentence`. `random` splits per word;
+                `by_sentence` keys on `subject|task|sentence_idx`, so the same text read by different subjects can
+                still land on both sides; `by_stimulus` keys on the normalised text and closes that cross-subject
+                leak; `by_subject_loso` and `by_task` hold out one group as `val`.
             val_fraction (float): Validation fraction for `random`/`by_sentence`.
-            test_fraction (float): Disjoint held-out test fraction for `random`/`by_sentence` (`0` omits the `test` key).
-                Ignored by the hold-out-group strategies, whose held-out group already is `val`.
-            holdout_subject (str): Subject to hold out for LOSO (else the last subject).
-            holdout_task (str): Task to hold out for `by_task` (else the last task).
+            test_fraction (float): Disjoint test fraction for `random`/`by_sentence` (`0` omits the `test` key).
+                Ignored by the hold-out-group strategies, whose held-out group is already `val`.
+            holdout_subject (str | None): Subject to hold out for LOSO (else the last subject).
+            holdout_task (str | None): Task to hold out for `by_task` (else the last task).
             seed (int): RNG seed for the randomised strategies.
 
         Returns:
-            A mapping with `train`, `val` and (when `test_fraction > 0`) `test` row-index arrays, all disjoint.
-
+            dict[str, np.ndarray]: Disjoint `train`, `val` and (when `test_fraction > 0`) `test` row indices.
         """
         strategy = strategy or 'by_sentence'
         rng = np.random.default_rng(seed)
@@ -494,7 +459,7 @@ class ZuCoDataset:
             return out
 
         if strategy == 'by_stimulus':
-            # Group by normalised sentence text so a stimulus is indivisible across subjects/tasks.
+            # Keyed on normalised text, so a stimulus is indivisible across subjects and tasks.
             keys = self.words['stimulus_key'].fillna('').to_numpy()
             unique = np.array(sorted(set(keys.tolist())), dtype=object)
             perm_keys = unique[rng.permutation(len(unique))]
@@ -522,9 +487,8 @@ class ZuCoDataset:
         """Computes a compact summary of the dataset (counts, missingness, stats).
 
         Returns:
-            A nested dict with subject/task counts, per-measure missing rates, omission statistics and band-power presence
-                -- safe to JSON-dump or log.
-
+            dict[str, Any]: JSON-safe subject/task counts, per-measure missing rates, omission statistics and
+                band-power presence.
         """
         w = self.words
         from zte.data.schema import ET_MEASURES
@@ -568,18 +532,17 @@ class ZuCoDataset:
         """Ranks flattened band-power features by importance for a target column.
 
         Args:
-            target (str): A column in :attr:`words` to predict (e.g. `'log_freq'` or `'is_omitted'`).
-            method (SelectionMethod): Selection method (see :class:`FeatureSelector`).
+            target (str): A column in `words` to predict (e.g. `'log_freq'` or `'is_omitted'`).
+            method (SelectionMethod): Selection method (see `FeatureSelector`).
             k (int | None): Number of top features to keep.
             present_only (bool): Restrict scoring to present (non-omitted) tokens.
 
         Returns:
-            A `SelectionResult` with selected indices, scores and names.
+            SelectionResult: The selected indices, scores and names.
 
         Raises:
             RuntimeError: If band-power features were not built.
             KeyError: If `target` is not a column of `words`.
-
         """
         if self.features is None:
             raise RuntimeError('No band-power features; build with representation band_power/both.')
@@ -601,12 +564,11 @@ class ZuCoDataset:
         """Builds a PyTorch dataset over (a subset of) these samples.
 
         Args:
-            split (np.ndarray | None): Optional row indices selecting a split (e.g. from :meth:`split`).
+            split (np.ndarray | None): Optional row indices selecting a split (e.g. from `split`).
             **kwargs (Any): Additional keyword arguments forwarded to `ZuCoTorchDataset`.
 
         Returns:
-            A `ZuCoTorchDataset`.
-
+            ZuCoTorchDataset: The torch-side view over the selected rows.
         """
         from zte.data.torch_dataset import ZuCoTorchDataset
 
@@ -615,29 +577,39 @@ class ZuCoDataset:
     # -- persistence -------------------------------------------------------- #
 
     def _cache_key(self) -> str:
-        """Builds a short, deterministic cache subfolder name from the config."""
+        """Builds a deterministic cache subfolder name: a readable prefix plus a config hash.
+
+        The cache is shared across experiments and sessions, so the hash must cover every field that changes the
+        processed arrays -- a coarse key would load the wrong tensors for configs differing only in, say, `bands`.
+        Location and serialisation settings are excluded, as is `montage_csv`, which never enters the arrays.
+        """
+        import dataclasses
+        import hashlib
+        import json
+
         cfg = self.config
-        parts = [
-            '-'.join(cfg.tasks),
-            cfg.representation,
-            cfg.granularity,
-            cfg.missing.method,
-            cfg.normalize,
-            f'rw{cfg.raw_window}',
-        ]
-        return '_'.join(parts)
+        payload = dataclasses.asdict(cfg)
+        for ignore in ('root', 'cache_dir', 'cache_format', 'montage_csv'):
+            payload.pop(ignore, None)
+        digest = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        readable = '_'.join(
+            ['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}']
+        )
+        return f'{readable}_{digest}'
 
     def save(self, path: str | Path) -> Path:
         """Saves the full processed dataset as a self-contained directory bundle.
 
-        The bundle contains `arrays.npz` (tensors + presence), `words.pkl` and `sentences.pkl` (tables), and `meta.json`
-        (config, feature names and the fitted normaliser state) so `load` reproduces the object exactly.
+        The bundle holds `arrays.npz`, `words.pkl`, `sentences.pkl` and a `meta.json` carrying the config, feature
+        names and fitted normaliser state, so `load` reproduces the object exactly.
 
         Args:
             path (str | Path): Destination directory (created if needed).
 
         Returns:
-            The bundle directory path.
+            Path: The bundle directory.
         """
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
@@ -665,15 +637,14 @@ class ZuCoDataset:
 
     @classmethod
     def load(cls, path: str | Path, into: ZuCoDataset | None = None) -> ZuCoDataset:
-        """Loads a dataset bundle previously written by :meth:`save`.
+        """Loads a dataset bundle previously written by `save`.
 
         Args:
             path (str | Path): The bundle directory.
-            into (ZuCoDataset | None): Optionally populate an existing instance (used by the cache path in `build`).
+            into (ZuCoDataset | None): Optionally populate an existing instance, as the cache path in `build` does.
 
         Returns:
-            The populated `ZuCoDataset`.
-
+            ZuCoDataset: The populated dataset.
         """
         src = Path(path)
         meta = json.loads((src / 'meta.json').read_text(encoding='utf-8'))
@@ -687,6 +658,9 @@ class ZuCoDataset:
             ds.features = arrays['features'] if 'features' in arrays else None
             ds.presence = arrays['presence'] if 'presence' in arrays else None
             ds.raw_eeg = arrays['raw_eeg'] if 'raw_eeg' in arrays else None
+        if ds.raw_eeg is not None:
+            # Idempotent, so cleaning here spares an expensive rebuild for bundles holding NaN/unscaled windows.
+            ds.raw_eeg = sanitize_raw_windows(ds.raw_eeg)
         ds.feature_names = meta['feature_names']
         ds.bp_feature_names = meta['bp_feature_names']
         if meta.get('normalizer'):
@@ -700,13 +674,13 @@ class ZuCoDataset:
         """Saves the bundle locally then uploads it to Google Drive.
 
         Args:
-            remote_dir (str): Destination Drive folder id or path (see `zte.data.remote`).
+            remote_dir (str): Destination Drive folder id or path (see `zte.data.io.remote`).
             local_tmp (str | Path): Local staging directory for the bundle.
 
         Returns:
-            The remote location string returned by the uploader.
+            str: The remote location string returned by the uploader.
         """
-        from zte.data.remote import upload_directory
+        from zte.data.io.remote import upload_directory
 
         local = self.save(local_tmp)
         return upload_directory(local, remote_dir)
@@ -720,9 +694,9 @@ class ZuCoDataset:
             local_tmp (str | Path): Local directory to download into.
 
         Returns:
-            The loaded `ZuCoDataset`.
+            ZuCoDataset: The loaded dataset.
         """
-        from zte.data.remote import download_to_dir
+        from zte.data.io.remote import download_to_dir
 
         local = download_to_dir(remote_spec, local_tmp)
         return cls.load(local)
@@ -752,8 +726,7 @@ def _partition(
         test_fraction (float): Fraction assigned to `test` (`0` omits the `test` key).
 
     Returns:
-        A mapping with `train`, `val` and (when `test_fraction > 0`) `test` index arrays, all disjoint.
-
+        dict[str, np.ndarray]: Disjoint `train`, `val` and (when `test_fraction > 0`) `test` index arrays.
     """
     total = len(items)
     n_test = int(round(total * test_fraction))

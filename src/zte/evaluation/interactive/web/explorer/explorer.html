@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__</title>
+    <script>
+      /*__PLOTLY_JS__*/
+    </script>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <aside class="rail">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>Thought-Space Explorer</h1>
+      </div>
+      <div class="sub">
+        Every point is one <b>word</b> read by one <b>person</b>, placed by
+        their EEG. Does the space organise by <b>what</b> was read, or by
+        <b>who</b> read it?
+      </div>
+
+      <div class="eyebrow">Explore</div>
+      <div class="tabs" id="tabs"></div>
+
+      <div class="group ctx v-ctrl v1">
+        <h3>Spotlight a reader</h3>
+        <div class="row">
+          <label class="lab">Reader</label
+          ><select id="subj1"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Shade by</label
+          ><select id="metric1"></select>
+        </div>
+        <div class="hint">
+          <span class="i">◔</span
+          ><span
+            >Everyone else fades to grey so one reader's cloud stands out.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v2 hide">
+        <h3>One word, many brains</h3>
+        <div class="row">
+          <label class="lab">Word</label>
+          <input
+            type="text"
+            id="word2"
+            list="wordlist"
+            autocomplete="off"
+            placeholder="type a word…"
+          />
+        </div>
+        <button class="mini" id="rand2">&#127922; Try a random word</button>
+        <div class="hint">
+          <span class="i">◎</span
+          ><span
+            >Every occurrence lights up by reader. The stats show how alike it
+            is <b>across brains</b> vs unrelated thoughts.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v3 hide">
+        <h3>Thought arithmetic</h3>
+        <div class="row">
+          <label class="lab">Word <i>t</i></label>
+          <input type="text" id="wordT" list="wordlist" autocomplete="off" />
+        </div>
+        <div class="row">
+          <label class="lab">From brain A</label
+          ><select id="subjA"></select>
+        </div>
+        <div class="row">
+          <label class="lab">To brain B</label
+          ><select id="subjB"></select>
+        </div>
+        <div class="hint">
+          <span class="i">➜</span
+          ><span
+            ><b>emb(t,A) &minus; A + B</b>. A hit means the result's nearest
+            neighbour is <i>t</i> as read by B &mdash; or click a leaderboard
+            row below.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v4 hide">
+        <h3>Nearest thoughts</h3>
+        <div class="row">
+          <label class="lab">Word</label>
+          <input type="text" id="wordN" list="wordlist" autocomplete="off" />
+        </div>
+        <div class="row">
+          <label class="lab">Read by</label
+          ><select id="subjN"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Neighbours (k)</label>
+          <input type="number" id="kN" min="3" max="50" step="1" />
+        </div>
+        <button class="mini" id="rand4">&#127922; Try a random word</button>
+        <div class="hint">
+          <span class="i">◈</span
+          ><span
+            >The k closest points by cosine. Coherence = how many share the
+            <b>same word / category</b> vs chance.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v5 hide">
+        <h3>EEG vs gaze</h3>
+        <div class="row">
+          <label class="lab">Signal set</label>
+          <span class="seg" id="embset">
+            <button data-s="et">EEG + gaze</button
+            ><button data-s="eeg">EEG-only</button>
+          </span>
+        </div>
+        <div class="hint">
+          <span class="i">&#128065;</span><span id="v5note"></span>
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v6 hide">
+        <h3>Sentence journeys</h3>
+        <div class="row">
+          <label class="lab">Sentence</label
+          ><select id="sent6"></select>
+        </div>
+        <button class="mini" id="rand6">&#127922; Try a random sentence</button>
+        <div class="hint">
+          <span class="i">✎</span
+          ><span
+            >Each coloured path is one reader's route through the space, word by
+            word. Overlapping paths = readers agree.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v7 hide">
+        <h3>Same meaning, everyone</h3>
+        <div class="row">
+          <label class="lab">Meaning (category)</label
+          ><select id="cat7"></select>
+        </div>
+        <div class="hint">
+          <span class="i">◇</span
+          ><span
+            >Every word of this meaning lights up by reader. Subject-invariant
+            means they cluster <b>no matter who read them</b> &mdash; the north
+            star.</span
+          >
+        </div>
+      </div>
+
+      <div class="group ctx v-ctrl v8 hide">
+        <h3>Calibrate a new brain</h3>
+        <div class="row">
+          <label class="lab">Held-out reader</label
+          ><select id="subjH"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Anchor words</label>
+          <input type="number" id="kAnchor" min="3" max="30" step="1" />
+        </div>
+        <button class="mini" id="calbtn">Calibrate ▶</button>
+        <div class="hint">
+          <span class="i">⌖</span
+          ><span
+            >A few shared <b>anchor</b> words fit an alignment that snaps this
+            reader into the shared frame &mdash; no retraining. Proof-of-concept
+            in the projected space.</span
+          >
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Display</h3>
+        <div class="row">
+          <label class="lab">Colour points by</label
+          ><select id="colorby"></select>
+        </div>
+        <div class="row">
+          <label class="lab">Dimensions</label>
+          <span class="seg" id="dims">
+            <button data-d="2">2-D</button><button data-d="3">3-D</button>
+          </span>
+        </div>
+        <div class="row">
+          <label class="lab">Visible readers</label>
+          <div class="checks" id="subjchecks"></div>
+        </div>
+        <button class="mini" id="deidentbtn" style="margin-top: 9px">
+          ▶ Remove reader identity
+        </button>
+        <div class="hint">
+          <span class="i">✦</span
+          ><span
+            >Animate the space with each reader&rsquo;s signature subtracted
+            &mdash; watch the clouds merge (works in By reader / One word /
+            Meaning).</span
+          >
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <span class="brandmini"
+          ><span
+            class="dot"
+            style="width: 17px; height: 17px; border-radius: 5px"
+          ></span
+          >&nbsp;ZTE space</span
+        >
+        <div class="spacer"></div>
+        <button class="chipbtn" id="guidebtn">What am I looking at?</button>
+        <button class="theme-btn" id="themebtn">&#9680; Theme</button>
+      </div>
+
+      <div class="banners" id="banners"></div>
+
+      <div class="insight">
+        <div class="story" id="story"></div>
+        <div class="stat" id="statbox"></div>
+      </div>
+
+      <div class="guide hide" id="guide"></div>
+
+      <div class="plotwrap"><div id="plot"></div></div>
+
+      <div class="bottom hide" id="bottom">
+        <div id="leaderpanel" class="hide">
+          <div class="lbhead">
+            <span class="hh">Auto-analogy leaderboard</span>
+            <span class="big" id="hitrate"></span>
+            <button class="chipbtn" id="surprise">Surprise me &rarr;</button>
+            <span class="cap"
+              >Every word read by &ge;2 people, transferred A&rarr;B.
+              <b>Hit</b> = the result's nearest neighbour is <i>t</i> read by B.
+              Click a row to draw it.</span
+            >
+          </div>
+          <table class="tbl" id="leaderboard"></table>
+        </div>
+        <div id="neighpanel" class="hide">
+          <div class="lbhead">
+            <span class="hh">Nearest thoughts</span>
+            <span class="big" id="coherence"></span>
+            <span class="cap"
+              >k nearest points by cosine.
+              <b>same-word / same-category</b> shares are compared to how common
+              that word / category is overall (chance).</span
+            >
+          </div>
+          <table class="tbl" id="neightable"></table>
+        </div>
+        <div id="barwrap" class="hide">
+          <div class="cap">
+            Linear-probe accuracy / R&sup2; on <b>word length</b> &mdash; a
+            decodable content attribute; higher = more content carried.
+          </div>
+          <div id="bar"></div>
+        </div>
+      </div>
+    </main>
+
+    <datalist id="wordlist"></datalist>
+
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

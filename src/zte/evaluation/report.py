@@ -1,9 +1,4 @@
-"""Orchestrates the ZTE evaluation: metrics + figures + a written report.
-
-`evaluate_representation` takes aligned word/sentence embeddings and their metadata and produces, in one call: a `metrics.json`,
-a `comparison.csv` table, a set of figures, and a human-readable `report.md` with a pass/fail-style verdict. It is decoupled from training/inference
-so it can be unit-tested with arrays alone; `zte.cli.evaluate` wires it to a checkpoint + dataset.
-"""
+"""Orchestrates the ZTE evaluation: embeddings in, `metrics.json` + tables + figures + `report.md` out."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -27,26 +22,12 @@ _LOG = get_logger('evaluation.report')
 
 
 def _encode(values: np.ndarray) -> np.ndarray:
-    """Encodes categorical values to integer codes.
-
-    Args:
-        values (np.ndarray): Categorical labels.
-
-    Returns:
-        np.ndarray: Integer codes `(n_samples,)`.
-    """
+    """Encodes categorical values to integer codes `(n_samples,)`."""
     return pd.factorize(pd.Series(values))[0]
 
 
 def _adjacency_pairs(word_meta: pd.DataFrame) -> np.ndarray:
-    """Builds positive pairs of adjacent words within each sentence (for alignment).
-
-    Args:
-        word_meta (pd.DataFrame): Word metadata with subject/task/sentence_idx/word_idx.
-
-    Returns:
-        np.ndarray: Integer pairs `(n_pairs, 2)` of row indices into the embeddings.
-    """
+    """Builds `(n_pairs, 2)` row-index pairs of adjacent words within each sentence, for alignment."""
     wm = word_meta.reset_index(drop=True)
     pairs: list[tuple[int, int]] = []
     for _, grp in wm.groupby(['subject', 'task', 'sentence_idx']):
@@ -56,14 +37,7 @@ def _adjacency_pairs(word_meta: pd.DataFrame) -> np.ndarray:
 
 
 def _word_targets(word_meta: pd.DataFrame) -> dict[str, tuple[np.ndarray, str]]:
-    """Builds the supervised probe targets available from word metadata.
-
-    Args:
-        word_meta (pd.DataFrame): Word metadata.
-
-    Returns:
-        dict[str, tuple[np.ndarray, str]]: target name -> (values, task).
-    """
+    """Builds the `name -> (values, task)` probe targets available from the word metadata."""
     targets: dict[str, tuple[np.ndarray, str]] = {}
     if 'word_len' in word_meta:
         targets['word_len'] = (word_meta['word_len'].to_numpy(), 'regression')
@@ -77,14 +51,7 @@ def _word_targets(word_meta: pd.DataFrame) -> dict[str, tuple[np.ndarray, str]]:
 
 
 def _markdown_table(rows: list[dict[str, Any]]) -> str:
-    """Renders comparison rows as a Markdown table.
-
-    Args:
-        rows (list[dict[str, Any]]): Comparison rows.
-
-    Returns:
-        str: A Markdown table.
-    """
+    """Renders the probe-comparison rows as a Markdown table."""
     head = '| target | representation | metric | linear | kNN | baseline |\n'
     head += '| --- | --- | --- | --- | --- | --- |\n'
     body = ''.join(
@@ -108,15 +75,19 @@ def evaluate_representation(
     config: Any | None = None,
     tensorboard: bool | str = False,
     interactive: bool = True,
+    phase_word_emb: np.ndarray | None = None,
+    train_vocab: set[str] | None = None,
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
 
-    Beyond the global probes/retrieval/health, this computes **per-subject / per-task / per-category** breakdowns, **vector-arithmetic transfer**
-    analogies, and (when band power is supplied) **scalp-region importance**, then emits an interactive HTML explorer and a rich TensorBoard log.
+    Beyond the global probes/retrieval/health this adds per-subject / per-task / per-category
+    breakdowns, vector-arithmetic transfer analogies and (given band power) scalp-region importance,
+    then emits the interactive HTML explorers and a TensorBoard log.
 
     Args:
         word_emb (np.ndarray): Word-level ZTE embeddings `(n_words, embed_dim)`.
-        word_meta (pd.DataFrame): Aligned word metadata (word/word_len/log_freq/ subject/task/category/sentence_idx/word_idx), length `n_words`.
+        word_meta (pd.DataFrame): Aligned word metadata (word/word_len/log_freq/subject/task/category/
+            sentence_idx/word_idx), length `n_words`.
         raw_word_feats (np.ndarray): Aligned raw band-power features `(n_words, n_features)` for the baseline comparison.
         sent_emb (np.ndarray): Sentence-level embeddings `(n_sentences, embed_dim)`.
         sent_content_ids (np.ndarray): Content/group id per sentence `(n_sentences,)` (same stimulus across subjects shares an id).
@@ -125,9 +96,11 @@ def evaluate_representation(
         sent_meta (pd.DataFrame | None): Aligned sentence metadata (with `category`) enabling per-category retrieval breakdowns and projector colouring.
         word_band_power (np.ndarray | None): Aligned per-word band power
             `(n_words, n_bands, n_channels)` for scalp-region importance (skipped when `None`).
-        config (Any | None): The run :class:`~zte.config.ZTEConfig` for HParams logging.
+        config (Any | None): The run `ZTEConfig` for HParams logging.
         tensorboard (bool | str): `True` (write under `out/tb/run_name`), a path string, or `False` to disable TensorBoard logging.
         interactive (bool): Whether to write the interactive HTML explorer.
+        phase_word_emb (np.ndarray | None): Embeddings of phase-scrambled EEG, added as a control representation.
+        train_vocab (set[str] | None): Word types seen in training, enabling the seen-vs-novel retrieval split.
 
     Returns:
         dict[str, Any]: The full metrics dictionary (also written to `metrics.json`).
@@ -136,22 +109,43 @@ def evaluate_representation(
     fig_dir = out / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # 0) Optional ZCA whitening of the ZTE embeddings — the anti-cone / anti-collapse fix. It is
-    #    label-free, so every metric below is honestly recomputed on the whitened space (we get to see
-    #    whether content survives the geometry fix, not just that anisotropy dropped).
-    if config is not None and getattr(getattr(config, 'objective', None), 'whiten', False):
+    # 0) Label-free geometry post-processing; order matters: whiten, THEN all-but-the-top.
+    obj_cfg = getattr(config, 'objective', None)
+    # A raw snapshot, so report.md can show the geometry before vs after.
+    word_emb_raw = np.asarray(word_emb, dtype=np.float32).copy()
+    if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
         word_emb = M.whiten_features(word_emb)
         sent_emb = M.whiten_features(sent_emb)
         _LOG.info(
             'Applied ZCA whitening to the exported embeddings (config.objective.whiten=True).'
         )
+    n_top = int(getattr(obj_cfg, 'all_but_top', 0) or 0) if obj_cfg is not None else 0
+    if n_top > 0:
+        word_emb = M.all_but_the_top(word_emb, n_top)
+        sent_emb = M.all_but_the_top(sent_emb, n_top)
+        _LOG.info('Removed the top-%d principal directions (config.objective.all_but_top).', n_top)
+    csls_k = int(getattr(obj_cfg, 'csls_neighbors', 0) or 0) if obj_cfg is not None else 0
+    use_csls = csls_k > 0
+    if use_csls:
+        _LOG.info(
+            'Retrieval uses CSLS hubness correction (k=%d, config.objective.csls_neighbors).',
+            csls_k,
+        )
 
-    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control.
+    # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control vs phase-shuffled ZTE.
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),
         'raw band-power': np.asarray(raw_word_feats, dtype=np.float32),
         'noise (matched)': noise_matched(np.asarray(raw_word_feats, dtype=np.float32)),
     }
+    if phase_word_emb is not None:
+        # The control must get the same post-processing as ZTE or the comparison is rigged.
+        phase_word_emb = np.asarray(phase_word_emb, dtype=np.float32)
+        if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
+            phase_word_emb = M.whiten_features(phase_word_emb)
+        if n_top > 0:
+            phase_word_emb = M.all_but_the_top(phase_word_emb, n_top)
+        representations['phase-shuffled ZTE'] = phase_word_emb
     targets = _word_targets(word_meta)
     comparison = M.representation_comparison(representations, targets)
 
@@ -160,11 +154,49 @@ def evaluate_representation(
     health = M.embedding_health(word_emb, pairs=pairs)
 
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
-    #    Surface the per-query Top-1 hit vector for the bootstrap CI verdict, then
-    #    strip it so it never bloats the persisted metrics.
-    sent_ret = M.content_retrieval(sent_emb, np.asarray(sent_content_ids), return_hits=True)
+    sent_ret = M.content_retrieval(
+        sent_emb,
+        np.asarray(sent_content_ids),
+        return_hits=True,
+        return_ranks=True,
+        csls=use_csls,
+        csls_k=csls_k,
+    )
+    # Popped, not kept: the per-query vectors feed the CI verdict but would bloat metrics.json.
     sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
-    word_ret = M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()))
+    sent_ranks = sent_ret.pop('ranks', [])  # per-query ranks for the rank-distribution figure
+    word_ret = M.content_retrieval(
+        word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k
+    )
+    eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
+    eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
+    # 3.2c) Seen vs novel word types: does retrieval hold for types absent from the training split?
+    word_ret_by_novelty: dict[str, Any] = {}
+    if eval_seen_novel and train_vocab is not None and 'word' in word_meta.columns:
+        words_arr = word_meta['word'].astype(str).to_numpy()
+        seen_mask = np.array([w in train_vocab for w in words_arr])
+        word_codes = _encode(word_meta['word'].to_numpy())
+        for label, mask in (('seen', seen_mask), ('novel', ~seen_mask)):
+            if int(mask.sum()) >= 4:
+                word_ret_by_novelty[label] = M.content_retrieval(
+                    word_emb[mask], word_codes[mask], csls=use_csls, csls_k=csls_k
+                )
+    # 3.2d) Frequency-matched distractors, so a hit cannot be a lexical-frequency shortcut.
+    word_ret_freq_matched: dict[str, float] | None = None
+    if eval_freq_matched:
+        freq_col = 'corpus_log_freq' if 'corpus_log_freq' in word_meta else 'log_freq'
+        if freq_col in word_meta.columns:
+            lf = pd.to_numeric(word_meta[freq_col], errors='coerce').to_numpy()
+            nbin = min(5, max(1, int(np.unique(lf[np.isfinite(lf)]).size)))
+            if nbin >= 2:
+                fbin = pd.qcut(pd.Series(lf), q=nbin, labels=False, duplicates='drop').to_numpy()
+                word_ret_freq_matched = M.matched_content_retrieval(
+                    word_emb,
+                    _encode(word_meta['word'].to_numpy()),
+                    fbin,
+                    csls=use_csls,
+                    csls_k=csls_k,
+                )
 
     # 4) Stratified breakdowns, vector arithmetic, and scalp-region importance.
     breakdown_words = stratified_report(word_emb, word_meta)
@@ -194,6 +226,8 @@ def evaluate_representation(
         'embedding_health': health,
         'sentence_retrieval': sent_ret,
         'word_retrieval': word_ret,
+        'word_retrieval_by_novelty': word_ret_by_novelty,
+        'word_retrieval_freq_matched': word_ret_freq_matched,
         'probe_comparison': comparison,
         'breakdown_words': breakdown_words,
         'retrieval_by_category': breakdown_categories,
@@ -216,25 +250,51 @@ def evaluate_representation(
     # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
     metrics['honesty'] = honesty
+
+    # 4d) The honest scoreboard: every headline metric stated as a lift over the raw control.
+    from zte.evaluation.audit.scoreboard import build_scoreboard
+
+    metrics['scoreboard'] = build_scoreboard(
+        word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
+    )
     perm = honesty.get('retrieval_permutation') or {}
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
         metrics['verdict']['retrieval_above_chance_perm'] = perm['above_chance']
+        # The headline needs both the bootstrap-CI lift and the permutation null; this only demotes.
+        metrics['verdict']['retrieval_above_chance'] = bool(
+            metrics['verdict']['retrieval_above_chance'] and perm['above_chance']
+        )
 
     # 5) Figures (each guarded so tiny inputs never abort the run).
     figures = _render_figures(
         word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir
     )
     figures += _render_extended_figures(analogy, breakdown_words, region_rows, fig_dir)
+    montage_csv = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
+    figures += _render_sota_figures(
+        word_emb_raw,
+        np.asarray(word_emb, dtype=np.float32),
+        word_meta,
+        sent_ranks,
+        sent_ret,
+        len(sent_emb),
+        neurons,
+        word_band_power,
+        montage_csv,
+        fig_dir,
+    )
     metrics['figures'] = [str(p.relative_to(out)) for p in figures]
 
     # 6) Interactive HTML explorers (self-contained; static PNG fallback).
     if interactive:
         metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
         metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
+        metrics['scoreboard_html'] = _write_scoreboard_html(
+            metrics.get('scoreboard'), out, run_name
+        )
 
-    # 6b) Persist the full neuron report (the per-dimension arrays are large, so they live in
-    #     their own file; only the compact summary is embedded in metrics.json).
+    # 6b) The per-dimension arrays are large, so only the compact summary goes in metrics.json.
     (out / 'neurons.json').write_text(
         json.dumps(neurons, indent=2, default=float), encoding='utf-8'
     )
@@ -250,8 +310,7 @@ def evaluate_representation(
     (out / 'metrics.json').write_text(
         json.dumps(metrics, indent=2, default=float), encoding='utf-8'
     )
-    # `linear_scores` (per-fold provenance for the CIs) stays in metrics.json but is
-    # dropped from the flat CSV so the table keeps one scalar per cell.
+    # `linear_scores` is dropped from the flat CSV so the table keeps one scalar per cell.
     pd.DataFrame([{k: v for k, v in r.items() if k != 'linear_scores'} for r in comparison]).to_csv(
         out / 'comparison.csv', index=False
     )
@@ -273,13 +332,8 @@ def _honesty_block(
     sent_content_ids: np.ndarray,
     config: Any | None,
 ) -> dict[str, Any]:
-    """Computes the permutation / held-out-decode / calibration add-ons (guarded, best-effort).
-
-    Runs only when the embedding set spans >= 2 subjects (cross-subject work is undefined
-    otherwise). Each add-on degrades to ``{'applicable': False, ...}`` on too-little data, so this
-    never aborts a run.
-    """
-    from zte.evaluation.honesty import (
+    """Computes the permutation / held-out-decode / calibration add-ons; each degrades rather than aborting."""
+    from zte.evaluation.audit.honesty import (
         anchor_calibration_lift,
         cross_subject_decode,
         retrieval_permutation_test,
@@ -312,20 +366,17 @@ def _honesty_block(
 def _load_region_map(config: Any | None) -> Any | None:
     """Loads an exact `RegionMap` from `config.dataset.montage_csv` when available.
 
-    Returns `None` when no config, no montage path, or the file cannot be read -- the
-    caller then falls back to the approximate coordinate-free default and softens all
-    region-importance wording accordingly.
-
     Args:
         config (Any | None): The run config; only `dataset.montage_csv` is consulted.
 
     Returns:
-        Any | None: An exact `RegionMap`, or `None` to signal the approximate fallback.
+        Any | None: An exact `RegionMap`, or `None` to signal the approximate coordinate-free
+            fallback (which also softens the region-importance wording in the report).
     """
     montage = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
     if not montage or not Path(montage).is_file():
         return None
-    from zte.data.regions import RegionMap
+    from zte.data.montage.regions import RegionMap
 
     try:
         region_map = RegionMap.from_csv(montage)
@@ -346,15 +397,14 @@ def _region_importance(
     Args:
         word_band_power (np.ndarray | None): Per-word band power `(n_words, n_bands, n_channels)`.
         word_meta (pd.DataFrame): Aligned word metadata.
-        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the
-            approximate coordinate-free default is used inside `region_importance`.
+        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the approximate coordinate-free default is used inside `region_importance`.
 
     Returns:
-        list[dict[str, Any]]: Tidy region-importance rows (empty when no band power).
+        list[dict[str, Any]]: Tidy region-importance rows (empty when no band power)
     """
     if word_band_power is None:
         return []
-    from zte.data.regions import region_importance
+    from zte.data.montage.regions import region_importance
 
     targets: dict[str, tuple[np.ndarray, str]] = {}
     if 'word_len' in word_meta:
@@ -379,11 +429,8 @@ def _write_interactive(
 ) -> str | None:
     """Writes the interactive explorers, returning the flagship explorer path relative to `out`.
 
-    Emits both the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`
-    (one-subject/many-words, many-subjects/one-word with the cross-subject cosine stat, thought
-    arithmetic, auto-analogy leaderboard, and real-time controls). Passing `emergence` lets the
-    explorer show the authoritative full-space clustering numbers in its verdict banners. The
-    flagship path is returned when available.
+    Emits the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`; passing
+    `emergence` lets the latter quote the authoritative full-space clustering numbers.
     """
     from zte.evaluation.interactive import embedding_explorer_html, thought_space_explorer_html
 
@@ -518,6 +565,26 @@ def _neuron_summary(neurons: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _write_scoreboard_html(board: dict[str, Any] | None, out: Path, run_name: str) -> str | None:
+    """Writes the held-out ("new brain") scoreboard dashboard, returning its path relative to `out`.
+
+    Each held-out number is plotted against its named reference line. Degrades to `None` on failure so
+    a run never aborts here.
+    """
+    if not board:
+        return None
+    try:
+        from zte.evaluation.interactive import scoreboard_html
+    except ImportError:  # pragma: no cover
+        return None
+    try:
+        path = scoreboard_html(board, out / 'interactive' / 'held_out_scoreboard.html', run_name)
+        return str(path.relative_to(out))
+    except (ValueError, OSError, KeyError, TypeError) as exc:  # pragma: no cover
+        _LOG.warning('Scoreboard dashboard failed: %r', exc)
+        return None
+
+
 def _write_neuron_atlas(neurons: dict[str, Any], out: Path) -> str | None:
     """Writes the interactive Neuron Atlas HTML, returning its path relative to `out`."""
     try:
@@ -530,6 +597,115 @@ def _write_neuron_atlas(neurons: dict[str, Any], out: Path) -> str | None:
     except (ValueError, OSError, KeyError) as exc:  # pragma: no cover
         _LOG.warning('Neuron atlas failed: %r', exc)
         return None
+
+
+def _render_sota_figures(
+    word_emb_raw: np.ndarray,
+    word_emb: np.ndarray,
+    word_meta: pd.DataFrame,
+    sent_ranks: list[float],
+    sent_ret: dict[str, float],
+    n_sent: int,
+    neurons: dict[str, Any],
+    word_band_power: np.ndarray | None,
+    montage_csv: str | None,
+    fig_dir: Path,
+) -> list[Path]:
+    """Renders the geometry, rank-distribution, variance-budget, neuron and scalp figures; skips any that fail."""
+    import matplotlib.pyplot as plt
+
+    written: list[Path] = []
+
+    def _save(fig: Any, name: str) -> None:
+        path = fig_dir / name
+        fig.savefig(path, dpi=120, bbox_inches='tight')
+        plt.close(fig)
+        written.append(path)
+
+    word_ids = _encode(word_meta['word'].to_numpy()) if 'word' in word_meta.columns else None
+    builders: list[tuple[str, Any]] = []
+    if word_ids is not None:
+        builders.append(
+            (
+                'geometry_before_after.png',
+                lambda: P.geometry_before_after(word_emb_raw, word_emb, word_ids),
+            )
+        )
+    if sent_ranks:
+        builders.append(
+            (
+                'retrieval_rank_distribution.png',
+                lambda: P.retrieval_rank_distribution(
+                    np.asarray(sent_ranks), n_sent, float(sent_ret.get('chance_top1', 0.0) or 0.0)
+                ),
+            )
+        )
+    summary = neurons.get('summary', {})
+    if summary.get('variance_budget'):
+        builders.append(('variance_budget_pie.png', lambda: P.variance_budget_pie(summary)))
+    top_neurons = neurons.get('top_neurons', [])
+    if top_neurons:
+        builders.append(
+            ('neuron_selectivity.png', lambda: P.neuron_selectivity_heatmap(top_neurons[:12]))
+        )
+    if 'subject' in word_meta.columns and word_meta['subject'].nunique() > 1:
+        builders.append(
+            (
+                'subject_similarity.png',
+                lambda: P.subject_similarity_heatmap(word_emb, word_meta['subject'].to_numpy()),
+            )
+        )
+    scalp = _scalp_topomap_data(word_band_power, word_meta, montage_csv)
+    if scalp is not None:
+        vals, coords = scalp
+        builders.append(
+            (
+                'scalp_topomap.png',
+                lambda: P.scalp_topomap(vals, coords, 'Scalp map: lexical-frequency importance'),
+            )
+        )
+    for name, builder in builders:
+        try:
+            _save(builder(), name)
+        except (ValueError, KeyError, IndexError, np.linalg.LinAlgError) as exc:
+            _LOG.warning('Skipped SOTA figure %s: %r', name, exc)
+    return written
+
+
+def _scalp_topomap_data(
+    word_band_power: np.ndarray | None, word_meta: pd.DataFrame, montage_csv: str | None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Per-channel lexical-frequency importance + 2-D electrode coordinates for the scalp topomap.
+
+    Importance is the per-channel absolute correlation between mean band power and log word frequency;
+    coordinates come from the montage geometry, exact only when a montage CSV was supplied.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] | None: `(per_channel_importance (C,), coords_2d (C, 2))`, or
+            `None` when band power / a frequency column is unavailable.
+    """
+    freq_col = 'corpus_log_freq' if 'corpus_log_freq' in word_meta else 'log_freq'
+    if word_band_power is None or word_band_power.ndim != 3 or freq_col not in word_meta.columns:
+        return None
+    freq = pd.to_numeric(word_meta[freq_col], errors='coerce').to_numpy(dtype=float)
+    finite = np.isfinite(freq)
+    if int(finite.sum()) < 8:
+        return None
+    from zte.models.spatial import resolve_geometry
+
+    bp = np.asarray(word_band_power, dtype=np.float64)  # (n, n_bands, n_channels)
+    n_channels = bp.shape[2]
+    # mean band power per (word, channel) over bands, then |corr with log_freq| per channel.
+    chan_power = np.nanmean(bp, axis=1)[finite]  # (n_finite, n_channels)
+    f = freq[finite]
+    imp = np.zeros(n_channels, dtype=np.float64)
+    for c in range(n_channels):
+        col = chan_power[:, c]
+        ok = np.isfinite(col)
+        if int(ok.sum()) >= 8 and np.std(col[ok]) > 1e-9:
+            imp[c] = abs(float(np.corrcoef(col[ok], f[ok])[0, 1]))
+    geo = resolve_geometry(n_channels, montage_csv)
+    return np.nan_to_num(imp), geo.coords_2d
 
 
 def _render_extended_figures(
@@ -703,15 +879,7 @@ def _render_figures(
 
 
 def _logfreq_scatter(word_emb: np.ndarray, word_meta: pd.DataFrame) -> Any:
-    """Builds a kNN leave-one-out predicted-vs-true scatter for log frequency.
-
-    Args:
-        word_emb (np.ndarray): Word embeddings.
-        word_meta (pd.DataFrame): Word metadata containing `log_freq`.
-
-    Returns:
-        Figure: The predicted-vs-true scatter.
-    """
+    """Builds a kNN leave-one-out predicted-vs-true scatter for log frequency."""
     index = NearestNeighborIndex(word_emb, word_meta[['log_freq']].reset_index(drop=True))
     pred = index.predict(
         word_emb, 'log_freq', k=10, task='regression', self_indices=np.arange(len(word_emb))
@@ -733,13 +901,8 @@ def _verdict(
 ) -> dict[str, Any]:
     """Derives headline checks backed by bootstrap effect-size confidence intervals.
 
-    Sign-only tests (``score > baseline + epsilon``) call any positive fluctuation a
-    pass; here each check must clear a bootstrap 95% CI lower bound:
-
-    - *beats noise*: the per-fold ZTE-minus-noise linear-probe difference (folds are
-      paired via a shared seed) must have a CI lower bound above `effect_floor`.
-    - *retrieval / subject-arithmetic above chance*: the per-query Top-1 hit vector,
-      minus its random-chance rate, must have a CI lower bound above 0.
+    Every check must clear a bootstrap 95% CI lower bound: `effect_floor` for the per-fold
+    ZTE-minus-noise probe gap, and 0 for a Top-1 hit rate minus its random-chance rate.
 
     Args:
         comparison (list[dict[str, Any]]): Probe comparison rows (with `linear_scores`).
@@ -759,6 +922,7 @@ def _verdict(
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise (matched)'}
 
+    # Per-target probe gap over the noise control, paired fold by fold.
     beats_noise: list[str] = []
     beats_noise_ci: dict[str, list[float]] = {}
     for t, z_row in zte.items():
@@ -773,6 +937,7 @@ def _verdict(
         if lo > effect_floor:
             beats_noise.append(t)
 
+    # Retrieval lift over its query-weighted chance rate.
     ret_chance = float(sent_ret.get('chance_top1', float('nan')))
     ret_point, ret_lo, ret_hi = _diff_ci(sent_top1_hits, ret_chance, seed=seed)
     retrieval_pass = bool(np.isfinite(ret_lo) and ret_lo > 0.0)
@@ -846,6 +1011,13 @@ def _render_report(
         f'Word embeddings: **{metrics["n_word_embeddings"]}** | '
         f'sentence embeddings: **{metrics["n_sentence_embeddings"]}**',
         '',
+    ]
+    if metrics.get('scoreboard'):
+        from zte.evaluation.audit.scoreboard import render_markdown as _render_scoreboard
+
+        lines.append(_render_scoreboard(metrics['scoreboard']))
+        lines.append('')
+    lines += [
         '## Verdict',
         '',
         'Checks are backed by bootstrap 95% confidence intervals (CI), not sign-only '
@@ -861,7 +1033,19 @@ def _render_report(
         f'- Cross-subject retrieval above chance: **{verdict["retrieval_above_chance"]}** '
         f'(Top-1 {sent.get("top1", float("nan")):.3f} vs query-weighted chance '
         f'{sent.get("chance_top1", float("nan")):.3f}; '
-        f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))})',
+        f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))}'
+        + (
+            f'; permutation p={verdict["retrieval_permutation_p"]:.3f}'
+            if 'retrieval_permutation_p' in verdict
+            else ''
+        )
+        + (
+            f'; rank-percentile {sent["rank_percentile"]:.3f}, median rank {sent["median_rank"]:.0f}'
+            if 'rank_percentile' in sent
+            else ''
+        )
+        + '). The headline requires BOTH the CI lift and the permutation null; '
+        'rank-percentile (1.0 = correct match ranked first) shows the whole distribution, not just the tail.',
         '',
         '## Transfer probes (frozen embeddings)',
         '',
@@ -887,6 +1071,29 @@ def _render_report(
         f'query-weighted chance {sent.get("chance_top1", float("nan")):.3f}',
         f'- Word (same token): Top-1 {metrics["word_retrieval"].get("top1", float("nan")):.3f}, '
         f'query-weighted chance {metrics["word_retrieval"].get("chance_top1", float("nan")):.3f}',
+    ]
+    fm = metrics.get('word_retrieval_freq_matched')
+    if fm:
+        lines.append(
+            f'- Word, frequency-matched distractors: Top-1 {fm.get("top1", float("nan")):.3f} '
+            f'vs matched chance {fm.get("chance_top1", float("nan")):.3f} over {int(fm.get("n_bins", 0))} bins '
+            '-- a hit here cannot be a lexical-frequency shortcut.'
+        )
+    nov = metrics.get('word_retrieval_by_novelty') or {}
+    if nov:
+        for label in ('seen', 'novel'):
+            blk = nov.get(label)
+            if blk:
+                lines.append(
+                    f'- Word, {label} types: Top-1 {blk.get("top1", float("nan")):.3f} '
+                    f'vs chance {blk.get("chance_top1", float("nan")):.3f} '
+                    f'({int(blk.get("n_queries", 0))} queries)'
+                )
+        lines.append(
+            '  _"novel" = a word type absent from the training split. In a LOSO run the held-out '
+            'subject reads the same stimuli, so most types are seen and the novel bucket is small._'
+        )
+    lines += [
         '',
         '_Chance is query-weighted (matches the per-occurrence hit rate); the legacy '
         'type-weighted value is kept as `chance_top1_typeweighted` in `metrics.json`._',

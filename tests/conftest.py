@@ -38,7 +38,7 @@ def small_dataset(synthetic_dir: Path, tmp_path: Path) -> ZuCoDataset:  # pylint
         tmp_path: Per-test temporary directory for the cache.
 
     Returns:
-        ZuCoDataset: A built :class:`ZuCoDataset`.
+        ZuCoDataset: A built `ZuCoDataset`.
 
     """
     config = DatasetConfig(

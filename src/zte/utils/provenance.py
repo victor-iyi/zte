@@ -1,12 +1,7 @@
-"""Reproducibility metadata for archived runs — the "how was this produced?" record.
+"""Reproducibility metadata embedded in archived runs by `zte-pack zip`.
 
-`zte-pack zip` embeds a `PROVENANCE.json` (and a short `PROVENANCE.md`) at the archive root so a
-downloaded/ shared bundle is self-describing: the git commit, package versions, platform/accelerator,
-timestamp, and — per run — the exact resolved config plus its headline metrics and verdict. That is
-enough to *reproduce* a result (check out the commit, `uv sync`, re-run `zte-run --config <run>/config.yaml`)
-and to *trust* it (the verdict/metrics travel with the checkpoint). Everything here is best-effort and
-never raises: missing git, an unreadable manifest, or an absent package degrades to `null`, so packing
-a run can never fail because provenance could not be gathered.
+Everything here is best-effort and never raises: missing git, an unreadable manifest or an absent package degrades to
+`null`, so packing a run can never fail because provenance could not be gathered.
 """
 
 from __future__ import annotations
@@ -83,7 +78,7 @@ def _accelerator() -> dict[str, Any] | None:
         from zte.utils.env import accelerator_info
 
         return accelerator_info()
-    except Exception:  # noqa: BLE001 — provenance must never fail on an optional probe.
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -102,6 +97,7 @@ def _run_record(run_dir: Path) -> dict[str, Any]:
             manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
         except OSError, json.JSONDecodeError:
             manifest = {}
+
         # Keep the load-bearing summary, not the whole manifest (paths/figures are local-only).
         record['headline'] = {
             key: manifest.get(key)
@@ -127,8 +123,8 @@ def build_provenance(
         now (datetime | None): Timestamp to stamp (defaults to the current UTC time).
 
     Returns:
-        A JSON-serialisable dict with `created_at`, `git`, `python`, `platform`, `packages`,
-        `accelerator`, `command`, `note` and per-run `runs`.
+        dict[str, Any]: JSON-serialisable, with `created_at`, `git`, `python`, `platform`, `packages`, `accelerator`,
+            `command`, `note` and per-run `runs`.
     """
     stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return {
@@ -148,10 +144,10 @@ def provenance_markdown(prov: dict[str, Any]) -> str:
     """Renders a short human-readable `PROVENANCE.md` from a provenance dict.
 
     Args:
-        prov (dict[str, Any]): Output of :func:`build_provenance`.
+        prov (dict[str, Any]): Output of `build_provenance`.
 
     Returns:
-        A Markdown string summarising how the bundle was produced and how to reproduce it.
+        str: Markdown summarising how the bundle was produced and how to reproduce it.
     """
     git = prov.get('git') or {}
     pkgs = prov.get('packages') or {}

@@ -22,9 +22,9 @@ from zte.config import (
     ZTEConfig,
 )
 from zte.data.dataset import ZuCoDataset
+from zte.data.features.transforms import FeatureNormalizer
 from zte.data.synthetic import generate_synthetic_zuco
 from zte.data.torch_dataset import make_dataloader
-from zte.data.transforms import FeatureNormalizer
 from zte.models.embedding import build_model
 from zte.models.heads import SubjectAdversary, gradient_reverse
 from zte.models.objectives import build_objective, vicreg_terms

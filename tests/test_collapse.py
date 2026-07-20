@@ -16,7 +16,7 @@ def _cone(n: int = 400, d: int = 64, seed: int = 0) -> np.ndarray:
     return (3.0 * common + 0.3 * rng.normal(size=(n, d))).astype(np.float32)
 
 
-def test_whitening_kills_the_cone_and_fills_dimensions():
+def test_whitening_kills_the_cone_and_fills_dimensions() -> None:
     x = _cone()
     assert anisotropy(x) > 0.9  # a cone: nearly all vectors point the same way
     w = whiten_features(x)
@@ -31,7 +31,7 @@ def test_whitening_kills_the_cone_and_fills_dimensions():
     assert effective_rank(whiten_features(g)) >= effective_rank(g) - 1.0
 
 
-def test_uniformity_term_spreads_normalised_embeddings():
+def test_uniformity_term_spreads_normalised_embeddings() -> None:
     torch.manual_seed(0)
     common = torch.randn(64)
     emb = (3.0 * common + 0.3 * torch.randn(400, 64)).clone().requires_grad_(True)
@@ -55,7 +55,7 @@ def test_uniformity_term_spreads_normalised_embeddings():
     assert aniso(emb) < a0 - 0.3  # the uniformity term genuinely spreads the directions
 
 
-def test_whiten_features_handles_tiny_input():
+def test_whiten_features_handles_tiny_input() -> None:
     x = np.zeros((1, 8), dtype=np.float32)
     out = whiten_features(x)
     assert out.shape == (1, 8) and np.isfinite(out).all()

@@ -1,9 +1,4 @@
-"""Device, dtype and autocast helpers for portable CPU / CUDA / MPS execution.
-
-The package is meant to run unchanged on a CPU box, an Apple Silicon device (the `mps` backend, e.g. an M-series chip)
-and an Nvidia GPU (`cuda`). All device-specific decisions -- which accelerator to use, whether mixed precision is safe,
-which autocast dtype to pick, whether to pin host memory -- are centralised here so model and training code stays backend-agnostic.
-"""
+"""Device, dtype and autocast helpers, so model and training code stays backend-agnostic across CPU/CUDA/MPS/XLA."""
 
 from __future__ import annotations
 
@@ -20,16 +15,12 @@ type PrecisionPreference = Literal['auto', 'fp32', 'fp16', 'bf16']
 
 
 def _xla_device() -> torch.device | None:
-    """Returns a Cloud-TPU XLA device if `torch_xla` is installed and a TPU is present, else `None`.
-
-    Kept import-guarded so the package runs unchanged on machines without `torch_xla` (Apple Silicon, plain GPU
-    boxes). On a Colab/Cloud **TPU** runtime with `torch_xla` installed this returns the XLA device.
-    """
+    """Returns a Cloud-TPU XLA device if `torch_xla` is installed and a TPU is present, else `None`."""
     try:
         import torch_xla.core.xla_model as xm  # type: ignore[import-untyped]
 
         return xm.xla_device()
-    except Exception:  # noqa: BLE001 — any import/runtime failure just means "no TPU here".
+    except Exception:  # noqa: BLE001 -- any import/runtime failure just means "no TPU here".
         return None
 
 
@@ -44,7 +35,6 @@ class DeviceSpec:
         use_amp (bool): Whether automatic mixed precision should be enabled.
         supports_pin_memory (bool): Whether `DataLoader(pin_memory=True)` helps.
         name (str): A human-readable device name for logging.
-
     """
 
     device: torch.device
@@ -81,15 +71,15 @@ def resolve_device(
 ) -> DeviceSpec:
     """Selects the best available device and a safe autocast configuration.
 
-    Selection order for `prefer='auto'` is CUDA, then MPS, then CPU. Mixed precision defaults are chosen conservatively: bfloat16 on
-    capable CUDA devices, float16 on older CUDA devices, and full precision on MPS/CPU where autocast support is partial or unhelpful.
+    Mixed-precision defaults are conservative: bf16 on capable CUDA and XLA, fp16 on older CUDA, and full precision on
+    MPS/CPU where autocast support is partial or unhelpful.
 
     Args:
         prefer (DeviceKind | Literal['auto']): Force a backend, or 'auto' to pick the best available.
         precision (PrecisionPreference): 'auto' to choose per backend, or force one of `fp32`, `fp16` or `bf16`.
 
     Returns:
-        A fully populated `DeviceSpec`.
+        DeviceSpec: A fully populated device specification.
 
     Raises:
         RuntimeError: If a specific backend is requested but unavailable.
@@ -160,25 +150,22 @@ def _resolve_precision(
     if precision == 'bf16':
         return torch.bfloat16, kind in {'cuda', 'xla'}
 
-    # auto: pick the fastest *accuracy-safe* mixed precision per backend.
+    # auto: the fastest accuracy-safe mixed precision per backend.
     if kind == 'cuda':
-        # bf16 on Ampere+ (A100/H100) keeps an fp32 master copy -> speed without accuracy loss;
-        # fp16 (+ GradScaler) on older CUDA.
+        # bf16 on Ampere+ keeps an fp32 master copy; older CUDA needs fp16 plus a GradScaler.
         return (torch.bfloat16, True) if _cuda_supports_bf16() else (torch.float16, True)
     if kind == 'xla':
-        # Cloud TPUs are bf16-native; bf16 mixed precision is the fast, accuracy-safe default.
-        return torch.bfloat16, True
-    # MPS autocast is still maturing (some ops NaN/error); CPU AMP rarely helps -> stable fp32.
+        return torch.bfloat16, True  # Cloud TPUs are bf16-native
+
+    # MPS autocast still NaNs on some ops and CPU AMP rarely helps, so both stay fp32.
     return None, False
 
 
 def configure_backend(spec: DeviceSpec) -> None:
     """Applies backend-global performance settings that do not change training accuracy.
 
-    Idempotent; call once at trainer/pipeline setup. The only backend that gets a global switch is
-    CUDA: **TF32** for fp32 matmuls and cuDNN, which is a large speedup on Ampere+ (A100/H100) at
-    negligible accuracy cost — PyTorch's recommended Ampere default — and a no-op on pre-Ampere GPUs.
-    MPS, CPU and XLA have nothing global to set here (their mixed precision is handled by `autocast`).
+    Idempotent; call once at pipeline setup. Only CUDA has a global switch worth flipping -- TF32 for fp32 matmuls and
+    cuDNN, a large Ampere+ speedup and a no-op below it. MPS/CPU/XLA handle their precision through `autocast`.
 
     Args:
         spec (DeviceSpec): The resolved device specification.
@@ -189,16 +176,15 @@ def configure_backend(spec: DeviceSpec) -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.set_float32_matmul_precision('high')
-    except AttributeError, RuntimeError:  # pragma: no cover — depends on the CUDA build
+    except AttributeError, RuntimeError:  # pragma: no cover -- depends on the CUDA build
         pass
 
 
 def auto_num_workers(spec: DeviceSpec, requested: int) -> int:
     """Resolves the DataLoader worker count, auto-picking when `requested < 0`.
 
-    On an accelerator (CUDA/MPS/XLA) input pipelining matters, so `auto` uses a few workers; on CPU
-    it stays single-process (extra workers rarely help and hurt reproducibility). An explicit
-    non-negative `requested` is always honoured.
+    Auto uses a few workers on an accelerator, where input pipelining matters, and stays single-process on CPU, where
+    extra workers rarely help and hurt reproducibility.
 
     Args:
         spec (DeviceSpec): The resolved device specification.
@@ -236,7 +222,7 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         spec (DeviceSpec): The resolved device specification.
 
     Yields:
-        Control inside a `torch.autocast` block when AMP is enabled, or a no-op context otherwise.
+        None: Control inside a `torch.autocast` block when AMP is enabled, or a no-op context otherwise.
 
     Example:
         >>> spec = resolve_device('cpu')
@@ -247,15 +233,14 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         yield
         return
     if spec.kind == 'xla':
-        # TPU autocast lives in torch_xla; fall back to the generic 'xla' device_type, then to a
-        # no-op (fp32) so a torch_xla version without autocast degrades safely rather than crashing.
+        # TPU autocast lives in torch_xla; degrade through the generic device_type to fp32 rather than crash.
         try:
             import torch_xla.amp  # type: ignore[import-untyped]
 
             with torch_xla.amp.autocast(spec.device):
                 yield
             return
-        except Exception:  # noqa: BLE001 — try the generic path next.
+        except Exception:  # noqa: BLE001 -- try the generic path next.
             pass
         try:
             with torch.autocast(device_type='xla', dtype=spec.autocast_dtype):
@@ -280,7 +265,6 @@ def seed_everything(seed: int, deterministic: bool = False) -> None:
         >>> seed_everything(42)
         >>> torch.randn(10).mean()
         tensor(0.0000)
-
     """
     import random
 

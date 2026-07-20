@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from typing import Literal
+
+type Granularity = Literal['word', 'sentence']
+"""Token granularity. Only `'word'` is implemented; use `ZTEEmbedder(level='sentence')` for pooled sentences."""
+
+type Representation = Literal['band_power', 'raw', 'both']
+"""Use compact band-power vectors, raw time-series windows, or both."""
+
+type Normalization = Literal[
+    'zscore_channel', 'zscore_global', 'zscore_subject', 'riemannian', 'minmax', 'none'
+]
+"""Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std across the cohort; `zscore_subject` fits
+per subject, removing the constant offset that makes subject identity the cheapest thing to encode."""
+
+type MissingMethod = Literal[
+    'zero',
+    'row_mean',
+    'col_mean',
+    'global_mean',
+    'median',
+    'knn',
+    'iterative',
+    'ffill',
+    'interpolate',
+    'drop',
+    'mask_only',
+]
+"""How missing word-level values are filled; `drop` removes the row and `mask_only` leaves the NaN in place."""
+
+type SplitStrategy = Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
+"""What the train/val/test split groups on; `by_subject_loso` holds out whole subjects."""
+
+type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc', 'clip']
+"""The self-supervised objective: word2vec-style contrastive, data2vec-style masked, CPC, or EEG-text CLIP."""
+
+type FrontendName = Literal['band_power_mlp', 'raw_conformer']
+"""Per-token encoder: an MLP over band-power vectors or a conformer over raw time-series windows."""
+
+type PoolName = Literal['mean', 'attention', 'cls']
+"""How token embeddings are pooled into a sentence embedding."""
+
+type SchedulerName = Literal['cosine', 'linear', 'constant']
+"""Learning-rate schedule shape after warmup."""
+
+type PosEncoding = Literal['rope', 'sinusoidal', 'learned', 'alibi', 'none']
+"""Positional encoding over the word axis."""
+
+type SpatialEncoding = Literal['none', 'spherical_harmonics', 'spatial_attention']
+"""Positional encoding over the electrode axis, from the montage geometry."""

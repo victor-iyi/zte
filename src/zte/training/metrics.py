@@ -1,13 +1,4 @@
-"""Evaluation metrics for self-supervised embeddings.
-
-Two complementary, leakage-resistant probes are provided:
-
-- `linear_probe` -- freezes the embeddings and fits a cheap linear model to predict a held-out attribute (word length, frequency, omission).  A score
-well above chance means the embedding captured linguistic structure *without* the probe being able to memorise, since it is linear and cross-validated.
-- `retrieval_metrics` -- Top-K / MRR for matching one set of embeddings to another (used downstream for EEG<->text retrieval; here for neighbour probes).
-
-`noise_matched` builds the Gaussian control the project mandates: inputs with the genuine data's per-feature mean/variance but no real structure.
-"""
+"""Leakage-resistant probes for self-supervised embeddings, plus the matched-noise control."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -26,12 +17,9 @@ def linear_probe(
 ) -> dict[str, float | str | list[float]]:
     """Cross-validated linear probe of an embedding's information content.
 
-    The estimator is a `StandardScaler` -> `Ridge`/`LogisticRegression` pipeline so
-    every fold is scaled from *its own training rows only* (no test leakage), and the
-    folds are shuffled with a fixed seed (`KFold`/`StratifiedKFold`) so the split is
-    reproducible and independent of row order. The same `seed`+`n_splits` yield the
-    *same* fold assignment for any matrix of equal length, so per-fold scores from two
-    representations of one target are paired (used for bootstrap effect-size CIs).
+    The estimator is a `StandardScaler` -> `Ridge`/`LogisticRegression` pipeline, so every fold is scaled from its
+    own training rows only. The same `seed` and `n_splits` give the same fold assignment for any matrix of equal
+    length, which pairs per-fold scores from two representations of one target for bootstrap effect-size CIs.
 
     Args:
         embeddings (np.ndarray): Array `(n_samples, embed_dim)` of frozen embeddings.
@@ -44,7 +32,6 @@ def linear_probe(
         dict[str, float | str | list[float]]: A dict with `score` (mean R^2 for
             regression, mean accuracy for classification), `baseline` (predict-the-mean
             / majority), `task`, `scores` (the per-fold score list) and `score_std`.
-
     """
     embeddings = np.asarray(embeddings, dtype=np.float32)
     targets = np.asarray(targets)
@@ -78,10 +65,7 @@ def linear_probe(
         return {**nan_out, 'baseline': 1.0}
 
     with warnings.catch_warnings():
-        # Raw band-power / noise controls (and any collapsed embedding) yield an
-        # ill-conditioned Gram matrix, so Ridge/LogisticRegression warn once per
-        # fold. That is expected here and separately quantified by embedding_health's
-        # effective-rank ratio -- suppress the per-fold spam rather than flood stderr.
+        # Noise controls and collapsed embeddings give an ill-conditioned Gram matrix, warning per fold.
         warnings.simplefilter('ignore', LinAlgWarning)
         warnings.simplefilter('ignore', ConvergenceWarning)
         if task == 'classification':
@@ -124,7 +108,6 @@ def retrieval_metrics(
 
     Returns:
         dict[str, float]: A dict with `top{k}` for each `k` and `mrr`.
-
     """
     q = _l2(np.asarray(query, dtype=np.float32))
     k = _l2(np.asarray(key, dtype=np.float32))
@@ -139,34 +122,56 @@ def retrieval_metrics(
     return out
 
 
-def noise_matched(x: np.ndarray, seed: int = 0) -> np.ndarray:
+def noise_matched(x: np.ndarray, seed: int = 0, chunk: int = 2048) -> np.ndarray:
     """Returns Gaussian noise matched to `x`'s per-feature mean and variance.
 
-    This is the empirical-floor control: a genuine encoder must beat embeddings learned from this noise to claim it decodes real neural structure.
+    This is the empirical-floor control: a genuine encoder must beat embeddings learned from this noise to claim it
+    decodes real neural structure. Computed in row blocks and entirely in float32, since the naive whole-array form
+    MemoryErrors on a multi-GB raw baseline; moments accumulate in `(n_features,)` float64 registers to stay exact.
 
     Args:
-        x (np.ndarray): Real feature matrix `(n_samples, n_features)`.
+        x (np.ndarray): Real feature matrix `(n_samples, n_features)`; may be a read-only memmap.
         seed (int): RNG seed.
+        chunk (int): Rows processed per block (bounds peak temporary memory).
 
     Returns:
-        np.ndarray: A noise matrix of the same shape with matched first/second moments.
-
+        np.ndarray: A noise matrix of the same shape with matched first/second moments (float32).
     """
     rng = np.random.default_rng(seed)
-    mean = np.nanmean(x, axis=0, keepdims=True)
-    std = np.nanstd(x, axis=0, keepdims=True)
-    return (rng.standard_normal(x.shape) * std + mean).astype(np.float32)
+    src = np.asarray(x)
+    n, d = src.shape[0], int(np.prod(src.shape[1:]))
+
+    # Pass 1: nan-aware per-feature mean.
+    count = np.zeros(d, dtype=np.int64)
+    total = np.zeros(d, dtype=np.float64)
+    for start in range(0, n, chunk):
+        block = np.asarray(src[start : start + chunk], dtype=np.float32).reshape(-1, d)
+        valid = ~np.isnan(block)
+        count += valid.sum(axis=0)
+        total += np.where(valid, block, np.float32(0.0)).sum(axis=0, dtype=np.float64)
+    safe = np.maximum(count, 1)
+    mean = (total / safe).astype(np.float32)
+
+    # Pass 2: nan-aware variance about that mean.
+    resid = np.zeros(d, dtype=np.float64)
+    for start in range(0, n, chunk):
+        block = np.asarray(src[start : start + chunk], dtype=np.float32).reshape(-1, d)
+        valid = ~np.isnan(block)
+        delta = np.where(valid, block - mean, np.float32(0.0))
+        resid += np.square(delta).sum(axis=0, dtype=np.float64)
+    std = np.sqrt(resid / safe).astype(np.float32)
+
+    # Draw in float32 -- the default float64 draw doubles peak memory.
+    out = np.empty((n, d), dtype=np.float32)
+    for start in range(0, n, chunk):
+        stop = min(start + chunk, n)
+        block = rng.standard_normal((stop - start, d), dtype=np.float32)
+        block *= std
+        block += mean
+        out[start:stop] = block
+    return out.reshape(src.shape)
 
 
 def _l2(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """L2-normalises rows of `x`.
-
-    Args:
-        x (np.ndarray): Array `(n_samples, embed_dim)`.
-        eps (float): Numerical floor.
-
-    Returns:
-        np.ndarray: Row-normalised array.
-
-    """
+    """L2-normalises the rows of `x`."""
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)

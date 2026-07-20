@@ -1,17 +1,8 @@
 """A pre-norm Transformer encoder with pluggable positional encoding.
 
-The stock `torch.nn.TransformerEncoder` only supports *absolute* position information added to the inputs.
-Modern sequence models favour **relative** schemes applied inside attention -- rotary embeddings (RoPE) and ALiBi
--- which generalise to unseen sequence lengths and encode *distance* directly. Since ZuCo sentences vary in length and
-the north-star goal is a length-/device-agnostic thought code, this module implements a small, explicit encoder supporting all of:
-
-- `rope` -- rotary position embedding rotated into the query/key subspaces.
-- `alibi` -- linear, head-specific distance penalties added to attention logits.
-- `sinusoidal` / `learned` -- classic absolute encodings (added to inputs by the caller); attention here is then position-agnostic.
-- `none` -- no positional signal (ablation).
-
-The encoder is pre-norm (stable training), GELU-activated, and honours both a key-padding mask (variable-length sentences)
-and an optional causal mask (for CPC), matching the interface the ZTE objectives already rely on.
+`torch.nn.TransformerEncoder` only supports absolute positions added to the inputs; ZuCo sentences vary in length, so this encoder also
+offers the relative in-attention schemes `rope` and `alibi` (plus `none` for ablation). The absolute `sinusoidal` / `learned` schemes are
+added to the inputs by the caller, leaving attention here position-agnostic. Key-padding and causal (CPC) masks are both honoured.
 """
 
 from __future__ import annotations
@@ -30,13 +21,12 @@ def sinusoidal_encoding(length: int, dim: int, device: torch.device | None = Non
     """Builds the classic fixed sinusoidal positional encoding.
 
     Args:
-        length: Number of positions.
-        dim: Model dimensionality (encoding width).
-        device: Optional device for the returned tensor.
+        length (int): Number of positions.
+        dim (int): Model dimensionality (encoding width).
+        device (torch.device | None): Optional device for the returned tensor.
 
     Returns:
-        A `(1, length, dim)` tensor to add to token embeddings, where `dim` is the
-        model/encoding width.
+        torch.Tensor: A `(1, length, dim)` tensor to add to token embeddings.
     """
     pos = torch.arange(length, dtype=torch.float32, device=device).unsqueeze(1)
     i = torch.arange(0, dim, 2, dtype=torch.float32, device=device)
@@ -48,13 +38,13 @@ def sinusoidal_encoding(length: int, dim: int, device: torch.device | None = Non
 
 
 def _alibi_slopes(n_heads: int) -> torch.Tensor:
-    """Returns the geometric ALiBi slope per head (Press et al., 2022).
+    """Returns the geometric ALiBi slope per head.
 
     Args:
-        n_heads: Number of attention heads.
+        n_heads (int): Number of attention heads.
 
     Returns:
-        A `(n_heads,)` tensor of positive slopes.
+        torch.Tensor: A `(n_heads,)` tensor of positive slopes.
     """
 
     def pow2_slopes(n: int) -> list[float]:
@@ -77,13 +67,12 @@ def _rope_cos_sin(
     """Precomputes RoPE cosine/sine tables for a sequence.
 
     Args:
-        length: Sequence length.
-        head_dim: Per-head dimensionality (rotation uses its largest even prefix).
-        device: Device for the tables.
+        length (int): Sequence length.
+        head_dim (int): Per-head dimensionality (rotation uses its largest even prefix).
+        device (torch.device): Device for the tables.
 
     Returns:
-        `(cos, sin)` each shaped `(1, 1, seq_len, rot)` where `rot` is the even
-        rotation width.
+        tuple[torch.Tensor, torch.Tensor]: `(cos, sin)`, each `(1, 1, seq_len, rot)` for the even rotation width `rot`.
     """
     rot = head_dim - (head_dim % 2)
     inv_freq = 1.0 / (10000.0 ** (torch.arange(0, rot, 2, device=device).float() / rot))
@@ -97,13 +86,12 @@ def _apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.
     """Rotates the even-dimensional prefix of `x` by the RoPE angles.
 
     Args:
-        x: Query/key tensor `(batch_size, n_heads, seq_len, head_dim)`.
-        cos: Cosine table `(1, 1, seq_len, rot)`.
-        sin: Sine table `(1, 1, seq_len, rot)`.
+        x (torch.Tensor): Query/key tensor `(batch_size, n_heads, seq_len, head_dim)`.
+        cos (torch.Tensor): Cosine table `(1, 1, seq_len, rot)`.
+        sin (torch.Tensor): Sine table `(1, 1, seq_len, rot)`.
 
     Returns:
-        `x` with its first `rot` channels rotated; any odd trailing channel is
-        passed through unchanged.
+        torch.Tensor: `x` with its first `rot` channels rotated; any odd trailing channel passes through unchanged.
     """
     rot = cos.shape[-1]
     x_rot, x_pass = x[..., :rot], x[..., rot:]
@@ -118,19 +106,19 @@ class MultiHeadSelfAttention(nn.Module):
     """Multi-head self-attention with optional RoPE or ALiBi and masking.
 
     Attributes:
-        n_heads: Number of attention heads.
-        head_dim: Per-head dimensionality.
-        pos: In-attention positional scheme (`'rope'`, `'alibi'` or `'none'`).
+        n_heads (int): Number of attention heads.
+        head_dim (int): Per-head dimensionality.
+        pos (AttnPos): In-attention positional scheme (`'rope'`, `'alibi'` or `'none'`).
     """
 
     def __init__(self, dim: int, n_heads: int, dropout: float, pos: AttnPos) -> None:
         """Initialises the attention block.
 
         Args:
-            dim: Model dimensionality.
-            n_heads: Head count (must divide `dim`).
-            dropout: Attention dropout probability.
-            pos: In-attention positional scheme.
+            dim (int): Model dimensionality.
+            n_heads (int): Head count (must divide `dim`).
+            dropout (float): Attention dropout probability.
+            pos (AttnPos): In-attention positional scheme.
         """
         super().__init__()
         self.n_heads = n_heads
@@ -146,13 +134,14 @@ class MultiHeadSelfAttention(nn.Module):
         """Runs masked self-attention over a token sequence.
 
         Args:
-            x: Input `(batch_size, seq_len, hidden_dim)`.
-            valid_mask: Boolean `(batch_size, seq_len)`; `True` marks attendable key positions.
-            causal: If `True`, position `i` may only attend to `j <= i`.
+            x (torch.Tensor): Input `(batch_size, seq_len, hidden_dim)`.
+            valid_mask (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` marks attendable key positions.
+            causal (bool): If `True`, position `i` may only attend to `j <= i`.
 
         Returns:
-            The attended output `(batch_size, seq_len, hidden_dim)`.
+            torch.Tensor: The attended output `(batch_size, seq_len, hidden_dim)`.
         """
+        # Project to per-head queries, keys and values.
         b, length, dim = x.shape
         qkv = self.qkv(x).reshape(b, length, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)  # each (batch_size, n_heads, seq_len, head_dim)
@@ -168,14 +157,13 @@ class MultiHeadSelfAttention(nn.Module):
             rel = -(dist[None, :] - dist[:, None]).abs().float()  # (seq_len, seq_len), <= 0
             scores = scores + self.slopes[None, :, None, None] * rel[None, None]  # type: ignore[index]
 
+        # Mask non-attendable keys, then flatten fully-masked rows -- an all-`-inf` row softmaxes to NaN.
         allow = valid_mask[:, None, None, :].expand(b, self.n_heads, length, length)
         if causal:
             causal_ok = torch.tril(torch.ones(length, length, dtype=torch.bool, device=x.device))
             allow = allow & causal_ok[None, None]
         neg_inf = torch.finfo(scores.dtype).min
         scores = scores.masked_fill(~allow, neg_inf)
-        # A query row with no attendable key would softmax to NaN; make it uniform
-        # (its output is masked out downstream anyway).
         dead = ~allow.any(dim=-1, keepdim=True)
         scores = torch.where(dead, torch.zeros_like(scores), scores)
 
@@ -193,10 +181,10 @@ class EncoderLayer(nn.Module):
         """Initialises the block.
 
         Args:
-            dim: Model dimensionality.
-            n_heads: Attention head count.
-            dropout: Dropout probability (attention and residual paths).
-            pos: In-attention positional scheme.
+            dim (int): Model dimensionality.
+            n_heads (int): Attention head count.
+            dropout (float): Dropout probability (attention and residual paths).
+            pos (AttnPos): In-attention positional scheme.
         """
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
@@ -211,12 +199,12 @@ class EncoderLayer(nn.Module):
         """Applies attention and the feed-forward block with residuals.
 
         Args:
-            x: Input `(batch_size, seq_len, hidden_dim)`.
-            valid_mask: Boolean `(batch_size, seq_len)` of attendable positions.
-            causal: Whether to apply a causal mask.
+            x (torch.Tensor): Input `(batch_size, seq_len, hidden_dim)`.
+            valid_mask (torch.Tensor): Boolean `(batch_size, seq_len)` of attendable positions.
+            causal (bool): Whether to apply a causal mask.
 
         Returns:
-            The updated sequence `(batch_size, seq_len, hidden_dim)`.
+            torch.Tensor: The updated sequence `(batch_size, seq_len, hidden_dim)`.
         """
         x = x + self.drop(self.attn(self.norm1(x), valid_mask, causal))
         x = x + self.drop(self.mlp(self.norm2(x)))
@@ -227,19 +215,18 @@ class ZTETransformerEncoder(nn.Module):
     """A stack of pre-norm encoder layers with a configurable positional scheme.
 
     Attributes:
-        pos_mode: The in-attention positional scheme actually used (`'rope'`,
-            `'alibi'` or `'none'` -- absolute schemes are added by the caller).
+        pos_mode (AttnPos): The in-attention positional scheme actually used; absolute schemes are added by the caller.
     """
 
     def __init__(self, dim: int, n_heads: int, n_layers: int, dropout: float, pos: AttnPos) -> None:
         """Builds the encoder stack.
 
         Args:
-            dim: Model dimensionality.
-            n_heads: Attention head count per layer.
-            n_layers: Number of stacked layers.
-            dropout: Dropout probability.
-            pos: In-attention positional scheme.
+            dim (int): Model dimensionality.
+            n_heads (int): Attention head count per layer.
+            n_layers (int): Number of stacked layers.
+            dropout (float): Dropout probability.
+            pos (AttnPos): In-attention positional scheme.
         """
         super().__init__()
         self.pos_mode = pos
@@ -254,12 +241,12 @@ class ZTETransformerEncoder(nn.Module):
         """Encodes a padded token sequence.
 
         Args:
-            x: Input `(batch_size, seq_len, hidden_dim)`.
-            valid_mask: Boolean `(batch_size, seq_len)`; `True` marks valid (attendable) tokens.
-            causal: If `True`, apply a causal attention mask.
+            x (torch.Tensor): Input `(batch_size, seq_len, hidden_dim)`.
+            valid_mask (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` marks valid (attendable) tokens.
+            causal (bool): If `True`, apply a causal attention mask.
 
         Returns:
-            The contextualised sequence `(batch_size, seq_len, hidden_dim)`.
+            torch.Tensor: The contextualised sequence `(batch_size, seq_len, hidden_dim)`.
         """
         for layer in self.layers:
             x = layer(x, valid_mask, causal)

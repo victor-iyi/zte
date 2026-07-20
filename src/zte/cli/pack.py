@@ -1,8 +1,4 @@
-"""`zte-pack` — list, zip, unpack and delete training runs (the Colab↔local hand-off).
-
-Train on a cloud GPU, `zte-pack zip --all` into a small archive, download it, and `zte-pack unpack` it locally for inference.
-Heavy `cache/`, `tb/` and `bundle/` folders are excluded by default (a checkpoint already embeds what inference needs).
-"""
+"""`zte-pack` -- list, zip, unpack and delete training runs (the Colab<->local hand-off)."""
 
 from __future__ import annotations
 
@@ -30,7 +26,9 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--experiments', default='res/experiments', help='Experiments directory.')
-    parser.add_argument('--log-level', default='INFO')
+    parser.add_argument(
+        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    )
     sub = parser.add_subparsers(dest='command', required=True)
 
     sub.add_parser('list', help='List runs with sizes and completeness.')
@@ -55,6 +53,7 @@ def parse_arguments() -> argparse.Namespace:
     z.add_argument(
         '--note',
         default=None,
+        type=str,
         help='Free-text note stored in the archive PROVENANCE metadata (e.g. "flagship real-data run").',
     )
     z.add_argument(
@@ -78,7 +77,10 @@ def parse_arguments() -> argparse.Namespace:
         '--out', default=None, help='Output .zip path (point at Drive to upload directly).'
     )
     s.add_argument(
-        '--note', default=None, help='Free-text note stored in the archive PROVENANCE metadata.'
+        '--note',
+        default=None,
+        type=str,
+        help='Free-text note stored in the archive PROVENANCE metadata.',
     )
     s.add_argument(
         '--move', action='store_true', help='Delete the archived subtrees after a successful zip.'

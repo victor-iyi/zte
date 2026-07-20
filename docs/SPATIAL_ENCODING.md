@@ -73,9 +73,9 @@ dataset:
 Without a montage the module uses a smooth, well‑separated **Fibonacci‑cap** placeholder and logs `approximate=True` (mirroring `RegionMap`). This makes the encoding *usable* but not geometrically true. For real accuracy, supply the electrode coordinates of the ZuCo EGI net:
 
 ```sh
-# Requires `mne`. Provide the retained 105 electrode labels in channel-axis order.
-# uv sync --group montage
-python scripts/export_montage.py --out res/montage_gsn105.csv --keep-file res/zuco_channel_labels.txt
+# Requires `mne` (uv sync --group spatial). ZuCo uses standard EGI ordering, so --zuco105
+# reproduces the retained 105-channel montage with no manual channel list:
+python scripts/export_montage.py --out res/montage_gsn105.csv --zuco105
 ```
 
 then point `dataset.montage_csv` at the CSV. **The CSV's channel index must line up with the channel axis of your EEG tensors** — the 23 dropped outer
