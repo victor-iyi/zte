@@ -13,10 +13,10 @@ import pytest
 import torch
 
 from zte.config import DatasetConfig, MissingConfig, ModelConfig
-from zte.data.categories import corpus_frequencies, length_band, sentence_categories
 from zte.data.dataset import ZuCoDataset
-from zte.data.regions import RegionMap, default_region_map, region_importance
+from zte.data.montage.regions import RegionMap, default_region_map, region_importance
 from zte.data.schema import BANDS, N_CHANNELS
+from zte.data.targets.categories import corpus_frequencies, length_band, sentence_categories
 from zte.data.torch_dataset import SentenceSample, collate_sentences
 from zte.evaluation.analogy import analogy_report, transfer_analogy
 from zte.models.embedding import build_model
@@ -224,7 +224,7 @@ def test_categories_and_corpus_frequency() -> None:
 
 def test_resolve_source_dir_and_zip(synthetic_dir: Path, tmp_path: Path) -> None:
     """resolve_source returns extracted dirs and unzips archives idempotently."""
-    from zte.data.sources import resolve_source
+    from zte.data.io.sources import resolve_source
 
     assert resolve_source(synthetic_dir) == synthetic_dir  # already extracted
 
@@ -236,7 +236,7 @@ def test_resolve_source_dir_and_zip(synthetic_dir: Path, tmp_path: Path) -> None
 
 def test_resolve_source_zip_dir_prefers_extract_dir(synthetic_dir: Path, tmp_path: Path) -> None:
     """A staging dir of zips extracts to extract_dir even when mats exist only inside archives."""
-    from zte.data.sources import resolve_source
+    from zte.data.io.sources import resolve_source
 
     archive = shutil.make_archive(str(tmp_path / 'task1'), 'zip', root_dir=str(synthetic_dir))
     staging = tmp_path / 'downloads'
@@ -250,7 +250,7 @@ def test_resolve_source_zip_dir_prefers_extract_dir(synthetic_dir: Path, tmp_pat
 
 def test_drive_manifest_skips_complete(tmp_path: Path) -> None:
     """Completed manifest entries are skipped on resume."""
-    from zte.data.drive_download import DriveFileEntry, DriveManifest
+    from zte.data.io.drive_download import DriveFileEntry, DriveManifest
 
     dest = tmp_path / 'downloads'
     dest.mkdir()
@@ -266,7 +266,7 @@ def test_drive_manifest_skips_complete(tmp_path: Path) -> None:
 
 def test_parse_drive_spec_normalizes_shell_escaped_urls() -> None:
     """Shell-escaped share URLs still resolve to the correct folder id."""
-    from zte.data.remote import parse_drive_spec
+    from zte.data.io.remote import parse_drive_spec
 
     escaped = (
         r'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL\?usp\=share_link'

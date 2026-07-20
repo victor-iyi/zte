@@ -6,6 +6,8 @@ These cover both the mathematics (orthonormality, known values, the addition the
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -119,7 +121,7 @@ def test_fallback_is_flagged_approximate() -> None:
     assert geo.n_channels == 105
 
 
-def test_from_csv_xyz_and_spherical(tmp_path) -> None:
+def test_from_csv_xyz_and_spherical(tmp_path: Path) -> None:
     """from_csv reads both x,y,z and theta,phi montages and agrees for the same points."""
     theta = np.array([0.3, 1.1, 2.0])
     phi = np.array([0.0, 1.5, -2.0])
@@ -143,7 +145,7 @@ def test_from_csv_xyz_and_spherical(tmp_path) -> None:
     assert g_xyz.approximate is False
 
 
-def test_from_csv_missing_channel_raises(tmp_path) -> None:
+def test_from_csv_missing_channel_raises(tmp_path: Path) -> None:
     """A montage missing a channel index is rejected."""
     csv = tmp_path / 'bad.csv'
     csv.write_text('channel,x,y,z\n0,1,0,0\n', encoding='utf-8')

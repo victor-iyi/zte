@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from zte.evaluation.honesty import (
+from zte.evaluation.audit.honesty import (
     anchor_calibration_lift,
     cross_subject_decode,
     retrieval_permutation_test,

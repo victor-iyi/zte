@@ -12,11 +12,11 @@ from scipy.io import loadmat
 
 from zte.config import MissingConfig
 from zte.data.dataset import ZuCoDataset
-from zte.data.mat_loader import _raw_window
-from zte.data.missing import MissingValueImputer
+from zte.data.features.missing import MissingValueImputer
+from zte.data.features.transforms import band_power_from_raw
+from zte.data.io.mat_loader import _raw_window
 from zte.data.schema import BANDS, ET_MEASURES, N_CHANNELS, SAMPLING_RATE_HZ, band_feature_name
 from zte.data.torch_dataset import make_dataloader
-from zte.data.transforms import band_power_from_raw
 
 
 def _obj_array(items: list) -> np.ndarray:

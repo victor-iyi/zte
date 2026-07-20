@@ -37,7 +37,7 @@ def _make_run(root: Path, name: str, synthetic: bool | None = None) -> Path:
     return run
 
 
-def test_skip_synthetic_excludes_smoke_runs(tmp_path: Path):
+def test_skip_synthetic_excludes_smoke_runs(tmp_path: Path) -> None:
     """`skip_synthetic` drops --synthetic runs but keeps real (and flag-less) ones."""
     exp = tmp_path / 'experiments'
     exp.mkdir()
@@ -54,7 +54,7 @@ def test_skip_synthetic_excludes_smoke_runs(tmp_path: Path):
     assert tops == {'real', 'legacy'}  # smoke excluded
 
 
-def test_best_only_keeps_just_best_checkpoint(tmp_path: Path):
+def test_best_only_keeps_just_best_checkpoint(tmp_path: Path) -> None:
     exp = tmp_path / 'experiments'
     exp.mkdir()
     _make_run(exp, 'runA')
@@ -67,7 +67,7 @@ def test_best_only_keeps_just_best_checkpoint(tmp_path: Path):
     assert not (ckpts / 'ckpt_epoch0001.pt').exists()
 
 
-def test_move_removes_local_run_after_zip(tmp_path: Path):
+def test_move_removes_local_run_after_zip(tmp_path: Path) -> None:
     exp = tmp_path / 'experiments'
     exp.mkdir()
     run = _make_run(exp, 'runA')
@@ -75,7 +75,7 @@ def test_move_removes_local_run_after_zip(tmp_path: Path):
     assert not run.exists()  # local run freed after archiving
 
 
-def test_zip_excludes_heavy_dirs_and_unpacks_inference_ready(tmp_path: Path):
+def test_zip_excludes_heavy_dirs_and_unpacks_inference_ready(tmp_path: Path) -> None:
     exp = tmp_path / 'experiments'
     exp.mkdir()
     _make_run(exp, 'runA')
@@ -96,7 +96,7 @@ def test_zip_excludes_heavy_dirs_and_unpacks_inference_ready(tmp_path: Path):
     assert not (dest / 'runA' / 'checkpoints' / 'tb').exists()
 
 
-def test_zip_experiments_bundles_multiple_runs(tmp_path: Path):
+def test_zip_experiments_bundles_multiple_runs(tmp_path: Path) -> None:
     exp = tmp_path / 'experiments'
     exp.mkdir()
     _make_run(exp, 'runA')
@@ -106,7 +106,7 @@ def test_zip_experiments_bundles_multiple_runs(tmp_path: Path):
     assert set(tops) == {'runA', 'runB'}
 
 
-def test_delete_run_is_guarded(tmp_path: Path):
+def test_delete_run_is_guarded(tmp_path: Path) -> None:
     exp = tmp_path / 'experiments'
     exp.mkdir()
     run = _make_run(exp, 'runA')
@@ -116,7 +116,7 @@ def test_delete_run_is_guarded(tmp_path: Path):
     assert not run.exists()
 
 
-def test_clean_outputs_is_guarded_and_selective(tmp_path: Path):
+def test_clean_outputs_is_guarded_and_selective(tmp_path: Path) -> None:
     (tmp_path / 'res' / 'experiments' / 'r1').mkdir(parents=True)
     (tmp_path / 'res' / 'cache').mkdir(parents=True)
     (tmp_path / 'res' / 'data').mkdir(parents=True)
@@ -133,7 +133,7 @@ def test_clean_outputs_is_guarded_and_selective(tmp_path: Path):
     assert not (tmp_path / 'res').exists()
 
 
-def test_ensure_dirs_and_accelerator_info(tmp_path: Path):
+def test_ensure_dirs_and_accelerator_info(tmp_path: Path) -> None:
     made = ensure_dirs(tmp_path)
     assert all(p.is_dir() for p in made)
     info = accelerator_info()

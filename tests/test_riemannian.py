@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from zte.data.transforms import FeatureNormalizer
+from zte.data.features.transforms import FeatureNormalizer
 
 
 def _two_subject_data(seed: int = 0) -> tuple[np.ndarray, np.ndarray]:

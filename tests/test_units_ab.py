@@ -9,10 +9,10 @@ import pytest
 import torch
 
 from zte.config import DatasetConfig, ModelConfig, ObjectiveConfig
-from zte.data.behaviour import build_behaviour_matrix
 from zte.data.dataset import ZuCoDataset
-from zte.data.meaning import build_meaning_matrix
 from zte.data.synthetic import generate_synthetic_zuco
+from zte.data.targets.behaviour import build_behaviour_matrix
+from zte.data.targets.meaning import build_meaning_matrix
 from zte.data.torch_dataset import make_dataloader
 from zte.models.embedding import build_model
 from zte.models.frontends import BandRoutedMLP

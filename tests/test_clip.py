@@ -15,7 +15,7 @@ import torch
 from zte.config import DatasetConfig, ModelConfig, ObjectiveConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.synthetic import generate_synthetic_zuco
-from zte.data.text import build_sentence_text_matrix, mine_hard_negatives
+from zte.data.targets.text import build_sentence_text_matrix, mine_hard_negatives
 from zte.data.torch_dataset import SemanticHardNegativeSampler, make_dataloader
 from zte.models.embedding import build_model
 from zte.models.objectives import SentenceClipObjective, _clip_direction, build_objective

@@ -19,7 +19,9 @@ from zte.models.objectives import alignment_penalty, build_objective, debiased_i
 from zte.models.spatial import ScalpGeometry, SpatialAttention
 
 
-def _hubby_clusters(n_groups: int = 6, per: int = 20, dim: int = 32, seed: int = 0):
+def _hubby_clusters(
+    n_groups: int = 6, per: int = 20, dim: int = 32, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
     """A clustered embedding set with a strong shared 'hub' axis (high anisotropy)."""
     rng = np.random.default_rng(seed)
     centers = rng.standard_normal((n_groups, dim))
@@ -175,7 +177,7 @@ def test_spatial_attention_preserves_shape() -> None:
 # --------------------------------------------------------------------------- #
 def test_phase_scramble_preserves_power_spectrum() -> None:
     """The surrogate keeps each channel's power spectrum but destroys the phase/time structure."""
-    from zte.data.transforms import phase_scramble
+    from zte.data.features.transforms import phase_scramble
 
     rng = np.random.default_rng(0)
     x = rng.standard_normal((4, 8, 128)).astype(np.float32)  # (words, channels, time)

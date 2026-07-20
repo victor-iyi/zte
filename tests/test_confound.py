@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from zte.evaluation.confound import (
+from zte.data.dataset import ZuCoDataset
+from zte.evaluation.audit.confound import (
     abs_spearman,
     association,
     confound_report,
@@ -57,7 +58,7 @@ def test_association_dispatch() -> None:
     assert association(df, 'num', 'num')[1] == 'spearman'
 
 
-def test_task_stimulus_confound_detected(small_dataset) -> None:  # noqa: ANN001
+def test_task_stimulus_confound_detected(small_dataset: ZuCoDataset) -> None:
     """Test that the task/stimulus confound is detected."""
     ov = task_stimulus_overlap(small_dataset.words)
     assert ov['available']
@@ -66,7 +67,7 @@ def test_task_stimulus_confound_detected(small_dataset) -> None:  # noqa: ANN001
     assert ov['cramers_v_task_stimulus'] > 0.9
 
 
-def test_confound_report_shape(small_dataset) -> None:  # noqa: ANN001
+def test_confound_report_shape(small_dataset: ZuCoDataset) -> None:
     """Test that the confound report has the correct shape."""
     rep = confound_report(small_dataset.words)
     for key in (

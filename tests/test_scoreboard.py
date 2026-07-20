@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from zte.evaluation.scoreboard import (
+from zte.evaluation.audit.scoreboard import (
     build_scoreboard,
     cross_subject_holdout_retrieval,
     held_out_geometry,

@@ -1,4 +1,4 @@
-"""Tests for the turn-key `--spatial` / `--meaning` provisioning (see `zte.cli.provision`).
+"""Tests for the turn-key `--spatial` / `--meaning` provisioning (see `zte.cli.support.provision`).
 
 These cover the config-wiring for each choice. The two choices that build heavy artifacts (`--spatial
 exact`, `--meaning static`) are exercised with the builders monkeypatched, so the tests need neither
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from zte.cli import provision
+from zte.cli.support import provision
 from zte.config import ZTEConfig
 
 
@@ -45,7 +45,7 @@ def test_apply_spatial_exact_builds_and_wires(monkeypatch: pytest.MonkeyPatch) -
         calls['out'], calls['montage'], calls['zuco105'] = out, montage, zuco105
         return Path(out)
 
-    monkeypatch.setattr('zte.data.montage.build_montage_csv', fake_build)
+    monkeypatch.setattr('zte.data.montage.montage.build_montage_csv', fake_build)
     cfg = ZTEConfig()
     provision.apply_spatial(cfg, 'exact', montage_out='res/m/x.csv')
     assert cfg.model.spatial_encoding == 'spherical_harmonics'
@@ -55,7 +55,7 @@ def test_apply_spatial_exact_builds_and_wires(monkeypatch: pytest.MonkeyPatch) -
 
 def test_apply_spatial_attention_uses_learned_scheme(monkeypatch: pytest.MonkeyPatch) -> None:
     """`attention` selects the learned spatial-attention scheme on the exact montage."""
-    monkeypatch.setattr('zte.data.montage.build_montage_csv', lambda out, **_: Path(out))
+    monkeypatch.setattr('zte.data.montage.montage.build_montage_csv', lambda out, **_: Path(out))
     cfg = ZTEConfig()
     provision.apply_spatial(cfg, 'attention', montage_out='m.csv')
     assert cfg.model.spatial_encoding == 'spatial_attention'
@@ -68,7 +68,7 @@ def test_apply_spatial_exact_without_mne_falls_back(monkeypatch: pytest.MonkeyPa
     def boom(*_a: object, **_k: object) -> Path:
         raise ImportError('no mne')
 
-    monkeypatch.setattr('zte.data.montage.build_montage_csv', boom)
+    monkeypatch.setattr('zte.data.montage.montage.build_montage_csv', boom)
     cfg = ZTEConfig()
     provision.apply_spatial(cfg, 'exact')
     assert cfg.model.spatial_encoding == 'spherical_harmonics'  # still on...
@@ -106,7 +106,7 @@ def test_apply_meaning_static_builds_and_wires(monkeypatch: pytest.MonkeyPatch) 
         seen['vocab'], seen['model'] = vocab, model
         return Path(out), 300
 
-    monkeypatch.setattr('zte.data.glove.provision_glove', fake_provision)
+    monkeypatch.setattr('zte.data.targets.glove.provision_glove', fake_provision)
     cfg = ZTEConfig()
     provision.apply_meaning(
         cfg, 'static', meaning_out='res/v/g.txt', weight=0.5, vocab={'apple', 'brain'}
@@ -119,7 +119,7 @@ def test_apply_meaning_static_builds_and_wires(monkeypatch: pytest.MonkeyPatch) 
 
 def test_provision_glove_reuses_existing_file(tmp_path: Path) -> None:
     """An existing GloVe file is reused (no download / re-filter), and its dim is read back."""
-    from zte.data.glove import provision_glove
+    from zte.data.targets.glove import provision_glove
 
     f = tmp_path / 'g.txt'
     f.write_text('the 0.1 0.2 0.3\nbrain 0.4 0.5 0.6\n', encoding='utf-8')
@@ -129,7 +129,7 @@ def test_provision_glove_reuses_existing_file(tmp_path: Path) -> None:
 
 def test_build_montage_csv_reuses_existing_file(tmp_path: Path) -> None:
     """An existing montage CSV is reused on the cache-hit path -- and needs no `mne`."""
-    from zte.data.montage import build_montage_csv
+    from zte.data.montage.montage import build_montage_csv
 
     f = tmp_path / 'm.csv'
     f.write_text('channel,x,y,z,label,region\n0,0,0,1,E1,frontopolar\n', encoding='utf-8')
@@ -143,7 +143,7 @@ def test_contextual_meaning_matrix_uses_cache(
     import numpy as np
     import pandas as pd
 
-    from zte.data import meaning
+    from zte.data.targets import meaning
 
     words = pd.DataFrame(
         {'word': ['the', 'brain'], 'word_idx': [0, 1], 'stimulus_key': ['s1', 's1']}
@@ -162,7 +162,7 @@ def test_contextual_meaning_matrix_uses_cache(
 
     real_import = builtins.__import__
 
-    def guard(name: str, *a: object, **k: object):
+    def guard(name: str, *a: object, **k: object) -> object:
         if name == 'transformers':
             raise AssertionError('cache miss: transformers should not be imported on a hit')
         return real_import(name, *a, **k)
@@ -178,7 +178,7 @@ def test_provision_from_args_dispatches_both(monkeypatch: pytest.MonkeyPatch) ->
     """`provision_from_args` applies both flags from a parsed namespace."""
     import argparse
 
-    monkeypatch.setattr('zte.data.montage.build_montage_csv', lambda out, **_: Path(out))
+    monkeypatch.setattr('zte.data.montage.montage.build_montage_csv', lambda out, **_: Path(out))
     cfg = ZTEConfig()
     args = argparse.Namespace(
         spatial='exact',
