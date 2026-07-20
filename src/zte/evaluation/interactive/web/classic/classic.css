@@ -1,0 +1,178 @@
+:root {
+  --plane: #eef1f6;
+  --panel: #fff;
+  --ink: #131720;
+  --ink2: #495264;
+  --muted: #8a93a6;
+  --border: #e3e7ef;
+  --accent: #5a4bff;
+  --accent2: #ff4d8d;
+}
+:root[data-theme="dark"] {
+  --plane: #0b0e14;
+  --panel: #161b26;
+  --ink: #eef2f9;
+  --ink2: #aab4c6;
+  --muted: #78829a;
+  --border: #232a37;
+  --accent: #9a86ff;
+  --accent2: #ff77a9;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+}
+body {
+  min-height: 100vh;
+  background: var(--plane);
+  color: var(--ink);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+  background-image: radial-gradient(
+    920px 520px at 84% -10%,
+    color-mix(in srgb, var(--accent) 15%, transparent),
+    transparent 70%
+  );
+  background-attachment: fixed;
+}
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px 22px 34px;
+}
+header.hd {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+.brand .dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  flex: none;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 660;
+  letter-spacing: 0.2px;
+}
+.spacer {
+  flex: 1;
+  min-width: 8px;
+}
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ctl label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  font-weight: 650;
+}
+select {
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.seg button {
+  border: none;
+  background: transparent;
+  color: var(--ink2);
+  padding: 7px 13px;
+  font-size: 12.5px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.12s;
+}
+.seg button.on {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow:
+    0 14px 38px -20px rgba(9, 11, 20, 0.55),
+    0 2px 8px -4px rgba(9, 11, 20, 0.22);
+  padding: 8px;
+  overflow: hidden;
+}
+.plotcard {
+  height: 600px;
+}
+#plot {
+  width: 100%;
+  height: 100%;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 16px;
+  margin: 13px 4px 0;
+}
+.lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--ink2);
+}
+.lg .sw {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+}
+.cap {
+  color: var(--ink2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 12px 4px 0;
+  max-width: 900px;
+}
+.cap b {
+  color: var(--ink);
+  font-weight: 640;
+}
+@media (max-width: 640px) {
+  .plotcard {
+    height: 460px;
+  }
+  .brand h1 {
+    font-size: 15px;
+  }
+}

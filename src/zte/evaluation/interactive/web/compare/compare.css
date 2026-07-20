@@ -1,0 +1,350 @@
+:root {
+  --bg: #f7f8fb;
+  --panel: #ffffff;
+  --ink: #141922;
+  --muted: #5c6773;
+  --line: #e4e8ef;
+  --pass: #0f9d6b;
+  --passbg: #e3f6ee;
+  --fail: #e5484d;
+  --failbg: #fce9ea;
+  --accent: #6d4aff;
+  --accent2: #ff4d8d;
+  --warn: #e8a13a;
+  --heat0: #eef1f6;
+  --shadow: 0 1px 3px rgba(20, 25, 34, 0.08), 0 8px 24px rgba(20, 25, 34, 0.06);
+}
+:root[data-theme="dark"] {
+  --bg: #0e1117;
+  --panel: #161b25;
+  --ink: #e8edf5;
+  --muted: #96a2b4;
+  --line: #242c3a;
+  --pass: #3ddc97;
+  --passbg: #123227;
+  --fail: #ff6b6f;
+  --failbg: #331a1d;
+  --accent: #9b7bff;
+  --accent2: #ff77a9;
+  --warn: #f0b95e;
+  --heat0: #1b2230;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1117;
+    --panel: #161b25;
+    --ink: #e8edf5;
+    --muted: #96a2b4;
+    --line: #242c3a;
+    --pass: #3ddc97;
+    --passbg: #123227;
+    --fail: #ff6b6f;
+    --failbg: #331a1d;
+    --accent: #9b7bff;
+    --accent2: #ff77a9;
+    --warn: #f0b95e;
+    --heat0: #1b2230;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    14px/1.5 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 20px 80px;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+h1 {
+  font-size: 22px;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.themebtn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 7px 13px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px 18px;
+}
+.section {
+  margin-top: 22px;
+}
+.section h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 10px 2px;
+  font-weight: 700;
+}
+/* Best banner */
+.best {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--accent) 14%, var(--panel)),
+    color-mix(in srgb, var(--accent2) 12%, var(--panel))
+  );
+}
+.best .medal {
+  font-size: 34px;
+}
+.best .name {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+.pill {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.pill.pass {
+  background: var(--passbg);
+  color: var(--pass);
+}
+.pill.real {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+.scorebar {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--heat0);
+  overflow: hidden;
+  min-width: 120px;
+  flex: 1;
+}
+.scorebar > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}
+/* Scorecard matrix */
+.scroll {
+  overflow-x: auto;
+}
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 13px;
+}
+th,
+td {
+  padding: 8px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+th.rowhead,
+td.rowhead {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--panel);
+  z-index: 2;
+  border-right: 1px solid var(--line);
+  min-width: 190px;
+}
+thead th {
+  color: var(--muted);
+  font-weight: 650;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+thead th.run .rn {
+  display: block;
+  font-weight: 700;
+  color: var(--ink);
+}
+thead th.run .cfg {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+tbody tr:hover td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.cell {
+  border-radius: 8px;
+}
+.mark {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+}
+.mark.y {
+  background: var(--passbg);
+  color: var(--pass);
+}
+.mark.n {
+  background: var(--failbg);
+  color: var(--fail);
+}
+.count {
+  font-weight: 800;
+}
+.heat {
+  border-radius: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.desc {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  display: block;
+}
+/* CI bars */
+.ci {
+  position: relative;
+  height: 16px;
+  width: 120px;
+  margin: 0 auto;
+  background: var(--heat0);
+  border-radius: 6px;
+}
+.ci .zero {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--muted);
+  opacity: 0.7;
+}
+.ci .bar {
+  position: absolute;
+  top: 4px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--muted);
+}
+.ci .bar.good {
+  background: var(--pass);
+}
+.ci .bar.bad {
+  background: var(--fail);
+}
+.ci .pt {
+  position: absolute;
+  top: 2px;
+  width: 2px;
+  height: 12px;
+  background: var(--ink);
+}
+/* Cards */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+}
+.runcard {
+  padding: 0;
+  overflow: hidden;
+}
+.runcard .thumb {
+  height: 120px;
+  background: var(--heat0);
+  display: block;
+  object-fit: cover;
+  width: 100%;
+}
+.runcard .body {
+  padding: 12px 13px;
+}
+.runcard .rname {
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.runcard .links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+.runcard .links a {
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+.rank {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.rubric {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.rubric b {
+  color: var(--ink);
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.empty {
+  color: var(--muted);
+  opacity: 0.6;
+}
