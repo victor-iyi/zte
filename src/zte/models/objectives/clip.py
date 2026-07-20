@@ -1,0 +1,149 @@
+"""Sentence-level CLIP objective: align EEG sentence vectors to frozen text embeddings."""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from zte.config import ObjectiveConfig
+from zte.models.embedding import ZTEModel
+from zte.models.objectives.base import _ObjectiveBase, _usable_mask
+
+
+def _clip_direction(logits: torch.Tensor, pos: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """One direction of a multi-positive InfoNCE over a `(B, B)` similarity matrix.
+
+    Rows are anchors, columns candidates. Candidates without a text target are masked out of the denominator; an anchor's positives are
+    the columns sharing its sentence text, so the same sentence read by different subjects counts as a positive.
+
+    Args:
+        logits (torch.Tensor): Scaled cosine logits `(B, B)`.
+        pos (torch.Tensor): Boolean `(B, B)` positive mask.
+        valid (torch.Tensor): Boolean `(B,)`; `True` for items with a text target.
+
+    Returns:
+        torch.Tensor: Scalar mean loss over valid anchors (0 when none).
+    """
+    neg_inf = torch.finfo(logits.dtype).min
+    cand = valid[None, :]
+    masked = logits.masked_fill(~cand, neg_inf)
+    denom = torch.logsumexp(masked, dim=1)
+    numer = torch.logsumexp(masked.masked_fill(~(pos & cand), neg_inf), dim=1)
+    per = denom - numer
+    return per[valid].mean() if bool(valid.any()) else logits.new_zeros(())
+
+
+class SentenceClipObjective(_ObjectiveBase):
+    """Symmetric sentence-level CLIP alignment between EEG and a frozen text encoder.
+
+    Each sentence's word-EEG tokens are pooled into one vector, projected to the text space, and aligned to a frozen sentence embedding
+    of the ground-truth text by a symmetric InfoNCE loss. The loss is multi-positive: every EEG reading of a text is a positive for that
+    text, so subject identity is pushed out. VICReg and the adversaries stay on as auxiliaries via `_ObjectiveBase.regularize`.
+
+    Attributes:
+        clip_head (nn.Module | None): Projects the pooled sentence embedding to the text-embedding width.
+        logit_scale (nn.Parameter): Learnable CLIP temperature (log scale), clamped in the forward pass.
+    """
+
+    def __init__(self, config: ObjectiveConfig, model: ZTEModel) -> None:
+        """Initialises the CLIP objective.
+
+        Args:
+            config (ObjectiveConfig): Objective configuration (uses `clip_temperature`).
+            model (ZTEModel): The encoder (its `embed_dim` sizes the CLIP projection head).
+        """
+        super().__init__(config, model)
+        self._embed_dim = model.embed_dim
+        self.clip_head: nn.Module | None = None
+        self.register_buffer('text_matrix', None, persistent=False)
+        self.logit_scale = nn.Parameter(
+            torch.tensor(math.log(1.0 / max(config.clip_temperature, 1e-4)))
+        )
+
+    def attach_text(self, text_matrix: torch.Tensor) -> None:
+        """Attaches the frozen `(n_sentences, text_dim)` L2-normalised text-embedding matrix.
+
+        Args:
+            text_matrix (torch.Tensor): Frozen sentence embeddings indexed by `batch['sentence_text_id']`.
+        """
+        self.text_matrix = text_matrix  # buffer: moves with .to(device), never trained
+        self.clip_head = nn.Linear(self._embed_dim, int(text_matrix.shape[1]))
+
+    def _sentence_vectors(
+        self, model: ZTEModel, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pools each sentence's word-EEG tokens into one contextual sentence embedding `(B, embed_dim)`.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: `(sentence_embeddings (B, embed_dim), token_hiddens (B, L, H))`.
+        """
+        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
+        empty = ~valid.any(dim=1)
+        if bool(empty.any()):
+            valid = valid.clone()
+            valid[empty] = batch['pad_mask'][empty]
+        hidden = model.token_hidden(batch)  # (B, L, H)
+        hidden_ctx = model.contextualize(hidden, valid)  # sentence-contextual (bidirectional)
+        pooled = model._pool_tokens(hidden_ctx, valid)  # (B, H)  # noqa: SLF001 -- shared pooling
+        return model.project(
+            pooled
+        ), hidden  # (B, embed_dim), plus token hiddens for VICReg/adversary
+
+    def compute(
+        self, model: ZTEModel, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Computes the symmetric CLIP loss (+ VICReg/invariance auxiliaries) for a batch.
+
+        Args:
+            model (ZTEModel): The ZTE encoder.
+            batch (dict[str, Any]): A collated batch dict (uses `sentence_text_id`).
+
+        Returns:
+            tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`.
+        """
+        usable = _usable_mask(batch)
+        z_sent, hidden = self._sentence_vectors(model, batch)  # (B, embed_dim), (B, L, H)
+        emb_tok = model.project(hidden)  # token embeddings for VICReg / adversary
+        reg_loss, reg_metrics = self.regularize(batch, hidden, emb_tok, usable)
+
+        text_id = batch.get('sentence_text_id')
+        if self.clip_head is None or self.text_matrix is None or text_id is None:
+            zero = z_sent.sum() * 0.0 + reg_loss
+            return zero, {'loss': float(reg_loss.detach()), 'n_valid': 0.0, **reg_metrics}
+
+        # Cosine logits between every EEG reading and every text in the batch.
+        z_eeg = F.normalize(self.clip_head(z_sent), dim=-1)  # (B, text_dim)
+        valid = text_id >= 0
+        z_txt = F.embedding(
+            text_id.clamp(min=0), self.text_matrix
+        )  # (B, text_dim), already L2-normed
+        scale = self.logit_scale.exp().clamp(max=100.0)
+        logits = (z_eeg @ z_txt.t()) * scale  # (B, B): row=EEG reading, col=text
+        pos = (text_id[:, None] == text_id[None, :]) & valid[:, None] & valid[None, :]
+
+        if not bool(valid.any()):
+            zero = logits.sum() * 0.0 + reg_loss
+            return zero, {'loss': float(reg_loss.detach()), 'n_valid': 0.0, **reg_metrics}
+
+        clip_loss = 0.5 * (
+            _clip_direction(logits, pos, valid)  # EEG -> text
+            + _clip_direction(logits.t(), pos, valid)  # text -> EEG (pos is symmetric)
+        )
+        loss = clip_loss + reg_loss
+        with torch.no_grad():
+            neg_inf = torch.finfo(logits.dtype).min
+            pred = logits.masked_fill(~valid[None, :], neg_inf).argmax(dim=1)
+            hit = pos[torch.arange(len(pred), device=pred.device), pred] & valid
+            acc = float(hit.sum()) / max(int(valid.sum()), 1)
+        return loss, {
+            'loss': float(loss.detach()),
+            'clip_loss': float(clip_loss.detach()),
+            'clip_top1': acc,
+            'logit_scale': float(scale.detach()),
+            'n_valid': float(valid.sum()),
+            **reg_metrics,
+        }

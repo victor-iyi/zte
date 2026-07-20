@@ -1,11 +1,8 @@
 """The ZTE encoder: tokens -> (optionally contextual) word/sentence embeddings.
 
-`ZTEModel` is the trainable backbone shared by every objective. It runs a per-token frontend, optionally adds a learned subject embedding, optionally
-contextualises tokens with a transformer (bidirectional for masked modelling, causal for CPC), and projects to the `embed_dim` space (768 by default, to
-stay plug-compatible with the frozen LLM space used downstream in EEG-OT-CLIP).
-
-The non-contextual path (frontend -> projection) is the word2vec analogue used by the skip-gram/CBOW objectives: each word's embedding depends only on its own EEG,
-exactly like a word-embedding lookup depends only on the word.
+`ZTEModel` is the trainable backbone shared by every objective: a per-token frontend, optional subject conditioning, an optional transformer
+(bidirectional for masked modelling, causal for CPC), and a projection to `embed_dim`. Skipping the transformer gives the word2vec analogue
+used by skip-gram/CBOW, where a word's embedding depends only on its own EEG.
 """
 
 from __future__ import annotations
@@ -25,14 +22,14 @@ class AttentionPool(nn.Module):
     """Masked attention pooling from a token sequence to one vector.
 
     Attributes:
-        score: Linear layer producing per-token attention logits.
+        score (nn.Linear): Linear layer producing per-token attention logits.
     """
 
     def __init__(self, dim: int) -> None:
         """Initialises the pooler.
 
         Args:
-            dim: Token feature dimensionality.
+            dim (int): Token feature dimensionality.
         """
         super().__init__()
         self.score = nn.Linear(dim, 1)
@@ -61,7 +58,6 @@ class ZTEModel(nn.Module):
         hidden_dim (int): Frontend hidden width.
         embed_dim (int): Output embedding dimensionality.
         uses_raw (bool): Whether the frontend consumes raw EEG (vs band power).
-
     """
 
     def __init__(
@@ -102,17 +98,14 @@ class ZTEModel(nn.Module):
             if config.subject_conditioning
             else None
         )
-        # FiLM per-subject conditioning -- a feature-wise affine (gamma, beta) applied to the token hiddens. Zero-initialised,
-        # so it starts as the identity and, crucially, stays the identity for any subject id never seen in training (the held-out
-        # LOSO subject gets a valid vocab id but its row is never updated). This is the "condition on identity, don't only
-        # adversarially remove it" lever (Defossez et al., 2023) made honest for the held-out north-star.
+        # Per-subject FiLM affine, zero-initialised so an unseen (held-out LOSO) subject id stays the identity.
         self.subject_film = (
             nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None  # type: ignore[operator]
         )
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)
-        # Absolute positional schemes are added to the inputs here; relative schemes
-        # (RoPE / ALiBi) are applied inside the encoder's attention.
+
+        # Absolute schemes are added to the inputs here; RoPE / ALiBi act inside the encoder's attention.
         self.pos_encoding = config.pos_encoding
         self.pos_emb: nn.Parameter | None = None
         if config.pos_encoding == 'learned':
@@ -124,6 +117,7 @@ class ZTEModel(nn.Module):
                 sinusoidal_encoding(config.max_positions, self.hidden_dim),
                 persistent=False,
             )
+
         attn_pos = config.pos_encoding if config.pos_encoding in {'rope', 'alibi'} else 'none'
         self.context_encoder = ZTETransformerEncoder(
             dim=self.hidden_dim,
@@ -141,14 +135,13 @@ class ZTEModel(nn.Module):
         """Picks the frontend's input tensor from a collated batch.
 
         Args:
-            batch: A batch dict from `~zte.data.torch_dataset.collate_sentences`.
+            batch (dict[str, Any]): A batch dict from `collate_sentences`.
 
         Returns:
             torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len, n_features)` band-power tensor.
 
         Raises:
             ValueError: If the required representation is missing from `batch`.
-
         """
         key = 'raw' if self.uses_raw else 'features'
         value = batch.get(key)
@@ -163,19 +156,17 @@ class ZTEModel(nn.Module):
         """Runs the frontend (and subject conditioning) to per-token hiddens.
 
         Args:
-            batch(dict[str, Any]): A collated batch dict.
+            batch (dict[str, Any]): A collated batch dict.
 
         Returns:
-            Tensor (torch.Tensor): `(batch_size, seq_len, hidden_dim)`.
-
+            torch.Tensor: `(batch_size, seq_len, hidden_dim)`.
         """
         x = self.select_input(batch)
         hidden = self.frontend(x)  # (batch_size, seq_len, hidden_dim)
         if self.subject_emb is not None:
             hidden = hidden + self.subject_emb(batch['subject']).unsqueeze(1)
         if self.subject_film is not None:
-            # Per-subject feature-wise affine, broadcast over the token axis. Zero-init -> gamma=0,
-            # beta=0 => identity, so an unseen (held-out) subject id is a no-op, not injected noise.
+            # Feature-wise affine broadcast over the token axis; zero-init makes an unseen subject a no-op.
             gamma, beta = self.subject_film(batch['subject']).chunk(2, dim=-1)
             hidden = (1.0 + gamma).unsqueeze(1) * hidden + beta.unsqueeze(1)
         return hidden
@@ -186,13 +177,12 @@ class ZTEModel(nn.Module):
         """Applies the transformer over the token sequence.
 
         Args:
-            hidden(torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
-            pad_mask(torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at valid positions.
-            causal(bool): If `True`, apply a causal mask (for CPC).
+            hidden (torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
+            pad_mask (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at valid positions.
+            causal (bool): If `True`, apply a causal mask (for CPC).
 
         Returns:
-            Contextualised hiddens (torch.Tensor): `(batch_size, seq_len, hidden_dim)`.
-
+            torch.Tensor: Contextualised hiddens `(batch_size, seq_len, hidden_dim)`.
         """
         length = hidden.shape[1]
         if self.pos_emb is not None:  # learned absolute
@@ -207,18 +197,16 @@ class ZTEModel(nn.Module):
                 )
             )
             hidden = hidden + pe.to(hidden.dtype)
-        # RoPE / ALiBi (or none) are handled inside the encoder; pad_mask marks valid
-        # (attendable) positions, and `causal` gates future tokens for CPC.
         return self.context_encoder(hidden, pad_mask, causal=causal)
 
     def project(self, hidden: torch.Tensor) -> torch.Tensor:
         """Projects hiddens to the embedding space.
 
         Args:
-            hidden(torch.Tensor): Tensor `(..., hidden_dim)`.
+            hidden (torch.Tensor): Tensor `(..., hidden_dim)`.
 
         Returns:
-            Tensor (torch.Tensor): `(..., embed_dim)`.
+            torch.Tensor: Tensor `(..., embed_dim)`.
         """
         return self.projection(hidden)
 
@@ -228,9 +216,9 @@ class ZTEModel(nn.Module):
         """Computes token embeddings, optionally contextualised.
 
         Args:
-            batch: A collated batch dict.
-            contextual: Run the transformer (masked/CPC) vs per-token (skip-gram).
-            causal: Use a causal mask when `contextual` (CPC).
+            batch (dict[str, Any]): A collated batch dict.
+            contextual (bool): Run the transformer (masked/CPC) vs per-token (skip-gram).
+            causal (bool): Use a causal mask when `contextual` (CPC).
 
         Returns:
             torch.Tensor: Token embeddings `(batch_size, seq_len, embed_dim)`.
@@ -249,7 +237,6 @@ class ZTEModel(nn.Module):
 
         Returns:
             torch.Tensor: Pooled `(batch_size, hidden_dim)` via attention pooling when configured, else a masked mean.
-
         """
         if self.pool is not None:
             return self.pool(hidden, valid)
@@ -264,33 +251,31 @@ class ZTEModel(nn.Module):
 
         Routing is objective-aware so the exported sentence embedding matches the path the objective actually trained:
 
-        - `skipgram`/`cbow`: per-token frontend -> pool -> project (no transformer, since their contextual path was never in the gradient path).
+        - `skipgram`/`cbow`: per-token frontend -> pool -> project (their contextual path never sees a gradient).
         - `cpc`: causal-contextual -> pool -> project (CPC trains with a causal mask).
-        - `masked` or `None` (back-compat default): bidirectional-contextual -> pool -> project.
+        - `masked` or `None`: bidirectional-contextual -> pool -> project.
 
         Args:
             batch (dict[str, Any]): A collated batch dict.
-            objective (str | None): Trained objective name (`skipgram`|`cbow`|`masked`|`cpc`); `None` keeps the legacy bidirectional-contextual behaviour.
+            objective (ObjectiveName | None): Trained objective name; `None` defaults to the bidirectional-contextual path.
 
         Returns:
             torch.Tensor: Sentence embeddings `(batch_size, embed_dim)`.
-
         """
-        # Treat omitted words as non-tokens for both attention and pooling, with a
-        # fallback so a sentence with no present words is never fully masked.
+        # Omitted words are non-tokens for attention and pooling; fall back so no sentence is fully masked.
         valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
         empty = ~valid.any(dim=1)
         if bool(empty.any()):
             valid = valid.clone()
             valid[empty] = batch['pad_mask'][empty]
+
         hidden = self.token_hidden(batch)
         if objective in {'skipgram', 'cbow'}:
-            # Non-contextual path: pool the per-token frontend hiddens directly.
             pooled = self._pool_tokens(hidden, valid)
         elif objective == 'cpc':
             hidden = self.contextualize(hidden, valid, causal=True)
             pooled = self._pool_tokens(hidden, valid)
-        else:  # 'masked' or None -> bidirectional-contextual (back-compat default).
+        else:
             hidden = self.contextualize(hidden, valid, causal=False)
             pooled = self._pool_tokens(hidden, valid)
         return self.project(pooled)
@@ -316,7 +301,6 @@ def build_model(
 
     Returns:
         ZTEModel: An initialised `ZTEModel`.
-
     """
     return ZTEModel(
         config,
