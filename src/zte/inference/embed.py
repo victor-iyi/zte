@@ -1,8 +1,7 @@
 """Inference: turn a trained ZTE checkpoint into thought embeddings.
 
-`ZTEEmbedder` rebuilds the encoder (and its fitted normaliser) from a checkpoint's embedded state and produces embeddings either for a built
-`ZuCoDataset` (`ZTEEmbedder.embed`, word/sentence level with aligned metadata) or for brand-new in-memory EEG token arrays
-(`ZTEEmbedder.embed_signals`). Outputs can be exported to `.npz` and a nearest-neighbour helper supports qualitative probing of the learned space.
+`ZTEEmbedder` rebuilds the encoder and its fitted normaliser from a checkpoint, then embeds either a built `ZuCoDataset`
+with aligned metadata or brand-new in-memory EEG token arrays.
 """
 
 # pylint: disable=import-outside-toplevel
@@ -52,8 +51,8 @@ class ZTEEmbedder:
         self.config = config
         self.device = device
         self.model = model.to(device.device).eval()
-        # Populated by :meth:`from_checkpoint` so new in-memory signals can be
-        # normalised exactly as during training.
+
+        # Populated by `from_checkpoint`, so new signals are normalised exactly as during training.
         self.normalizer: Any | None = None
         self.subject_vocab: dict[str, int] | None = None
         self.in_dim: int | None = None
@@ -68,16 +67,16 @@ class ZTEEmbedder:
     ) -> ZTEEmbedder:
         """Rebuilds the encoder (and its normaliser) from a checkpoint.
 
-        Input shapes and the fitted feature-normaliser are read from the checkpoint's embedded state, so a dataset is *not* required
-        to embed new signals. A `dataset` is only used as a fallback for older checkpoints that predate shape embedding.
+        Input shapes and the fitted normaliser come from the checkpoint itself, so no dataset is needed to embed new
+        signals; `dataset` is only a fallback for checkpoints that carry no shapes.
 
         Args:
             ckpt_path (str | Path): Path to a `best.pt`/`last.pt` checkpoint.
-            dataset (ZuCoDataset | None): Optional built dataset, used only to infer frontend input shapes when the checkpoint lacks them.
+            dataset (ZuCoDataset | None): Built dataset, used only to infer frontend input shapes.
             device (DeviceSpec | None): Optional device spec (auto-resolved when `None`).
 
         Returns:
-            ZTEEmbedder: A ready `ZTEEmbedder`.
+            ZTEEmbedder: A ready embedder.
 
         Raises:
             ValueError: If input shapes can be found neither in the checkpoint nor from a supplied dataset.
@@ -109,7 +108,7 @@ class ZTEEmbedder:
         embedder.raw_shape = raw_shape
 
         if extra.get('normalizer'):
-            from zte.data.transforms import FeatureNormalizer
+            from zte.data.features.transforms import FeatureNormalizer
 
             embedder.normalizer = FeatureNormalizer.from_state(extra['normalizer'])
         embedder.subject_vocab = extra.get('subject_vocab')
@@ -129,15 +128,14 @@ class ZTEEmbedder:
 
         Args:
             dataset (ZuCoDataset): A built dataset.
-            level (EmbeddingLevel): `word` for one embedding per (present) word, or `sentence` for one pooled embedding per sentence.
+            level (EmbeddingLevel): `word` for one embedding per present word, or `sentence` for one pooled per sentence.
             indices (np.ndarray | None): Optional word-row indices to restrict to (e.g. a split).
             batch_size (int): Sentences per forward pass.
             present_only (bool): For word level, keep only present (non-omitted) words.
 
         Returns:
-            tuple[np.ndarray, pd.DataFrame]: `(embeddings, metadata)` where `embeddings` is `(n_samples, embed_dim)` and `metadata`
-                is a DataFrame of length `n_samples`.
-
+            tuple[np.ndarray, pd.DataFrame]: `(n_samples, embed_dim)` embeddings and a metadata frame of the same
+                length.
         """
         vocab = build_subject_vocab(dataset)
         torch_ds = ZuCoTorchDataset(dataset, indices=indices, subject_vocab=vocab)
@@ -159,9 +157,7 @@ class ZTEEmbedder:
                     meta_rows.append(self._sentence_meta(dataset, rows))
                     seq_ptr += 1
             else:
-                # Word-level routing mirrors each objective's trained representation:
-                # skipgram/cbow are non-contextual (per-token frontend -> project),
-                # while cpc/masked are contextual (causal/bidirectional transformer).
+                # Word-level routing mirrors each objective's trained representation.
                 contextual = objective in {'cpc', 'masked'}
                 causal = objective == 'cpc'
                 token_emb = (
@@ -189,10 +185,8 @@ class ZTEEmbedder:
     def calibrate_subject(self, baseline_band_power: np.ndarray, subject_code: str) -> None:
         """Calibrates a new subject into the shared space from an unlabelled baseline.
 
-        Computes and registers the new person's own normalisation (per-subject mean/std or the
-        Riemannian covariance-whitening map) from a short recording of them reading anything, so
-        their word embeddings are placed on the training cohort's scale with no labels and no
-        retraining. Pass their code to `embed_signals(..., subject_codes=...)` afterwards.
+        Registers their own normalisation from a short recording of them reading anything, placing their embeddings on
+        the training cohort's scale with no labels and no retraining. Pass their code to `embed_signals` afterwards.
 
         Args:
             baseline_band_power (np.ndarray): `(n, n_features)` un-normalised baseline tokens.
@@ -215,24 +209,20 @@ class ZTEEmbedder:
         batch_size: int = 256,
         show_progress: bool = True,
     ) -> np.ndarray:
-        """Embeds brand-new EEG token signals held in memory (no ZuCoDataset needed).
+        """Embeds brand-new EEG token signals held in memory, with no `ZuCoDataset` needed.
 
-        Each input row is one word's neural response and yields one embedding.  Pass `band_power` for a band-power checkpoint or
-        `raw` for a raw-Conformer checkpoint -- the one matching the model's frontend is used. Band-power inputs are passed through
-        the checkpoint's fitted normaliser by default so they are scaled exactly as during training.
-
-        Limitation: this streams tokens with no surrounding sentence context, so it always
-        uses the non-contextual per-token path (`project(token_hidden(...))`). For
-        `cpc`/`masked` checkpoints, whose trained word representation is contextual, this
-        is an approximation -- use :meth:`embed` on a `ZuCoDataset` to obtain the correct
-        objective-aware (contextual) word embeddings.
+        Each input row is one word's neural response and yields one embedding; whichever of `band_power`/`raw` matches
+        the model's frontend is used. Tokens stream with no surrounding sentence context, so this always takes the
+        non-contextual per-token path -- an approximation for `cpc`/`masked` checkpoints, whose trained word
+        representation is contextual. Use `embed` on a dataset for those.
 
         Args:
-            band_power (np.ndarray | None): `(n_tokens, n_features)` *un-normalised* band-power tokens; the last dim must equal the model's input size.
+            band_power (np.ndarray | None): Un-normalised `(n_tokens, n_features)` tokens; the last dim must equal the
+                model's input size.
             raw (np.ndarray | None): `(n_tokens, n_channels, time_steps)` raw EEG windows for a raw model.
-            subjects (np.ndarray | None): Optional `(n_tokens,)` integer subject ids for a subject-conditioned model (defaults to id 0).
-            subject_codes (np.ndarray | None): Optional `(n_tokens,)` subject *codes* (strings) selecting per-subject normalisation
-                statistics (from training or :meth:`calibrate_subject`); unknown codes use the population fallback.
+            subjects (np.ndarray | None): `(n_tokens,)` integer subject ids for a subject-conditioned model.
+            subject_codes (np.ndarray | None): `(n_tokens,)` subject codes selecting per-subject normalisation
+                statistics; unknown codes use the population fallback.
             apply_normalizer (bool): Apply the checkpoint's band-power normaliser (ignored for raw input).
             batch_size (int): Tokens per forward pass.
             show_progress (bool): Show a progress bar.
@@ -289,8 +279,8 @@ class ZTEEmbedder:
             end = min(start + batch_size, n)
             count = end - start
             chunk = torch.from_numpy(np.ascontiguousarray(signals[start:end])).to(dev)
-            # Treat each token as a length-1 sequence so the non-contextual path
-            # produces one embedding per signal.
+
+            # Each token is a length-1 sequence, so the non-contextual path yields one embedding per signal.
             batch: dict[str, Any] = {
                 'features': None,
                 'raw': None,
@@ -368,8 +358,7 @@ class ZTEEmbedder:
             k (int): Number of neighbours to return (excluding the query itself).
 
         Returns:
-            list[tuple[int, float]]: A list of `(index, cosine_similarity)` pairs, most similar first.
-
+            list[tuple[int, float]]: `(index, cosine_similarity)` pairs, most similar first.
         """
         normed = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8)
         sims = normed @ normed[query_idx]
@@ -385,8 +374,7 @@ def _input_shapes(dataset: ZuCoDataset) -> tuple[int | None, tuple[int, int] | N
         dataset (ZuCoDataset): A built dataset.
 
     Returns:
-        tuple[int | None, tuple[int, int] | None]: `(in_dim, raw_shape)` where unused entries are `None`.
-
+        tuple[int | None, tuple[int, int] | None]: `(in_dim, raw_shape)`, with unused entries `None`.
     """
     in_dim = None if dataset.features is None else int(dataset.features.shape[1])
     raw_shape = (

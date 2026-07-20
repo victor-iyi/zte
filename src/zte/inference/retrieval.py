@@ -1,9 +1,8 @@
-"""A lightweight cosine nearest-neighbour index over a labelled embedding bank.
+"""A cosine nearest-neighbour index over a labelled embedding bank, standing in for a learned decoder.
 
-This is a *temporary* stand-in for a learned decoder: given a bank of ZTE embeddings with known labels (e.g. the word each EEG token corresponds to),
-it answers "which known items is this new embedding closest to?" and turns that into predictions (majority vote / distance-weighted mean) or a crude
-`decode` to the nearest word. It also powers the evaluation suite's kNN probes and content retrieval. Brute-force cosine is used (no FAISS dependency);
-ZuCo-scale banks (thousands of tokens) are well within reach.
+It answers "which known items is this new embedding closest to?", turns that into predictions or a crude `decode` to
+the nearest word, and powers the evaluation suite's kNN probes. Brute-force cosine keeps FAISS out of the dependency
+list, which ZuCo-scale banks of a few thousand tokens comfortably allow.
 """
 
 from __future__ import annotations
@@ -30,9 +29,7 @@ def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)
 
 
-# Cap the transient (block x n_items) cosine-similarity tile so a large bank never
-# forces one giant (n_queries x n_items) allocation -- at ZuCo word scale that matrix
-# is 160k x 160k float32 (~96 GiB) and swaps the box to death.
+# Caps the transient similarity tile; a full 160k x 160k float32 matrix would be ~96 GiB.
 _QUERY_SIM_BUDGET_BYTES = 128 * 1024 * 1024
 
 
@@ -56,7 +53,6 @@ class NearestNeighborIndex:
     Attributes:
         bank (np.ndarray): L2-normalised bank embeddings `(n_items, embed_dim)`.
         metadata (pd.DataFrame): Per-bank-row labels, length `n_items`.
-
     """
 
     def __init__(
@@ -72,12 +68,9 @@ class NearestNeighborIndex:
         Args:
             embeddings (np.ndarray): Bank embeddings `(n_items, embed_dim)`.
             metadata (pd.DataFrame): Labels aligned row-for-row with `embeddings`.
-            csls (bool): If `True`, correct similarities with Cross-domain Similarity Local Scaling
-                (Conneau et al., 2018): `sim -> 2 * cos - r_query - r_bank`, where `r` is a point's mean
-                cosine to its `csls_k` nearest bank neighbours. This penalises hub-dense neighbourhoods
-                that are everyone's nearest neighbour -- the anisotropy/hubness that drives below-chance
-                retrieval -- without adding any signal (a monotone re-ranking). Default `False` keeps
-                plain cosine, so every existing caller is unchanged.
+            csls (bool): Correct similarities with CSLS, `sim -> 2 * cos - r_query - r_bank` for `r` a point's mean
+                cosine to its `csls_k` nearest bank neighbours. A monotone re-ranking that adds no signal but
+                penalises the hub-dense neighbourhoods behind below-chance retrieval.
             csls_k (int): Neighbourhood size for the CSLS mean-shift term.
 
         Raises:
@@ -92,16 +85,14 @@ class NearestNeighborIndex:
         self.metadata = metadata.reset_index(drop=True)
         self.csls = bool(csls)
         self.csls_k = int(csls_k)
-        # Per-bank neighbourhood mean r_bank (the CSLS "hubness" term); None when disabled.
         self.r_bank: np.ndarray | None = (
             self._neighbourhood_means(self.bank, self.csls_k) if self.csls else None
         )
 
     def _neighbourhood_means(self, points: np.ndarray, m: int) -> np.ndarray:
-        """Mean of each row's top-`m` cosine similarities to the bank (excluding an exact self-match).
+        """Mean of each row's top-`m` cosine similarities to the bank, excluding an exact self-match.
 
-        Block-tiled so the `(n_items x n_items)` similarity matrix is never materialised -- the same
-        memory guard `query` uses (a full self-similarity at ZuCo word scale would be ~96 GiB).
+        Block-tiled under the same memory guard `query` uses, so the `(n_items x n_items)` matrix never materialises.
 
         Args:
             points (np.ndarray): L2-normalised points `(n, embed_dim)` scored against the bank. When
@@ -141,11 +132,12 @@ class NearestNeighborIndex:
         Args:
             queries (np.ndarray): Query embeddings `(n_queries, embed_dim)`.
             k (int): Number of neighbours to return.
-            self_indices (np.ndarray | None): Optional `(n_queries,)` bank row to exclude per query (for leave-one-out when the queries *are* the bank).
+            self_indices (np.ndarray | None): `(n_queries,)` bank row to exclude per query, for leave-one-out when
+                the queries are the bank.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: `(indices (n_queries, k), similarities (n_queries, k))`, neighbours sorted by descending cosine similarity.
-
+            tuple[np.ndarray, np.ndarray]: `(indices, similarities)`, each `(n_queries, k)`, sorted by descending
+                similarity.
         """
         q = _l2_normalize(queries)
         n_items = self.bank.shape[0]
@@ -154,15 +146,13 @@ class NearestNeighborIndex:
         idx_out = np.empty((n_queries, k), dtype=np.int64)
         sim_out = np.empty((n_queries, k), dtype=np.float32)
 
-        # Score the bank in query-blocks so the full (n_queries x n_items) similarity
-        # matrix is never materialised; peak memory stays flat as the bank grows.
+        # Query-blocked, so peak memory stays flat as the bank grows.
         block = _query_block_rows(n_items)
         for start in range(0, n_queries, block):
             stop = min(start + block, n_queries)
             sims = q[start:stop] @ self.bank.T  # (b, n_items)
             if self.csls and self.r_bank is not None:
-                # CSLS mean-shift: 2*cos - r_query - r_bank de-hubs the space so anisotropy /
-                # hubness no longer let a few points win every top-1 (Conneau et al., 2018).
+                # The CSLS mean-shift de-hubs the space, so a few points can no longer win every top-1.
                 m = max(1, min(self.csls_k, n_items - 1))
                 r_query = np.partition(sims, kth=n_items - m, axis=1)[:, -m:].mean(axis=1)
                 sims = 2.0 * sims - r_query[:, None] - self.r_bank[None, :]
@@ -170,7 +160,6 @@ class NearestNeighborIndex:
                 rows = np.arange(stop - start)
                 sims[rows, self_indices[start:stop]] = -np.inf
             part = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
-            # Sort each block's top-k slice by similarity.
             order = np.argsort(-np.take_along_axis(sims, part, axis=1), axis=1)
             part = np.take_along_axis(part, order, axis=1)
             idx_out[start:stop] = part
@@ -185,7 +174,7 @@ class NearestNeighborIndex:
             k (int): Number of neighbours.
 
         Returns:
-            list[pd.DataFrame]: One DataFrame of neighbour rows per query (with a `similarity` column added).
+            list[pd.DataFrame]: One frame of neighbour rows per query, with a `similarity` column added.
         """
         idx, sims = self.query(queries, k)
         out: list[pd.DataFrame] = []
@@ -227,7 +216,6 @@ class NearestNeighborIndex:
 
         Returns:
             np.ndarray: Predictions `(n_queries,)`.
-
         """
         values = self.metadata[column].to_numpy()
         if task == 'auto':
@@ -235,6 +223,7 @@ class NearestNeighborIndex:
         idx, sims = self.query(queries, k=k, self_indices=self_indices)
         neighbour_vals = values[idx]  # (n_queries, k)
 
+        # Regression weights by similarity; classification takes a plain majority.
         if task == 'regression':
             weights = np.clip(sims, 0.0, None)
             weights = np.where(weights.sum(1, keepdims=True) > 0, weights, 1.0)
