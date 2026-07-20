@@ -1,23 +1,4 @@
-"""Generate the ZTE *study* config YAMLs (bias-controlled experiment suite).
-
-Every study config is built here as a `ZTEConfig` object and serialised with `ZTEConfig.to_yaml`, so each file is guaranteed valid against the *current*
-schema (no hand-edited YAML that can drift out of sync). A short comment header is prepended to each file explaining the study, its A/B partner and what to look
-at. Re-run this any time the schema changes::
-
-    .venv/bin/python scripts/make_study_configs.py
-
-The generated files are the matched variants for the two studies that need new configs -- Study 2 (subject-invariance A/B under LOSO) and Study 3 (VICReg
-anti-collapse ablation). Studies 1, 4 and 5 reuse the shipped `exp*` presets or `zte-benchmark`, so they need no new files.
-
-Design invariants shared by every study config (stated in the doc too):
-  * `subjects=None`, `tasks=('SR', 'NR')`  -> maximise the dataset (all 12 subjects, both reading tasks).
-  * `normalizer_fit='train'`               -> normaliser/imputer fit on train only (no val/test/held-out leakage).
-  * `test_fraction > 0`                    -> every headline number is on HELD-OUT data.
-  * `deterministic=True`, fixed `seed`     -> reproducible; the runner sweeps seeds 42/43/44 for bootstrap CIs.
-  * `include_eye_tracking=False`           -> EEG-only is the honest headline (no gaze artefact) for the invariance / collapse questions.
-
-Only the levers under test differ between an A/B pair; everything else is held identical so any metric delta is attributable to the lever, not a confound.
-"""
+"""Generate the ZTE study config YAMLs from `ZTEConfig` objects, so they cannot drift from the schema."""
 
 from __future__ import annotations
 
@@ -29,15 +10,13 @@ from zte.config import DatasetConfig, ObjectiveConfig, TrainConfig, ZTEConfig
 # Where the study YAMLs are written (next to the shipped exp*.yaml presets).
 EXPERIMENTS_DIR: Path = Path(__file__).resolve().parent.parent / 'experiments'
 
-# One held-out subject for the LOSO study. ZuCo v1 has 12 subjects; rotate this # across all of them for a full leave-one-subject-out
-# sweep (see the runner / docs). ZAB is a safe default present in `res/data/zuco_extracted`.
+# Rotate across all 12 ZuCo v1 subjects for a full leave-one-subject-out sweep.
 LOSO_HOLDOUT: str = 'ZAB'
 
 
 def _base_dataset(**overrides: object) -> DatasetConfig:
     """A dataset config that maximises the cohort and fits the normaliser on train only.
 
-    All 12 subjects (`subjects=None`), both reading tasks (SR + NR), band-power representation, `normalizer_fit='train'`.
     `include_eye_tracking` and `normalize` are left to the caller because they are levers under test.
     """
     base = DatasetConfig(
@@ -67,10 +46,7 @@ def _base_train(**overrides: object) -> TrainConfig:
 
 
 # --------------------------------------------------------------------------- #
-# Study 2 -- subject-invariance A/B under leave-one-subject-out (the north star).
-#   Matched: skipgram, EEG-only, by_subject_loso, same held-out subject, 40 ep.
-#   Differs: the invariance stack only
-#            (VICReg var+cov, per-subject norm, cross-subject positives, adversary).
+# Study 2 -- subject-invariance A/B under LOSO; only the invariance stack differs.
 # --------------------------------------------------------------------------- #
 
 _INVAR_BASELINE = ZTEConfig(
@@ -100,10 +76,7 @@ _INVAR_FULL = ZTEConfig(
 )
 
 # --------------------------------------------------------------------------- #
-# Study 3 -- VICReg anti-collapse ablation.
-#   Matched: skipgram, EEG-only, by_stimulus (text never spans train/test),
-#            zscore_channel, no adversary, no cross-subject positives, 40 ep.
-#   Differs: VICReg variance+covariance weights ONLY (0 -> 1).
+# Study 3 -- anti-collapse ablation; only the VICReg variance+covariance weights differ.
 # --------------------------------------------------------------------------- #
 
 _VICREG_OFF = ZTEConfig(

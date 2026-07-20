@@ -1,27 +1,7 @@
-"""Provision frozen word-meaning vectors for Unit A (`objective.meaning_source`).
+"""Provision frozen GloVe word-meaning vectors for `objective.meaning_source` (`zte-run --meaning static` does this per-run).
 
-The meaning-distillation target must carry real semantics to attack `content = 0%`; the built-in hash fallback only verifies the mechanism.
-This script downloads a standard static GloVe embedding and writes it in the GloVe text format (`word v1 v2 …` per line) that `zte.data.meaning.build_meaning_matrix` consumes.
-
-It fetches directly from the public `gensim-data` release files (plain gzipped word2vec text) with the Python standard library only — **no `gensim` dependency**,
-which does not build on Python 3.14 (its bundled Cython C code still references the removed `PyDictObject.ma_version_tag`).
-
-Restricting with `--vocab-from` to the words that actually occur in a dataset (the ZuCo vocabulary is tiny) yields a file of a few thousand rows;
-otherwise `--top` keeps the N most frequent words.
-
-Available `--model` names (dimension is the trailing number):
-    glove-wiki-gigaword-50 / -100 / -200 / -300   ·   glove-twitter-25 / -50 / -100 / -200
-
-Examples::
-
-    # ZuCo-only GloVe-300 (smallest, exact) — the path sota_loso.yaml expects:
-    python scripts/build_meaning_vectors.py --out res/vectors/glove.300d.txt \
-        --vocab-from experiments/sota_loso.yaml --root res/data/zuco_extracted
-
-    # (Turn-key alternative: `zte-run --meaning static` builds + wires this per-run; see zte.cli.provision.)
-
-    # 50k most frequent GloVe-300 vectors (no dataset needed):
-    python scripts/build_meaning_vectors.py --out res/vectors/glove.300d.txt --top 50000
+Available --model names (the trailing number is the dimension):
+    glove-wiki-gigaword-50 / -100 / -200 / -300, glove-twitter-25 / -50 / -100 / -200
 """
 
 from __future__ import annotations
@@ -29,14 +9,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from zte.data.glove import DEFAULT_MODEL, provision_glove
+from zte.data.targets.glove import DEFAULT_MODEL, provision_glove
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('scripts.meaning_vectors')
 
 
 def _vocab_from_config(config_path: str, root: str | None) -> set[str] | None:
-    """Returns the lowercased word set of the dataset a config defines (or None on failure)."""
+    """Returns the lowercased word set of the dataset a config defines, or `None` on failure."""
     try:
         from zte.config import ZTEConfig
         from zte.data.dataset import ZuCoDataset

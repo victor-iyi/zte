@@ -1,25 +1,7 @@
-"""Export a real electrode-coordinate montage CSV for spatial (spherical-harmonic) encoding.
+"""Export a `channel,x,y,z,label,region` montage CSV for spatial encoding, from an MNE standard montage.
 
-Electrode spatial encoding (`model.spatial_encoding='spherical_harmonics'`) is mathematically exact for whatever coordinates it is given; the only
-approximation is in the coordinates themselves. This script writes a `channel,x,y,z,label` CSV -- the format `zte.models.spatial.ScalpGeometry.from_csv`
-consumes and that `dataset.montage_csv` points at -- from an MNE standard montage, so the encoding uses the true scalp geometry instead of the
-coordinate-free fallback.
-
-ZuCo v1 and v2 recorded with the 129-channel EGI HydroCel Geodesic Sensor Net (E1..E128 plus the Cz vertex reference, named E129 in ZuCo) and use
-**standard EGI channel ordering** — confirmed against the dataset documentation. After preprocessing, 105 scalp channels are retained (the outer
-face/neck artefact ring is dropped). Because the ordering is standard, `--zuco105` reproduces that retained set directly. The output also carries a
-coordinate-derived `region` column, so one CSV serves both the spatial encoding (`x,y,z`) and the eval's region-importance analysis.
-
-Usage:
-    python scripts/export_montage.py --out res/montage_gsn105.csv --zuco105   # recommended: the ZuCo 105-channel scalp cap, no manual step
-    python scripts/export_montage.py --out res/montage_full.csv               # full net in its own order (unaligned to the 105-subset)
-
-    # Turn-key alternative: `zte-run --spatial exact` builds + wires this montage per-run (see zte.cli.provision).
-
-`--zuco105` starts from the 129-net (the Cz reference is excluded automatically), drops the 23 standard EGI outer-ring electrodes by elevation, and
-keeps the 105 scalp electrodes in native E-number order — the order ZuCo's band-power tensors use.
-
-Requires the optional dependency `mne` (`pip install mne`).
+Pass --zuco105 for the 105 scalp electrodes ZuCo retains, in the order its band-power tensors use.
+Requires the optional dependency `mne`; `zte-run --spatial exact` does this per-run instead.
 """
 
 from __future__ import annotations
@@ -27,10 +9,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from zte.data.montage import DEFAULT_MONTAGE, build_montage_csv, zuco105_labels
+from zte.data.montage.montage import DEFAULT_MONTAGE, build_montage_csv, zuco105_labels
 
-# Re-exported for backward compatibility; the importable core now lives in `zte.data.montage`, shared
-# with the `zte-run --spatial exact` flag so the script and the flag stay byte-for-byte identical.
+# Re-exported so this script and `zte-run --spatial exact` share one implementation.
 __all__ = ['build_montage_csv', 'zuco105_labels']
 
 
