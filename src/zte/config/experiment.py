@@ -44,7 +44,7 @@ class ZTEConfig:
             path (str | Path): Destination `.yaml` file (parent dirs are created).
 
         Returns:
-            The written `pathlib.Path`.
+            Path: The written path.
         """
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -56,11 +56,10 @@ class ZTEConfig:
         """Builds a `ZTEConfig` from a nested dict, coercing tuples/types.
 
         Args:
-            data (dict[str, Any]): A nested mapping such as one produced by :meth:`to_dict` or parsed from YAML.
+            data (dict[str, Any]): A nested mapping such as one produced by `to_dict` or parsed from YAML.
 
         Returns:
-            A fully constructed config with sub-dataclasses rebuilt `ZTEConfig`.
-
+            ZTEConfig: A fully constructed config with sub-dataclasses rebuilt.
         """
         return cls(
             dataset=_build(DatasetConfig, data.get('dataset', {})),
@@ -72,14 +71,13 @@ class ZTEConfig:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ZTEConfig:
-        """Loads a :class:`ZTEConfig` from a YAML file.
+        """Loads a `ZTEConfig` from a YAML file.
 
         Args:
-            path (str | Path): Path to a YAML config previously written by :meth:`to_yaml`.
+            path (str | Path): Path to a YAML config previously written by `to_yaml`.
 
         Returns:
             ZTEConfig: The parsed config.
-
         """
         data = yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}
         return cls.from_dict(data)

@@ -1,8 +1,11 @@
-"""Typed, serialisable configuration objects for the whole ZTE pipeline.
+"""Typed, serialisable configuration dataclasses for the whole pipeline.
 
-Every tunable knob lives in a `dataclasses` object so configs are explicit.  The top-level `ZTEConfig` aggregates the dataset,
-model, objective and training sub-configs and is what the CLIs read and write.  Each sub-config is its own module
-(`dataset`, `model`, `objective`, `train`); the Literal type aliases live in `types`.
+- `zte.config.dataset` -- `DatasetConfig` and `MissingConfig`.
+- `zte.config.model` -- `ModelConfig` (encoder architecture).
+- `zte.config.objective` -- `ObjectiveConfig` (losses and regularisers).
+- `zte.config.train` -- `TrainConfig` (optimiser and schedule).
+- `zte.config.experiment` -- `ZTEConfig`, the aggregate the CLIs read and write.
+- `zte.config.types` -- the Literal type aliases.
 """
 
 from __future__ import annotations

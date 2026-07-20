@@ -12,8 +12,7 @@ class MissingConfig:
     """How missing word-level values (omitted words, rejected epochs) are filled."""
 
     method: MissingMethod = 'mask_only'
-    """The imputation strategy. `mask_only` leaves NaNs in place and relies solely on the presence mask;
-    `drop` removes incomplete rows; the remainder fill values in different ways."""
+    """Imputation strategy. `mask_only` leaves NaNs to the presence mask; `drop` removes incomplete rows; the rest fill."""
 
     knn_neighbors: int = 5
     """Neighbour count for the `knn` method."""
@@ -25,7 +24,7 @@ class MissingConfig:
     """Pandas interpolation kind for `interpolate`."""
 
     add_missing_indicator: bool = True
-    """If `True`, emit a boolean presence mask alongside the imputed features so downstream losses can ignore filled entries."""
+    """Emit a boolean presence mask alongside the imputed features so downstream losses can ignore filled entries."""
 
 
 @dataclass
@@ -42,8 +41,7 @@ class DatasetConfig:
     """Subject codes to include, or `None` for all discovered."""
 
     granularity: Granularity = 'word'
-    """Token granularity. Only `'word'` is implemented; `'sentence'` is reserved (use `ZTEEmbedder(level='sentence')`
-    for pooled sentence embeddings at inference time)."""
+    """Token granularity. Only `'word'` is implemented; use `ZTEEmbedder(level='sentence')` for pooled sentences."""
 
     representation: Representation = 'band_power'
     """Use compact band-power vectors, raw time-series windows, or both."""
@@ -52,13 +50,20 @@ class DatasetConfig:
     """Eye-tracking measures whose band features are used for the band-power representation."""
 
     include_eye_tracking: bool = True
-    """Whether eye-tracking *behaviour* (the fixation-duration scalars FFD/SFD/GD/GPT/TRT, `nFixations` and `meanPupilSize`)
-    is appended to each word's band-power feature vector. `True` (default) enriches the reading-evoked representation;
-    `False` yields an EEG-only representation better suited to imagined thought, where no eye-tracking exists. The EEG band-power
-    itself is always kept -- this toggle only governs the extra gaze-behaviour dimensions."""
+    """Append the gaze-behaviour scalars to each word's band-power vector. `False` gives an EEG-only representation,
+    suited to imagined thought where no eye-tracking exists; the EEG band-power itself is kept either way."""
 
-    eye_tracking_measures: tuple[str, ...] = ('FFD', 'GD', 'GPT', 'TRT', 'nFixations', 'meanPupil')
-    """Which per-word eye-tracking scalars are appended when `include_eye_tracking` is `True`."""
+    # SFD is excluded: ~60% missing and equal to FFD wherever present.
+    eye_tracking_measures: tuple[str, ...] = (
+        'FFD',
+        'GD',
+        'GPT',
+        'TRT',
+        'n_fixations',
+        'mean_pupil',
+    )
+    """Per-word eye-tracking scalars appended when `include_eye_tracking` is `True`. Names must match the `words`
+    table columns written by `mat_loader` -- an unmatched name is silently skipped."""
 
     bands: tuple[Band, ...] = BANDS
     """Frequency bands used for the band-power representation."""
@@ -70,22 +75,20 @@ class DatasetConfig:
     """Fixed time length (samples) raw EEG is padded/truncated to."""
 
     time_bins: int = 1
-    """Number of time bins to split each word's raw window into when computing band power, to expose the post-word N400
-    semantic-integration window.  `1` (default) is the legacy single whole-fixation vector; `>1` yields band power per bin so an N400-window
-    feature is exposed to the encoder instead of being integrated away. Requires the raw signal (`representation` includes raw)."""
+    """Time bins each word's raw window is split into for band power. `1` is one whole-fixation vector; `>1` exposes
+    the post-word N400 semantic-integration window instead of integrating it away. Requires a raw `representation`."""
 
     normalize: Normalization = 'zscore_channel'
-    """Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std across the whole cohort; `zscore_subject` fits and
-    applies a **per-subject** mean/std, which removes the constant per-subject offset that otherwise makes subject identity the cheapest thing
-    to encode (a direct attack on the "learns who, not what" failure mode). `minmax`/`none` as named."""
+    """Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std across the cohort; `zscore_subject` fits
+    per subject, removing the constant offset that makes subject identity the cheapest thing to encode."""
 
     normalizer_fit: Literal['train', 'all'] = 'train'
-    """Whether the normaliser (and imputer) statistics are fit on the training split only (`train`, default -- no leakage into val/test/held-out subject)
-    or on the whole dataset before splitting (`all`, the legacy behaviour). `train` is required for honest held-out and LOSO numbers."""
+    """Fit normaliser and imputer statistics on the training split only (`train`) or on everything before splitting
+    (`all`). `train` is required for honest held-out and LOSO numbers."""
 
     montage_csv: str | None = None
-    """Optional path to an electrode-montage CSV (`channel,region` or `channel,x,y,z`) used for scalp-region importance.
-    When `None`, an *approximate* rostro-caudal channel partition is used and every region claim is flagged `approximate=True`."""
+    """Electrode-montage CSV (`channel,region` or `channel,x,y,z`) for scalp-region importance. When `None`, an
+    approximate rostro-caudal partition is used and every region claim is flagged `approximate=True`."""
 
     bandpass: tuple[float, float] | None = None
     """Optional `(low, high)` Hz Butterworth band-pass for raw EEG."""
@@ -94,8 +97,7 @@ class DatasetConfig:
     """Missing-value handling configuration."""
 
     include_omitted: bool = True
-    """Whether to keep omitted words as masked tokens (preserves sentence sequence integrity). When `False`, omitted-word rows are dropped
-    (as with `missing.method='drop'`)."""
+    """Keep omitted words as masked tokens, preserving sentence sequence integrity; `False` drops those rows."""
 
     min_words: int = 1
     """Drop sentences shorter than this many words."""

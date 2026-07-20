@@ -14,8 +14,7 @@ def _build(cls: type, data: dict[str, Any]) -> Any:
         data (dict[str, Any]): Field values, typically parsed from YAML where tuples became lists.
 
     Returns:
-        An instance of `cls` with type-appropriate field values.
-
+        Any: An instance of `cls` with type-appropriate field values.
     """
     if not dataclasses.is_dataclass(cls):
         return data
