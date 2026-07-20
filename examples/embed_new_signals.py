@@ -23,7 +23,7 @@ import numpy as np
 
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
-from zte.data.features import flatten_band_power
+from zte.data.features.features import flatten_band_power
 from zte.data.synthetic import generate_synthetic_zuco
 from zte.device import resolve_device
 from zte.inference.embed import ZTEEmbedder
