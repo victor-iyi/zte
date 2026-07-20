@@ -1,24 +1,18 @@
 """Honesty add-ons: permutation nulls, held-out cross-subject decoding, and anchor calibration.
 
-The core evaluation reports bootstrap CIs against *analytic* chance. This module adds the three
-things reviewers ask for when a paper claims "above chance":
+The core evaluation reports bootstrap CIs against *analytic* chance. This module adds the three things reviewers ask for when
+a paper claims "above chance":
 
-1. **Permutation null** (`retrieval_permutation_test`) — shuffle the content labels many times and
-   recompute the statistic to get an *empirical* null and a p-value, rather than trusting an
-   analytic chance rate. The nearest-neighbour structure is computed once, so this is cheap.
-2. **Held-out cross-subject decoding** (`cross_subject_decode`) — the honest generalization test:
-   train a linear probe on N-1 subjects and score it on the held-out subject, one fold per
-   subject. If content decodes on a brain the probe never saw, the space carries transferable
-   content — not just per-subject structure.
-3. **Anchor calibration lift** (`anchor_calibration_lift`) — a metrics-side version of the
-   explorer's "calibrate a new brain" demo: fit an orthogonal Procrustes map from a few shared
-   *anchor* words that aligns a held-out subject into the others' frame, then measure whether the
-   same-word cross-subject cohesion improves on *held-out* (non-anchor) words. This quantifies
-   whether a stranger's brain can be snapped into the shared space with a tiny calibration —
-   the project's central open question — without any retraining.
-
-All functions are pure (numpy / scikit-learn) and degrade gracefully (returning
-``{'applicable': False, 'reason': ...}``) when there is too little data.
+1. **Permutation null** (`retrieval_permutation_test`) — shuffle the content labels many times and recompute the statistic to
+    get an *empirical* null and a p-value, rather than trusting an analytic chance rate.
+2. **Held-out cross-subject decoding** (`cross_subject_decode`) — the honest generalization test: train a linear probe on N-1
+    subjects and score it on the held-out subject, one fold per subject. If content decodes on a brain the probe never saw,
+    the space carries transferable content — not just per-subject structure.
+3. **Anchor calibration lift** (`anchor_calibration_lift`) — a metrics-side version of the explorer's "calibrate a new brain"
+    fit an orthogonal Procrustes map from a few shared *anchor* words that aligns a held-out subject into the others' frame, then
+    measure whether the same-word cross-subject cohesion improves on *held-out* (non-anchor) words. This quantifies whether a
+    stranger's brain can be snapped into the shared space with a tiny calibration — the project's central open question — without
+    any retraining.
 """
 
 from __future__ import annotations
@@ -52,15 +46,15 @@ def retrieval_permutation_test(
     neighbour structure, so the geometry is held constant and only the labels move.
 
     Args:
-        emb (np.ndarray): Embeddings ``(n, d)`` (e.g. sentence embeddings).
+        emb (np.ndarray): Embeddings `(n, d)` (e.g. sentence embeddings).
         group_ids (np.ndarray): Content group id per item (e.g. stimulus id shared across subjects).
         n_perm (int): Number of label permutations.
         seed (int): RNG seed.
-        max_n (int): If ``n > max_n`` a random subsample is used (kept deterministic by ``seed``).
+        max_n (int): If `n > max_n` a random subsample is used (kept deterministic by `seed`).
 
     Returns:
-        dict: ``{applicable, observed_top1, null_mean, null_std, p_value, n_perm, n_queries,
-        above_chance}``. ``p_value`` is ``(1 + #{null >= observed}) / (n_perm + 1)``.
+        dict: `{'applicable', 'observed_top1', 'null_mean', 'null_std', 'p_value', 'n_perm', 'n_queries',
+        'above_chance'}`. `p_value` is `(1 + #{null >= observed}) / (n_perm + 1)`.
     """
     emb = np.asarray(emb, dtype=np.float32)
     group_ids = np.asarray(group_ids)
@@ -68,27 +62,36 @@ def retrieval_permutation_test(
     if n < 4:
         return {'applicable': False, 'reason': 'need >= 4 items'}
     rng = np.random.default_rng(seed)
+    # If the number of items is greater than the maximum number of items, subsample the items.
     if n > max_n:
         keep = np.sort(rng.choice(n, size=max_n, replace=False))
         emb, group_ids = emb[keep], group_ids[keep]
         n = max_n
-    # only groups with >= 2 members can be retrieved; if none, the test is undefined
     _, counts = np.unique(group_ids, return_counts=True)
     if counts.max() < 2:
         return {'applicable': False, 'reason': 'no group has >= 2 members'}
 
+    # Normalize the embeddings and compute the similarity matrix.
     x = _l2norm(emb)
     sims = x @ x.T
     np.fill_diagonal(sims, -np.inf)
+
+    # Find the nearest neighbour for each item.
     nn = np.argmax(sims, axis=1)
+
+    # Get the group id of the nearest neighbour.
     nn_group = group_ids[nn]
     observed = float(np.mean(nn_group == group_ids))
 
+    # Compute the null distribution by shuffling the group ids and recomputing the statistic.
     null = np.empty(n_perm, dtype=np.float64)
     for i in range(n_perm):
         perm = rng.permutation(group_ids)
         null[i] = np.mean(perm[nn] == perm)
+
+    # Compute the p-value.
     p = (1.0 + int(np.sum(null >= observed))) / (n_perm + 1.0)
+
     return {
         'applicable': True,
         'observed_top1': observed,
@@ -104,7 +107,7 @@ def retrieval_permutation_test(
 def _fit_score(
     xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str
 ) -> float | None:
-    """Fits a standardised linear probe on ``(xtr, ytr)`` and scores it on the held-out fold."""
+    """Fits a standardised linear probe on `(xtr, ytr)` and scores it on the held-out fold."""
     import warnings
 
     from sklearn.exceptions import ConvergenceWarning
@@ -120,14 +123,11 @@ def _fit_score(
         return None
     scaler = StandardScaler().fit(xtr)
     xtr_s, xte_s = scaler.transform(xtr), scaler.transform(xte)
-    # High-dimensional embeddings give the probes a near-collinear (Ridge) or near-separable
-    # (lbfgs) design, so scikit-learn emits an ill-conditioning / non-convergence warning once per
-    # LOSO fold. Neither is actionable here -- the probe's held-out score is still the diagnostic we
-    # want, and conditioning is separately quantified by embedding_health's effective rank -- so we
-    # give lbfgs a larger iteration budget and suppress the per-fold spam rather than flood stderr.
+    # Suppress warnings about convergence and linear algebra.
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', ConvergenceWarning)
         warnings.simplefilter('ignore', LinAlgWarning)
+        # Fit the model and predict the held-out subject.
         if task == 'regression':
             model: object = Ridge(alpha=1.0).fit(xtr_s, ytr)
             # R^2 on the held-out subject
@@ -135,8 +135,10 @@ def _fit_score(
             ss_res = float(np.sum((yte - pred) ** 2))
             ss_tot = float(np.sum((yte - yte.mean()) ** 2)) or 1.0
             return 1.0 - ss_res / ss_tot
+
         if len(np.unique(ytr)) < 2:
             return None
+
         model = LogisticRegression(max_iter=2000, C=1.0).fit(xtr_s, ytr)
         return float(model.score(xte_s, yte))  # type: ignore[attr-defined]
 
@@ -158,31 +160,37 @@ def cross_subject_decode(
     target "generalises" only if the CI lower bound clears chance.
 
     Args:
-        word_emb (np.ndarray): Word embeddings ``(n, d)``.
-        word_meta (pd.DataFrame): Aligned metadata; must have ``subject`` and the target columns.
-        targets (tuple[str, ...]): Columns to decode. ``word_len`` / ``log_freq`` are regressions.
+        word_emb (np.ndarray): Word embeddings `(n, d)`.
+        word_meta (pd.DataFrame): Aligned metadata; must have `subject` and the target columns.
+        targets (tuple[str, ...]): Columns to decode. `word_len` / `log_freq` are regressions.
         seed (int): RNG seed (train subsampling + bootstrap).
         min_subjects (int): Minimum distinct subjects required to run.
         max_train (int): Cap on training rows per fold (subsampled) for speed.
 
     Returns:
-        dict: ``{applicable, n_subjects, targets: {name: {task, mean, ci, chance, n_folds,
-        above_chance}}}`` or ``{applicable: False, reason}``.
+        dict: `{'applicable', 'n_subjects', 'targets': {name: {task, mean, ci, chance, n_folds,
+        above_chance}}}` or `{'applicable': False, 'reason'}`.
     """
     from zte.evaluation.metrics import bootstrap_ci
 
+    # Check if the metadata has a subject column.
     if 'subject' not in word_meta.columns:
         return {'applicable': False, 'reason': 'no subject column'}
+
     subjects = word_meta['subject'].astype(str).to_numpy()
     uniq = np.unique(subjects)
+
+    # Check if the number of unique subjects is greater than the minimum number of subjects.
     if len(uniq) < min_subjects:
         return {'applicable': False, 'reason': f'need >= {min_subjects} subjects'}
 
     rng = np.random.default_rng(seed)
     out_targets: dict[str, Any] = {}
+    # Iterate over the targets.
     for tgt in targets:
         if tgt not in word_meta.columns:
             continue
+
         task = 'regression' if tgt in ('word_len', 'log_freq') else 'classification'
         y_all = (
             pd.to_numeric(word_meta[tgt], errors='coerce').to_numpy(dtype=float)
@@ -213,11 +221,17 @@ def cross_subject_decode(
                 chances.append(float(c.max() / len(yte)))
             else:
                 chances.append(0.0)
+
+        # If there are less than 2 scores, continue.
         if len(scores) < 2:
             continue
+
+        # Compute the bootstrap CI.
         arr = np.asarray(scores, dtype=float)
         point, lo, hi = bootstrap_ci(arr, seed=seed)
         chance = float(np.mean(chances)) if chances else 0.0
+
+        # Add the target to the output targets.
         out_targets[tgt] = {
             'task': task,
             'mean': float(point),
@@ -226,18 +240,24 @@ def cross_subject_decode(
             'n_folds': len(scores),
             'above_chance': bool(lo > chance),
         }
+
     return {'applicable': True, 'n_subjects': int(len(uniq)), 'targets': out_targets}
 
 
 def _procrustes(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Orthogonal Procrustes with translation: returns ``(R, mean_a, mean_b)`` mapping a -> b.
+    """Orthogonal Procrustes with translation: returns `(R, mean_a, mean_b)` mapping a -> b.
 
-    Solves ``min_R ||(A - mean_a) R - (B - mean_b)||`` over orthogonal ``R``. A point ``x`` in
-    A's frame is mapped to B's frame by ``(x - mean_a) @ R + mean_b``.
+    Solves `min_R ||(A - mean_a) R - (B - mean_b)||` over orthogonal `R`. A point `x` in A's frame is
+    mapped to B's frame by `(x - mean_a) @ R + mean_b`.
     """
+    # Compute the mean of the embeddings.
     ma, mb = a.mean(axis=0), b.mean(axis=0)
+
+    # Compute the centered embeddings.
     ac, bc = a - ma, b - mb
     u, _, vt = np.linalg.svd(ac.T @ bc, full_matrices=False)
+
+    # Compute the rotation matrix.
     r = u @ vt
     return r, ma, mb
 
@@ -251,8 +271,12 @@ def _cohesion(h_vecs: list[np.ndarray], o_vecs: list[np.ndarray]) -> float:
     """Mean cosine between paired held-out and pooled-other centroids."""
     if not h_vecs:
         return float('nan')
+
+    # Normalize the held-out and pooled-other centroids.
     h = _l2norm(np.asarray(h_vecs, dtype=np.float32))
     o = _l2norm(np.asarray(o_vecs, dtype=np.float32))
+
+    # Compute the mean cosine between the held-out and pooled-other centroids.
     return float(np.mean(np.sum(h * o, axis=1)))
 
 
@@ -268,13 +292,17 @@ def _calibrate_one(
     is_h = subjects == holdout
     if not is_h.any() or is_h.all():
         return None
-    # words this subject shares with at least one other subject
+    # Words this subject shares with at least one other subject.
     h_words = {w: np.where(is_h & (words == w))[0] for w in np.unique(words[is_h]) if w}
     shared = []
+
+    # Iterate over the shared words.
     for w, h_idx in h_words.items():
         o_idx = np.where((~is_h) & (words == w))[0]
         if len(h_idx) and len(o_idx):
             shared.append((w, h_idx, o_idx, min(len(h_idx), len(o_idx))))
+
+    # If there are less than the minimum number of shared words, return None.
     if len(shared) < max(min_shared, 4):
         return None
     shared.sort(key=lambda t: t[3], reverse=True)

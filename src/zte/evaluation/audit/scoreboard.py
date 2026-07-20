@@ -9,9 +9,6 @@ mixes the 11 training subjects with the 1 held-out stranger and dilutes the only
     beats the learned embedding on a stranger, so an absolute score is meaningless -- only `ZTE - raw` is progress.
 3. **Can the content probe even detect content in principle?** A positive control: the raw features must expose
     word length / frequency, or "content 0%" is a dead probe, not a meaningful absence.
-
-Everything here is derived from artefacts the evaluation already computed (the probe comparison rows, the sentence embeddings,
-the word metadata), so it adds no model work and cannot disagree with the rest of the report.
 """
 
 from __future__ import annotations
@@ -139,11 +136,6 @@ def cross_subject_holdout_retrieval(
 ) -> dict[str, Any] | None:
     """Held-out queries vs a cross-subject gallery: find a stranger's thought in others.
 
-    For each sentence read by the held-out subject, search every *other* subject's
-    readings and score a hit when a neighbour shares the stimulus. This is the true
-    north-star: not "does content cluster" in the mixed space, but "can we retrieve the
-    held-out person's specific reading from people the model trained on".
-
     Args:
         sent_emb (np.ndarray): Sentence embeddings `(n, d)`.
         content_ids (np.ndarray): Stimulus id per sentence `(n,)`.
@@ -160,9 +152,13 @@ def cross_subject_holdout_retrieval(
     content_ids = np.asarray(content_ids)
     if len(np.unique(subjects)) < 2:
         return None
+
+    # Check if the number of queries is greater than the minimum number of queries.
     q_mask = subjects == holdout
     if q_mask.sum() < 2:
         return None
+
+    # Normalize the embeddings.
     emb = np.asarray(sent_emb, dtype=np.float64)
     emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
     sims = emb @ emb.T  # cosine, (n, n)
@@ -173,35 +169,53 @@ def cross_subject_holdout_retrieval(
     chances = []
     percentiles: list[float] = []  # rank-percentile per query (1.0 = correct match ranked first)
     n_scored = 0
+
     for i in q_idx:
+        # Get the indices of the other subjects.
         cross = subjects != subjects[i]  # gallery: other people only
+
+        # If there are no other subjects, continue.
         if not cross.any():
             continue
+
         cand = np.where(cross)[0]
         order = cand[np.argsort(-sims[i, cand])]
+
+        # Check if the content ids are the same.
         same = content_ids[order] == content_ids[i]
         if not same.any():
-            # still counts as a query (a miss); chance uses this query's gallery
+            # Still counts as a query (a miss); chance uses this query's gallery.
             chances.append(float((content_ids[cand] == content_ids[i]).mean()))
             percentiles.append(0.0)
             n_scored += 1
             continue
+
+        # Iterate over the top-K cut-offs.
         for k in ks:
             out[f'top{k}'] += float(same[:k].any())
+
+        # Compute the MRR, chance top1, rank percentile, number of queries and lift top1.
         rr += 1.0 / (np.argmax(same) + 1)
         rank = int(np.argmax(same)) + 1
         percentiles.append(1.0 - (rank - 1) / max(len(order) - 1, 1))
         chances.append(float((content_ids[cand] == content_ids[i]).mean()))
         n_scored += 1
+
+    # If there are no scored queries, return None.
     if n_scored == 0:
         return None
+
+    # Compute the top-K cut-offs.
     for k in ks:
         out[f'top{k}'] /= n_scored
+
+    # Compute the MRR, chance top1, rank percentile, number of queries and lift top1.
     out['mrr'] = rr / n_scored
     out['chance_top1'] = float(np.mean(chances)) if chances else float('nan')
     out['rank_percentile'] = float(np.mean(percentiles)) if percentiles else float('nan')
     out['n_queries'] = int(n_scored)
     out['lift_top1'] = _sub(out['top1'], out['chance_top1'])
+
     return out
 
 
@@ -223,19 +237,27 @@ def build_scoreboard(
         cdim = int(getattr(model_cfg, 'content_dim', word_emb.shape[1]))
         word_emb = np.asarray(word_emb)[:, :cdim]
         sent_emb = np.asarray(sent_emb)[:, :cdim]
+
+    # Build the scoreboard.
     board: dict[str, Any] = {
         'is_loso': holdout is not None,
         'holdout_subject': holdout,
         'factored': bool(model_cfg is not None and getattr(model_cfg, 'factored', False)),
         'lift_over_raw': lift_over_raw(comparison),
     }
+
+    # If there is a held-out subject, build the held-out geometry and retrieval.
     if holdout is not None:
         board['held_out_geometry'] = held_out_geometry(word_emb, word_meta, holdout)
+
+        # Get the subjects.
         subjects = (
             sent_meta['subject'].to_numpy()
             if sent_meta is not None and 'subject' in sent_meta.columns
             else None
         )
+
+        # Build the held-out retrieval.
         board['held_out_retrieval'] = (
             cross_subject_holdout_retrieval(sent_emb, sent_content_ids, subjects, holdout)
             if subjects is not None
