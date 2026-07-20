@@ -1,9 +1,4 @@
-"""High-level training orchestration tying a dataset to a trained ZTE model.
-
-`run_training` is the one call the CLI (and the smoke-test) make: it builds leakage-aware splits, sizes the encoder to the data,
-constructs the chosen objective, wires DataLoaders with a shared subject vocabulary, and runs the `Trainer`. The fitted normaliser
-and subject vocabulary are embedded in every checkpoint for reproducible inference.
-"""
+"""High-level training orchestration: leakage-aware splits, model, objective, loaders, then `Trainer`."""
 
 from __future__ import annotations
 
@@ -70,10 +65,10 @@ def run_training(
         seed=config.train.seed,
     )
 
-    # Fit the normaliser (and imputer) on the TRAIN split only, so val/test/held-out-subject
-    # statistics never leak in. A no-op when `dataset.normalizer_fit == 'all'` (legacy behaviour).
+    # Fit the normaliser (and imputer) on the TRAIN split only, so val/test statistics never leak in.
     dataset.refit_normalizer(splits['train'])
 
+    # Size the encoder to the data, then build the objective on top of it.
     in_dim, raw_shape, feature_dim = _shapes(dataset, config)
     n_channels, bp_features_per_channel = _channel_shape(dataset, config, raw_shape)
     model = build_model(
@@ -93,14 +88,13 @@ def run_training(
     beh_targets = (
         config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
     )
-    # A per-occurrence contextual meaning target is built (once) on the train
-    # split when meaning distillation is on and a contextual model is configured; None keeps the
-    # word-type-keyed static path. Only the train dataset carries it (val loss is a monitor).
+    # `None` keeps the word-type-keyed static meaning path instead of a per-occurrence target.
     mctx = (
         config.objective.meaning_contextual
         if config.objective.meaning_distill_weight > 0.0
         else None
     )
+
     # Build the torch datasets up front so static-shape padding can be sized from actual lengths.
     train_td = dataset.to_torch(
         split=splits['train'],
@@ -116,9 +110,7 @@ def run_training(
     )
     clip_hard_negs = None  # (n_text, k) semantic-hard negatives for the CLIP loader (set below)
 
-    # Attach dataset-derived auxiliary targets (meaning, behaviour, and the collapse-proof
-    # regression auxiliary) to the objective now that
-    # the word vocabulary and behaviour spec exist. The meaning matrix is frozen (a distillation teacher).
+    # Attach the auxiliary targets, which need the word vocabulary and behaviour spec to exist first.
     obj = config.objective
     if (
         obj.meaning_distill_weight > 0.0
@@ -127,11 +119,10 @@ def run_training(
     ):
         import torch as _torch
 
-        from zte.data.meaning import build_meaning_matrix
+        from zte.data.targets.meaning import build_meaning_matrix
 
         meaning_mat = None
-        # A per-occurrence contextual target (meaning_contextual) is carried in the batch, so no
-        # word-type matrix is built here; the objective sizes its head from the contextual width.
+        # A contextual target rides in the batch, so the head is sized from its width instead.
         if obj.meaning_distill_weight > 0.0 and not obj.meaning_contextual:
             mat = build_meaning_matrix(train_td.word_vocab, obj.meaning_source, obj.meaning_dim)
             meaning_mat = _torch.from_numpy(mat)
@@ -142,13 +133,11 @@ def run_training(
             meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim
         )
 
-    # CLIP objective: build the frozen sentence-text target once (each unique ZuCo sentence embedded by
-    # the configured frozen encoder), then attach it. Falls back to a deterministic hash target (no
-    # semantics) when the text encoder / its dependency is unavailable, so training still runs.
+    # CLIP objective: embed every unique sentence once with the frozen text encoder, then attach it.
     if config.objective.name == 'clip' and hasattr(objective, 'attach_text'):
         import torch as _torch
 
-        from zte.data.text import build_sentence_text_matrix
+        from zte.data.targets.text import build_sentence_text_matrix
 
         vocab = train_td.text_vocab  # {normalised sentence text: id}
         n_text = len(vocab)
@@ -185,7 +174,7 @@ def run_training(
             config.objective.text_source or 'hash',
         )
         if config.objective.semantic_hard_negatives:
-            from zte.data.text import mine_hard_negatives
+            from zte.data.targets.text import mine_hard_negatives
 
             clip_hard_negs = mine_hard_negatives(
                 ordered, mat, k=config.objective.hard_negative_pool
@@ -194,12 +183,10 @@ def run_training(
                 'Mined %d semantic-hard negatives per sentence (surface-similar, meaning-distinct).',
                 config.objective.hard_negative_pool,
             )
-    # Static shapes (XLA/TPU only under 'auto'): pad every batch to the dataset-wide max sentence
-    # length so XLA compiles a single graph instead of recompiling per shape. Accuracy-neutral
-    # (padded positions are masked out); `None` keeps the smallest per-batch padding on GPU/CPU/MPS.
+
+    # Wire the loaders: static shapes pad every batch alike so XLA compiles a single graph.
     pad_to = _static_pad_length(config.train.static_shapes, device, train_td, val_td)
-    # Cross-subject positives need the same stimulus (read by different subjects) to co-occur in a
-    # batch, so route the train loader through the stimulus-grouped sampler when enabled.
+    # Cross-subject positives need one stimulus read by several subjects in the same batch.
     group_by_stimulus = bool(config.objective.cross_subject_positives)
     train_loader = make_dataloader(
         train_td,
@@ -224,6 +211,7 @@ def run_training(
             pad_to=pad_to,
         )
 
+    # Everything inference needs to rebuild the model is embedded in the checkpoint.
     extra = {
         'subject_vocab': vocab,
         'normalizer': None if dataset.normalizer is None else dataset.normalizer.state,
@@ -280,9 +268,7 @@ def _shapes(
         raise ValueError('band_power_mlp frontend needs band-power features in the dataset.')
     if config.model.frontend == 'raw_conformer' and raw_shape is None:
         raise ValueError('raw_conformer frontend needs raw EEG in the dataset.')
-    # The masked-reconstruct head predicts the per-token input, so its target
-    # dimension follows the frontend: n_features for band power, or
-    # n_channels * time_steps for raw windows.
+    # The masked-reconstruct head predicts the per-token input, so its width follows the frontend.
     recon_dim = in_dim
     if config.model.frontend == 'raw_conformer' and raw_shape is not None:
         recon_dim = raw_shape[0] * raw_shape[1]
@@ -297,9 +283,8 @@ def _static_pad_length(
 ) -> int | None:
     """Resolves the fixed padding length for static shapes, or `None` for per-batch padding.
 
-    `auto` enables static shapes only on XLA/TPU (where dynamic shapes force recompilation); `on`/`off`
-    force it. When active, the length is the dataset-wide maximum sentence length (over train + val),
-    so no sentence is ever truncated and XLA compiles a single graph.
+    `auto` enables static shapes only on XLA/TPU, where dynamic shapes force recompilation. When active the
+    length is the dataset-wide maximum sentence length, so no sentence is ever truncated.
 
     Args:
         setting (str): `'auto'`, `'on'` or `'off'`.
@@ -330,8 +315,8 @@ def _channel_shape(
         raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` for the raw frontend.
 
     Returns:
-        `(n_channels, bp_features_per_channel)`. `bp_features_per_channel` is `None` for the raw frontend (each electrode token is a time window, not a
-        band-power vector); either value is `None` when it cannot be determined, which disables spatial encoding.
+        `(n_channels, bp_features_per_channel)`. Either value is `None` when it cannot be determined,
+        which disables spatial encoding; the raw frontend always has `None` band-power width.
     """
     if config.model.frontend == 'raw_conformer':
         return (raw_shape[0] if raw_shape is not None else None), None

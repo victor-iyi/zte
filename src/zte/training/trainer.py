@@ -1,9 +1,4 @@
-"""The ZTE Trainer: a device-agnostic, checkpointing self-supervised loop.
-
-The trainer is backend-agnostic (CPU / CUDA / MPS via `zte.device`), uses automatic mixed precision where it is safe, supports gradient accumulation and
-clipping, warmup+decay scheduling, rich progress bars, structured + optional TensorBoard logging, EMA-teacher updates for data2vec, and best/last/rotating
-checkpoints with optional Google Drive backup.
-"""
+"""The ZTE Trainer: a device-agnostic, pausable, checkpointing self-supervised loop."""
 
 # pyright: reportFunctionMemberAccess=false, reportPrivateImportUsage=false
 # pylint: disable=import-outside-toplevel
@@ -31,11 +26,11 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     """Moves all tensor values of a batch dict to `device` (non-blocking).
 
     Args:
-        batch: A collated batch dict (some values may be `None`).
+        batch (dict[str, Any]): A collated batch dict (some values may be `None`).
         device (torch.device): Target device.
 
     Returns:
-        A new `dict` with tensors relocated and non-tensors passed through.
+        dict[str, Any]: A new dict with tensors relocated and non-tensors passed through.
     """
     out: dict[str, Any] = {}
     for key, value in batch.items():
@@ -78,9 +73,8 @@ class Trainer:
             val_loader (DataLoader[Any] | None): Optional validation DataLoader.
             device (DeviceSpec | None): Pre-resolved device spec; auto-resolved when `None`.
             extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
-            resume (bool): If `True` and a `last.pt` exists in the checkpoint dir, restore the model,
-                optimiser, scheduler, AMP scaler, objective/EMA-teacher, best metric, history and step,
-                and continue from the next epoch. Enables pause/resume of long runs.
+            resume (bool): Restore model, optimiser, scheduler, scaler, objective/teacher, best metric,
+                history and step from `last.pt` and continue from the next epoch.
         """
         seed_everything(config.train.seed, deterministic=config.train.deterministic)
         self.config = config
@@ -94,6 +88,7 @@ class Trainer:
         self.val_loader = val_loader
         self.extra_state = extra_state or {}
 
+        # Optimiser and schedule, sized from the accumulated (not raw) step count.
         params = list(self.model.parameters()) + list(self.objective.parameters())
         self.optimizer = torch.optim.AdamW(
             params, lr=config.train.lr, weight_decay=config.train.weight_decay
@@ -106,6 +101,8 @@ class Trainer:
             warmup_steps=int(self.total_steps * config.train.warmup_ratio),
             kind=config.train.scheduler,
         )
+
+        # Mixed precision, checkpointing and logging side-cars.
         self._use_scaler = self.device.is_cuda and self.device.autocast_dtype is torch.float16
         self.scaler = self._build_scaler()
         self.ckpt = CheckpointManager(
@@ -135,12 +132,11 @@ class Trainer:
     def train(self) -> dict[str, list[float]]:
         """Runs the full training loop and returns the metric history.
 
-        Supports pause/resume: a SIGINT (Ctrl-C) or SIGTERM (`kill`) finishes cleanly, leaving a
-        `last.pt` from the last completed epoch. Re-running with `resume=True` continues from the next
-        epoch. Raises `KeyboardInterrupt` on a pause so the caller can skip downstream stages.
+        SIGINT or SIGTERM finishes cleanly, leaving a `last.pt` from the last completed epoch that `resume=True`
+        picks up; the re-raised `KeyboardInterrupt` lets the caller skip downstream stages.
 
         Returns:
-            The `history` dict (`train_loss`, `val_loss`, `lr` lists).
+            dict[str, list[float]]: The `history` dict (`train_loss`, `val_loss`, `lr` lists).
 
         Raises:
             KeyboardInterrupt: When the run is paused by a signal before all epochs complete.
@@ -227,7 +223,7 @@ class Trainer:
         """Computes the mean validation objective loss.
 
         Returns:
-            The average loss over the validation loader (`nan` if no loader).
+            float: The average loss over the validation loader (`nan` if no loader).
         """
         if self.val_loader is None:
             return float('nan')
@@ -261,8 +257,7 @@ class Trainer:
         )
         for i, raw_batch in enumerate(iterator):
             batch = move_batch(raw_batch, self.device.device)
-            # Hand the objective the current progress so the subject-adversary
-            # gradient-reversal strength can ramp 0 -> 1 (a no-op when warmup_ratio is 0).
+            # Progress drives the subject-adversary gradient-reversal ramp.
             if hasattr(self.objective, 'set_progress'):
                 self.objective.set_progress(self._global_step, self.total_steps)
             with autocast(self.device):
@@ -327,7 +322,7 @@ class Trainer:
                 import torch_xla.core.xla_model as xm  # type: ignore[import-untyped]
 
                 xm.mark_step()
-            except Exception:  # noqa: BLE001 — never let an XLA hiccup abort a step.
+            except Exception:  # noqa: BLE001 -- never let an XLA hiccup abort a step.
                 pass
         if getattr(self.objective, 'needs_teacher', False) and hasattr(self.objective, 'post_step'):
             # Pass the global step so the objective can ramp its EMA teacher decay across training.
@@ -339,8 +334,7 @@ class Trainer:
         """Builds the checkpoint payload, including objective/teacher/resume state and extras."""
         extra = dict(self.extra_state)
         extra['objective_state'] = self.objective.state_dict()
-        # Resume bookkeeping: the EMA teacher is a plain object (not in state_dict), and best/history
-        # live on the manager/trainer -- persist them so a resumed run is byte-consistent.
+        # The EMA teacher, best metric and history live outside any state_dict, so persist them here.
         teacher = getattr(self.objective, 'teacher', None)
         if teacher is not None:
             extra['teacher_state'] = teacher.module.state_dict()
@@ -363,6 +357,8 @@ class Trainer:
         if not last.exists():
             _LOG.info('resume requested but no last.pt in %s; starting fresh.', self.ckpt.ckpt_dir)
             return
+
+        # Core torch state.
         ckpt = CheckpointManager.load(last, map_location=self.device.device)
         self.model.load_state_dict(ckpt['model'])
         if 'optimizer' in ckpt:
@@ -371,6 +367,8 @@ class Trainer:
             self.scheduler.load_state_dict(ckpt['scheduler'])
         if 'scaler' in ckpt and self.scaler is not None:
             self.scaler.load_state_dict(ckpt['scaler'])
+
+        # Trainer-side bookkeeping carried in `extra`.
         extra = ckpt.get('extra', {})
         if 'objective_state' in extra:
             self.objective.load_state_dict(extra['objective_state'])
@@ -412,7 +410,7 @@ class Trainer:
         return previous
 
     def _restore_signal_handlers(self, previous: dict[int, Any]) -> None:
-        """Restores signal handlers saved by :meth:`_install_signal_handlers`."""
+        """Restores signal handlers saved by `_install_signal_handlers`."""
         import signal
 
         for sig, handler in previous.items():

@@ -1,11 +1,7 @@
-"""Zip, download-prepare and delete ZTE training runs — the Colab↔local hand-off.
+"""Zip, unpack and delete training runs, for the cloud-to-local hand-off.
 
-The intended workflow: train on a powerful cloud GPU (Colab Pro), **zip** the finished runs into a small archive
-(checkpoints + config + evaluation, without the huge dataset cache / TensorBoard logs by default), **download** them, and **unpack**
-locally for inference / offline exploration. A run's checkpoint embeds its input shapes and fitted normaliser, so inference needs only
-the checkpoint — which is why the default archive is light.
-
-Everything here is pure-stdlib and platform-agnostic (paths via `pathlib`), so it behaves the same on Linux, macOS and Colab.
+A run's checkpoint embeds its input shapes and fitted normaliser, so inference needs only the checkpoint; the default
+archive therefore drops the dataset cache, TensorBoard logs and saved bundle.
 """
 
 from __future__ import annotations
@@ -39,7 +35,7 @@ def _write_provenance(zf: zipfile.ZipFile, run_dirs: list[Path], note: str | Non
         prov = build_provenance(run_dirs, note=note)
         zf.writestr('PROVENANCE.json', json.dumps(prov, indent=2, default=str))
         zf.writestr('PROVENANCE.md', provenance_markdown(prov))
-    except Exception as exc:  # noqa: BLE001 — provenance is a nicety, never a hard requirement.
+    except Exception as exc:  # noqa: BLE001 -- provenance is a nicety, never a hard requirement.
         _LOG.warning('Skipped provenance metadata: %r', exc)
 
 
@@ -54,22 +50,14 @@ def human_size(n: int) -> str:
 
 
 def _dir_size(path: Path) -> int:
-    """Total size in bytes of all files under `path`.
-
-    Args:
-        path (Path): The path to the directory.
-
-    Returns:
-        The total size in bytes of all files under `path`.
-    """
+    """Total size in bytes of all files under `path`."""
     return sum(p.stat().st_size for p in path.rglob('*') if p.is_file())
 
 
 def is_synthetic_run(run_dir: Path) -> bool:
-    """Returns whether a run was produced with `--synthetic` (per its `manifest.json`).
+    """Returns whether a run was produced with `--synthetic`, to keep smoke runs out of Drive backups.
 
-    Used to keep smoke/synthetic runs out of Drive backups. A run whose manifest is missing or lacks
-    the flag is treated as **not** synthetic (real), so real runs are never dropped by accident.
+    A run whose manifest is missing or lacks the flag counts as real, so real runs are never dropped by accident.
 
     Args:
         run_dir (Path): The run directory.
@@ -98,10 +86,10 @@ def list_runs(experiments_root: str | Path = 'res/experiments') -> list[dict]:
     """Lists catalogued runs with sizes and a completeness flag.
 
     Args:
-        experiments_root: (str | Path): The directory holding per-run folders.
+        experiments_root (str | Path): The directory holding per-run folders.
 
     Returns:
-        A list of dicts `{name, path, size_bytes, size, has_checkpoint, complete}`, largest first.
+        list[dict]: `{name, path, size_bytes, size, has_checkpoint, complete}` per run, largest first.
     """
     root = Path(experiments_root)
     if not root.is_dir():
@@ -135,15 +123,14 @@ def _iter_archive_files(
     """Yields `(absolute_path, arcname)` pairs for the files to include from one run.
 
     Args:
-        run_dir: (str | Path): The run directory.
-        with_bundle: (bool): Include the saved dataset bundle.
-        with_cache: (bool): Include the processed dataset cache.
-        with_tb: (bool): Include TensorBoard logs.
-        best_only: (bool): Keep only the best checkpoint.
+        run_dir (str | Path): The run directory.
+        with_bundle (bool): Include the saved dataset bundle.
+        with_cache (bool): Include the processed dataset cache.
+        with_tb (bool): Include TensorBoard logs.
+        best_only (bool): Keep only the best checkpoint.
 
     Returns:
-        A list of `(absolute_path, arcname)` pairs for the files to include from one run.
-
+        list[tuple[Path, str]]: `(absolute_path, arcname)` pairs to write into the archive.
     """
     skip = set(_HEAVY_DIRS)
     if with_bundle:
@@ -159,7 +146,7 @@ def _iter_archive_files(
         rel = p.relative_to(run_dir)
         if any(part in skip for part in rel.parts):  # 'tb' also lives under checkpoints/tb
             continue
-        # best_only: keep just checkpoints/best.pt, dropping last.pt + every ckpt_epoch*.pt.
+        # best_only keeps checkpoints/best.pt, dropping last.pt and every ckpt_epoch*.pt.
         if best_only and rel.parts and rel.parts[0] == 'checkpoints':
             if p.suffix == '.pt' and p.name != 'best.pt':
                 continue
@@ -180,20 +167,19 @@ def zip_run(
 ) -> Path:
     """Zips a single run into an archive suitable for download.
 
-    By default the heavy `cache/`, `tb/` and `bundle/` directories are excluded (a run's checkpoint
-    already embeds everything inference needs), keeping the archive small.
-
     Args:
-        run_dir: The run directory (`res/experiments/<name>`).
-        out: (str | Path): Output `.zip` path (default `<run>.zip` next to the run). Point this at a mounted Google Drive folder to upload straight to Drive.
-        with_bundle: (bool): Include the saved dataset bundle (needed only to _re-evaluate_, not to infer).
-        with_cache: (bool): Include the processed dataset cache (large).
-        with_tb: (bool): Include TensorBoard event logs.
-        best_only: (bool): Keep only `checkpoints/best.pt` (drop `last.pt` + every `ckpt_epoch*.pt`) — smallest archive, enough for inference but not for resuming training.
-        move: (bool): Delete the run directory after a successful zip (free local space once it is on Drive).
+        run_dir (str | Path): The run directory (`res/experiments/<name>`).
+        out (str | Path | None): Output `.zip` path (default `<run>.zip` next to the run); point it at a mounted
+            Google Drive folder to upload straight to Drive.
+        with_bundle (bool): Include the saved dataset bundle, needed to re-evaluate but not to infer.
+        with_cache (bool): Include the processed dataset cache (large).
+        with_tb (bool): Include TensorBoard event logs.
+        best_only (bool): Keep only `checkpoints/best.pt` -- enough for inference, not for resuming training.
+        move (bool): Delete the run directory after a successful zip.
+        note (str | None): Free-text note stored in the archive's provenance metadata.
 
     Returns:
-        The written archive path.
+        Path: The written archive path.
 
     Raises:
         FileNotFoundError: If `run_dir` does not exist.
@@ -239,17 +225,19 @@ def zip_experiments(
     """Zips several runs (default: all) into one archive, each under its own folder.
 
     Args:
-        experiments_root: The experiments directory.
-        names: (list[str]): Run names to include (default: every run directory found).
-        out: (str | Path): Output `.zip` path (default `<experiments_root>/zte_experiments.zip`). Point it at a mounted Google Drive folder to upload straight to Drive.
-        with_bundle: (bool): Include dataset bundles.
-        with_cache: (bool): Include dataset caches.
-        with_tb: (bool): Include TensorBoard logs.
-        best_only: (bool): Keep only each run's `best.pt` checkpoint (smallest archive; inference-only).
-        move: (bool): Delete each run directory after a successful zip (free local space).
+        experiments_root (str | Path): The experiments directory.
+        names (list[str] | None): Run names to include (default: every run directory found).
+        out (str | Path | None): Output `.zip` path (default `<experiments_root>/zte_experiments.zip`).
+        with_bundle (bool): Include dataset bundles.
+        with_cache (bool): Include dataset caches.
+        with_tb (bool): Include TensorBoard logs.
+        best_only (bool): Keep only each run's `best.pt` checkpoint (inference-only).
+        move (bool): Delete each run directory after a successful zip.
+        note (str | None): Free-text note stored in the archive's provenance metadata.
+        skip_synthetic (bool): Drop runs produced with `--synthetic`.
 
     Returns:
-        (Path): The written archive path.
+        Path: The written archive path.
 
     Raises:
         ValueError: If no matching runs are found.
@@ -312,13 +300,10 @@ def zip_res(
     move: bool = False,
     skip_synthetic: bool = False,
 ) -> Path:
-    """Zips whole `res/` subtrees into one archive so you can continue locally without re-training.
+    """Zips whole `res/` subtrees into one archive so a local session can continue without re-training.
 
-    Unlike :func:`zip_experiments` (which packs per-run checkpoints for inference), this captures the
-    heavier *working state* — the dataset `cache/` (so a local session never re-prepares the data), the
-    full `experiments/` (all checkpoints + evaluation), `benchmark/` tables and `explorer/` HTML — under
-    their `res/`-relative paths, plus a `PROVENANCE.json`/`PROVENANCE.md`. Unpack it with
-    ``unpack(archive, dest='res')`` to restore `res/experiments`, `res/cache`, … verbatim.
+    Where `zip_experiments` packs per-run checkpoints for inference, this captures the heavier working state under its
+    `res/`-relative paths; `unpack(archive, dest='res')` restores it verbatim.
 
     Args:
         res_root (str | Path): The `res/` directory root.
@@ -327,7 +312,8 @@ def zip_res(
         out (str | Path | None): Output `.zip` path (default `<res_root>/zte_snapshot.zip`). Point it at a
             mounted Drive folder to upload straight to Drive.
         note (str | None): Optional free-text note stored in the archive provenance.
-        move (bool): Delete the archived subtrees after a successful zip (free local space).
+        move (bool): Delete the archived subtrees after a successful zip.
+        skip_synthetic (bool): Drop runs produced with `--synthetic`.
 
     Returns:
         Path: The written archive path.
@@ -342,7 +328,8 @@ def zip_res(
         raise ValueError(f'no res/ subtrees to snapshot under {root} (looked for {names}).')
     out_path = Path(out) if out is not None else root / 'zte_snapshot.zip'
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Synthetic experiment run dirs to exclude (smoke runs shouldn't be shipped to Drive).
+
+    # Synthetic run dirs to exclude, since smoke runs should not be shipped to Drive.
     synthetic_dirs: set[Path] = set()
     exp_root = root / 'experiments'
     if skip_synthetic and exp_root.is_dir():
@@ -384,12 +371,11 @@ def unpack(archive: str | Path, dest: str | Path = 'res/experiments') -> list[st
     """Extracts a run archive into `dest` (e.g. on your machine after downloading).
 
     Args:
-        archive: (str | Path): The path to a `.zip` produced by `zip_run` / `zip_experiments`.
-        dest: (str | Path): Destination directory (run folders are created underneath).
+        archive (str | Path): Path to a `.zip` produced by `zip_run` / `zip_experiments`.
+        dest (str | Path): Destination directory (run folders are created underneath).
 
     Returns:
-        The list of top-level run names extracted.
-
+        list[str]: The top-level run names extracted.
     """
     arc = Path(archive)
     dest_path = Path(dest)
@@ -397,8 +383,8 @@ def unpack(archive: str | Path, dest: str | Path = 'res/experiments') -> list[st
     with zipfile.ZipFile(arc) as zf:
         names = zf.namelist()
         zf.extractall(dest_path)
-    # Return the top-level run *folders* only; root-level files (PROVENANCE.json/md) are metadata,
-    # not runs, so they are extracted but not reported as run names.
+
+    # Root-level files (PROVENANCE.json/md) are metadata, so only nested top-level folders count as runs.
     tops = sorted(
         {Path(n).parts[0] for n in names if n and not n.startswith('/') and len(Path(n).parts) > 1}
     )
@@ -410,12 +396,11 @@ def delete_run(run_dir: str | Path, *, yes: bool = False) -> bool:
     """Deletes a run directory (guarded).
 
     Args:
-        run_dir: (str | Path): The run directory to remove.
-        yes: (bool): Must be `True` to actually delete; otherwise this is a dry run that only logs.
+        run_dir (str | Path): The run directory to remove.
+        yes (bool): Must be `True` to actually delete; otherwise this is a dry run that only logs.
 
     Returns:
-        `True` if the directory was deleted, `False` on a dry run or a missing directory.
-
+        bool: `True` if the directory was deleted, `False` on a dry run or a missing directory.
     """
     run = Path(run_dir)
     if not run.is_dir():

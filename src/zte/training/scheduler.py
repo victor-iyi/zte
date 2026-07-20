@@ -1,8 +1,4 @@
-"""Learning-rate schedules with linear warmup.
-
-A single `build_scheduler` returns a `~torch.optim.lr_scheduler.LambdaLR` implementing linear warmup followed by cosine,
-linear or constant decay -- the schedules that work well for transformer-style self-supervised pretraining.
-"""
+"""Linear warmup followed by cosine, linear or constant learning-rate decay."""
 
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ def build_scheduler(
 
     Returns:
         LambdaLR: A `LambdaLR` scheduler.
-
     """
     total_steps = max(total_steps, 1)
     warmup_steps = max(0, min(warmup_steps, total_steps - 1))

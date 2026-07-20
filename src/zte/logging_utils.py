@@ -1,10 +1,4 @@
-"""Centralised logging and progress-bar helpers.
-
-Console logging is routed through `rich` when available (pretty, coloured, single-line
-tracebacks) and falls back to the standard library otherwise. A single `get_logger`
-accessor is used everywhere so log formatting is consistent across the dataset, model,
-training and CLI layers.
-"""
+"""Logging and progress-bar helpers, routed through `rich`/`tqdm` when installed."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -25,9 +19,7 @@ def configure_logging(
 
     Args:
         level (int | str): Logging level (e.g. `logging.INFO` or `'DEBUG'`).
-        log_file (str | Path | None): Optional path; when given, logs are also
-            appended to this file with a verbose formatter.
-
+        log_file (str | Path | None): Optional path; when given, logs are also appended there with a verbose formatter.
     """
     logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(level)
@@ -64,11 +56,10 @@ def get_logger(name: str | None = None) -> logging.Logger:
     """Returns a namespaced child of the `zte` logger.
 
     Args:
-        name (str | None): Optional dotted suffix (e.g. `'data.dataset'`). When
-            omitted the root `zte` logger is returned.
+        name (str | None): Optional dotted suffix (e.g. `'data.dataset'`); `None` returns the root `zte` logger.
 
     Returns:
-        A configured `logging.Logger`.
+        logging.Logger: A configured logger.
     """
     if not _STATE['configured']:
         configure_logging()
@@ -84,11 +75,7 @@ def progress[_T](
     disable: bool = False,
     unit: str = 'it',
 ) -> Iterator[_T]:
-    """Wraps an iterable in a progress bar (`tqdm` if installed).
-
-    A single helper is used for every long-running loop in the package so the
-    progress UI is consistent. When `tqdm` is unavailable the iterable is
-    yielded unchanged, so callers never need to branch.
+    """Wraps an iterable in a progress bar, yielding it unchanged when `tqdm` is unavailable.
 
     Args:
         iterable (Iterable[_T]): The iterable to consume.
@@ -98,7 +85,7 @@ def progress[_T](
         unit (str): Unit label for the rate display.
 
     Yields:
-        Items from `iterable` unchanged.
+        _T: Items from `iterable` unchanged.
     """
     if disable:
         yield from iterable

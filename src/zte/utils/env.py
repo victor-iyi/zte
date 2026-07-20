@@ -1,10 +1,4 @@
-"""Environment bootstrap so ZTE runs cleanly on Colab (and anywhere) without manual fiddling.
-
-Colab does not set the environment variables headless plotting / tokenizer libraries expect, and the CLIs use paths relative to the repo
-root — so the two ways a fresh Colab session errors are (a) a missing/writable-config env var and (b) the notebook's working directory not
-being the repo root.  `bootstrap` fixes both: it sets sane defaults for the missing env vars (only when unset), resolves the project root,
-changes into it if asked, and creates the `res/` output directories. It is idempotent and a no-op-safe on a laptop.
-"""
+"""Environment bootstrap: env-var defaults, project-root resolution and `res/` output directories."""
 
 from __future__ import annotations
 
@@ -30,16 +24,13 @@ _RES_TARGETS: dict[str, str] = {
 
 
 def project_root(start: str | Path | None = None) -> Path:
-    """Resolves the ZTE project root.
-
-    Order: the `ZTE_HOME` env var, else the nearest ancestor of `start`/cwd containing a `pyproject.toml`, else the current working directory.
+    """Resolves the project root: `ZTE_HOME`, else the nearest ancestor holding a `pyproject.toml`, else the cwd.
 
     Args:
-        start: Where to begin the upward search (default: current working directory).
+        start (str | Path | None): Where to begin the upward search (default: current working directory).
 
     Returns:
-        The resolved project-root path.
-
+        Path: The resolved project-root path.
     """
     env = os.environ.get('ZTE_HOME')
     if env:
@@ -52,16 +43,13 @@ def project_root(start: str | Path | None = None) -> Path:
 
 
 def set_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
-    """Sets sane defaults for env vars Colab leaves unset (only when they are missing).
-
-    Covers headless matplotlib (`MPLBACKEND`, a writable `MPLCONFIGDIR`), quiet tokenizers, and a
-    writable Numba/font cache. Existing values are never overwritten.
+    """Sets defaults for headless matplotlib, quiet tokenizers and writable caches, never overwriting existing values.
 
     Args:
-        overrides: Extra ``{name: value}`` to apply with the same "only if unset" rule.
+        overrides (dict[str, str] | None): Extra `{name: value}` applied with the same "only if unset" rule.
 
     Returns:
-        The mapping of env vars this call actually set (i.e. that were previously unset).
+        dict[str, str]: The env vars this call actually set.
     """
     root = project_root()
     cache = root / 'res' / '.cache'
@@ -75,8 +63,8 @@ def set_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     if overrides:
         defaults.update(overrides)
     applied: dict[str, str] = {}
-    # An inherited interactive/inline MPLBACKEND (Colab sets `module://…`) crashes a headless
-    # subprocess, so replace it rather than treating it as "already set".
+
+    # An inherited `module://` MPLBACKEND crashes a headless subprocess, so replace it rather than treat it as set.
     current_mpl = os.environ.get('MPLBACKEND', '')
     if current_mpl.startswith('module://'):
         os.environ['MPLBACKEND'] = 'Agg'
@@ -94,11 +82,10 @@ def ensure_dirs(root: str | Path | None = None) -> list[Path]:
     """Creates the standard `res/` output directories so first-run writes never fail.
 
     Args:
-        root: Project root (default: `project_root`).
+        root (str | Path | None): Project root (default: `project_root`).
 
     Returns:
-        The list of directories ensured.
-
+        list[Path]: The directories ensured.
     """
     base = Path(root) if root is not None else project_root()
     dirs = [
@@ -116,16 +103,16 @@ def ensure_dirs(root: str | Path | None = None) -> list[Path]:
 def clean_outputs(
     targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False
 ) -> list[Path]:
-    """Deletes selected `res/` output subtrees — to free Colab space or start fresh.
+    """Deletes selected `res/` output subtrees, to free space or start fresh.
 
     Args:
-        targets: Names to remove, from ``experiments, data, cache, benchmark, explorer, embeddings``
-            or ``all`` (the whole ``res/``). Defaults to ``['experiments']``.
-        root: Project root (default: :func:`project_root`).
-        yes: Must be `True` to actually delete; otherwise this is a dry run that only logs.
+        targets (list[str] | None): Names from `_RES_TARGETS`, or `all` for the whole `res/`.
+            Defaults to `['experiments']`.
+        root (str | Path | None): Project root (default: `project_root`).
+        yes (bool): Must be `True` to actually delete; otherwise this is a dry run that only logs.
 
     Returns:
-        The directories removed (empty on a dry run).
+        list[Path]: The directories removed (empty on a dry run).
     """
     base = Path(root) if root is not None else project_root()
     names = targets or ['experiments']
@@ -152,8 +139,7 @@ def accelerator_info() -> dict[str, Any]:
     """Reports the available accelerator without raising, on any platform.
 
     Returns:
-        `{kind, name, torch_version, cuda, mps, tpu}` where `kind` is one of `cuda|mps|xla|cpu`
-            (the backend ZTE's `--device auto` would pick).
+        dict[str, Any]: `{kind, name, torch_version, cuda, mps, tpu}`, where `kind` is the backend `--device auto` picks.
     """
     import torch
 
@@ -181,20 +167,15 @@ def accelerator_info() -> dict[str, Any]:
 
 
 def bootstrap(chdir: bool = False, *, ensure: bool = True, quiet: bool = False) -> dict[str, Any]:
-    """One call to make any environment (Colab included) ready to run ZTE.
-
-    Note:
-        This function sets the missing env vars, optionally changes into the project root, ensures the output directories exist,
-        and reports the accelerator.  It is safe and idempotent everywhere.
+    """Makes any environment ready to run ZTE: env vars, project root, output directories, accelerator report.
 
     Args:
-        chdir (bool): If `True`, `os.chdir` into the resolved project root (handy in a notebook so the CLIs' relative `res/...` paths resolve).
+        chdir (bool): `os.chdir` into the project root, so the CLIs' relative `res/...` paths resolve in a notebook.
         ensure (bool): Create the `res/` directories.
         quiet (bool): Suppress the summary log line.
 
     Returns:
-        `{root, changed_dir, env_set, accelerator}`.
-
+        dict[str, Any]: `{root, changed_dir, env_set, accelerator}`.
     """
     root = project_root()
     env_set = set_env()
