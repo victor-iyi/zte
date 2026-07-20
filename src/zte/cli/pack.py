@@ -1,8 +1,4 @@
-"""`zte-pack` — list, zip, unpack and delete training runs (the Colab<->local hand-off).
-
-Train on a cloud GPU, `zte-pack zip --all` into a small archive, download it, and `zte-pack unpack` it locally for inference.
-Heavy `cache/`, `tb/` and `bundle/` folders are excluded by default (a checkpoint already embeds what inference needs).
-"""
+"""`zte-pack` -- list, zip, unpack and delete training runs (the Colab<->local hand-off)."""
 
 from __future__ import annotations
 

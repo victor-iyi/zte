@@ -14,7 +14,6 @@ def dataframe_to_markdown(frame: 'pd.DataFrame') -> str:
 
     Returns:
         str: The table as Markdown (header row, separator row, one row per record).
-
     """
     cols = list(frame.columns)
     head = '| ' + ' | '.join(cols) + ' |\n| ' + ' | '.join(['---'] * len(cols)) + ' |\n'

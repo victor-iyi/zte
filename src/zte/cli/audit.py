@@ -1,15 +1,4 @@
-"""`zte-audit` — quantify how entangled ZTE's factors are, *before* fighting them.
-
-Builds (or loads) the word-level metadata table exactly as a training run would, then runs the confound audit from
-`zte.evaluation.audit.confound`: the decisive task<->stimulus overlap query, the nuisance→content bleed table,
-the behaviour<->lexical table, and the full association matrix. Writes a Markdown report and a JSON sidecar.
-
-Examples::
-
-    zte-audit --synthetic                         # smoke-audit on a fake tree
-    zte-audit --config experiments/exp8_*.yaml    # audit the real dataset a run uses
-    zte-audit --root /path/to/zuco --out docs/confound_audit.md
-"""
+"""`zte-audit` -- quantify how entangled ZTE's factors are, before designing invariance against them."""
 
 from __future__ import annotations
 
@@ -70,16 +59,19 @@ def main() -> None:
     args = parse_arguments()
     configure_logging(args.log_level)
 
+    # Build the word table exactly as a training run would.
     cfg = _dataset_config(args)
     _LOG.info('Building dataset from %s ...', cfg.root)
     dataset = ZuCoDataset(cfg).build(show_progress=False)
 
+    # Audit it, writing the Markdown report plus a JSON sidecar.
     report = confound_report(dataset.words)
     out = args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_markdown(report), encoding='utf-8')
     write_json(out.with_suffix('.json'), report)
 
+    # Headline the decisive task<->stimulus overlap.
     ts = report['task_stimulus']
     if ts.get('available'):
         _LOG.info(

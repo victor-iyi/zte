@@ -1,26 +1,4 @@
-"""`zte-ablate` — generate single-variable ablation sweeps and diff their scoreboards.
-
-Two subcommands:
-
-    # 1a) Emit a sweep that changes exactly one knob, ready to run with zte-run:
-    zte-ablate generate --config experiments/sota_loso.yaml \
-        --knob objective.subject_adversary_weight --values 0,1 --out-dir experiments/ablate_adv
-
-    # 1b) Or sweep a GRID: repeat --knob/--values to emit the Cartesian product of value combinations
-    #     (here 3 spatial encodings x 2 meaning targets = 6 configs), with the exact montage built once:
-    zte-ablate generate --config experiments/sota_loso.yaml --spatial exact \
-        --knob model.spatial_encoding --values none,spherical_harmonics,spatial_attention \
-        --knob objective.meaning_contextual --values None,bert-base-uncased \
-        --out-dir experiments/ablate_geom_meaning
-
-    # 2) After running the pair, isolate the knob's contribution on the LOSO scoreboard:
-    zte-ablate diff --knob objective.subject_adversary_weight \
-        --baseline res/experiments/<base>/evaluation/metrics.json \
-        --variant  res/experiments/<var>/evaluation/metrics.json
-
-A single-knob sweep keeps every claim a *single-variable* comparison, so a metric delta is attributable to one knob.
-A grid additionally reveals how knobs *interact* (e.g. does exact geometry only help once the contextual meaning target is on).
-"""
+"""`zte-ablate` -- generate single-variable (or grid) ablation sweeps and diff their scoreboards."""
 
 from __future__ import annotations
 
@@ -80,14 +58,15 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def _generate(args: argparse.Namespace) -> None:
+    """Writes one config per point of the knob grid."""
     if len(args.knob) != len(args.values):
         raise SystemExit(
             f'Got {len(args.knob)} --knob but {len(args.values)} --values; pass one --values per --knob.'
         )
+    # Provision the base once so every arm shares it, while a knob can still override per arm.
     base = ZTEConfig.from_yaml(args.config)
-    # Bake any --spatial/--meaning provisioning into the base once (e.g. build the montage a single time),
-    # so every arm of the sweep shares it and a knob can still override the encoding per arm.
     provision_from_args(base, args)
+
     specs = [
         (knob, [v.strip() for v in values.split(',') if v.strip()])
         for knob, values in zip(args.knob, args.values)
@@ -106,6 +85,7 @@ def _generate(args: argparse.Namespace) -> None:
 
 
 def _diff(args: argparse.Namespace) -> None:
+    """Renders the scoreboard delta between a baseline run and its one-knob variant."""
     diff = diff_scoreboards(args.baseline, args.variant)
     md = render_diff(
         args.knob,

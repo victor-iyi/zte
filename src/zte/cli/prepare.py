@@ -1,8 +1,4 @@
-"""`zte-prepare` -- build (or synthesise) a processed ZuCo bundle.
-
-Loads ZuCo `.mat` files (or generates a synthetic tree), processes them into a `ZuCoDataset` with the chosen missing-value strategy
-and normalisation, optionally renders the analysis figures, and saves a self-contained bundle that `zte.cli.train` can consume directly.
-"""
+"""`zte-prepare` -- build (or synthesise) a self-contained, processed ZuCo dataset bundle."""
 
 from __future__ import annotations
 
@@ -24,7 +20,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Prepare a processed ZuCo dataset bundle.',
@@ -79,6 +74,7 @@ def main() -> None:
     args = parse_arguments()
     configure_logging(args.log_level)
 
+    # Resolve the data source, fabricating a synthetic tree when asked.
     root = resolve_data_root(args) if not args.synthetic else None
     if args.synthetic:
         subjects = tuple(args.synthetic_subjects.split(','))
@@ -91,6 +87,7 @@ def main() -> None:
         )
         root = args.synthetic_out
 
+    # Build the dataset, then save the bundle and optional overview figures.
     config = DatasetConfig(
         root=root,
         tasks=tuple(args.tasks.split(',')),

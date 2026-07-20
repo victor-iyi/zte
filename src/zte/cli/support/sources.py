@@ -59,9 +59,8 @@ def resolve_data_root(
 ) -> Path:
     """Resolves `--root` or `--drive` to a local directory of `.mat` files.
 
-    Note:
-        Only the `.mat` files matching `tasks` / `subjects` are extracted (so selecting `SR,NR` never unpacks `TSR`),
-        and `--overwrite` (read off `args`) forces re-extraction.
+    Only the `.mat` files matching `tasks` / `subjects` are extracted, so selecting `SR,NR` never
+    unpacks `TSR`; `--overwrite` (read off `args`) forces re-extraction.
 
     Args:
         args (argparse.Namespace): The parsed arguments.
@@ -71,7 +70,6 @@ def resolve_data_root(
 
     Returns:
         Path: The resolved root directory.
-
     """
     from zte.data.io.sources import resolve_source  # pylint: disable=import-outside-toplevel
 
@@ -80,8 +78,7 @@ def resolve_data_root(
         msg = 'One of --root or --drive is required.'
         raise ValueError(msg)
 
-    # Fall back to the CLI's own --tasks / --subjects (comma-separated) so every command extracts
-    # only what it will load, unless the caller passed an explicit list.
+    # Fall back to the CLI's own --tasks / --subjects so a command extracts only what it will load.
     if tasks is None:
         t = getattr(args, 'tasks', None)
         tasks = t.split(',') if isinstance(t, str) and t else None

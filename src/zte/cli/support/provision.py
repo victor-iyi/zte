@@ -1,27 +1,4 @@
-"""Turn-key provisioning of the two heavy, hand-wired experiment ingredients: exact scalp geometry and the word-meaning target.
-
-
-Usage::
-
-    zte-run --config ... --spatial exact --meaning contextual
-    zte-run --config ... --spatial attention --meaning static
-
-`--spatial` bundles the electrode-geometry knobs (`model.spatial_encoding` + `dataset.montage_csv`):
-
-    keep       leave the config as-is (default)
-    off        no spatial encoding (`spatial_encoding='none'`, montage cleared)
-    approx     spherical-harmonic encoding on the coordinate-free fallback cap (no montage)
-    exact      spherical-harmonic encoding on the **exact** ZuCo-105 montage (built + wired here)
-    attention  Défossez-style learned spatial attention on the exact montage
-
-`--meaning` selects the distillation target (`objective.meaning_source`/`meaning_contextual`/…):
-
-    keep       leave the config as-is (default)
-    hash       deterministic hash target (mechanism only, no semantics)
-    static     word-type GloVe vectors, restricted to the dataset vocabulary (built + wired here)
-    contextual per-occurrence contextual target from a frozen encoder (e.g. BERT mid-layer)
-
-"""
+"""Builds and wires the two heavy experiment ingredients behind `--spatial` / `--meaning`: scalp geometry and the meaning target."""
 
 from __future__ import annotations
 
@@ -119,10 +96,9 @@ def apply_spatial(
     montage_out: Path = DEFAULT_MONTAGE_OUT,
     montage_name: str | None = None,
 ) -> None:
-    """Wires `model.spatial_encoding` + `dataset.montage_csv` for a `--spatial` choice (building the CSV if needed).
+    """Wires `model.spatial_encoding` + `dataset.montage_csv` for a `--spatial` choice, building the CSV if needed.
 
-    On an exact choice with `mne` unavailable, this degrades to the coordinate-free fallback (a warning,
-    `montage_csv=None`) rather than failing the run.
+    Without `mne`, an exact choice degrades to the coordinate-free fallback rather than failing the run.
     """
     if choice == 'keep':
         return
@@ -164,7 +140,7 @@ def apply_meaning(
     weight: float | None = None,
     vocab: Iterable[str] | None = None,
 ) -> None:
-    """Wires the `objective.meaning_*` fields for a `--meaning` choice (building the GloVe file if needed).
+    """Wires the `objective.meaning_*` fields for a `--meaning` choice, building the GloVe file if needed.
 
     Args:
         config (ZTEConfig): The config to mutate in place.
@@ -213,17 +189,12 @@ def provision_from_args(
 ) -> None:
     """Applies both `--spatial` and `--meaning` (from parsed args) to `config`, in place.
 
-    Note:
-        `vocab` (the training word set) is used only to shrink the `--meaning static` GloVe file; it is safe
-        to omit (the top-N words are kept instead).
-
     Args:
         config (ZTEConfig): The config to mutate in place.
         args (argparse.Namespace): The parsed arguments.
-        vocab (Iterable[str] | None): Training vocabulary to restrict the `static` GloVe file to (keeps it tiny).
-
+        vocab (Iterable[str] | None): Training vocabulary to restrict the `static` GloVe file to; safe to
+            omit, in which case the top-N words are kept instead.
     """
-    # Apply the spatial choice.
     apply_spatial(
         config,
         getattr(args, 'spatial', 'keep'),
@@ -231,7 +202,6 @@ def provision_from_args(
         montage_name=getattr(args, 'montage_name', None),
     )
 
-    # Apply the meaning choice.
     apply_meaning(
         config,
         getattr(args, 'meaning', 'keep'),

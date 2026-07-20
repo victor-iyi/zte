@@ -1,9 +1,4 @@
-"""`zte-train` -- pretrain a ZTE model with a chosen self-supervised objective.
-
-Configuration comes from a YAML file (`--config`) and/or individual flags that override it, so quick experiments need no file
-while reproducible runs can pin everything. The trained run writes checkpoints (best/last), the resolved config and a training-curve
-figure under the checkpoint directory.
-"""
+"""`zte-train` -- pretrain a ZTE model with a chosen self-supervised objective."""
 
 from __future__ import annotations
 
@@ -25,7 +20,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Pretrain a ZuCo Thought Embedding model.',
@@ -64,7 +58,6 @@ def build_config(args: argparse.Namespace) -> ZTEConfig:
 
     Returns:
         ZTEConfig: The merged `ZTEConfig`.
-
     """
     config = ZTEConfig.from_yaml(args.config) if args.config else ZTEConfig()
     overrides = {
@@ -100,7 +93,6 @@ def load_dataset(args: argparse.Namespace, config: ZTEConfig) -> ZuCoDataset:
 
     Returns:
         ZuCoDataset: A built `ZuCoDataset`.
-
     """
     if args.bundle:
         if args.representation is not None:
@@ -136,6 +128,7 @@ def main() -> None:
     out_dir = Path(config.train.ckpt_dir)
     config.to_yaml(out_dir / 'config.yaml')
 
+    # Training curves are a convenience; a missing viz backend must not fail the run.
     try:
         from zte.data.viz import plot_training_curves  # pylint: disable=import-outside-toplevel
 

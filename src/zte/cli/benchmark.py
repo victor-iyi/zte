@@ -1,12 +1,4 @@
-"""`zte-benchmark` -- a reproducible sweep over the knobs that matter.
-
-To claim ZTE is a *standard* way to encode EEG, its choices must be benchmarked, not asserted.
-This command trains and evaluates a small model across a grid of **objective x positional-encoding x eye-tracking x seed**,
-all from fixed seeds, and aggregates the headline metrics into a sortable table (CSV + Markdown).
-Every cell writes its own resolved `config.yaml` so any row can be reproduced exactly.
-
-The defaults are intentionally light (a quick, CPU-friendly sweep); widen the grid via the flags for a full run on a GPU.
-"""
+"""`zte-benchmark` -- fixed-seed sweep over objective x positional-encoding x eye-tracking x seed."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -106,9 +98,9 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
         dataset (ZuCoDataset): The dataset it was trained on.
 
     Returns:
-        dict[str, float]: Headline metrics: sentence retrieval Top-1 (+ lift over chance), embedding effective-rank ratio and
-            anisotropy, the number of probe targets that beat the noise control, and subject-transfer analogy Top-1 (+ lift).
-
+        dict[str, float]: Sentence retrieval Top-1 (+ lift over chance), embedding effective-rank ratio
+            and anisotropy, the number of probe targets beating the noise control, and subject-transfer
+            analogy Top-1 (+ lift).
     """
     from zte.cli.evaluate import collect_embeddings
 
@@ -127,8 +119,8 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
     if word_meta['subject'].nunique() > 1:
         tgts['subject'] = (pd.factorize(word_meta['subject'])[0], 'classification')
     comparison = M.representation_comparison(reps, tgts)
-    # A target "beats noise" only if the per-fold ZTE-minus-noise linear-probe gap has a bootstrap 95% CI lower bound
-    # above an effect-size floor (folds are paired via a shared seed) -- not merely a positive point difference.
+
+    # A target beats noise only when the paired per-fold gap's bootstrap CI clears an effect-size floor.
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise'}
     effect_floor = 0.01
@@ -171,6 +163,7 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(',')]
     datasets = {et: _dataset_for(args, et) for et in et_settings}
 
+    # One training run + metric block per grid cell, each writing its own resolved config.
     rows: list[dict[str, Any]] = []
     grid = list(itertools.product(objectives, pos_encodings, et_settings, seeds))
     _LOG.info('Benchmarking %d configurations.', len(grid))
@@ -206,6 +199,7 @@ def main() -> None:
         )
         _LOG.info('[%s] %s', tag, json.dumps(metrics))
 
+    # Aggregate into the sortable CSV + Markdown tables.
     frame = pd.DataFrame(rows).sort_values('subject_transfer_lift', ascending=False)
     frame.to_csv(out / 'benchmark.csv', index=False)
     (out / 'benchmark.md').write_text(_render_markdown(frame), encoding='utf-8')

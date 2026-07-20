@@ -1,20 +1,4 @@
-"""`zte-visualize` -- build the flagship interactive Thought-Space Explorer.
-
-Produces a single self-contained `.html` (Plotly inlined, fully offline) over word-level ZTE embeddings, wiring five live views:
-one subject / many words, one word across many brains (with a cross-subject cosine statistic), thought arithmetic
-`emb(t,A) - centroid(A) + centroid(B)`, an eye-tracking vs EEG-only toggle, and real-time colour / subject / word / dimension controls.
-
-Two data paths:
-
-* `--run res/experiments/<name>` re-embeds a catalogued run's bundle with its own checkpoint and visualises those real ZTE embeddings.
-* `--synthetic` fabricates a tiny ZuCo tree, trains two fast models -- one on EEG + eye-tracking, one EEG-only -- embeds both
-  (aligned row-for-row) and produces the explorer with the view-4 toggle and probe bar populated.
-
-Examples::
-
-    zte-visualize --run res/experiments/exp1_skipgram_rope_et --out explorer.html
-    zte-visualize --synthetic --out explorer.html
-"""
+"""`zte-visualize` -- build the offline interactive Thought-Space Explorer and Neuron Atlas HTML."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -108,12 +92,10 @@ def _probe_word_len(emb: np.ndarray, meta: pd.DataFrame) -> float | None:
 
 
 def _emergence(emb: np.ndarray, meta: pd.DataFrame, raw_feats: np.ndarray | None) -> dict | None:
-    """Canonical full-embedding-space emergence report for the explorer's verdict banners.
+    """Full-embedding-space emergence report for the explorer's verdict banners.
 
-    Bundles the subject-transfer analogy hit-rate with the cross-subject clustering and
-    semantic-neighbourhood metrics (the same numbers `metrics.json` carries), so the
-    explorer's banners headline authoritative figures instead of only the in-browser
-    PCA-space estimate. Returns `None` (banners fall back to the live estimate) on failure.
+    Computed here so the banners headline the same numbers `metrics.json` carries rather than the
+    in-browser PCA-space estimate; `None` on failure, which falls the banners back to that estimate.
     """
     from zte.evaluation.analogy import analogy_report
     from zte.evaluation.emergence import emergence_report
@@ -123,7 +105,7 @@ def _emergence(emb: np.ndarray, meta: pd.DataFrame, raw_feats: np.ndarray | None
         arr = np.asarray(raw_feats)
         flat = arr.reshape(len(arr), -1) if arr.ndim > 1 else arr[:, None]
         if flat.ndim == 2 and len(flat) == len(emb):
-            feats = flat  # aligned raw-feature control; else omit (it is optional)
+            feats = flat  # aligned raw-feature control; optional, so omit when misaligned
     try:
         analogy = analogy_report(emb, meta, feats)
         return emergence_report(emb, meta, analogy=analogy)
@@ -198,9 +180,8 @@ def _embed_quick(
     """Builds a dataset, trains 2 epochs, and returns aligned word embeddings + meta.
 
     Returns:
-        tuple: `(word_emb, word_meta, word_band_power, dataset)`; the same present-word
-            ordering is produced for both the ET and EEG-only configs, so the two
-            embedding sets line up row-for-row for the view-4 toggle.
+        tuple: `(word_emb, word_meta, word_band_power, dataset)`, in present-word order -- identical for
+            the ET and EEG-only configs, so the two embedding sets line up row-for-row for the toggle.
     """
     from zte.cli.evaluate import collect_embeddings
     from zte.data.dataset import ZuCoDataset
@@ -300,6 +281,7 @@ def main() -> None:
 
     inputs = _from_synthetic(args) if args.synthetic else _from_run(args)
 
+    # Emit whichever pages were asked for, then report their paths.
     written: list[Path] = []
     if kind in ('explorer', 'both'):
         out = thought_space_explorer_html(

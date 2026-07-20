@@ -1,28 +1,4 @@
-"""`zte-run` -- one command from data source to catalogued experiment.
-
-This is the easy, reproducible front door. Given an experiment YAML (a `ZTEConfig`) and a data source,
-it runs the whole pipeline and writes every artifact under `res/experiments/<run_name>/`::
-
-    experiments/<run_name>/
-      config.yaml         # the exact, resolved config (re-run with this)
-      bundle/             # processed, cached ZuCoDataset (arrays + tables + normaliser)
-      checkpoints/        # best.pt / last.pt / rotating + training curves
-      figures/            # dataset overview figures
-      evaluation/         # metrics.json, report.md, figures, interactive HTML
-      exploration/        # brain-region + eye-tracking analysis
-      tb/                 # TensorBoard (training + evaluation, incl. projector)
-      manifest.json       # data source, headline metrics, verdict, paths
-      README.md           # human summary of this run
-
-The data source may be a local extracted directory, one or more `.zip` archives, a Google Drive id/URL, or `--synthetic`
-for a no-data smoke run -- all normalised by `resolve_source`.
-
-Examples::
-
-    zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
-    zte-run --config experiments/exp2_masked_eegonly.yaml --drive <folder-id-or-url>
-    zte-run --config experiments/exp1_skipgram_rope_et.yaml --synthetic --epochs 5
-"""
+"""`zte-run` -- prepare, train, evaluate and catalogue one experiment under `res/experiments/<run_name>/`."""
 
 # pylint: disable=import-outside-toplevel
 from __future__ import annotations
@@ -47,7 +23,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Run a full, catalogued ZTE experiment from a config + data source.',
@@ -184,7 +159,7 @@ def main() -> None:
 
 def _run(args: argparse.Namespace) -> None:
     """The pipeline body (separated so `main` can wrap it for clean pause/resume)."""
-
+    # CLI overrides, applied before anything derives from the config.
     config = ZTEConfig.from_yaml(args.config)
     if args.seed is not None:
         config.train.seed = args.seed
@@ -225,35 +200,24 @@ def _run(args: argparse.Namespace) -> None:
 
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
-    # Point every output at the run directory so the experiment is self-contained. The PROCESSED
-    # dataset bundle is the exception: `--data-cache` puts it in a shared, content-addressed store
-    # (ideally a persistent/Drive path) so the costly `.mat` load + processing happens once and every
-    # later run/session reuses it. Without the flag it stays per-run (the original self-contained mode).
+    # Every output goes under the run directory; only `--data-cache` moves the bundle to a shared store.
     config.dataset.root = _resolve_root(args, config)
     config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
-    # Continuous checkpoint mirror to Drive: train fast on the local disk, but copy best/last.pt to
-    # a mounted Drive path after every epoch so a lost runtime never loses trainable progress. The
-    # mirror is best-effort (a Drive hiccup won't crash training). `--drive-backup <root>` points at
-    # a per-session Drive folder; each run mirrors to <root>/<run_name>/checkpoints.
     if args.drive_backup:
-        # The checkpoint manager copies its `checkpoints/` dir *into* drive_backup_dir, so point it at
-        # the run's Drive folder -> checkpoints land at <root>/<run_name>/checkpoints.
+        # The checkpoint manager copies its `checkpoints/` dir into this path, so it must be per-run.
         config.train.drive_backup_dir = str(Path(args.drive_backup) / config.run_name)
 
     manifest: dict[str, Any] = {
         'run_name': config.run_name,
         'data_root': config.dataset.root,
-        # Records whether this run used --synthetic (a schema-faithful fake tree). Lets tooling
-        # exclude smoke/synthetic runs from Drive backups (zte-pack --skip-synthetic).
+        # Lets tooling exclude smoke runs from backups (zte-pack --skip-synthetic).
         'synthetic': bool(args.synthetic),
     }
 
+    # A shared cache already holds the processed bundle, making the per-run copy redundant.
     bundle_dir = run_dir / 'bundle'
-    # With a shared --data-cache, the processed bundle already lives in that content-addressed store
-    # and is reused across runs/sessions, so the per-run `bundle/` copy is redundant: skip it and let
-    # `build()` hit the shared cache (a fast array load, no `.mat` parsing) on this and every later run.
     shared_cache = args.data_cache is not None
 
     # 1) Prepare (build + cache + save bundle + overview figures). On --resume, reuse the bundle.
@@ -271,10 +235,7 @@ def _run(args: argparse.Namespace) -> None:
     manifest['dataset'] = dataset.analyze()
     _save_overview(dataset, run_dir / 'figures')
 
-    # 1b) Provision heavy ingredients on demand (--spatial / --meaning): build the exact montage and/or
-    #     the meaning-distillation target and wire them into the config, so runs pick them with one flag
-    #     instead of the old manual export-montage + hand-edit ritual. Runs after the bundle is built so
-    #     --meaning static can restrict the GloVe file to the actual training vocabulary.
+    # 1b) Provision --spatial / --meaning after the bundle, so the GloVe file can be vocab-restricted.
     _apply_provisioning(config, args, dataset)
 
     # 2) Train (resumes from the last checkpoint when --resume).
@@ -294,8 +255,7 @@ def _run(args: argparse.Namespace) -> None:
     )
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
 
-    # 3) Evaluate (skipped on --resume only if metrics are at least as new as the checkpoint, so a
-    #    run whose training advanced this invocation is always re-evaluated on the fresh model).
+    # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
     metrics_path = run_dir / 'evaluation' / 'metrics.json'
     best_ckpt = run_dir / 'checkpoints' / 'best.pt'
     eval_fresh = metrics_path.exists() and (
@@ -323,8 +283,7 @@ def _run(args: argparse.Namespace) -> None:
             )
             manifest['region_map_approximate'] = summary['region_map_approximate']
     elif not args.skip_explore:
-        # Say so rather than silently producing no exploration at all: region/eye-tracking exploration
-        # needs band power, which `representation: raw` never loads.
+        # Exploration needs band power, which `representation: raw` never loads.
         _LOG.warning(
             '[4/4] Skipped: exploration needs band power, but representation=%r loads none. '
             "Use representation: 'both' to explore regions for a raw frontend.",
@@ -334,6 +293,7 @@ def _run(args: argparse.Namespace) -> None:
             f'no band power (representation={config.dataset.representation})'
         )
 
+    # Catalogue: manifest, per-run README and the shared index row.
     write_json(run_dir / 'manifest.json', manifest, default=str)
     (run_dir / 'README.md').write_text(
         _render_run_readme(config, manifest, run_dir), encoding='utf-8'
@@ -343,10 +303,10 @@ def _run(args: argparse.Namespace) -> None:
 
 
 def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: ZuCoDataset) -> None:
-    """Builds + wires the `--spatial` / `--meaning` ingredients into `config` (see `zte.cli.support.provision`).
+    """Builds + wires the `--spatial` / `--meaning` ingredients into `config`.
 
     The training word set is pulled from the built dataset so `--meaning static` writes only the GloVe
-    rows this dataset needs; provisioning is otherwise a no-op when both flags are left at `keep`.
+    rows this dataset needs; a no-op when both flags are left at `keep`.
     """
     vocab: set[str] | None = None
     words = getattr(dataset, 'words', None)
@@ -364,9 +324,6 @@ def _last_completed_epoch(ckpt_dir: Path) -> int:
 def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace) -> bool:
     """Whether a run has finished every stage, so `--resume` can skip it without loading anything.
 
-    Checks training (last checkpoint at the final epoch) and, unless skipped, evaluation
-    (`metrics.json`) and exploration (`exploration/report.md`) outputs.
-
     Args:
         run_dir (Path): The run directory.
         config (ZTEConfig): The (resolved) run config, for the target epoch count.
@@ -382,8 +339,7 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
     if not args.skip_eval and not (run_dir / 'evaluation' / 'metrics.json').exists():
         return False
     if not args.skip_explore and not (run_dir / 'exploration' / 'report.md').exists():
-        # Exploration only runs when band power is available; absence of the marker is only
-        # decisive when the run could have produced it. A prior manifest confirms it did/should.
+        # Exploration only runs when band power is available, so a prior manifest is the arbiter.
         if (run_dir / 'manifest.json').exists():
             manifest = read_json(run_dir / 'manifest.json')
             if 'region_map_approximate' not in manifest:

@@ -13,7 +13,6 @@ def read_json(path: str | Path) -> Any:
 
     Returns:
         Any: The parsed JSON payload.
-
     """
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
@@ -35,7 +34,6 @@ def write_json(
 
     Returns:
         Path: The written path.
-
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -20,12 +20,10 @@ def synthetic_root(
 
     Returns:
         Path: The `out` path, ready to hand to a `DatasetConfig(root=...)`.
-
     """
     from zte.data.synthetic import generate_synthetic_zuco
 
     out = Path(out)
-
     if tasks is None:
         generate_synthetic_zuco(out, show_progress=show_progress)
     else:

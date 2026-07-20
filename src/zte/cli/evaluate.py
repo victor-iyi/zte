@@ -1,8 +1,4 @@
-"""`zte-evaluate` -- produce evidence that a trained ZTE encodes EEG well.
-
-Loads a checkpoint + dataset, embeds words and sentences, and runs the evaluation suite (transfer probes vs raw features
-and a noise control, geometry/health, and cross-subject content retrieval), writing figures, tables and a Markdown report.
-"""
+"""`zte-evaluate` -- embed a checkpoint and run the evaluation suite (probes, retrieval, geometry)."""
 
 from __future__ import annotations
 
@@ -25,8 +21,7 @@ from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.evaluate')
 
-# Raw-EEG rows embedded per block. Raw windows are ~147 KB each (105 x 350 x 4 B), so the full present
-# set is tens of GB -- streaming keeps peak memory at one block plus the compact outputs.
+# Raw-EEG rows embedded per block; the full present set is tens of GB, so it must be streamed.
 _EVAL_BLOCK: int = 2048
 
 
@@ -35,7 +30,6 @@ def parse_arguments() -> argparse.Namespace:
 
     Returns:
         argparse.Namespace: The parsed argument namespace.
-
     """
     parser = argparse.ArgumentParser(
         description='Evaluate a trained ZTE representation (probes, retrieval, geometry).',
@@ -78,21 +72,22 @@ def collect_embeddings(
 ]:
     """Produces aligned word/sentence embeddings + a raw-feature baseline.
 
-    Word-level arrays are built in dataset row order over the present tokens so the ZTE embeddings, the raw-feature
-    baseline and the metadata line up exactly. Sentence content ids group sentences by their stimulus text (so the same
-    sentence read by different subjects shares an id).
+    Word-level arrays are built in dataset row order over the present tokens so the embeddings, the
+    baseline and the metadata line up exactly. Sentence content ids group sentences by stimulus text,
+    so the same sentence read by different subjects shares an id.
 
     Args:
         embedder (ZTEEmbedder): The restored embedder.
         dataset (ZuCoDataset): A built dataset.
-        indices (np.ndarray | None): Optional word-row indices restricting embedding to a split (e.g. the held-out test set);
-            `None` embeds every present word.
+        indices (np.ndarray | None): Optional word-row indices restricting embedding to a split (e.g. the
+            held-out test set); `None` embeds every present word.
 
     Returns:
-        tuple: `(word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, sent_meta, word_band_power)`, where `sent_meta` is the merged
-            sentence metadata and `word_band_power` holds per-word band power (or `None` when the model consumes raw signals or no band power is available).
-
+        tuple: `(word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, sent_meta,
+            word_band_power)`, where `word_band_power` is `None` when the model consumes raw signals or
+            no band power is available.
     """
+    # Restrict to present tokens, intersected with the requested split.
     present = (
         np.ones(len(dataset.words), dtype=bool)
         if dataset.presence is None
@@ -102,11 +97,9 @@ def collect_embeddings(
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
+
+    # Raw path: stream in blocks, since slicing the whole signal is a ~21 GB copy that also un-mmaps a bundle.
     if embedder.model.uses_raw:
-        # Stream in blocks. `dataset.raw_eeg[present]` materialises a full copy of the raw signal (~21 GB at raw_window=350,
-        # and it would un-memory-map a mmap-backed bundle), and the flattened window it used to feed the probes was the time-domain
-        # signal at n_channels * time_steps dims -- mislabelled as band power and far too wide for ridge (a d x d Gram).
-        # `band_power_from_raw` is the classical-feature control the label promises, at ~840 dims. Peak here is one block plus the two compact outputs.
         rows = np.flatnonzero(present)
         emb_parts: list[np.ndarray] = []
         bp_parts: list[np.ndarray] = []
@@ -117,13 +110,13 @@ def collect_embeddings(
         word_emb = np.concatenate(emb_parts, axis=0)
         raw_word_feats = np.concatenate(bp_parts, axis=0)
     else:
-        # dataset.features are already normalised and carry the exact model input width (band power + any appended eye-tracking dims),
-        # so feed them straight in with the normaliser disabled -- this stays aligned to `present` order and is agnostic to the eye-tracking toggle.
+        # `dataset.features` are already normalised at the exact model input width, so skip the normaliser.
         feats = dataset.features[present]  # type: ignore[index]
         word_emb = embedder.embed_signals(band_power=feats, apply_normalizer=False)
         raw_word_feats = feats
     word_meta = dataset.words.loc[present].reset_index(drop=True)
 
+    # Sentence level, keyed by stimulus text so cross-subject retrieval has ground truth.
     sent_emb, sent_meta = embedder.embed(dataset, level='sentence', indices=indices)
     sent_cols = ['subject', 'task', 'sentence_idx', 'text']
     for extra in ('category', 'length_band'):
@@ -147,9 +140,8 @@ def phase_shuffled_word_emb(
 ) -> np.ndarray | None:
     """Embeds phase-scrambled EEG through the trained encoder (a signal-destroyed control).
 
-    Passing FFT-phase-randomised raw EEG through the *same* trained encoder tests whether the encoder invents structure from destroyed signal.
-    Only meaningful for a raw frontend: band-power features are (near-)phase-invariant, so scrambling raw EEG barely moves them.
-    For band-power models this returns `None` rather than presenting an identical-looking baseline as if it destroyed signal.
+    Only meaningful for a raw frontend: band-power features are near phase-invariant, so scrambling
+    barely moves them and a band-power model returns `None` rather than a misleading baseline.
 
     Args:
         embedder (ZTEEmbedder): The restored embedder.
@@ -172,8 +164,8 @@ def phase_shuffled_word_emb(
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
         present = present & in_split
-    # Scramble + embed one block at a time: the full slice is a ~21 GB copy and phase_scramble promotes it again internally,
-    # so materialising it would OOM long before the encoder ran.
+
+    # Scramble + embed one block at a time; `phase_scramble` promotes its input, doubling an already huge slice.
     rows = np.flatnonzero(present)
     parts = [
         np.asarray(
@@ -191,8 +183,7 @@ def phase_shuffled_word_emb(
 def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:
     """Returns the set of word types in the training split (for the seen-vs-novel retrieval split).
 
-    Recomputes the deterministic, seeded train/val/test split the run used and reads its word types, so
-    a word can be labelled *novel* (never seen in training) at evaluation time.
+    Recomputes the run's deterministic, seeded split so a word can be labelled novel at evaluation time.
 
     Args:
         dataset (ZuCoDataset): A built dataset.
@@ -226,13 +217,16 @@ def main() -> None:
 
     dataset = load_dataset(args)
     embedder = ZTEEmbedder.from_checkpoint(args.ckpt, dataset, device=resolve_device(args.device))
-    # A CLI montage overrides whatever the checkpoint carried, so exact scalp-region
-    # importance can be requested at evaluation time (report.py loads it from config).
+
+    # A CLI montage overrides the checkpoint's, so exact scalp regions can be requested at eval time.
     if args.montage_csv is not None and getattr(embedder.config, 'dataset', None) is not None:
         embedder.config.dataset.montage_csv = args.montage_csv
+
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )
+
+    # Opt-in hardening controls, config-gated so default runs stay fast.
     obj_cfg = getattr(embedder.config, 'objective', None)
     phase_emb = (
         phase_shuffled_word_emb(embedder, dataset)
