@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ZTE — Leave-One-Subject-Out (LOSO) experiment: the "new brain" generalization test.
+# ZTE -- full leave-one-subject-out (LOSO) sweep: the "new brain" generalization test.
 #
-# Trains the full invariance recipe once per held-out subject (rotating the held-out
-# subject over the whole cohort), so the single-subject LOSO result becomes a *trend*.
-# Each per-subject run is a self-contained, resumable `zte-run`.
+# Trains one config once per held-out subject, rotating the held-out subject over the whole
+# 12-person ZuCo cohort, so a single held-out number becomes a trend with error bars.
 #
-#   * Portable: runs on Apple Silicon (MPS), Linux, and Google Colab. The device is chosen
-#     automatically (CUDA > MPS > CPU) — no flags needed. Set DEVICE=... to force one.
-#   * Fully resumable: every run carries `--resume`. Stop any time (Ctrl-C) and re-run
-#     the exact same command — finished subjects are skipped and the interrupted one
-#     continues from its last checkpoint. Nothing is recomputed.
+# DEFAULT CONFIG = experiments/flagship/clip_e5_bandpower.yaml -- the only recipe that has ever
+# cleared the retrieval gate on real ZuCo (held-out ZAB, 2026-07-16: sentence Top-1 0.093 vs 0.001
+# chance, permutation p=0.002). Override with FULL_CFG to sweep a different arm.
+#
+# SURVIVING A LOST COLAB VM
+#   Every run carries --resume, and with DRIVE_BACKUP set the *entire* run directory (config,
+#   checkpoints, evaluation, figures, TensorBoard) is mirrored to Drive after every stage, and
+#   checkpoints after every epoch. If the VM is reclaimed:
+#     1. copy the Drive folder back to OUT_ROOT (or point OUT_ROOT straight at Drive), and
+#     2. re-run this exact command.
+#   Finished subjects are skipped instantly; the interrupted one resumes from its last epoch.
+#   Point DATA_CACHE at a Drive path so the processed dataset bundle is built ONCE, ever.
 #
 # USAGE
-#   bash scripts/run_loso.sh                      # real data at res/data/zuco_extracted
-#   bash scripts/run_loso.sh /path/to/zuco        # real data elsewhere
-#   SMOKE=1 bash scripts/run_loso.sh              # fast synthetic dry-run (no data, CPU)
-#   CONTROL=1 bash scripts/run_loso.sh            # also run the no-recipe control arm (A/B)
-#   DEVICE=cuda bash scripts/run_loso.sh          # force a device (else auto)
-#   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh   # restrict the held-out set
-#   FULL_CFG=experiments/sota_loso.yaml bash scripts/run_loso.sh   # run the SOTA stack instead of the old recipe
-#   OUT_ROOT="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh   # write ALL runs to Google Drive (persist everything)
-#   DRIVE_BACKUP="/gdrive/My Drive/zte/loso" bash scripts/run_loso.sh  # train local (fast) + mirror checkpoints to Drive each epoch
+#   bash scripts/run_loso.sh                       # real data at res/data/zuco_extracted
+#   bash scripts/run_loso.sh /path/to/zuco         # real data elsewhere
+#   SMOKE=1 bash scripts/run_loso.sh               # fast synthetic dry-run (CPU, 3 subjects)
+#   CONTROL=1 bash scripts/run_loso.sh             # also run the skip-gram control arm (A/B)
+#   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh    # restrict the held-out set
+#   FULL_CFG=experiments/flagship/clip_e5_raw.yaml bash scripts/run_loso.sh
+#
+# COLAB (recommended -- train on local disk, keep a live Drive copy of everything):
+#   DRIVE_BACKUP="/content/drive/MyDrive/Sharables/ZTE/$(date +%F)/experiments" \
+#   DATA_CACHE="/content/drive/MyDrive/Sharables/ZTE/prepared" \
+#   bash scripts/run_loso.sh /content/zuco_extracted
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -29,22 +37,22 @@ cd "$(dirname "$0")/.."
 ROOT="${1:-res/data/zuco_extracted}"
 PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
-OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set OUT_ROOT to a mounted Drive path to persist runs
-DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder to mirror checkpoints to each epoch (train local, live Drive copy)
-FULL_CFG="${FULL_CFG:-experiments/study_invariance_full_loso.yaml}"       # the invariance recipe (override: FULL_CFG=experiments/sota_loso.yaml)
-CTRL_CFG="${CTRL_CFG:-experiments/study_invariance_baseline_loso.yaml}"   # no-recipe control
-SPATIAL="${SPATIAL:-}"    # optional: provision spatial encoding per run (e.g. exact); empty = use each config as-is
-MEANING="${MEANING:-}"    # optional: provision meaning target per run (e.g. static / contextual); empty = use each config as-is
-DATA_CACHE="${DATA_CACHE:-}"  # optional: shared PROCESSED-dataset cache dir (e.g. a Drive path); build once, reuse across all subjects/sessions
+OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set to a mounted Drive path to write runs straight to Drive
+DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder; mirrors the whole run dir each stage
+DATA_CACHE="${DATA_CACHE:-}"                   # shared PROCESSED-bundle dir; build once, reuse every subject
+FULL_CFG="${FULL_CFG:-experiments/flagship/clip_e5_bandpower.yaml}"   # the champion (see header)
+CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
+SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)
+MEANING="${MEANING:-keep}"    # leave each config's own meaning target alone
 
-# Built once and reused from cache across every held-out subject (montage, meaning and the processed
-# dataset bundle are all subject-independent, so --data-cache skips the .mat load + processing per subject).
+# Built once and reused from cache across every held-out subject: the montage, the meaning target and
+# the processed bundle are all subject-independent, so only the first subject pays for them.
 PROVISION=()
 [ -n "${SPATIAL}" ] && PROVISION+=(--spatial "${SPATIAL}")
 [ -n "${MEANING}" ] && PROVISION+=(--meaning "${MEANING}")
 [ -n "${DATA_CACHE}" ] && PROVISION+=(--data-cache "${DATA_CACHE}")
 
-# All 12 ZuCo v1 subjects; synthetic mode only has three.
+# All 12 ZuCo v1 subjects; the synthetic generator only makes three.
 ALL_SUBJECTS="ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH"
 SYNTH_SUBJECTS="ZAB ZDM ZJN"
 
@@ -53,15 +61,17 @@ if [ "${SMOKE:-0}" = "1" ]; then
   SUBJECTS="${SUBJECTS:-$SYNTH_SUBJECTS}"
 else
   SRC=(--root "${ROOT}")
-  [ -n "${DEVICE:-}" ] && SRC+=(--device "${DEVICE}")   # else config's 'auto' picks the GPU
+  [ -n "${DEVICE:-}" ] && SRC+=(--device "${DEVICE}")   # else the config's 'auto' picks the accelerator
   [ -n "${EPOCHS:-}" ] && SRC+=(--epochs "${EPOCHS}")
   SUBJECTS="${SUBJECTS:-$ALL_SUBJECTS}"
 fi
 
+FAILED=""
+
 run_one() {   # cfg, holdout
   local cfg="$1" holdout="$2"
   echo "───────────────────────────────────────────────────────────────"
-  echo "▶ LOSO hold out ${holdout}  ($(basename "${cfg}"))"
+  echo "▶ LOSO hold out ${holdout}  ($(basename "${cfg}" .yaml))"
   local backup=()
   [ -n "${DRIVE_BACKUP}" ] && backup=(--drive-backup "${DRIVE_BACKUP}")
   "${PY}" -m zte.cli.run --config "${cfg}" "${SRC[@]}" \
@@ -73,18 +83,32 @@ run_one() {   # cfg, holdout
     exit 130
   elif [ "${code}" != "0" ]; then
     echo "✗ ${holdout} failed (exit ${code}). Re-run to retry; other subjects are unaffected."
+    FAILED="${FAILED} $(basename "${cfg}" .yaml)/${holdout}"
   fi
   return 0
 }
 
-echo "LOSO sweep · ${OUT_ROOT} · held-out: ${SUBJECTS}"
+echo "LOSO sweep · config $(basename "${FULL_CFG}") · out ${OUT_ROOT} · held-out: ${SUBJECTS}"
+[ -n "${DRIVE_BACKUP}" ] && echo "Drive mirror: ${DRIVE_BACKUP} (whole run dir, every stage)"
+[ -n "${DATA_CACHE}" ]   && echo "Shared bundle cache: ${DATA_CACHE} (built once, reused per subject)"
+
 for s in ${SUBJECTS}; do
   [ "${CONTROL:-0}" = "1" ] && run_one "${CTRL_CFG}" "${s}"
   run_one "${FULL_CFG}" "${s}"
 done
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "✓ LOSO sweep complete. Building the combined comparison view ..."
+if [ -n "${FAILED}" ]; then
+  echo "⚠  Completed with failures:${FAILED}"
+  echo "   Re-run the same command to retry only those (everything else is skipped instantly)."
+else
+  echo "✓ LOSO sweep complete."
+fi
+
+echo "Building the combined comparison view ..."
 "${PY}" -m zte.cli.compare --experiments "${OUT_ROOT}" \
     --out "${OUT_ROOT}/COMPARE.html" --title "ZTE — LOSO (new-brain) trend" || true
+if [ -n "${DRIVE_BACKUP}" ] && [ -f "${OUT_ROOT}/COMPARE.html" ]; then
+  mkdir -p "${DRIVE_BACKUP}" && cp -f "${OUT_ROOT}/COMPARE.html" "${DRIVE_BACKUP}/" 2>/dev/null || true
+fi
 echo "Open ${OUT_ROOT}/COMPARE.html to compare every held-out subject side by side."

@@ -7,8 +7,8 @@ from pathlib import Path
 
 from zte.config import DatasetConfig, ObjectiveConfig, TrainConfig, ZTEConfig
 
-# Where the study YAMLs are written (next to the shipped exp*.yaml presets).
-EXPERIMENTS_DIR: Path = Path(__file__).resolve().parent.parent / 'experiments'
+# Where the study YAMLs are written: the ablation tier, alongside the other single-lever studies.
+EXPERIMENTS_DIR: Path = Path(__file__).resolve().parent.parent / 'experiments' / 'ablation'
 
 # Rotate across all 12 ZuCo v1 subjects for a full leave-one-subject-out sweep.
 LOSO_HOLDOUT: str = 'ZAB'
