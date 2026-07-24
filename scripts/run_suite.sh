@@ -2,17 +2,21 @@
 #
 # run_suite.sh -- the fixed-seed driver for the ZTE experiment suite.
 #
-# Study order follows the evidence from the 2026-07-16 real-ZuCo LOSO session (held out ZAB):
+# Study order follows the 2026-07-24 real-ZuCo LOSO board (held out ZAB), a clean 2x2 over
+# {frontend} x {meaning distillation}:
 #
-#   | run                       | sentence Top-1 (chance 0.0013) | permutation p | held-out Top-1 lift |
-#   | ------------------------- | ------------------------------ | ------------- | ------------------- |
-#   | clip_e5_bandpower         | 0.0932  ✓ above chance         | 0.002         | +0.29pp             |
-#   | clip_e5_raw               | 0.0065  ✓ above chance         | 0.002         | +0.71pp  (best)     |
-#   | clip_qwen_bandpower       | 0.0010  ✗                      | 0.096         | +0.00pp             |
-#   | baseline_skipgram_loso    | 0.0004  ✗                      | 0.986         | +0.29pp             |
+#   | run                        | frontend       | meaning | sentence Top-1 | eff-rank | subject var |
+#   | -------------------------- | -------------- | ------- | -------------- | -------- | ----------- |
+#   | clip_e5_bandpower (exp8)   | band_power     | off     | 0.019          | 0.166    | 10.1%       |
+#   | clip_e5_meaning   (exp9)   | band_power     | ON      | 0.043  champion| 0.160    |  0.9%       |
+#   | clip_e5_raw       (exp8)   | raw_conformer  | off     | 0.010          | 0.264    |  6.9%       |
+#   | clip_e5_meaning_raw (exp10)| raw_conformer  | ON      |  ? missing cell|    ?     |    ?        |
 #
-# So: CLIP against an E5 sentence target is the only objective that has ever beaten chance here, and
-# skip-gram is now a control rather than a contender. Everything below is built around that.
+# Two findings drive everything below: (1) meaning distillation is the DISENTANGLER -- turning it on under
+# band_power cut subject-variance 10x and 2.25x'd retrieval; (2) the raw conformer holds the richest space
+# (eff-rank 0.264) but, without meaning distillation, never disentangles subject. exp10 fills the empty cell
+# (raw + meaning), and exp10_v2 pushes the encoder itself (multiscale temporal + attentive pool + wider).
+# Qwen is a dead end (Top-1 0.002); skip-gram is a control, not a contender.
 #
 # Usage:
 #   bash scripts/run_suite.sh                         # real data (default root)
@@ -22,7 +26,9 @@
 #
 # STUDIES (default: "audit flagship controls"):
 #   audit     -- model-free confound audit of the dataset (run this before believing any result)
-#   flagship  -- the three CLIP arms held out on ZAB: band-power, raw-conformer, +meaning distillation
+#   flagship  -- the CLIP arms held out on ZAB: band-power champion (exp9) + the exp10 raw+meaning cell and
+#                its encoder-leap v2 (multiscale temporal / attentive pool / wider conformer)
+#   text_ab   -- text-encoder A/B on the champion recipe (E5 vs Qwen vs BGE vs MPNet): what makes E5 unique
 #   controls  -- the skip-gram baseline and the Qwen text-encoder arm, for honest comparison
 #   benchmark -- objective sweep on top of the champion recipe (zte-benchmark, resumable)
 #   ablate    -- one-knob-at-a-time studies on the champion (zte-ablate generate + run + diff)
@@ -61,13 +67,19 @@ HOLDOUT="${HOLDOUT:-ZAB}"                 # held-out subject for the single-fold
 
 # The configs, by tier (see experiments/README.md).
 FLAGSHIP_CONFIGS="${FLAGSHIP_CONFIGS:-\
-experiments/flagship/clip_e5_bandpower.yaml \
-experiments/flagship/clip_e5_raw.yaml \
-experiments/flagship/clip_e5_meaning.yaml}"
+experiments/flagship/clip_e5_meaning.yaml \
+experiments/flagship/clip_e5_meaning_raw.yaml \
+experiments/flagship/clip_e5_meaning_raw_v2.yaml}"
+# Text-encoder A/B (same champion recipe, only the CLIP sentence target differs): what makes E5 unique.
+TEXT_CONFIGS="${TEXT_CONFIGS:-\
+experiments/flagship/clip_e5_meaning.yaml \
+experiments/benchmark/clip_qwen_bandpower.yaml \
+experiments/text_encoders/clip_bge_meaning.yaml \
+experiments/text_encoders/clip_mpnet_meaning.yaml}"
 CONTROL_CONFIGS="${CONTROL_CONFIGS:-\
 experiments/benchmark/baseline_skipgram_loso.yaml \
 experiments/benchmark/clip_qwen_bandpower.yaml}"
-CHAMPION="${CHAMPION:-experiments/flagship/clip_e5_bandpower.yaml}"
+CHAMPION="${CHAMPION:-experiments/flagship/clip_e5_meaning.yaml}"
 ABLATE_KNOBS="${ABLATE_KNOBS:-objective.meaning_distill_weight objective.subject_adversary_weight}"
 
 # Turn-key provisioning shared by every run (built once, then reused from cache): --spatial exact
@@ -145,16 +157,26 @@ study_audit() {
 }
 
 # =========================================================================== #
-# FLAGSHIP -- the three CLIP arms, held out on one subject.
-#   clip_e5_bandpower : the champion (best in-sample cross-subject retrieval).
-#   clip_e5_raw       : raw-conformer encoder (best HELD-OUT lift, and the only arm that made
-#                       subjects harder to identify than raw band power).
-#   clip_e5_meaning   : champion + contextual word-meaning distillation -- the untested hypothesis
-#                       aimed at the 0.0% content variance the champion still reports.
+# FLAGSHIP -- the CLIP arms, held out on one subject.
+#   clip_e5_meaning        : the measured champion (band-power + contextual meaning distillation, Top-1 0.043).
+#   clip_e5_meaning_raw    : exp10 -- the missing 2x2 cell: raw-conformer frontend under the champion objective.
+#   clip_e5_meaning_raw_v2 : exp10 -- the encoder leap: + multiscale temporal bank + attentive temporal pool + wider.
 # =========================================================================== #
 study_flagship() {
-  echo "=== FLAGSHIP: CLIP arms (E5 band-power · raw-conformer · +meaning) ==="
+  echo "=== FLAGSHIP: CLIP arms (champion · raw+meaning · encoder-leap v2) ==="
   run_configs "${FLAGSHIP_CONFIGS}"
+}
+
+# =========================================================================== #
+# TEXT_AB -- what makes E5 unique. Same champion recipe, only the CLIP sentence target changes:
+#   clip_e5_meaning   : E5 (intfloat/e5-base-v2)          -- retrieval-contrastive, query prefix.
+#   clip_qwen_bandpower : Qwen2.5-0.5B (mean-pooled)      -- decoder LLM, no sentence head.
+#   clip_bge_meaning  : BGE (BAAI/bge-base-en-v1.5)       -- retrieval-contrastive, like E5 (isolates the family).
+#   clip_mpnet_meaning : MPNet (all-mpnet-base-v2)        -- classic NLI/paraphrase encoder, no prefix.
+# =========================================================================== #
+study_text_ab() {
+  echo "=== TEXT_AB: text-encoder A/B (E5 · Qwen · BGE · MPNet) on the champion recipe ==="
+  run_configs "${TEXT_CONFIGS}"
 }
 
 # =========================================================================== #
@@ -225,11 +247,12 @@ for study in ${STUDIES}; do
   case "${study}" in
     audit)     study_audit ;;
     flagship)  study_flagship ;;
+    text_ab)   study_text_ab ;;
     controls)  study_controls ;;
     benchmark) study_benchmark ;;
     ablate)    study_ablate ;;
     loso)      study_loso ;;
-    *) echo "Unknown study '${study}' (valid: audit flagship controls benchmark ablate loso)"; exit 2 ;;
+    *) echo "Unknown study '${study}' (valid: audit flagship text_ab controls benchmark ablate loso)"; exit 2 ;;
   esac
 done
 
@@ -242,4 +265,4 @@ else
 fi
 echo ">>> Compare the runs with:"
 echo "    ${PY} -m zte.cli.compare --experiments ${OUT_ROOT} --out ${OUT_ROOT}/COMPARE.html"
-echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/exp8_clip_e5_lo${HOLDOUT}_s42 --kind both"
+echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/exp9_clip_e5_meaning_lo${HOLDOUT}_s42 --kind both"

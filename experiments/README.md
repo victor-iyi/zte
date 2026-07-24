@@ -9,12 +9,13 @@ uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/d
 uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --drive <folder-id-or-url> --loso-holdout ZAB
 ```
 
-| Tier         | What lives there                                                                         |
-| ------------ | ---------------------------------------------------------------------------------------- |
-| `flagship/`  | The recipes that have beaten chance on real ZuCo, plus the one hypothesis built on them. |
-| `benchmark/` | The controls a flagship must beat to earn its place.                                     |
-| `ablation/`  | Single-lever studies — matched pairs that flip exactly one knob.                         |
-| `archive/`   | Superseded or failed arms, kept for the record and for reproducibility.                  |
+| Tier             | What lives there                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `flagship/`      | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
+| `text_encoders/` | Text-encoder A/B: the champion recipe with only the CLIP sentence target swapped.              |
+| `benchmark/`     | The controls a flagship must beat to earn its place.                                           |
+| `ablation/`      | Single-lever studies — matched pairs that flip exactly one knob.                               |
+| `archive/`       | Superseded or failed arms, kept for the record and for reproducibility.                        |
 
 > **File paths moved; `run_name` did not.** `experiments/flagship/clip_e5_bandpower.yaml` still trains a run called `exp8_clip_e5`, so every run already on Drive keeps matching and `--resume` still skips it.
 > The name in the left column below is the *file*; the run directory uses the `run_name` in brackets.
@@ -23,37 +24,46 @@ uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --drive <fol
 
 ## The evidence
 
-Real ZuCo, leave-one-subject-out with `ZAB` held out, 12 subjects / 160,804 words / 8,400 sentences (session of 2026-07-16, on Drive under `Sharables/ZTE/2026-07-16`). Chance Top-1 is 0.0013.
+Real ZuCo, leave-one-subject-out with `ZAB` held out, 12 subjects / 160,804 words / 8,400 sentences (session of 2026-07-24, on Drive under `Sharables/ZTE/2026-07-24`). The board is a clean 2×2 over {frontend} × {meaning distillation}. Chance Top-1 is ≈0.001.
 
-| Config (run_name)                                  | Sentence Top-1 | Permutation *p* | Held-out Top-1 lift | Verdict        |
-| -------------------------------------------------- | -------------- | --------------- | ------------------- | -------------- |
-| `flagship/clip_e5_bandpower` (`exp8_clip_e5`)      | **0.0932**     | **0.002**       | +0.29pp             | ✓ beats chance |
-| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)        | 0.0065         | **0.002**       | **+0.71pp**         | ✓ beats chance |
-| `benchmark/clip_qwen_bandpower` (`exp8_clip_qwen`) | 0.0010         | 0.096           | +0.00pp             | ✗              |
-| `benchmark/baseline_skipgram_loso` (`sota_loso`)   | 0.0004         | 0.986           | +0.29pp             | ✗              |
-| `archive/exp7_sota_geom_invariance`                | 0.0000         | 1.000           | +0.00pp             | ✗              |
+| Config (run_name)                                       | Frontend      | Meaning | Sentence Top-1 | Eff-rank | Subject var | Verdict        |
+| ------------------------------------------------------- | ------------- | ------- | -------------- | -------- | ----------- | -------------- |
+| `flagship/clip_e5_bandpower` (`exp8_clip_e5`)           | band_power    | off     | 0.019          | 0.166    | 10.1%       | ✓ beats chance |
+| `flagship/clip_e5_meaning` (`exp9_clip_e5_meaning`)     | band_power    | **ON**  | **0.043**      | 0.160    | **0.9%**    | ✓ **champion** |
+| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)             | raw_conformer | off     | 0.010          | **0.264**| 6.9%        | ✓ beats chance |
+| `benchmark/clip_qwen_bandpower` (`exp8_clip_qwen`)      | band_power    | qwen    | 0.002          | 0.165    | 27.5%       | ✗              |
 
-Read that table as three findings. **Sentence-level CLIP against a frozen E5 text embedding is the only objective that has ever cleared the retrieval gate here** — skip-gram, which used to be the flagship, is now a control. **The text encoder matters**: the same recipe against a Qwen target fails, so the win is not "any text embedding will do". And **the encoder A/B is unresolved**: band power wins in-sample by 14×, but the raw-conformer wins where it counts more — on the held-out subject — and is the only arm that made subjects *harder* to identify than raw band power (subject probe 0.419 vs 0.809 for raw).
+Read that table as three findings. **Meaning distillation is the disentangler.** Turning it on under band power (exp8 → exp9) cut subject-variance ~10× (10.1% → 0.9%) and 2.25×'d retrieval (0.019 → 0.043), and it is the only change that made a new brain snap into the shared frame (anchor-calibration lift +0.084 vs ≈0). **The text encoder matters**: swapping E5 for a Qwen target collapses retrieval to 0.002 — the `text_encoders/` A/B asks whether that is E5 specifically or the retrieval-tuned family. And **the encoder is the open frontier**: the raw conformer already holds the richest space on the board (eff-rank 0.264, best content probes, best held-out category decode) but, with meaning distillation *off*, never disentangles subject — so its retrieval languishes. `clip_e5_meaning_raw` (exp10) fills that empty 2×2 cell; `clip_e5_meaning_raw_v2` pushes the encoder itself.
 
-### What is still wrong with even the best run
+### The full 12-subject LOSO sweep (exp8, 2026-07-24) — the honest trend
+
+A complete leave-one-subject-out sweep of `clip_e5_bandpower` (meaning off) over all 12 subjects makes one thing unavoidable: **the per-fold "sentence Top-1" in `INDEX.md` is the POOLED number, dominated by the 11 subjects the model trained on, and it is not the model's generalisation.** Read it with `zte-loso-summary`, which reports the honest held-out metric instead:
+
+- **Pooled retrieval swings 0.0015 → 0.131 across folds** (mean 0.061 ± 0.052) — but this is mostly training instability, not generalisation. Convergence was **bimodal: 5/12 folds trained to a healthy subject-invariant code, 3/12 collapsed** (pooled < 0.01, subject identity never removed). A single seed per fold cannot separate "hard subject" from "unlucky seed" — hence the new `SEEDS="42 43 44"` option on `scripts/run_loso.sh`.
+- **Held-out retrieval — the honest headline — is essentially chance.** On the genuinely never-seen subject, Top-1 lift over chance is **+0.0017 ± 0.0030** (6/12 folds at or below chance). The correct match does rank around the 91st percentile on average, so *weak* signal exists, but it is nowhere near Top-1. The model does **not** yet retrieve a stranger's sentence.
+- **What *does* generalise honestly:** held-out **category decode** beats chance in 10/12 folds (0.64 vs 0.54), and **anchor calibration helps in 12/12** (cohesion lift +0.04 … +0.16) — a new brain can be snapped into the shared frame from ~12 anchor words without retraining. That anchor result is the most promising lever for the decoder roadmap.
+
+### What is still open
 
 State these next to any result from this directory; they are in every `evaluation/report.md`.
 
-- **The content-probe positive control fails in every run.** Raw band power reads lexical content at R² = −0.008 against a floor of 0.02, so the probe cannot recover content even from raw features. Until that is fixed, "content variance 0%" and the content lifts are not interpretable.
-- **`what_variance` is 0.0 everywhere.** The champion spends 93.6% of its variance on "none", 3.5% on subject and 2.9% on task — nothing on content. `clip_e5_meaning` is the direct attack on this.
-- **The held-out number is two orders of magnitude below the headline.** 0.093 is cross-subject retrieval pooled over all 12 subjects; on genuinely held-out `ZAB` it is 0.43% vs 0.14% chance. The held-out task-variance of 0.613 says the freed variance moved into the task axis.
+- **The content-probe positive control now probes genuinely-raw band power** (fixed 2026-07-24). It previously read the model's *normalised* input, and a whitening normaliser (riemannian/zscore_subject) strips the amplitude that word-length and frequency ride on — so it read R² ≈ −0.008 and falsely branded the whole content probe broken. It now probes the untouched `(bands × channels)` band power, so a passing control means "content 0%" is a real absence rather than a measurement artefact. Re-run any older eval to get the corrected control.
+- **The held-out number is well below the pooled headline** (see the 12-fold trend above). A richer, subject-invariant encoder is the lever with the most headroom left; the exp10 arms target exactly this.
+- **Analogy/vector arithmetic is still at chance.** Cancelling *who* produced a thought (`emb(t,A) − centroid(A) + centroid(B)`) does not yet retrieve the same token for another subject. A cleaner ZTE-space is the path there.
 
 ---
 
 ## `flagship/` — start here
 
-| Config              | Objective                                  | Encoder                                                      | Why it is here                                                                                                           |
-| ------------------- | ------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `clip_e5_bandpower` | sentence-level CLIP (symmetric InfoNCE)    | band-power MLP + spherical-harmonic spatial encoding         | **The champion.** Best cross-subject retrieval ever measured here (Top-1 0.093, *p* = 0.002).                            |
-| `clip_e5_raw`       | sentence-level CLIP                        | raw-conformer (temporal→spatial convolution, ~700 ms window) | Best **held-out** lift (+0.71pp) and the best held-out effective rank (0.417); the de-identification winner.             |
-| `clip_e5_meaning`   | sentence-level CLIP + meaning distillation | band-power MLP + spherical harmonics                         | **Untested hypothesis:** the champion plus a per-occurrence contextual meaning target, aimed at the 0% content variance. |
+| Config                   | Objective                                  | Encoder                                                                   | Why it is here                                                                                                                |
+| ------------------------ | ------------------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `clip_e5_meaning`        | sentence-level CLIP + meaning distillation | band-power MLP + spherical harmonics                                      | **The champion** (exp9). Best cross-subject retrieval measured here (Top-1 0.043); meaning distillation cut subject-var 10×.  |
+| `clip_e5_bandpower`      | sentence-level CLIP (symmetric InfoNCE)    | band-power MLP + spherical-harmonic spatial encoding                      | The pre-meaning champion (exp8); the meaning-distillation-off cell of the 2×2.                                                |
+| `clip_e5_raw`            | sentence-level CLIP                        | raw-conformer (temporal→spatial convolution, ~700 ms window)              | Richest space on the board (eff-rank 0.264, best content probes) but subject-entangled without meaning distillation.          |
+| `clip_e5_meaning_raw`    | sentence-level CLIP + meaning distillation | raw-conformer, ~700 ms window                                             | **exp10 — the missing 2×2 cell:** the raw frontend under the champion objective. Does richer content + invariance beat 0.043? |
+| `clip_e5_meaning_raw_v2` | sentence-level CLIP + meaning distillation | raw-conformer + multiscale temporal bank + attentive temporal pool, wider | **exp10 — the encoder leap:** the same objective, a deliberately richer per-word encoder. Run *after* `clip_e5_meaning_raw`.  |
 
-All three are EEG-only (an honest "thought, not gaze" choice — eye-tracking is a reading artefact absent from imagined thought), LOSO, and Riemannian-normalised per subject.
+All are EEG-only (an honest "thought, not gaze" choice — eye-tracking is a reading artefact absent from imagined thought), LOSO, and Riemannian-normalised per subject. The two exp10 arms share one `run_name` prefix (`exp10_…`) so they group as one study; run the plain `clip_e5_meaning_raw` first so the frontend-swap effect and the architecture effect stay separable.
 
 ### What the CLIP objective does
 
@@ -77,6 +87,17 @@ Per-subject **Riemannian normalisation**; **subject + stimulus adversaries**, re
 | ------------------------ | ---------------------------------------------------------------------------------------------- |
 | `baseline_skipgram_loso` | The previous SOTA recipe (skip-gram + the full invariance stack). Answers "did CLIP earn it?". |
 | `clip_qwen_bandpower`    | The second arm of the text-encoder A/B (E5 vs Qwen), on an otherwise identical recipe.         |
+
+## `text_encoders/` — what makes E5 unique
+
+Every arm here is the champion recipe (`clip_e5_meaning`) with **only** the CLIP sentence target changed, so any delta isolates the frozen text encoder. Run them together with `STUDIES=text_ab bash scripts/run_suite.sh` (adds E5 and Qwen from the tiers above for the full four-way).
+
+| Config               | Text target                               | What it isolates                                                                       |
+| -------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------- |
+| `clip_bge_meaning`   | BAAI/bge-base-en-v1.5 (retrieval-tuned)   | The retrieval-contrastive *family* — if BGE ≈ E5, the win is the pretraining style.    |
+| `clip_mpnet_meaning` | all-mpnet-base-v2 (NLI/paraphrase, 768-d) | A strong non-retrieval encoder — if E5/BGE beat it, retrieval pretraining is the edge. |
+
+The champion (`flagship/clip_e5_meaning`, E5) and `benchmark/clip_qwen_bandpower` (Qwen) are the other two arms of the same A/B. To add another encoder, copy `clip_bge_meaning.yaml` and change only `objective.text_source` (and `text_query_prefix` if the model needs one — E5/BGE queries do, MPNet does not).
 
 ## `ablation/` — one lever at a time
 
@@ -111,14 +132,17 @@ STUDIES="audit flagship controls benchmark ablate" bash scripts/run_suite.sh /pa
 
 ### The full LOSO sweep — `scripts/run_loso.sh`
 
-Rotates the held-out subject over the whole 12-person cohort for one config, turning a single number into a generalisation trend (`COMPARE.html`). Defaults to the champion.
+Rotates the held-out subject over the whole 12-person cohort for one config, turning a single number into a generalisation trend. On completion it writes **`LOSO_SUMMARY.md`** (the honest held-out headline + convergence spread, via `zte-loso-summary`) alongside `COMPARE.html`. Defaults to the champion.
 
 ```sh
 bash scripts/run_loso.sh /path/to/zuco_extracted                          # champion, all 12 subjects
+SEEDS="42 43 44" bash scripts/run_loso.sh /path/to/zuco_extracted         # 3 seeds/fold -> mean±std, exposes instability
 FULL_CFG=experiments/flagship/clip_e5_raw.yaml bash scripts/run_loso.sh   # a different arm
 SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh /path/to/zuco_extracted       # a subset
 CONTROL=1 bash scripts/run_loso.sh /path/to/zuco_extracted                # also run the skip-gram control
 ```
+
+Aggregate any existing sweep on its own with `uv run zte-loso-summary --experiments res/experiments/loso` — it reads every fold's `metrics.json` and reports the held-out lift over chance (mean ± std), how many folds beat chance, the converged/collapsed split, and the anchor-calibration lift. This is the number to quote for LOSO, **not** the pooled `sentence Top-1` in `INDEX.md`.
 
 ### The objective benchmark — `zte-benchmark`
 

@@ -5,9 +5,10 @@
 # Trains one config once per held-out subject, rotating the held-out subject over the whole
 # 12-person ZuCo cohort, so a single held-out number becomes a trend with error bars.
 #
-# DEFAULT CONFIG = experiments/flagship/clip_e5_bandpower.yaml -- the only recipe that has ever
-# cleared the retrieval gate on real ZuCo (held-out ZAB, 2026-07-16: sentence Top-1 0.093 vs 0.001
-# chance, permutation p=0.002). Override with FULL_CFG to sweep a different arm.
+# DEFAULT CONFIG = experiments/flagship/clip_e5_meaning.yaml -- the measured champion on the 2026-07-24
+# real-ZuCo board (held-out ZAB: sentence Top-1 0.043 vs 0.001 chance, permutation p=0.002, subject-variance
+# down to 0.9% from meaning distillation). Override with FULL_CFG to sweep a different arm, e.g. the exp10
+# raw+meaning cell or its encoder-leap v2 once their single-fold spotlight looks good.
 #
 # SURVIVING A LOST COLAB VM
 #   Every run carries --resume, and with DRIVE_BACKUP set the *entire* run directory (config,
@@ -24,7 +25,14 @@
 #   SMOKE=1 bash scripts/run_loso.sh               # fast synthetic dry-run (CPU, 3 subjects)
 #   CONTROL=1 bash scripts/run_loso.sh             # also run the skip-gram control arm (A/B)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh    # restrict the held-out set
-#   FULL_CFG=experiments/flagship/clip_e5_raw.yaml bash scripts/run_loso.sh
+#   SEEDS="42 43 44" bash scripts/run_loso.sh       # repeat each fold at N seeds -> mean±std, exposes instability
+#   FULL_CFG=experiments/flagship/clip_e5_meaning_raw.yaml bash scripts/run_loso.sh      # exp10: raw + meaning
+#   FULL_CFG=experiments/flagship/clip_e5_meaning_raw_v2.yaml bash scripts/run_loso.sh   # exp10: encoder leap
+#
+# WHY MULTI-SEED. The 2026-07-24 single-seed sweep converged bimodally: 5/12 folds trained to a healthy
+# subject-invariant code, 3/12 collapsed (pooled retrieval < 0.01, identity not removed). A single seed
+# per fold cannot tell "this subject is hard" from "this seed was unlucky". SEEDS="42 43 44" reruns each
+# fold at three seeds so the honest summary can report mean±std and flag genuine vs seed-driven failure.
 #
 # COLAB (recommended -- train on local disk, keep a live Drive copy of everything):
 #   DRIVE_BACKUP="/content/drive/MyDrive/Sharables/ZTE/$(date +%F)/experiments" \
@@ -44,10 +52,11 @@ DATA_CACHE="${DATA_CACHE:-}"                   # shared local PROCESSED-bundle d
 # copied down once, a freshly built one is published there immediately. Also honoured via $ZTE_CACHE_REMOTE.
 CACHE_REMOTE="${CACHE_REMOTE:-${ZTE_CACHE_REMOTE:-}}"
 export ZTE_CACHE_REMOTE="${CACHE_REMOTE}"
-FULL_CFG="${FULL_CFG:-experiments/flagship/clip_e5_bandpower.yaml}"   # the champion (see header)
+FULL_CFG="${FULL_CFG:-experiments/flagship/clip_e5_meaning.yaml}"   # the champion (see header)
 CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
 SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"    # leave each config's own meaning target alone
+SEEDS="${SEEDS:-42}"          # seed(s) per held-out subject; e.g. "42 43 44" to average out training instability
 
 # Built once and reused from cache across every held-out subject: the montage, the meaning target and
 # the processed bundle are all subject-independent, so only the first subject pays for them.
@@ -72,33 +81,35 @@ fi
 
 FAILED=""
 
-run_one() {   # cfg, holdout
-  local cfg="$1" holdout="$2"
+run_one() {   # cfg, holdout, seed
+  local cfg="$1" holdout="$2" seed="$3"
   echo "───────────────────────────────────────────────────────────────"
-  echo "▶ LOSO hold out ${holdout}  ($(basename "${cfg}" .yaml))"
+  echo "▶ LOSO hold out ${holdout}  seed ${seed}  ($(basename "${cfg}" .yaml))"
   local backup=()
   [ -n "${DRIVE_BACKUP}" ] && backup=(--drive-backup "${DRIVE_BACKUP}")
   "${PY}" -m zte.cli.run --config "${cfg}" "${SRC[@]}" \
-      --loso-holdout "${holdout}" --out-root "${OUT_ROOT}" --resume --skip-explore \
+      --loso-holdout "${holdout}" --seed "${seed}" --out-root "${OUT_ROOT}" --resume --skip-explore \
       "${PROVISION[@]+"${PROVISION[@]}"}" "${backup[@]+"${backup[@]}"}"
   local code=$?
   if [ "${code}" = "130" ]; then
-    echo "⏸  Paused during ${holdout}. Re-run this script to resume exactly here."
+    echo "⏸  Paused during ${holdout} (seed ${seed}). Re-run this script to resume exactly here."
     exit 130
   elif [ "${code}" != "0" ]; then
-    echo "✗ ${holdout} failed (exit ${code}). Re-run to retry; other subjects are unaffected."
-    FAILED="${FAILED} $(basename "${cfg}" .yaml)/${holdout}"
+    echo "✗ ${holdout}/s${seed} failed (exit ${code}). Re-run to retry; other runs are unaffected."
+    FAILED="${FAILED} $(basename "${cfg}" .yaml)/${holdout}/s${seed}"
   fi
   return 0
 }
 
-echo "LOSO sweep · config $(basename "${FULL_CFG}") · out ${OUT_ROOT} · held-out: ${SUBJECTS}"
+echo "LOSO sweep · config $(basename "${FULL_CFG}") · out ${OUT_ROOT} · held-out: ${SUBJECTS} · seeds: ${SEEDS}"
 [ -n "${DRIVE_BACKUP}" ] && echo "Drive mirror: ${DRIVE_BACKUP} (whole run dir, every stage)"
 [ -n "${DATA_CACHE}" ]   && echo "Shared bundle cache: ${DATA_CACHE} (built once, reused per subject)"
 
 for s in ${SUBJECTS}; do
-  [ "${CONTROL:-0}" = "1" ] && run_one "${CTRL_CFG}" "${s}"
-  run_one "${FULL_CFG}" "${s}"
+  for seed in ${SEEDS}; do
+    [ "${CONTROL:-0}" = "1" ] && run_one "${CTRL_CFG}" "${s}" "${seed}"
+    run_one "${FULL_CFG}" "${s}" "${seed}"
+  done
 done
 
 echo "═══════════════════════════════════════════════════════════════"
@@ -109,10 +120,18 @@ else
   echo "✓ LOSO sweep complete."
 fi
 
+echo "Aggregating the HONEST held-out trend (not the inflated pooled retrieval) ..."
+"${PY}" -m zte.cli.loso_summary --experiments "${OUT_ROOT}" \
+    --out "${OUT_ROOT}/LOSO_SUMMARY.md" || true
+
 echo "Building the combined comparison view ..."
 "${PY}" -m zte.cli.compare --experiments "${OUT_ROOT}" \
     --out "${OUT_ROOT}/COMPARE.html" --title "ZTE — LOSO (new-brain) trend" || true
-if [ -n "${DRIVE_BACKUP}" ] && [ -f "${OUT_ROOT}/COMPARE.html" ]; then
-  mkdir -p "${DRIVE_BACKUP}" && cp -f "${OUT_ROOT}/COMPARE.html" "${DRIVE_BACKUP}/" 2>/dev/null || true
+if [ -n "${DRIVE_BACKUP}" ]; then
+  mkdir -p "${DRIVE_BACKUP}"
+  for f in COMPARE.html LOSO_SUMMARY.md LOSO_SUMMARY.csv; do
+    [ -f "${OUT_ROOT}/${f}" ] && cp -f "${OUT_ROOT}/${f}" "${DRIVE_BACKUP}/" 2>/dev/null || true
+  done
 fi
-echo "Open ${OUT_ROOT}/COMPARE.html to compare every held-out subject side by side."
+echo "Honest trend  -> ${OUT_ROOT}/LOSO_SUMMARY.md   (the held-out headline + convergence spread)"
+echo "Side-by-side  -> ${OUT_ROOT}/COMPARE.html"
