@@ -48,6 +48,15 @@ def parse_arguments() -> argparse.Namespace:
         'entirely. Default: a per-run cache under the run directory (no cross-run reuse).',
     )
     parser.add_argument(
+        '--data-cache-remote',
+        type=str,
+        default=None,
+        dest='data_cache_remote',
+        help='Persistent cache directory (e.g. a mounted Drive folder) layered behind --data-cache. A '
+        'bundle found there is copied down once; a freshly built one is published there immediately, so '
+        'the processing survives a reclaimed VM. Defaults to $ZTE_CACHE_REMOTE.',
+    )
+    parser.add_argument(
         '--drive-backup',
         type=str,
         default=None,
@@ -204,6 +213,8 @@ def _run(args: argparse.Namespace) -> None:
     # `str`, not `Path`: `DatasetConfig.root` is typed `str` and a Path is not YAML-serialisable.
     config.dataset.root = str(_resolve_root(args, config))
     config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
+    if args.data_cache_remote:
+        config.dataset.cache_remote = args.data_cache_remote
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
     if args.drive_backup:

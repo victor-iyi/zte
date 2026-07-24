@@ -39,7 +39,11 @@ PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments/loso}"   # set to a mounted Drive path to write runs straight to Drive
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"               # mounted Drive folder; mirrors the whole run dir each stage
-DATA_CACHE="${DATA_CACHE:-}"                   # shared PROCESSED-bundle dir; build once, reuse every subject
+DATA_CACHE="${DATA_CACHE:-}"                   # shared local PROCESSED-bundle dir; build once, reuse every subject
+# Persistent cache dir (e.g. a mounted Drive folder) layered behind DATA_CACHE: a bundle found there is
+# copied down once, a freshly built one is published there immediately. Also honoured via $ZTE_CACHE_REMOTE.
+CACHE_REMOTE="${CACHE_REMOTE:-${ZTE_CACHE_REMOTE:-}}"
+export ZTE_CACHE_REMOTE="${CACHE_REMOTE}"
 FULL_CFG="${FULL_CFG:-experiments/flagship/clip_e5_bandpower.yaml}"   # the champion (see header)
 CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
 SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)

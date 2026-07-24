@@ -6,12 +6,13 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import numpy as np
 import pandas as pd
 
 from zte.config import DatasetConfig
+from zte.data.cache import BundleStore
 from zte.data.features.features import (
     FeatureSelector,
     SelectionMethod,
@@ -27,6 +28,28 @@ from zte.data.schema import N_CHANNELS
 from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.dataset')
+
+
+# The only settings the `.mat` extraction depends on: `discover_files` selects by task/subject, and
+# `_load_mat` passes the rest to `mat_loader.extract_file`. Everything else is post-processing, which is
+# why an extraction can be reused across configs that differ only in how it is processed.
+_EXTRACT_FIELDS: Final[tuple[str, ...]] = (
+    'tasks',
+    'subjects',
+    'granularity',
+    'representation',
+    'band_power_measures',
+    'bands',
+    'raw_field',
+    'raw_window',
+)
+
+
+def _jsonable(value: Any) -> Any:
+    """Renders a config value in a stable, JSON-serialisable form for hashing."""
+    if isinstance(value, tuple | list):
+        return [_jsonable(v) for v in value]
+    return value
 
 
 def _word_freq_proxy(word: str) -> float:
@@ -129,14 +152,33 @@ class ZuCoDataset:
                 f'cache_format={self.config.cache_format!r} is reserved; only '
                 "'npz' is currently implemented."
             )
-        cache_dir = Path(self.config.cache_dir) / self._cache_key()
-        if not force and (cache_dir / 'meta.json').is_file():
-            _LOG.info('Loading processed dataset from cache: %s', cache_dir)
-            return self.load(cache_dir, into=self)
+        store = BundleStore.create(self.config.cache_dir, self.config.cache_remote)
+        key, extract_key = self._cache_key(), self._extract_key()
 
-        self._load_mat(show_progress=show_progress)
+        # Level 2: the finished bundle for exactly this config.
+        if not force:
+            hit = store.find(key)
+            if hit is not None:
+                _LOG.info('Loading processed dataset from cache: %s', hit)
+                self.load(hit, into=self)
+                store.publish(key)  # a local-only hit still gets persisted
+                return self
+
+        # Level 1: the `.mat` extraction, which depends on far fewer settings than the processing does,
+        # so a config that only changes normalisation/imputation/filters skips the expensive parse.
+        extract_hit = None if force else store.find(extract_key, kind='extract')
+        if extract_hit is not None:
+            _LOG.info('Reusing cached .mat extraction: %s', extract_hit)
+            self._load_extract(extract_hit)
+        else:
+            self._load_mat(show_progress=show_progress)
+            if self.config.cache_extracts:
+                self._save_extract(store.reserve(extract_key, kind='extract'))
+                store.publish(extract_key, kind='extract')
+
         self._process()
-        self.save(cache_dir)
+        self.save(store.reserve(key))
+        store.publish(key)
         return self
 
     def _load_mat(self, show_progress: bool = True) -> None:
@@ -586,6 +628,25 @@ class ZuCoDataset:
 
     # -- persistence -------------------------------------------------------- #
 
+    def _extract_key(self) -> str:
+        """Builds the cache key for the raw `.mat` extraction.
+
+        Only the fields `discover_files` and `_load_mat` actually read enter this key, which is what
+        makes the extraction reusable: everything `_process` consumes (normalisation, imputation,
+        eye-tracking, length filters, band-pass) is excluded, so changing any of those re-derives a
+        bundle in seconds instead of re-parsing every `.mat` file.
+        """
+        import hashlib
+
+        cfg = self.config
+        payload = {field: _jsonable(getattr(cfg, field)) for field in _EXTRACT_FIELDS}
+        digest = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        synthetic = 'synthetic' in str(cfg.root).lower()
+        readable = '_'.join(['-'.join(cfg.tasks), cfg.representation, f'rw{cfg.raw_window}'])
+        return f'{"synthetic_" if synthetic else ""}{readable}_{digest}'
+
     def _cache_key(self) -> str:
         """Builds a deterministic cache subfolder name: a readable prefix plus a config hash.
 
@@ -599,7 +660,16 @@ class ZuCoDataset:
 
         cfg = self.config
         payload = dataclasses.asdict(cfg)
-        for ignore in ('root', 'cache_dir', 'cache_format', 'montage_csv'):
+        # `cache_remote` / `cache_extracts` say WHERE and WHETHER to cache, never what the arrays hold,
+        # so they must stay out of the digest -- including them would invalidate every existing bundle.
+        for ignore in (
+            'root',
+            'cache_dir',
+            'cache_remote',
+            'cache_extracts',
+            'cache_format',
+            'montage_csv',
+        ):
             payload.pop(ignore, None)
         # `root` is excluded so the same recording hits one key from any machine (local, Colab, Drive)
         # -- but synthetic data must never share a key with real ZuCo, or a smoke run and a real run
@@ -614,6 +684,61 @@ class ZuCoDataset:
             ['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}']
         )
         return f'{"synthetic_" if synthetic else ""}{readable}_{digest}'
+
+    def _save_extract(self, path: str | Path) -> Path:
+        """Saves the raw `.mat` extraction (pre-processing) so other configs can skip the parse.
+
+        Only what `_load_mat` produced is stored: the word/sentence tables and the raw arrays. The
+        processed `features`, `presence` and fitted normaliser are deliberately absent -- they are the
+        cheap, config-specific part that `_process` re-derives.
+
+        Args:
+            path (str | Path): Destination directory (created if needed).
+
+        Returns:
+            Path: The extraction directory.
+        """
+        out = Path(path)
+        out.mkdir(parents=True, exist_ok=True)
+        arrays: dict[str, np.ndarray] = {}
+        if self.band_power_raw is not None:
+            arrays['band_power_raw'] = self.band_power_raw
+        if self.raw_eeg is not None:
+            arrays['raw_eeg'] = self.raw_eeg
+        np.savez_compressed(out / 'arrays.npz', **arrays)
+        self.words.to_pickle(out / 'words.pkl')
+        self.sentences.to_pickle(out / 'sentences.pkl')
+        meta = {
+            'extract_key': self._extract_key(),
+            'bp_feature_names': self.bp_feature_names,
+            # Informational only: the fields below are what the extraction actually depends on.
+            'extract_config': {
+                field: _jsonable(getattr(self.config, field)) for field in _EXTRACT_FIELDS
+            },
+        }
+        (out / 'meta.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+        _LOG.info('Saved .mat extraction to %s', out)
+        return out
+
+    def _load_extract(self, path: str | Path) -> ZuCoDataset:
+        """Restores a raw extraction saved by `_save_extract`, leaving `self.config` untouched.
+
+        The whole point of the extraction cache is to serve a *different* config from the one that built
+        it, so unlike `load` this must not adopt the stored config.
+        """
+        src = Path(path)
+        meta = json.loads((src / 'meta.json').read_text(encoding='utf-8'))
+        self.words = pd.read_pickle(src / 'words.pkl')
+        self.sentences = pd.read_pickle(src / 'sentences.pkl')
+        with np.load(src / 'arrays.npz') as arrays:
+            self.band_power_raw = arrays['band_power_raw'] if 'band_power_raw' in arrays else None
+            self.raw_eeg = arrays['raw_eeg'] if 'raw_eeg' in arrays else None
+        self.bp_feature_names = meta['bp_feature_names']
+        self.features = None
+        self.presence = None
+        self.normalizer = None
+        self._groups = None
+        return self
 
     def save(self, path: str | Path) -> Path:
         """Saves the full processed dataset as a self-contained directory bundle.

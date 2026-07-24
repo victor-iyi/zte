@@ -32,7 +32,12 @@ class MissingConfig:
 class DatasetConfig(PathFields):
     """Everything that controls how raw ZuCo `.mat` files become tensors."""
 
-    _PATH_FIELDS: ClassVar[tuple[str, ...]] = ('root', 'cache_dir', 'montage_csv')
+    _PATH_FIELDS: ClassVar[tuple[str, ...]] = (
+        'root',
+        'cache_dir',
+        'cache_remote',
+        'montage_csv',
+    )
 
     root: str = 'res/data/zuco_extracted'
     """Directory holding extracted `.mat` files (searched recursively)."""
@@ -110,6 +115,15 @@ class DatasetConfig(PathFields):
 
     cache_dir: str = 'res/cache'
     """Where processed artifacts are cached."""
+
+    cache_remote: str | None = None
+    """Persistent cache directory (e.g. a mounted Drive folder) layered behind `cache_dir`. A bundle found
+    there is copied down once; a freshly built one is published there immediately, so processing survives the
+    machine. Defaults to the `ZTE_CACHE_REMOTE` environment variable. Never part of the cache key."""
+
+    cache_extracts: bool = True
+    """Also cache the raw `.mat` extraction, so a config that changes only processing (normalisation,
+    imputation, eye-tracking, filters) skips the expensive parse. Costs extra disk; never part of the cache key."""
 
     cache_format: Literal['npz', 'parquet', 'hdf5'] = 'npz'
     """On-disk cache format. Only `npz` is implemented; `parquet`/`hdf5` are reserved."""

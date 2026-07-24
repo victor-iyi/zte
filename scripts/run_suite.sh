@@ -49,7 +49,10 @@ PY="${PY:-.venv/bin/python}"              # project venv interpreter
 [ -x "${PY}" ] || PY="python"             # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments}"   # where zte-run catalogues each run (a Drive path persists everything)
 DRIVE_BACKUP="${DRIVE_BACKUP:-}"          # mounted Drive folder; mirrors each whole run dir every stage
-DATA_CACHE="${DATA_CACHE:-}"              # shared PROCESSED-bundle dir; build once, reuse across every run
+DATA_CACHE="${DATA_CACHE:-}"              # shared local PROCESSED-bundle dir; build once, reuse across every run
+# Persistent cache dir (mounted Drive folder) layered behind DATA_CACHE; also honoured via $ZTE_CACHE_REMOTE.
+CACHE_REMOTE="${CACHE_REMOTE:-${ZTE_CACHE_REMOTE:-}}"
+export ZTE_CACHE_REMOTE="${CACHE_REMOTE}"
 SMOKE="${SMOKE:-0}"                       # SMOKE=1 -> tiny synthetic run
 SPATIAL="${SPATIAL:-exact}"               # build + wire the true ZuCo-105 montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"                # leave each config's own meaning target alone

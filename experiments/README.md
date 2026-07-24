@@ -156,15 +156,21 @@ Multi-hour runs assume the machine can vanish at any moment, so nothing importan
 - **Checkpoint writes are atomic**, and resume falls back past a torn file. A VM killed mid-write costs the epoch in flight, not the run.
 - **`--drive-backup <mounted path>` mirrors the whole run directory** — config, checkpoints, evaluation, figures, TensorBoard — after every stage, and checkpoints after every epoch. Only changed files move, so the cost stays flat as checkpoints grow.
 - **`config.yaml` is written before training starts**, so a run killed at any point is reproducible from its own directory without reconstructing CLI flags by hand.
-- **`--data-cache <mounted path>` builds the processed dataset bundle once, ever** — across every subject, arm and session. Synthetic and real data can never collide in that cache.
+- **The dataset is processed once, ever.** The cache is layered (a fast local copy backed by a persistent Drive one) and two-level (the expensive `.mat` extraction is cached separately from the cheap processing). A freshly built bundle is published to Drive *immediately*, so a reclaimed VM never re-processes; a new config that changes only normalisation, imputation, eye-tracking or length filters reuses the extraction and re-derives in seconds instead of re-parsing every `.mat` file. Point every command at the persistent store once with `ZTE_CACHE_REMOTE` (or `--data-cache-remote`); synthetic and real data can never collide in it.
 
 ```sh
+# Process every dataset the shipped experiments need, once — then every run below starts warm:
+uv run zte-prepare --root /content/zuco_extracted --configs \
+    --cache-dir res/cache/prepared \
+    --cache-remote "/content/drive/MyDrive/Sharables/ZTE/prepared"
+
+export ZTE_CACHE_REMOTE="/content/drive/MyDrive/Sharables/ZTE/prepared"   # every command now reads/writes it
 DRIVE_BACKUP="/content/drive/MyDrive/Sharables/ZTE/$(date +%F)/experiments" \
-DATA_CACHE="/content/drive/MyDrive/Sharables/ZTE/prepared" \
+DATA_CACHE="res/cache/prepared" \
 bash scripts/run_loso.sh /content/zuco_extracted
 ```
 
-If the VM is reclaimed: copy the Drive folder back to `OUT_ROOT` (or point `OUT_ROOT` straight at Drive) and re-run the identical command.
+If the VM is reclaimed: copy the Drive folder back to `OUT_ROOT` (or point `OUT_ROOT` straight at Drive) and re-run the identical command. The processed dataset is already on Drive, so it is never rebuilt.
 
 ## Reproducibility
 
