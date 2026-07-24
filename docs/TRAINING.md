@@ -143,8 +143,8 @@ Auto-detected by `zte.device.resolve_device`:
 | `cpu`   | otherwise                | fp32                               | fine for smoke-tests & synthetic data     |
 
 ```python
-cfg.train.device = 'auto'      # or 'cuda' | 'mps' | 'cpu'
-cfg.train.precision = 'auto'   # or 'bf16' | 'fp16' | 'fp32'
+cfg.train.device = 'auto'  # or 'cuda' | 'mps' | 'cpu'
+cfg.train.precision = 'auto'  # or 'bf16' | 'fp16' | 'fp32'
 ```
 
 ## The training loop
@@ -189,6 +189,7 @@ Every config fixes `train.seed`; set `train.deterministic: true` for determinist
 
 ```python
 from zte.inference.embed import ZTEEmbedder
+
 embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt', ds)
 
 # Word-level "thought embeddings" (present words only) with aligned metadata.
@@ -224,13 +225,18 @@ embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt')  # no dataset 
 # (a) New recordings as .mat files -> build a dataset, then embed.
 from zte.config import DatasetConfig
 from zte.data.dataset import ZuCoDataset
-new_ds = ZuCoDataset(DatasetConfig(root='res/data/new_subject',
-                                   representation=embedder.config.dataset.representation)).build()
+
+new_ds = ZuCoDataset(
+    DatasetConfig(
+        root='res/data/new_subject', representation=embedder.config.dataset.representation
+    )
+).build()
 word_emb, word_meta = embedder.embed(new_ds, level='word')
 
 # (b) New signals already in memory (e.g. from a custom pipeline).
 import numpy as np
-signals = np.load('my_band_power.npy')            # shape (N, F*C), un-normalised
+
+signals = np.load('my_band_power.npy')  # shape (N, F*C), un-normalised
 emb = embedder.embed_signals(band_power=signals)  # -> (N, embed_dim); normaliser applied
 ```
 

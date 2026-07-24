@@ -49,22 +49,24 @@ uv run zte-prepare --root res/data/zuco_extracted \
 from zte.config import DatasetConfig, MissingConfig
 from zte.data.dataset import ZuCoDataset
 
-ds = ZuCoDataset(DatasetConfig(
-    root='res/data/zuco_extracted',
-    tasks=('SR', 'NR'),
-    representation='both',                 # band_power | raw | both
-    band_power_measures=('TRT',),          # which eye-tracking-locked features
-    include_eye_tracking=True,             # gaze scalars appended? (see below)
-    normalize='zscore_channel',
-    missing=MissingConfig(method='knn'),   # see table below
-    raw_window=128,
-)).build()                                 # caches a bundle; reloads instantly next time
+ds = ZuCoDataset(
+    DatasetConfig(
+        root='res/data/zuco_extracted',
+        tasks=('SR', 'NR'),
+        representation='both',  # band_power | raw | both
+        band_power_measures=('TRT',),  # which eye-tracking-locked features
+        include_eye_tracking=True,  # gaze scalars appended? (see below)
+        normalize='zscore_channel',
+        missing=MissingConfig(method='knn'),  # see table below
+        raw_window=128,
+    )
+).build()  # caches a bundle; reloads instantly next time
 
-ds.analyze()                               # dict: counts, omission, missingness
+ds.analyze()  # dict: counts, omission, missingness
 ds.select_features(target='log_freq', method='mutual_info', k=64)
 splits = ds.split('by_subject_loso', holdout_subject='ZPH')
 torch_ds = ds.to_torch(split=splits['train'])
-ds.save('res/bundle')                      # round-trips arrays + tables + normaliser
+ds.save('res/bundle')  # round-trips arrays + tables + normaliser
 ```
 
 ## Lifecycle
@@ -119,7 +121,7 @@ Defaults come straight from `src/zte/config/`.
 ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`, pupil size) is richly informative — **for reading**. But an imagined-thought BCI has no gaze. `include_eye_tracking` makes this a first-class switch:
 
 ```python
-DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to each token
+DatasetConfig(include_eye_tracking=True)  # default: gaze scalars appended to each token
 DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
 ```
 
@@ -188,8 +190,9 @@ flowchart TD
 
 ```python
 from zte.data.viz import save_overview
-summary = ds.analyze()                 # counts, omission, missingness (JSON-safe)
-save_overview(ds, 'res/figures')       # missingness, ET dists, correlations, omission, availability
+
+summary = ds.analyze()  # counts, omission, missingness (JSON-safe)
+save_overview(ds, 'res/figures')  # missingness, ET dists, correlations, omission, availability
 ```
 
 | Figure                      | Function                  | What it shows         |
@@ -206,9 +209,9 @@ Sample outputs (from the synthetic smoke run) are shown in [RESULTS.md].
 
 ```python
 res = ds.select_features(target='log_freq', method='mutual_info', k=64)
-res.indices   # selected flattened (channel×band) indices
-res.scores    # importance per input feature
-res.names     # e.g. 'TRT_t1::ch042'
+res.indices  # selected flattened (channel×band) indices
+res.scores  # importance per input feature
+res.names  # e.g. 'TRT_t1::ch042'
 ```
 
 Methods: `variance`, `f_score`, `mutual_info`, `rf_importance`. Scoring is restricted to present tokens (`present_only=True`) so omitted words never drive the ranking.
@@ -242,8 +245,8 @@ uv run zte-prepare --drive 13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ --out res/bundle
 ### Bundles
 
 ```python
-ds.save('res/bundle')                       # arrays.npz + words.pkl + sentences.pkl + meta.json
-ds2 = ZuCoDataset.load('res/bundle')        # exact round-trip incl. normaliser state
+ds.save('res/bundle')  # arrays.npz + words.pkl + sentences.pkl + meta.json
+ds2 = ZuCoDataset.load('res/bundle')  # exact round-trip incl. normaliser state
 ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')
 ZuCoDataset.from_drive('<file id | url | mounted path>')
 ```

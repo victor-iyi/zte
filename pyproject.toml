@@ -12,7 +12,7 @@ dependencies = [
   'h5py>=3.16.0',
   'matplotlib>=3.11.1',
   'numpy>=2.5.1',
-  'pandas>=3.0.3',
+  'pandas>=3.0.5',
   'pyyaml>=6.0.3',
   'rich>=15.0.0',
   'scikit-learn>=1.9.0',
@@ -44,10 +44,10 @@ spatial = [
 # enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
 meaning = [
   'transformers>=4.44.0',
-  'sentence-transformers>=3.0.0',
+  'sentence-transformers>=5.6.1',
 ]
 dev = [
-  'ruff>=0.15.22',
+  'ruff>=0.16.0',
   'pytest>=9.1.1',
   'mypy>=2.3.0',
 ]
@@ -112,6 +112,7 @@ select = [
 ]
 ignore = [
   'PLR0913',  # too-many-arguments
+  'PLR0917',  # too-many-positional-arguments
   'PLR0914',  # too-many-locals
   'PLR0915',  # too-many-statements
   'PLR0912',  # too-many-branches

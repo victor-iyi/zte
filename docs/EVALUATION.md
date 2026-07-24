@@ -49,9 +49,17 @@ word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect
     embedder, ds
 )
 metrics = evaluate_representation(
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids,
-    out_dir='res/evaluation', sent_meta=sent_meta, word_band_power=word_bp,
-    config=embedder.config, tensorboard=True, interactive=True,
+    word_emb,
+    word_meta,
+    raw_feats,
+    sent_emb,
+    sent_ids,
+    out_dir='res/evaluation',
+    sent_meta=sent_meta,
+    word_band_power=word_bp,
+    config=embedder.config,
+    tensorboard=True,
+    interactive=True,
 )
 print(metrics['verdict'])
 ```

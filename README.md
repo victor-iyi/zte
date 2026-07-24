@@ -142,23 +142,26 @@ Equivalent Python:
 from zte import ZuCoDataset, DatasetConfig, ZTEConfig, run_training, ZTEEmbedder
 from zte.data.synthetic import generate_synthetic_zuco
 
-generate_synthetic_zuco('res/data/synthetic_zuco')             # or point at real .mat files
+generate_synthetic_zuco('res/data/synthetic_zuco')  # or point at real .mat files
 # EEG-only (include_eye_tracking=False) so brand-new EEG can be embedded later.
-ds = ZuCoDataset(DatasetConfig(root='res/data/synthetic_zuco', representation='band_power',
-                               include_eye_tracking=False)).build()
+ds = ZuCoDataset(
+    DatasetConfig(
+        root='res/data/synthetic_zuco', representation='band_power', include_eye_tracking=False
+    )
+).build()
 
 cfg = ZTEConfig()
-cfg.objective.name = 'skipgram'        # 'cbow' | 'masked' | 'cpc'
-cfg.model.pos_encoding = 'rope'        # 'sinusoidal' | 'learned' | 'alibi' | 'none'
-artifacts = run_training(cfg, ds)      # logs, progress bars, checkpoints
+cfg.objective.name = 'skipgram'  # 'cbow' | 'masked' | 'cpc'
+cfg.model.pos_encoding = 'rope'  # 'sinusoidal' | 'learned' | 'alibi' | 'none'
+artifacts = run_training(cfg, ds)  # logs, progress bars, checkpoints
 
 embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt', ds)
-embeddings, meta = embedder.embed(ds, level='word')            # (M, 768), aligned metadata
+embeddings, meta = embedder.embed(ds, level='word')  # (M, 768), aligned metadata
 
 # Embed brand-new EEG signals held in memory (no dataset needed).
 # The vector width must match the checkpoint's input: F*C for an EEG-only model,
 # or F*C + gaze scalars if it was trained with include_eye_tracking=True.
-new_emb = embedder.embed_signals(band_power=my_array)          # (N, in_dim) -> (N, 768)
+new_emb = embedder.embed_signals(band_power=my_array)  # (N, in_dim) -> (N, 768)
 ```
 
 Embedding new EEG with a trained checkpoint -- both from new `.mat` files and from in-memory arrays -- is shown end-to-end in `examples/embed_new_signals.py`.
@@ -172,7 +175,7 @@ Embedding new EEG with a trained checkpoint -- both from new `.mat` files and fr
 ZuCo is a *reading* corpus, so eye-tracking behaviour (fixation durations, `nFixations`, pupil size) is richly informative — for reading. But an imagined-thought BCI has no gaze. `include_eye_tracking` makes this a first-class switch:
 
 ```python
-DatasetConfig(include_eye_tracking=True)   # default: gaze scalars appended to each token
+DatasetConfig(include_eye_tracking=True)  # default: gaze scalars appended to each token
 DatasetConfig(include_eye_tracking=False)  # EEG-only: the imagined-thought / device-agnostic path
 ```
 
@@ -214,22 +217,24 @@ Fixed-seed sweep over **objective × positional-encoding × eye-tracking × seed
 ## The dataset class, end to end
 
 ```python
-ds = ZuCoDataset(DatasetConfig(
-    root='res/data/zuco_extracted',
-    tasks=('SR', 'NR'),
-    representation='both',                 # band_power | raw | both
-    band_power_measures=('TRT',),          # which eye-tracking-locked features
-    normalize='zscore_channel',
-    missing=MissingConfig(method='knn'),   # see table below
-    raw_window=128,
-)).build()                                 # caches a bundle; reloads instantly next time
+ds = ZuCoDataset(
+    DatasetConfig(
+        root='res/data/zuco_extracted',
+        tasks=('SR', 'NR'),
+        representation='both',  # band_power | raw | both
+        band_power_measures=('TRT',),  # which eye-tracking-locked features
+        normalize='zscore_channel',
+        missing=MissingConfig(method='knn'),  # see table below
+        raw_window=128,
+    )
+).build()  # caches a bundle; reloads instantly next time
 
-ds.analyze()                               # dict: counts, omission, missingness
+ds.analyze()  # dict: counts, omission, missingness
 ds.select_features(target='log_freq', method='mutual_info', k=64)
 splits = ds.split('by_subject_loso', holdout_subject='ZPH')
 torch_ds = ds.to_torch(split=splits['train'])
-ds.save('res/bundle')                      # round-trips arrays + tables + normaliser
-ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')   # mounted Drive, or gdown/PyDrive
+ds.save('res/bundle')  # round-trips arrays + tables + normaliser
+ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')  # mounted Drive, or gdown/PyDrive
 ```
 
 ### Representations
@@ -336,8 +341,8 @@ flowchart TD
 | `cpu`   | otherwise                | fp32                               | fine for smoke-tests & synthetic data     |
 
 ```python
-cfg.train.device = 'auto'      # or 'cuda' | 'mps' | 'cpu'
-cfg.train.precision = 'auto'   # or 'bf16' | 'fp16' | 'fp32'
+cfg.train.device = 'auto'  # or 'cuda' | 'mps' | 'cpu'
+cfg.train.precision = 'auto'  # or 'bf16' | 'fp16' | 'fp32'
 ```
 
 ### Logging & checkpoints
@@ -377,7 +382,7 @@ uv run zte-download --drive 13EYW1h6dHD5E4YoEWNsKe6ZBHmMU_kFQ --out res/data/_do
 ### Bundles & uploads (Python API)
 
 ```python
-ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')   # Colab mounted path
+ds.save_to_drive('/content/drive/MyDrive/ZTE/bundle')  # Colab mounted path
 ZuCoDataset.from_drive('https://drive.google.com/.../view')  # public link via gdown
 ```
 
