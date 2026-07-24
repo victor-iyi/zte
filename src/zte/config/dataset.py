@@ -110,3 +110,15 @@ class DatasetConfig:
 
     cache_format: Literal['npz', 'parquet', 'hdf5'] = 'npz'
     """On-disk cache format. Only `npz` is implemented; `parquet`/`hdf5` are reserved."""
+
+    def __post_init__(self) -> None:
+        """Coerces path-like fields to `str`.
+
+        Callers naturally hand these a `Path` (`synthetic_root`, `resolve_data_root`), but the config is
+        serialised to YAML and JSON in every bundle, checkpoint and audit -- and a `Path` is not
+        representable in either, so the failure surfaces far from its cause.
+        """
+        self.root = str(self.root)
+        self.cache_dir = str(self.cache_dir)
+        if self.montage_csv is not None:
+            self.montage_csv = str(self.montage_csv)

@@ -48,9 +48,9 @@ def _dataset_config(args: argparse.Namespace) -> DatasetConfig:
     else:
         cfg = DatasetConfig()
     if args.synthetic:
-        cfg.root = synthetic_root(cfg.tasks, show_progress=False)
+        cfg.root = str(synthetic_root(cfg.tasks, show_progress=False))
     elif args.root:
-        cfg.root = args.root
+        cfg.root = str(args.root)
     return cfg
 
 

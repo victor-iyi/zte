@@ -201,13 +201,18 @@ def _run(args: argparse.Namespace) -> None:
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
     # Every output goes under the run directory; only `--data-cache` moves the bundle to a shared store.
-    config.dataset.root = _resolve_root(args, config)
+    # `str`, not `Path`: `DatasetConfig.root` is typed `str` and a Path is not YAML-serialisable.
+    config.dataset.root = str(_resolve_root(args, config))
     config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
     if args.drive_backup:
         # The checkpoint manager copies its `checkpoints/` dir into this path, so it must be per-run.
         config.train.drive_backup_dir = str(Path(args.drive_backup) / config.run_name)
+
+    # Written before anything expensive starts: a run killed mid-training is then still reproducible
+    # (and resumable) from its own directory, without reconstructing the CLI overrides by hand.
+    config.to_yaml(run_dir / 'config.yaml')
 
     manifest: dict[str, Any] = {
         'run_name': config.run_name,
@@ -237,6 +242,8 @@ def _run(args: argparse.Namespace) -> None:
 
     # 1b) Provision --spatial / --meaning after the bundle, so the GloVe file can be vocab-restricted.
     _apply_provisioning(config, args, dataset)
+    config.to_yaml(run_dir / 'config.yaml')  # now includes the provisioned montage / meaning target
+    _mirror_to_drive(run_dir, args, 'prepare')
 
     # 2) Train (resumes from the last checkpoint when --resume).
     _LOG.info(
@@ -254,6 +261,7 @@ def _run(args: argparse.Namespace) -> None:
         artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
     )
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
+    _mirror_to_drive(run_dir, args, 'train')
 
     # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
     metrics_path = run_dir / 'evaluation' / 'metrics.json'
@@ -268,6 +276,7 @@ def _run(args: argparse.Namespace) -> None:
         else:
             _LOG.info('[3/4] Evaluating ...')
             manifest['evaluation'] = _evaluate(config, dataset, run_dir, args)
+            _mirror_to_drive(run_dir, args, 'evaluate')
 
     # 4) Explore (brain regions + eye-tracking) when band power is available.
     explore_done = (run_dir / 'exploration' / 'report.md').exists()
@@ -299,7 +308,46 @@ def _run(args: argparse.Namespace) -> None:
         _render_run_readme(config, manifest, run_dir), encoding='utf-8'
     )
     _catalogue(Path(args.out_root), config.run_name, manifest)
+    _mirror_to_drive(run_dir, args, 'catalogue', index=Path(args.out_root) / 'INDEX.md')
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
+
+
+def _mirror_to_drive(
+    run_dir: Path, args: argparse.Namespace, stage: str, index: Path | None = None
+) -> None:
+    """Mirrors the run directory to the mounted Drive backup folder after a completed stage.
+
+    The checkpoint manager already mirrors `checkpoints/` every epoch; this adds everything else the
+    run produces (config, figures, evaluation, TensorBoard) so a reclaimed Colab VM never costs more
+    than the epoch in flight. Heavy, regenerable directories (`cache/`, `bundle/`) are skipped -- point
+    `--data-cache` at a Drive path to persist those once instead of per run.
+
+    Args:
+        run_dir (Path): The run directory to mirror.
+        args (argparse.Namespace): Parsed CLI args (for `--drive-backup`).
+        stage (str): Stage name, for the log line.
+        index (Path | None): Optional catalogue file to copy alongside the run.
+    """
+    if not args.drive_backup:
+        return
+    from zte.data.io.remote import is_mounted_path
+
+    if not is_mounted_path(args.drive_backup):
+        # A Drive id/URL cannot be mirrored file-by-file; the checkpoint zip-upload path covers it.
+        return
+    from zte.utils.mirror import mirror_file, mirror_tree
+
+    dest = Path(args.drive_backup) / run_dir.name
+    copied, failed = mirror_tree(run_dir, dest)
+    if index is not None:
+        mirror_file(index, Path(args.drive_backup))
+    _LOG.info(
+        '[drive] %s: %d file(s) mirrored to %s%s',
+        stage,
+        copied,
+        dest,
+        f' ({failed} failed)' if failed else '',
+    )
 
 
 def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: ZuCoDataset) -> None:

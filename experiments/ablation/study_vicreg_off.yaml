@@ -32,6 +32,7 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
+  time_bins: 1
   normalize: zscore_channel
   normalizer_fit: train
   montage_csv: null
@@ -58,10 +59,20 @@ model:
   conformer_temporal_kernel: 25
   pos_encoding: rope
   max_positions: 512
+  spatial_encoding: none
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
   pool: attention
   subject_conditioning: false
+  subject_film: false
   n_subjects: 12
+  n_tasks: 3
   projection_hidden: 512
+  factored: false
+  content_dim: 384
+  band_routing: false
 objective:
   name: skipgram
   temperature: 0.07
@@ -75,8 +86,41 @@ objective:
   variance_weight: 0.0
   covariance_weight: 0.0
   variance_target: 1.0
+  anisotropy_weight: 0.0
+  whiten: false
   cross_subject_positives: false
+  meaning_positives: false
   subject_adversary_weight: 0.0
+  stimulus_adversary_weight: 0.0
+  meaning_distill_weight: 0.0
+  meaning_source: null
+  meaning_dim: 64
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.0
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 0
+  csls_neighbors: 0
+  subject_adversary_warmup_ratio: 0.0
+  alignment_weight: 0.0
+  tau_plus: 0.0
+  data2vec_aux_weight: 0.0
+  meaning_contextual: null
+  meaning_context_layer: -1
+  eval_phase_shuffle: false
+  eval_seen_novel: false
+  eval_freq_matched: false
+  text_source: null
+  text_backend: auto
+  text_query_prefix: ''
+  clip_temperature: 0.07
+  semantic_hard_negatives: false
+  hard_negative_pool: 8
 train:
   epochs: 40
   batch_size: 128
@@ -89,6 +133,7 @@ train:
   device: auto
   precision: auto
   num_workers: -1
+  static_shapes: auto
   split: by_stimulus
   val_fraction: 0.1
   test_fraction: 0.1

@@ -352,14 +352,22 @@ class Trainer:
         )
 
     def _resume_from_last(self) -> None:
-        """Restores model/optimiser/scheduler/scaler/objective/teacher/best/history from `last.pt`."""
-        last = self.ckpt.ckpt_dir / 'last.pt'
-        if not last.exists():
-            _LOG.info('resume requested but no last.pt in %s; starting fresh.', self.ckpt.ckpt_dir)
+        """Restores model/optimiser/scheduler/scaler/objective/teacher/best/history from the newest checkpoint.
+
+        Reads whichever checkpoint is newest *and* readable, so a write torn apart by a reclaimed VM
+        costs one epoch rather than the run.
+        """
+        ckpt, last = CheckpointManager.load_latest(
+            self.ckpt.ckpt_dir, map_location=self.device.device
+        )
+        if ckpt is None:
+            _LOG.info(
+                'resume requested but no readable checkpoint in %s; starting fresh.',
+                self.ckpt.ckpt_dir,
+            )
             return
 
         # Core torch state.
-        ckpt = CheckpointManager.load(last, map_location=self.device.device)
         self.model.load_state_dict(ckpt['model'])
         if 'optimizer' in ckpt:
             self.optimizer.load_state_dict(ckpt['optimizer'])

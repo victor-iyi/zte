@@ -1,7 +1,9 @@
-# STUDY 3 (B) -- anti-collapse ablation, VICReg ON.
-# Identical to study_vicreg_off.yaml EXCEPT variance_weight=1, covariance_weight=1.
-# Discovery question: how many neurons "come alive" (effective rank, n_active) and does
-# lexical content (word length / frequency) become decodable once collapse is prevented?
+# STUDY 2 (A) -- subject-invariance BASELINE, leave-one-subject-out.
+# Skip-gram, EEG-only, split=by_subject_loso, holdout=ZAB, NO invariance levers
+# (variance/covariance=0, no cross-subject positives, no adversary, zscore_channel).
+# A/B partner: study_invariance_full_loso.yaml. Compare held-out cross-subject
+# retrieval and subject-decodability (should stay near baseline / above chance here).
+# Rotate train.loso_holdout_subject across all 12 subjects for a full LOSO sweep.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -31,6 +33,7 @@ dataset:
   - g2
   raw_field: rawEEG
   raw_window: 128
+  time_bins: 1
   normalize: zscore_channel
   normalizer_fit: train
   montage_csv: null
@@ -57,10 +60,20 @@ model:
   conformer_temporal_kernel: 25
   pos_encoding: rope
   max_positions: 512
+  spatial_encoding: none
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
   pool: attention
   subject_conditioning: false
+  subject_film: false
   n_subjects: 12
+  n_tasks: 3
   projection_hidden: 512
+  factored: false
+  content_dim: 384
+  band_routing: false
 objective:
   name: skipgram
   temperature: 0.07
@@ -71,11 +84,44 @@ objective:
   ema_decay_end: 0.9999
   teacher_variance_floor: 0.0001
   cpc_steps: 4
-  variance_weight: 1.0
-  covariance_weight: 1.0
+  variance_weight: 0.0
+  covariance_weight: 0.0
   variance_target: 1.0
+  anisotropy_weight: 0.0
+  whiten: false
   cross_subject_positives: false
+  meaning_positives: false
   subject_adversary_weight: 0.0
+  stimulus_adversary_weight: 0.0
+  meaning_distill_weight: 0.0
+  meaning_source: null
+  meaning_dim: 64
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.0
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 0
+  csls_neighbors: 0
+  subject_adversary_warmup_ratio: 0.0
+  alignment_weight: 0.0
+  tau_plus: 0.0
+  data2vec_aux_weight: 0.0
+  meaning_contextual: null
+  meaning_context_layer: -1
+  eval_phase_shuffle: false
+  eval_seen_novel: false
+  eval_freq_matched: false
+  text_source: null
+  text_backend: auto
+  text_query_prefix: ''
+  clip_temperature: 0.07
+  semantic_hard_negatives: false
+  hard_negative_pool: 8
 train:
   epochs: 40
   batch_size: 128
@@ -88,10 +134,11 @@ train:
   device: auto
   precision: auto
   num_workers: -1
-  split: by_stimulus
+  static_shapes: auto
+  split: by_subject_loso
   val_fraction: 0.1
   test_fraction: 0.1
-  loso_holdout_subject: null
+  loso_holdout_subject: ZAB
   seed: 42
   deterministic: true
   log_every: 10
@@ -101,4 +148,4 @@ train:
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-run_name: study_vicreg_on
+run_name: study_invariance_baseline_loso

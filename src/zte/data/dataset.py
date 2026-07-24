@@ -591,13 +591,19 @@ class ZuCoDataset:
         payload = dataclasses.asdict(cfg)
         for ignore in ('root', 'cache_dir', 'cache_format', 'montage_csv'):
             payload.pop(ignore, None)
+        # `root` is excluded so the same recording hits one key from any machine (local, Colab, Drive)
+        # -- but synthetic data must never share a key with real ZuCo, or a smoke run and a real run
+        # would silently swap bundles. Only the synthetic/real distinction re-enters the key.
+        # The prefix (not the digest) carries it, so real-data keys stay byte-identical to previously
+        # built caches -- an existing Drive bundle keeps hitting instead of rebuilding for hours.
+        synthetic = 'synthetic' in str(cfg.root).lower()
         digest = hashlib.sha1(
             json.dumps(payload, sort_keys=True, default=str).encode()
         ).hexdigest()[:12]
         readable = '_'.join(
             ['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}']
         )
-        return f'{readable}_{digest}'
+        return f'{"synthetic_" if synthetic else ""}{readable}_{digest}'
 
     def save(self, path: str | Path) -> Path:
         """Saves the full processed dataset as a self-contained directory bundle.

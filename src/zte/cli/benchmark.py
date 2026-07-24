@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import itertools
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +42,41 @@ def parse_arguments() -> argparse.Namespace:
     add_data_source_args(parser, include_synthetic=True)
     add_extract_dir(parser)
 
+    parser.add_argument(
+        '--base-config',
+        type=Path,
+        default=None,
+        dest='base_config',
+        help='Experiment YAML to sweep ON TOP OF, so every cell inherits the full recipe (encoder, '
+        'spatial encoding, invariance stack) and only the swept axes differ. Without it each cell is '
+        'a bare default config, which benchmarks the objective in isolation rather than the flagship.',
+    )
+    parser.add_argument(
+        '--loso-holdout',
+        type=str,
+        default=None,
+        dest='loso_holdout',
+        help='Held-out subject code; forces split=by_subject_loso so rows are held-out comparable.',
+    )
     parser.add_argument('--tasks', type=str, default='SR,NR')
     parser.add_argument('--subjects', type=str, default=None)
-    parser.add_argument('--objectives', type=str, default='skipgram')
-    parser.add_argument('--pos-encodings', type=str, default='rope,learned')
-    parser.add_argument('--eye-tracking', choices=['both', 'on', 'off'], default='both')
+    parser.add_argument('--objectives', type=str, default='clip,skipgram')
+    parser.add_argument('--pos-encodings', type=str, default='rope')
+    parser.add_argument('--eye-tracking', choices=['both', 'on', 'off'], default='off')
     parser.add_argument('--seeds', type=str, default='42')
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Skip grid cells that already have metrics on disk and continue interrupted ones from '
+        'their last checkpoint. Safe to pass always; makes the sweep restartable after a lost VM.',
+    )
+    parser.add_argument(
+        '--drive-backup',
+        type=str,
+        default=None,
+        dest='drive_backup',
+        help="Mounted Drive folder to mirror each cell's checkpoints to after every epoch.",
+    )
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
@@ -73,20 +104,35 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _dataset_for(args: argparse.Namespace, include_et: bool) -> ZuCoDataset:
-    """Builds (and caches) the band-power dataset for an eye-tracking setting."""
+def _dataset_for(
+    args: argparse.Namespace, include_et: bool, base: ZTEConfig | None = None
+) -> ZuCoDataset:
+    """Builds (and caches) the dataset for one eye-tracking setting.
+
+    With `--base-config` the base recipe's dataset settings are kept (representation, normalisation,
+    window, montage), so a raw-conformer flagship is benchmarked on raw EEG rather than band power.
+    """
     if args.synthetic:
         root = synthetic_root(tuple(args.tasks.split(',')))
     else:
         root = resolve_data_root(args)
-    cfg = DatasetConfig(
-        root=root,
-        tasks=tuple(args.tasks.split(',')),
-        subjects=tuple(args.subjects.split(',')) if args.subjects else None,
-        representation='band_power',
-        include_eye_tracking=include_et,
-        missing=MissingConfig(method='mask_only'),
-    )
+    if base is not None:
+        cfg = replace(
+            base.dataset,
+            root=root,
+            tasks=tuple(args.tasks.split(',')),
+            subjects=tuple(args.subjects.split(',')) if args.subjects else base.dataset.subjects,
+            include_eye_tracking=include_et,
+        )
+    else:
+        cfg = DatasetConfig(
+            root=root,
+            tasks=tuple(args.tasks.split(',')),
+            subjects=tuple(args.subjects.split(',')) if args.subjects else None,
+            representation='band_power',
+            include_eye_tracking=include_et,
+            missing=MissingConfig(method='mask_only'),
+        )
     return ZuCoDataset(cfg).build()
 
 
@@ -157,11 +203,15 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    base = ZTEConfig.from_yaml(args.base_config) if args.base_config else None
+    if base is not None:
+        _LOG.info('Sweeping on top of %s (run_name %r).', args.base_config, base.run_name)
+
     objectives = args.objectives.split(',')
     pos_encodings = args.pos_encodings.split(',')
     et_settings = {'both': [True, False], 'on': [True], 'off': [False]}[args.eye_tracking]
     seeds = [int(s) for s in args.seeds.split(',')]
-    datasets = {et: _dataset_for(args, et) for et in et_settings}
+    datasets = {et: _dataset_for(args, et, base) for et in et_settings}
 
     # One training run + metric block per grid cell, each writing its own resolved config.
     rows: list[dict[str, Any]] = []
@@ -169,25 +219,44 @@ def main() -> None:
     _LOG.info('Benchmarking %d configurations.', len(grid))
     for objective, pos, include_et, seed in grid:
         tag = f'{objective}_{pos}_et{int(include_et)}_s{seed}'
-        cfg = ZTEConfig()
-        cfg.objective.name = objective
-        cfg.model.pos_encoding = pos
-        cfg.dataset.include_eye_tracking = include_et
-        cfg.train.epochs = args.epochs
-        cfg.train.batch_size = args.batch_size
-        cfg.train.device = args.device
-        cfg.train.precision = args.precision
-        cfg.train.num_workers = args.num_workers
-        cfg.train.compile_model = args.compile == 'on'
-        cfg.train.seed = seed
-        cfg.train.deterministic = True
-        cfg.train.ckpt_dir = str(out / 'runs' / tag)
-        cfg.run_name = tag
+        cell = out / 'runs' / tag
+        cached = cell / 'metrics.json'
 
-        run_training(cfg, datasets[include_et])
-        cfg.to_yaml(out / 'runs' / tag / 'config.yaml')
-        embedder = ZTEEmbedder.from_checkpoint(out / 'runs' / tag / 'best.pt', datasets[include_et])
-        metrics = headline_metrics(embedder, datasets[include_et])
+        # A finished cell is reused verbatim, so a lost VM costs only the cell that was in flight.
+        if args.resume and cached.is_file():
+            metrics = json.loads(cached.read_text(encoding='utf-8'))
+            _LOG.info('[%s] resume: reusing metrics on disk.', tag)
+        else:
+            # Deep, not shallow: the sub-configs are mutated below and must not leak across cells.
+            cfg = copy.deepcopy(base) if base is not None else ZTEConfig()
+            cfg.objective.name = objective
+            cfg.model.pos_encoding = pos
+            cfg.dataset = copy.deepcopy(datasets[include_et].config)
+            cfg.train.epochs = args.epochs
+            cfg.train.batch_size = args.batch_size
+            cfg.train.device = args.device
+            cfg.train.precision = args.precision
+            cfg.train.num_workers = args.num_workers
+            cfg.train.compile_model = args.compile == 'on'
+            cfg.train.seed = seed
+            cfg.train.deterministic = True
+            cfg.train.ckpt_dir = str(cell)
+            cfg.run_name = tag
+            if args.loso_holdout:
+                cfg.train.split = 'by_subject_loso'
+                cfg.train.loso_holdout_subject = args.loso_holdout
+            if args.drive_backup:
+                cfg.train.drive_backup_dir = str(Path(args.drive_backup) / tag)
+
+            cell.mkdir(parents=True, exist_ok=True)
+            cfg.to_yaml(
+                cell / 'config.yaml'
+            )  # written first, so an interrupted cell is reproducible
+            run_training(cfg, datasets[include_et], resume=args.resume)
+            embedder = ZTEEmbedder.from_checkpoint(cell / 'best.pt', datasets[include_et])
+            metrics = headline_metrics(embedder, datasets[include_et])
+            (cell / 'metrics.json').write_text(json.dumps(metrics, indent=2), encoding='utf-8')
+
         rows.append(
             {
                 'objective': objective,

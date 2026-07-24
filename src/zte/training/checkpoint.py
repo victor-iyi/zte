@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import pickle
+import shutil
+import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,6 +16,42 @@ from zte.config import ZTEConfig
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('training.checkpoint')
+
+# What a half-written checkpoint raises when torch tries to read it back.
+_LOAD_ERRORS: tuple[type[BaseException], ...] = (
+    RuntimeError,
+    EOFError,
+    OSError,
+    ValueError,
+    zipfile.BadZipFile,
+    pickle.UnpicklingError,
+)
+
+
+def _atomic_save(state: dict[str, Any], path: Path) -> None:
+    """Serialises `state` to `path` via a temp file, so a killed process cannot truncate it.
+
+    Without this, a VM reclaimed mid-write leaves a corrupt `last.pt` *and* has already overwritten the
+    previous good one -- turning a lost epoch into a lost run.
+    """
+    tmp = path.with_name(f'.{path.name}.tmp')
+    try:
+        torch.save(state, tmp)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        torch.save(state, path)  # a mount that forbids rename still gets a checkpoint
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """Copies `src` onto `dst` atomically, tolerating filesystems that forbid rename."""
+    tmp = dst.with_name(f'.{dst.name}.tmp')
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+    except OSError as exc:  # pragma: no cover - filesystem dependent
+        tmp.unlink(missing_ok=True)
+        _LOG.warning('Could not write %s: %r', dst, exc)
 
 
 class CheckpointManager:
@@ -78,16 +118,18 @@ class CheckpointManager:
             Path: The path of the written `last` checkpoint.
         """
         path = self.ckpt_dir / f'ckpt_epoch{epoch:04d}.pt'
-        torch.save(state, path)
+        _atomic_save(state, path)
         self._last_paths.append(path)
         self._rotate()
-        torch.save(state, self.ckpt_dir / 'last.pt')
+        # `last.pt` and `best.pt` are copies of the epoch file, not re-serialisations: one
+        # `torch.save` per epoch instead of three, and the payload is guaranteed identical.
+        _atomic_copy(path, self.ckpt_dir / 'last.pt')
 
         if metric is not None and self.is_improvement(metric):
             self.best_metric = metric
             is_best = True
         if is_best:
-            torch.save(state, self.ckpt_dir / 'best.pt')
+            _atomic_copy(path, self.ckpt_dir / 'best.pt')
             _LOG.info(
                 'New best checkpoint at epoch %d (metric=%.4f)', epoch, metric or float('nan')
             )
@@ -104,13 +146,22 @@ class CheckpointManager:
                 _LOG.debug('Could not rotate %s: %r', old, exc)
 
     def _backup_to_drive(self) -> None:
-        """Mirrors the checkpoint directory to Drive when configured."""
+        """Mirrors the checkpoint directory to Drive when configured.
+
+        Mounted paths take the incremental mirror (only changed files move, so the per-epoch cost stays
+        flat as checkpoints grow); a Drive id/URL falls back to the zip-and-upload path.
+        """
         if not self.drive_backup_dir:
             return
         try:
-            from zte.data.io.remote import upload_directory
+            from zte.data.io.remote import is_mounted_path, upload_directory
 
-            upload_directory(self.ckpt_dir, self.drive_backup_dir)
+            if is_mounted_path(self.drive_backup_dir):
+                from zte.utils.mirror import mirror_tree
+
+                mirror_tree(self.ckpt_dir, Path(self.drive_backup_dir) / self.ckpt_dir.name)
+            else:
+                upload_directory(self.ckpt_dir, self.drive_backup_dir)
         except (RuntimeError, OSError) as exc:  # pragma: no cover - network/cred dependent
             _LOG.warning('Drive backup failed: %r', exc)
 
@@ -155,6 +206,44 @@ class CheckpointManager:
         if extra:
             state['extra'] = extra
         return state
+
+    @staticmethod
+    def load_latest(
+        ckpt_dir: str | Path, map_location: str | torch.device = 'cpu'
+    ) -> tuple[dict[str, Any] | None, Path | None]:
+        """Loads the newest *readable* checkpoint, falling back past corrupt ones.
+
+        Note:
+            Tries `last.pt` first, then the epoch checkpoints newest-first. A VM killed during a write can
+            leave the newest file truncated; the previous epoch is then still a perfectly good resume point,
+            so a torn write costs one epoch instead of the whole run.
+
+        Args:
+            ckpt_dir (str | Path): Directory holding the checkpoints.
+            map_location (str | torch.device): Device mapping for tensor storage.
+
+        Returns:
+            tuple[dict[str, Any] | None, Path | None]: The payload and the file it came from, or
+                `(None, None)` when nothing readable exists.
+        """
+        directory = Path(ckpt_dir)
+        epochs = sorted(directory.glob('ckpt_epoch*.pt'), reverse=True)
+        for candidate in [directory / 'last.pt', *epochs]:
+            if not candidate.is_file():
+                continue
+            try:
+                state = CheckpointManager.load(candidate, map_location=map_location)
+            except _LOAD_ERRORS as exc:
+                _LOG.warning(
+                    'Checkpoint %s is unreadable (%r); trying the previous one.', candidate, exc
+                )
+                continue
+            if candidate.name != 'last.pt':
+                _LOG.warning(
+                    'Resuming from %s -- `last.pt` was missing or corrupt.', candidate.name
+                )
+            return state, candidate
+        return None, None
 
     @staticmethod
     def load(path: str | Path, map_location: str | torch.device = 'cpu') -> dict[str, Any]:
