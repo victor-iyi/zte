@@ -128,8 +128,14 @@ class CheckpointManager:
         if metric is not None and self.is_improvement(metric):
             self.best_metric = metric
             is_best = True
+        # A run whose monitored metric is NaN every epoch (a diverged loss) would otherwise never write
+        # `best.pt` -- and evaluation loads exactly that file, so the run would train for hours and then
+        # be unable to finish, on every restart. Always keep a best.pt; the first epoch seeds it.
+        best_path = self.ckpt_dir / 'best.pt'
+        if not best_path.exists():
+            is_best = True
         if is_best:
-            _atomic_copy(path, self.ckpt_dir / 'best.pt')
+            _atomic_copy(path, best_path)
             _LOG.info(
                 'New best checkpoint at epoch %d (metric=%.4f)', epoch, metric or float('nan')
             )

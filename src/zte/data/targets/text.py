@@ -163,6 +163,17 @@ def build_sentence_text_matrix(
             exc.name,
         )
         return None, 0
+    except OSError as exc:
+        # The package is installed but the weights are not reachable (offline, cold HF cache, bad id).
+        # Same outcome as a missing package, so take the same documented fallback rather than killing
+        # the run -- with a loud warning, because a hash target makes the result meaningless.
+        _LOG.warning(
+            'CLIP text target %r could not be loaded (%r); falling back to the hash target (NO '
+            'semantics -- results are not meaningful). Pre-download the model or fix connectivity.',
+            source,
+            exc,
+        )
+        return None, 0
 
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache, raw)

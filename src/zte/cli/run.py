@@ -415,7 +415,14 @@ def _evaluate(
     from zte.evaluation.report import evaluate_representation
     from zte.inference.embed import ZTEEmbedder
 
-    embedder = ZTEEmbedder.from_checkpoint(run_dir / 'checkpoints' / 'best.pt', dataset)
+    # `best.pt` is the normal target; `last.pt` is the fallback so a run whose best checkpoint never
+    # materialised (a diverged metric, or an older run) can still be evaluated instead of stranding
+    # hours of finished training behind a FileNotFoundError.
+    ckpt = run_dir / 'checkpoints' / 'best.pt'
+    if not ckpt.is_file():
+        ckpt = run_dir / 'checkpoints' / 'last.pt'
+        _LOG.warning('No best.pt; evaluating %s instead.', ckpt.name)
+    embedder = ZTEEmbedder.from_checkpoint(ckpt, dataset)
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
         embedder, dataset
     )

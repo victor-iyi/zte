@@ -499,7 +499,11 @@ class ZuCoDataset:
             'n_subjects': int(w['subject'].nunique()),
             'subjects': sorted(w['subject'].unique().tolist()),
             'tasks': sorted(w['task'].unique().tolist()),
-            'words_per_task': w.groupby('task')['word_idx'].count().to_dict(),
+            # `int(...)`: pandas counts are `np.int64`, which is NOT an `int` subclass, so it would be
+            # stringified by `json.dumps(default=str)` and read back as `"18432"`.
+            'words_per_task': {
+                str(k): int(v) for k, v in w.groupby('task')['word_idx'].count().to_dict().items()
+            },
             'omission_rate_overall': float(w['is_omitted'].mean()),
             'omission_rate_by_subject': w.groupby('subject')['is_omitted']
             .mean()
@@ -514,7 +518,13 @@ class ZuCoDataset:
         if 'category' in w:
             summary['category_scheme'] = sorted(w['category_scheme'].dropna().unique().tolist())
             summary['sentences_by_category'] = (
-                self.sentences.groupby('category')['sentence_idx'].count().to_dict()
+                {
+                    str(k): int(v)
+                    for k, v in self.sentences.groupby('category')['sentence_idx']
+                    .count()
+                    .to_dict()
+                    .items()
+                }
                 if 'category' in self.sentences
                 else {}
             )

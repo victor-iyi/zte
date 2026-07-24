@@ -254,9 +254,15 @@ def evaluate_representation(
     # 4d) The honest scoreboard: every headline metric stated as a lift over the raw control.
     from zte.evaluation.audit.scoreboard import build_scoreboard
 
-    metrics['scoreboard'] = build_scoreboard(
-        word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
-    )
+    # Guarded like every other block here: the scoreboard materialises a large similarity matrix, and
+    # losing it must not discard an evaluation whose numbers are already computed.
+    try:
+        metrics['scoreboard'] = build_scoreboard(
+            word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
+        )
+    except (ValueError, KeyError, IndexError, MemoryError) as exc:  # pragma: no cover - defensive
+        _LOG.warning('Scoreboard skipped: %r', exc)
+        metrics['scoreboard'] = None
     perm = honesty.get('retrieval_permutation') or {}
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
@@ -295,21 +301,24 @@ def evaluate_representation(
         )
 
     # 6b) The per-dimension arrays are large, so only the compact summary goes in metrics.json.
-    (out / 'neurons.json').write_text(
-        json.dumps(neurons, indent=2, default=float), encoding='utf-8'
-    )
+    # `default=str` never raises; `default=float` would turn an unexpected value into a crash on the
+    # last write of a multi-hour run, which is exactly the wrong trade here.
+    (out / 'neurons.json').write_text(json.dumps(neurons, indent=2, default=str), encoding='utf-8')
 
-    # 7) TensorBoard (projector + hparams + scalars + histograms + figures + text).
+    # 7) Persist the results BEFORE the optional extras below, so nothing optional can cost the run
+    # an evaluation that is already computed.
+    (out / 'metrics.json').write_text(json.dumps(metrics, indent=2, default=str), encoding='utf-8')
+
+    # 8) TensorBoard (projector + hparams + scalars + histograms + figures + text). Best-effort: a full
+    # Drive mount or an odd figure must not discard the evaluation.
     if tensorboard:
         tb_dir = tensorboard if isinstance(tensorboard, str) else str(out / 'tb' / run_name)
-        _write_tensorboard(
-            tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config
-        )
-
-    # 8) Persist artifacts.
-    (out / 'metrics.json').write_text(
-        json.dumps(metrics, indent=2, default=float), encoding='utf-8'
-    )
+        try:
+            _write_tensorboard(
+                tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config
+            )
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:  # pragma: no cover - defensive
+            _LOG.warning('TensorBoard export skipped: %r', exc)
     # `linear_scores` is dropped from the flat CSV so the table keeps one scalar per cell.
     pd.DataFrame([{k: v for k, v in r.items() if k != 'linear_scores'} for r in comparison]).to_csv(
         out / 'comparison.csv', index=False
@@ -432,7 +441,13 @@ def _write_interactive(
     Emits the classic PCA `word_explorer.html` and the richer `thought_space_explorer.html`; passing
     `emergence` lets the latter quote the authoritative full-space clustering numbers.
     """
-    from zte.evaluation.interactive import embedding_explorer_html, thought_space_explorer_html
+    # The package builds its HTML templates at import time, so a packaging problem surfaces here rather
+    # than at call time; either way the run keeps its metrics and just loses the interactive views.
+    try:
+        from zte.evaluation.interactive import embedding_explorer_html, thought_space_explorer_html
+    except (ImportError, OSError) as exc:  # pragma: no cover - packaging dependent
+        _LOG.warning('Interactive explorers unavailable: %r', exc)
+        return None
 
     flagship: str | None = None
     try:

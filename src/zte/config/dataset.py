@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import ClassVar, Literal
 
+from zte.config._paths import PathFields
 from zte.config.types import Granularity, MissingMethod, Normalization, Representation
 from zte.data.schema import BANDS, Band, EyeTrackingMeasure, Task
 
@@ -28,8 +29,10 @@ class MissingConfig:
 
 
 @dataclass
-class DatasetConfig:
+class DatasetConfig(PathFields):
     """Everything that controls how raw ZuCo `.mat` files become tensors."""
+
+    _PATH_FIELDS: ClassVar[tuple[str, ...]] = ('root', 'cache_dir', 'montage_csv')
 
     root: str = 'res/data/zuco_extracted'
     """Directory holding extracted `.mat` files (searched recursively)."""
@@ -110,15 +113,3 @@ class DatasetConfig:
 
     cache_format: Literal['npz', 'parquet', 'hdf5'] = 'npz'
     """On-disk cache format. Only `npz` is implemented; `parquet`/`hdf5` are reserved."""
-
-    def __post_init__(self) -> None:
-        """Coerces path-like fields to `str`.
-
-        Callers naturally hand these a `Path` (`synthetic_root`, `resolve_data_root`), but the config is
-        serialised to YAML and JSON in every bundle, checkpoint and audit -- and a `Path` is not
-        representable in either, so the failure surfaces far from its cause.
-        """
-        self.root = str(self.root)
-        self.cache_dir = str(self.cache_dir)
-        if self.montage_csv is not None:
-            self.montage_csv = str(self.montage_csv)

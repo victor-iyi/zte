@@ -150,11 +150,20 @@ def run_exploration(
         )
 
     # Score regions, then quantify eye-tracking's contribution over the same channel grouping.
-    region_map = (
-        RegionMap.from_csv(montage_csv, ds.band_power_raw.shape[-1])
-        if montage_csv
-        else default_region_map(ds.band_power_raw.shape[-1])
-    )
+    # This is the LAST stage of a multi-hour run, so a missing or coordinates-only montage degrades to
+    # the approximate cap (as `evaluation.report._load_region_map` already does) instead of discarding
+    # the whole run -- the montage lives outside the run directory and may not survive a new VM.
+    region_map = default_region_map(ds.band_power_raw.shape[-1])
+    if montage_csv:
+        if Path(montage_csv).is_file():
+            try:
+                region_map = RegionMap.from_csv(montage_csv, ds.band_power_raw.shape[-1])
+            except (OSError, ValueError, KeyError) as exc:
+                _LOG.warning(
+                    'Could not load montage %s: %r; using approximate regions.', montage_csv, exc
+                )
+        else:
+            _LOG.warning('Montage %s not found; using approximate regions.', montage_csv)
     region_rows = region_importance(
         ds.band_power_raw,
         _region_targets(ds),

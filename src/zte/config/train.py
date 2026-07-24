@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 
+from zte.config._paths import PathFields
 from zte.config.types import (
     SchedulerName,
     SplitStrategy,
@@ -10,8 +11,10 @@ from zte.config.types import (
 
 
 @dataclass
-class TrainConfig:
+class TrainConfig(PathFields):
     """Optimisation, scheduling, logging and checkpointing."""
+
+    _PATH_FIELDS: ClassVar[tuple[str, ...]] = ('ckpt_dir', 'drive_backup_dir')
 
     epochs: int = 20
     """Number of passes over the training split."""

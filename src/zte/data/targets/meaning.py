@@ -197,8 +197,19 @@ def build_meaning_matrix_hf(
         )
         return None, 0
 
-    tok = AutoTokenizer.from_pretrained(model_name)
-    enc = AutoModel.from_pretrained(model_name, output_hidden_states=True).eval().to(device)
+    # Loading the weights is part of the same optional path: unreachable weights (offline, cold cache,
+    # wrong id) take the documented fallback instead of aborting the run.
+    try:
+        tok = AutoTokenizer.from_pretrained(model_name)
+        enc = AutoModel.from_pretrained(model_name, output_hidden_states=True).eval().to(device)
+    except OSError as exc:
+        _LOG.warning(
+            'meaning_contextual=%r could not be loaded (%r); falling back to the static (word-type) '
+            'meaning target.',
+            model_name,
+            exc,
+        )
+        return None, 0
     hidden = int(enc.config.hidden_size)
     out = np.full((n, hidden), np.nan, dtype=np.float32)
 
