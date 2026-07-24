@@ -1,11 +1,4 @@
-"""`zte-loso-summary` -- aggregate a leave-one-subject-out sweep into its honest trend.
-
-A single fold's headline `sentence_retrieval.top1` is POOLED over all subjects, so it is dominated by the
-11 the model trained on and reads far higher than the model's true generalisation. The honest number is
-`held_out_retrieval` -- retrieval among the never-seen subject's own readings -- averaged over folds with a
-spread. This tool reads a directory of LOSO run folders and reports both side by side, plus the
-convergence spread that a single fold hides.
-"""
+"""`zte-loso-summary` -- aggregate a LOSO sweep into its honest held-out trend (see docs/EVALUATION.md)."""
 
 from __future__ import annotations
 

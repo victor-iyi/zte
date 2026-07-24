@@ -72,6 +72,7 @@ zte-download = 'zte.cli.download:main'
 zte-visualize = 'zte.cli.visualize:main'
 zte-compare = 'zte.cli.compare:main'
 zte-loso-summary = 'zte.cli.loso_summary:main'
+zte-encodability = 'zte.cli.encodability:main'
 zte-pack = 'zte.cli.pack:main'
 
 [build-system]

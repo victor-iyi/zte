@@ -86,18 +86,11 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
 def raw_content_positive_control(
     word_band_power: np.ndarray | None, word_meta: 'pd.DataFrame'
 ) -> dict[str, Any] | None:
-    """Probes GENUINELY raw band power for lexical content -- the honest positive control.
-
-    The `lift_over_raw` "raw" baseline is the model's *normalised* input, and whitening normalisers
-    (riemannian, zscore_subject) remove the per-subject amplitude that word length and frequency ride
-    on -- so that baseline reads ~0 even though the signal is present, wrongly branding the whole
-    content probe as broken. This re-runs the control on the untouched `(n, bands, channels)` band
-    power the model was built from, so it measures what raw EEG actually exposes, independent of the
-    normalisation the run happened to use.
+    """Probes genuinely-raw band power for lexical content -- the honest positive control (docs/EVALUATION.md).
 
     Args:
-        word_band_power (np.ndarray | None): Raw band power `(n, bands, channels)`, or `None` (raw-signal
-            frontends carry no band power -- the control is then not applicable).
+        word_band_power (np.ndarray | None): Raw band power `(n, bands, channels)`, or `None` for a
+            raw-signal frontend (the control is then not applicable).
         word_meta (pd.DataFrame): Per-word metadata carrying `word_len` and `log_freq`.
 
     Returns:

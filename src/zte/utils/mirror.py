@@ -1,9 +1,4 @@
-"""Incremental directory mirroring, for keeping a live copy of a run on a mounted Drive.
-
-A Colab VM can be reclaimed at any moment, so everything needed to resume must already be on Drive.
-`shutil.copytree` re-copies every byte on every call, which is far too slow over a FUSE mount once
-checkpoints are hundreds of megabytes; `mirror_tree` copies only what changed and never raises.
-"""
+"""Incremental, never-raising directory mirroring for keeping a live copy of a run on a mounted Drive."""
 
 from __future__ import annotations
 

@@ -51,15 +51,21 @@ CONTROL=1 bash scripts/run_loso.sh res/data/zuco_extracted
 
 Useful knobs (environment variables):
 
-| var                            | meaning                                                         |
-| ------------------------------ | --------------------------------------------------------------- |
-| `SMOKE=1`                      | synthetic dry-run on CPU (2 epochs)                             |
-| `CONTROL=1`                    | also run the baseline (no-recipe) arm for each held-out subject |
-| `DEVICE=cuda` (or `mps`/`cpu`) | force a device instead of auto-selecting                        |
-| `SUBJECTS="ZAB ZDM"`           | restrict the held-out set                                       |
-| `EPOCHS=40`                    | override training length                                        |
+| var                            | meaning                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `SMOKE=1`                      | synthetic dry-run on CPU (2 epochs)                                      |
+| `CONTROL=1`                    | also run the baseline (no-recipe) arm for each held-out subject          |
+| `DEVICE=cuda` (or `mps`/`cpu`) | force a device instead of auto-selecting                                 |
+| `SUBJECTS="ZAB ZDM"`           | restrict the held-out set                                                |
+| `SEEDS="42 43 44"`             | repeat each fold at N seeds for a mean/std (averages out training noise) |
+| `EPOCHS=40`                    | override training length                                                 |
 
-When the sweep finishes it builds `res/experiments/loso/COMPARE.html` — the combined comparison view.
+When the sweep finishes it writes `res/experiments/loso/LOSO_SUMMARY.md` (the honest held-out trend, via `zte-loso-summary`) and `COMPARE.html`. **Read the held-out number, not the pooled `sentence Top-1` in `INDEX.md`** — see [`EVALUATION.md`](EVALUATION.md). Aggregate any existing sweep on its own, and ask which brains it encodes well and why:
+
+```sh
+uv run zte-loso-summary --experiments res/experiments/loso   # honest held-out trend + convergence spread
+uv run zte-encodability  --experiments res/experiments/loso   # per-subject encodability + what predicts it
+```
 
 ---
 

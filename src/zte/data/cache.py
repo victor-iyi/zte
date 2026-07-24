@@ -1,13 +1,4 @@
-"""A layered, content-addressed store for dataset bundles: build once, reuse everywhere, forever.
-
-Two ideas remove the cost of processing from every new machine:
-- Layered storage: A bundle is looked up in a fast local directory first, then in a persistent remote one
-  (a mounted Drive folder).  A hit on the remote is copied down once and then behaves like a local hit.  A freshly
-  built bundle is published to the remote *immediately*, so a VM reclaimed mid-training never costs the processing again.
-- Two levels: The expensive `.mat` extraction depends on far fewer settings than the cheap processing that follows it,
-  so they are cached separately (`ZuCoDataset._extract_key` vs `_cache_key`). A config that changes only normalisation,
-  imputation, eye-tracking or length filters reuses the extraction and re-derives its bundle in seconds.
-"""
+"""A layered, content-addressed store for dataset bundles: fast local cache backed by a persistent remote (docs/DATASET.md)."""
 
 from __future__ import annotations
 
