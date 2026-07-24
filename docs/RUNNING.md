@@ -16,10 +16,10 @@ Every long run is **resumable**: stop any time (`Ctrl-C`) and re-run the same co
 uv sync --group all          # provisions Python 3.14 + installs torch, viz, TensorBoard, gdown
 
 # 1) Smoke test on synthetic data — no dataset needed (a couple of minutes)
-uv run zte-run --config experiments/exp6_skipgram_eegonly_invariant.yaml --synthetic --epochs 3
+uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --synthetic --epochs 3
 
 # 2) A real run from a local folder of extracted .mat files
-uv run zte-run --config experiments/exp6_skipgram_eegonly_invariant.yaml --root res/data/zuco_extracted
+uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/data/zuco_extracted
 ```
 
 Which device did it pick?
@@ -28,7 +28,7 @@ Which device did it pick?
 uv run python -c "from zte.device import resolve_device; print(resolve_device('auto').name)"
 ```
 
-Each run writes a self-contained folder under `res/experiments/<run>/` with `metrics.json`, figures, a `report.md`, and interactive HTML (`evaluation/interactive/thought_space_explorer.html`, `neuron_atlas.html`).
+Each run writes a self-contained folder under `res/experiments/<run>/` with `metrics.json`, figures, a `report.md`, and interactive HTML (`evaluation/interactive/thought_space_explorer.html`, `neuron_atlas.html`). The run name comes from `run_name` inside the config rather than its file path, so `experiments/flagship/clip_e5_bandpower.yaml` writes to `res/experiments/exp8_clip_e5/`.
 
 ---
 

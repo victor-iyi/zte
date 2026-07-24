@@ -81,16 +81,16 @@ uv sync --no-default-groups  # core only, without the `dev` group
 
 ```sh
 # No data needed: full pipeline on a synthetic ZuCo tree (great smoke test).
-uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --synthetic --epochs 5
+uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --synthetic --epochs 5
 
 # Real data from a local folder (extracted .mat files, or a folder of task .zip archives).
-uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
+uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/data/zuco_extracted
 
 # Real data straight from Google Drive (folder id or shareable URL; needs the `drive` group).
-uv run zte-run --config experiments/exp2_masked_rope_eegonly.yaml --drive <folder-id-or-url>
+uv run zte-run --config experiments/flagship/clip_e5_raw.yaml --drive <folder-id-or-url>
 
 # Any subset, any override:
-uv run zte-run --config experiments/exp1_skipgram_rope_et.yaml \
+uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml \
     --root res/data/zuco_extracted --subjects ZAB,ZDM,ZJS --tasks SR,NR --epochs 20 \
     --name my_first_run
 ```
@@ -106,15 +106,19 @@ res/experiments/INDEX.md          # a growing catalogue of every run + headline 
 
 The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte.data.io.sources.resolve_source`: an already-extracted directory is used as-is, a `.zip` (or a folder of task zips) is unzipped once into `--extract-dir`, and a Drive id/URL is downloaded to `res/data/_downloads` then unzipped into `--extract-dir`.  Every CLI that loads raw ZuCo data accepts the same flags (`--root`, `--drive`, `--extract-dir`), so "load from Drive or locally, unzip, prepare, cache, train, evaluate" is a single command either way.
 
-### The 5 flagship experiments
+### The experiment tiers
 
-| Config                      | Objective           | Positional | Eye-tracking | Why run it                                              |
-| --------------------------- | ------------------- | ---------- | ------------ | ------------------------------------------------------- |
-| `exp1_skipgram_rope_et`     | skip-gram           | RoPE       | included     | **Start here** — best general reading-evoked embedding  |
-| `exp2_masked_rope_eegonly`  | masked (data2vec)   | RoPE       | **excluded** | Device-agnostic / imagined-thought path (EEG only)      |
-| `exp3_cpc_rope_et`          | CPC (wav2vec/BENDR) | RoPE       | included     | Does reading *order* carry transferable structure?      |
-| `exp4_skipgram_loso`        | skip-gram           | RoPE       | included     | Subject-invariance: leave-one-subject-out validation    |
-| `exp5_raw_conformer_masked` | masked              | RoPE       | excluded     | Raw temporal path (EEG-Conformer) instead of band power |
+`experiments/` is organised by what a config is *for*: **`flagship/`** are the recipes that won on real ZuCo, **`benchmark/`** are the controls a flagship has to beat, **`ablation/`** are single-lever studies, and **`archive/`** keeps superseded or failed arms for the record. The `run_name` lives *inside* each YAML and did not change when the files were tiered, so every config still writes to its historical directory — `experiments/flagship/clip_e5_bandpower.yaml` still produces the run `exp8_clip_e5`.
+
+| Config                                  | Tier      | Objective                    | Why run it                                                                                                                     |
+| --------------------------------------- | --------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `flagship/clip_e5_bandpower.yaml`       | flagship  | CLIP vs E5, band power       | **Start here** — the only recipe that has beaten chance on real ZuCo (held-out ZAB: sentence Top-1 0.093 vs 0.0013, *p*=0.002) |
+| `flagship/clip_e5_raw.yaml`             | flagship  | CLIP vs E5, raw conformer    | Learns the band-pass instead of assuming it; best held-out lift so far (+0.71pp)                                               |
+| `flagship/clip_e5_meaning.yaml`         | flagship  | CLIP vs E5 + meaning distill | The champion recipe plus a contextual per-occurrence word-meaning target — a hypothesis, not yet a measured win                |
+| `benchmark/baseline_skipgram_loso.yaml` | benchmark | skip-gram                    | The control the flagships must beat; on held-out ZAB it scored 0.0004 (*p*=0.99)                                               |
+| `benchmark/clip_qwen_bandpower.yaml`    | benchmark | CLIP vs Qwen2.5-0.5B         | Text-encoder control: does the win survive swapping the frozen sentence target?                                                |
+| `ablation/study_*.yaml`                 | ablation  | one lever each               | VICReg off/on, anti-cone off/on, invariance baseline vs full — everything else held identical                                  |
+| `archive/exp1..exp7*.yaml`              | archive   | superseded                   | The v1 skip-gram / masked / CPC arms and `exp7_sota_geom_invariance` (scored 0.0, *p*=1.0), kept for the record                |
 
 See [`experiments/README.md`](experiments/README.md) for the full rationale.
 
@@ -395,13 +399,13 @@ $$
 - **Masked objective repaired.** The exported 768-d head is now trained; the data2vec teacher is normalised across tokens with a variance floor and its EMA decay is ramped — no more exp2 cone.
 - **Honest evaluation.** `train.test_fraction` defaults to `0.1` (held-out), a new `by_stimulus` split keeps a sentence's text on one side, and the normaliser is fit on train only. Verdicts use bootstrap CIs + effect-size floors; retrieval chance is query-weighted; probes are shuffled and scaled; the `task_transfer` id bug is fixed; a real electrode montage can be supplied via `dataset.montage_csv`.
 
-The new **`exp6_skipgram_eegonly_invariant`** preset is the fairest test: EEG-only, `by_stimulus` held-out, and every subject-invariance lever on.
+The fairest test of those levers on their own was the **`exp6_skipgram_eegonly_invariant`** preset — EEG-only, `by_stimulus` held-out, every subject-invariance lever on. It now lives in `experiments/archive/`: on real ZuCo the skip-gram family never cleared chance, and the levers moved to the CLIP flagships in `experiments/flagship/`, where they stay on as auxiliaries.
 
 ### Interactive Thought-Space Explorer
 
 ```sh
 # Build a self-contained, offline interactive HTML explorer (Plotly).
-uv run zte-visualize --run res/experiments/exp1_skipgram_rope_et --out res/explorer.html
+uv run zte-visualize --run res/experiments/exp8_clip_e5 --out res/explorer.html
 uv run zte-visualize --synthetic --out res/explorer.html   # no data needed
 ```
 
@@ -410,7 +414,7 @@ Live, on-page controls let you see: one subject / many words; **many subjects / 
 ### Neuron Atlas — which dimensions fire, and what they encode
 
 ```sh
-uv run zte-visualize --atlas --run res/experiments/exp1_skipgram_rope_et --out res/atlas.html
+uv run zte-visualize --atlas --run res/experiments/exp8_clip_e5 --out res/atlas.html
 ```
 
 Every evaluation also writes `evaluation/interactive/neuron_atlas.html` (and `neurons.json`). It ranks all 768 dimensions by how much they *fire* (variance share), colours each by what it **encodes** (amber for *who* = subject, cool hues for *what* = word length / frequency / task / category, grey for the negligible dead tail past the active-threshold line), and — on click — shows a neuron's selectivity, activation histogram, top-firing words, and scalp band × region attribution. The header reports the **who-vs-what variance budget**: the share of the space spent on identity versus content. This is the "encodes who, not what" story made legible at neuron resolution.
@@ -448,7 +452,7 @@ The project's anti-"BLEU-trap" controls are first-class:
 ```sh
 zte/
 ├── pyproject.toml            # uv + ruff (single quotes) + deps
-├── experiments/              # the 5 flagship experiment configs (+ README)
+├── experiments/              # configs by tier: flagship · benchmark · ablation · archive (+ README)
 ├── src/zte/
 │   ├── config/               # typed, YAML-serialisable configs (dataset · model · objective · train · types)
 │   ├── device.py             # CPU/CUDA/MPS + autocast + seeding

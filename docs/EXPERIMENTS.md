@@ -2,7 +2,7 @@
 
 A rigorous, **bias-controlled** set of studies you can run end-to-end on the real ZuCo data, plus a "how to read every output" guide so a newcomer can peek into what ZTE actually learns. Each study is an **A/B (or a sweep) with everything else held identical**, so any metric delta is attributable to the one lever under test — not a confound.
 
-> Related: [EVALUATION.md](./EVALUATION.md) (what every metric means and how the verdict is computed) · [ARCHITECTURE.md](./ARCHITECTURE.md) · the shipped `experiments/exp1..exp6*.yaml` presets.
+> Related: [EVALUATION.md](./EVALUATION.md) (what every metric means and how the verdict is computed) · [ARCHITECTURE.md](./ARCHITECTURE.md) · the tiered presets under [`experiments/`](../experiments/README.md) (`flagship/` · `benchmark/` · `ablation/` · `archive/`).
 >
 > **Design vs result.** Everything in the *Expected / interesting* column below is a **hypothesis**, not a measured result. The suite is designed and verified on synthetic data; the real-data numbers are what you produce by running it. Tiny synthetic runs will *legitimately fail* several verdict checks (there is little real cross-subject signal to find) — that is the point of running it at scale.
 
@@ -30,24 +30,24 @@ $$\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \
 
 ## The studies
 
-| #   | Study                                              | Hypothesis                                                 | Config(s)                                                                                                                                                                                     | What to look at                                                                                                                                                                 | Expected / interesting (hypothesis)                                                                                                                                               |
-| --- | -------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Purpose / eye-tracking confound**                | "Reading from EEG" survives without gaze features          | Matched A/B: `zte-benchmark --eye-tracking both` (everything else identical). Full-scale flagships: `exp1_skipgram_rope_et.yaml` (ET on) vs `exp6_skipgram_eegonly_invariant.yaml` (EEG-only) | `comparison.csv` word-length / log-freq linear probe (ZTE vs raw vs noise); `region_importance.csv` EEG-vs-eye-tracking share; sentence retrieval Top-1                         | EEG-only keeps lexical structure **above the noise floor** -> not purely a gaze artefact. The ET->EEG-only drop *quantifies* how much gaze was carrying.                          |
-| 2   | **Subject-invariance A/B (LOSO — the north star)** | The invariance stack makes the code subject-agnostic       | `study_invariance_baseline_loso.yaml` (no levers) vs `study_invariance_full_loso.yaml` (VICReg + per-subject norm + cross-subject positives + adversary), same held-out subject               | `metrics.json` `analogy.subject_transfer` lift; the **subject** row of `comparison.csv` (probe accuracy should fall toward chance); held-out cross-subject `sentence_retrieval` | **Discovery question:** does the stack push subject-decodability toward chance **and** lift held-out cross-subject retrieval? A win means WHO is removed without destroying WHAT. |
-| 3   | **Anti-collapse ablation (VICReg OFF vs ON)**      | VICReg prevents dimensional collapse and revives content   | `study_vicreg_off.yaml` vs `study_vicreg_on.yaml` (identical except `variance_weight`/`covariance_weight` 0->1), `by_stimulus`                                                                | `metrics.json` `embedding_health.effective_rank_ratio`; `neurons` block `n_active`/`n_dead`/`variance_budget`; word-length & log-freq probes in `comparison.csv`                | **Discovery question:** how many neurons "come alive" (effective rank, `n_active`) and does lexical content become decodable once collapse is prevented?                          |
-| 4   | **Objective sweep**                                | Some SSL objective carries the most transferable structure | `zte-benchmark --objectives skipgram,cbow,masked,cpc --eye-tracking off --pos-encodings rope --seeds 42,43,44`                                                                                | `benchmark.csv` / `benchmark.md`, sorted by `subject_transfer_lift`; also `sent_retrieval_lift`, `eff_rank_ratio`, `beats_noise`                                                | Which of skip-gram / CBOW / masked / CPC gives the highest subject-agnostic transfer. No prior — this is exploratory.                                                             |
-| 5   | **Representation (optional)**                      | A raw temporal frontend can rival hand-made band-power     | `exp5_raw_conformer_masked.yaml` (raw conformer) vs `exp2_masked_rope_eegonly.yaml` (band-power); both masked, EEG-only                                                                       | Sentence/word retrieval, `effective_rank_ratio`, probes in `comparison.csv`                                                                                                     | Does learning the band-pass (`raw_conformer`) beat fixed band-power, or is band-power a strong-enough summary?                                                                    |
+| # | Study                                              | Hypothesis                                                 | Config(s)                                                                                                                                                                                                | What to look at                                                                                                                                                                 | Expected / interesting (hypothesis)                                                                                                                                               |
+| - | -------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 | **Purpose / eye-tracking confound**                | "Reading from EEG" survives without gaze features          | Matched A/B: `zte-benchmark --eye-tracking both` (everything else identical). Full-scale pair: `archive/exp1_skipgram_rope_et.yaml` (ET on) vs `archive/exp6_skipgram_eegonly_invariant.yaml` (EEG-only) | `comparison.csv` word-length / log-freq linear probe (ZTE vs raw vs noise); `region_importance.csv` EEG-vs-eye-tracking share; sentence retrieval Top-1                         | EEG-only keeps lexical structure **above the noise floor** -> not purely a gaze artefact. The ET->EEG-only drop *quantifies* how much gaze was carrying.                          |
+| 2 | **Subject-invariance A/B (LOSO — the north star)** | The invariance stack makes the code subject-agnostic       | `ablation/study_invariance_baseline_loso.yaml` (no levers) vs `ablation/study_invariance_full_loso.yaml` (VICReg + per-subject norm + cross-subject positives + adversary), same held-out subject        | `metrics.json` `analogy.subject_transfer` lift; the **subject** row of `comparison.csv` (probe accuracy should fall toward chance); held-out cross-subject `sentence_retrieval` | **Discovery question:** does the stack push subject-decodability toward chance **and** lift held-out cross-subject retrieval? A win means WHO is removed without destroying WHAT. |
+| 3 | **Anti-collapse ablation (VICReg OFF vs ON)**      | VICReg prevents dimensional collapse and revives content   | `ablation/study_vicreg_off.yaml` vs `ablation/study_vicreg_on.yaml` (identical except `variance_weight`/`covariance_weight` 0->1), `by_stimulus`                                                         | `metrics.json` `embedding_health.effective_rank_ratio`; `neurons` block `n_active`/`n_dead`/`variance_budget`; word-length & log-freq probes in `comparison.csv`                | **Discovery question:** how many neurons "come alive" (effective rank, `n_active`) and does lexical content become decodable once collapse is prevented?                          |
+| 4 | **Objective sweep**                                | Some SSL objective carries the most transferable structure | `zte-benchmark --objectives skipgram,cbow,masked,cpc --eye-tracking off --pos-encodings rope --seeds 42,43,44`                                                                                           | `benchmark.csv` / `benchmark.md`, sorted by `subject_transfer_lift`; also `sent_retrieval_lift`, `eff_rank_ratio`, `beats_noise`                                                | Which of skip-gram / CBOW / masked / CPC gives the highest subject-agnostic transfer. No prior — this is exploratory.                                                             |
+| 5 | **Representation (optional)**                      | A raw temporal frontend can rival hand-made band-power     | `archive/exp5_raw_conformer_masked.yaml` (raw conformer) vs `archive/exp2_masked_rope_eegonly.yaml` (band-power); both masked, EEG-only                                                                  | Sentence/word retrieval, `effective_rank_ratio`, probes in `comparison.csv`                                                                                                     | Does learning the band-pass (`raw_conformer`) beat fixed band-power, or is band-power a strong-enough summary?                                                                    |
 
 ### New config files created for this suite
 
-Generated by `scripts/make_study_configs.py` (build `ZTEConfig` objects -> `to_yaml`, so they are guaranteed valid against the current schema). Studies 1/4/5 need no new files — they reuse the shipped presets or `zte-benchmark`.
+Generated by `scripts/make_study_configs.py` (build `ZTEConfig` objects -> `to_yaml`, so they are guaranteed valid against the current schema) and shipped in the `ablation/` tier — one lever per study. Studies 1/4/5 need no new files — they reuse the shipped presets or `zte-benchmark`. Tiering the files did not touch the `run_name` inside them, so each still writes to `res/experiments/study_.../`.
 
-| File                                              | One-line purpose                                                                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `experiments/study_invariance_baseline_loso.yaml` | Study 2 (A): skip-gram, EEG-only, LOSO, **no** invariance levers — the control.                                          |
-| `experiments/study_invariance_full_loso.yaml`     | Study 2 (B): same, **with** the full invariance stack (VICReg + per-subject norm + cross-subject positives + adversary). |
-| `experiments/study_vicreg_off.yaml`               | Study 3 (A): skip-gram, EEG-only, `by_stimulus`, **VICReg off** (`variance_weight=covariance_weight=0`).                 |
-| `experiments/study_vicreg_on.yaml`                | Study 3 (B): identical to (A) except **VICReg on** (`=1`).                                                               |
+| File                                                       | One-line purpose                                                                                                         |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `experiments/ablation/study_invariance_baseline_loso.yaml` | Study 2 (A): skip-gram, EEG-only, LOSO, **no** invariance levers — the control.                                          |
+| `experiments/ablation/study_invariance_full_loso.yaml`     | Study 2 (B): same, **with** the full invariance stack (VICReg + per-subject norm + cross-subject positives + adversary). |
+| `experiments/ablation/study_vicreg_off.yaml`               | Study 3 (A): skip-gram, EEG-only, `by_stimulus`, **VICReg off** (`variance_weight=covariance_weight=0`).                 |
+| `experiments/ablation/study_vicreg_on.yaml`                | Study 3 (B): identical to (A) except **VICReg on** (`=1`).                                                               |
 
 All four share: `subjects: null` (all 12 subjects), `tasks: [SR, NR]`, `representation: band_power`, `include_eye_tracking: false`,
 `normalizer_fit: train`, `test_fraction: 0.1`, `deterministic: true`, `seed: 42`.  Only the levers named in the table differ between an A/B pair.
@@ -56,11 +56,12 @@ All four share: `subjects: null` (all 12 subjects), `tasks: [SR, NR]`, `represen
 
 All commands assume the repo root and the project venv (`.venv/bin/...`). The console scripts (`zte-run`, `zte-benchmark`, `zte-visualize`) are installed in the venv; you can equally call `.venv/bin/python -m zte.cli.run` etc.
 
-The fixed, documented driver is `scripts/run_suite.sh` (seeds `42 43 44`):
+The fixed, documented driver is `scripts/run_suite.sh`, which selects work by tier through `STUDIES` (`audit flagship controls benchmark ablate loso`; the first three are the default) and by seed through `SEEDS`:
 
 ```sh
 bash scripts/run_suite.sh                       # real data at res/data/zuco_extracted
 bash scripts/run_suite.sh /path/to/zuco_extracted   # a different data root
+STUDIES="ablate" SEEDS="42 43 44" bash scripts/run_suite.sh   # just the ablation tier, three seeds
 ```
 
 `zte-run --seed <N>` overrides `train.seed` and suffixes the run name with `_s<N>` (e.g.  `study_vicreg_on_s43`), so a multi-seed sweep is just a shell loop: `for s in 42 43 44; do zte-run --config <cfg> --root <root> --seed $s; done`. The `run_suite.sh` runner does exactly this; the individual commands below show the single-seed form.
@@ -71,10 +72,10 @@ Long runs are interruptible. **Stop** a run whenever you like — press `Ctrl-C`
 
 ```sh
 # start (optionally in the background)
-nohup zte-run --config experiments/study_vicreg_on.yaml --root res/data/zuco_extracted --seed 42 > run.log 2>&1 &
+nohup zte-run --config experiments/ablation/study_vicreg_on.yaml --root res/data/zuco_extracted --seed 42 > run.log 2>&1 &
 # ...pause it any time...  kill %1   (or Ctrl-C if in the foreground)
 # ...later, continue exactly where it left off:
-zte-run --config experiments/study_vicreg_on.yaml --root res/data/zuco_extracted --seed 42 --resume
+zte-run --config experiments/ablation/study_vicreg_on.yaml --root res/data/zuco_extracted --seed 42 --resume
 ```
 
 `--resume` is idempotent and safe to always pass: it reuses the cached dataset bundle (skips the slow prepare), continues training from the last checkpoint, and skips evaluation / exploration that are already up to date (a `--force` flag redoes them). Because `scripts/run_suite.sh` **already passes** `--resume` **on every run**, you can stop the whole suite at any point and just re-run `bash scripts/run_suite.sh` to pick up where it stopped — completed runs are skipped, the interrupted one resumes. (`zte-benchmark` sweeps are not individually resumable; re-running restarts that sweep.)
@@ -85,9 +86,9 @@ Every study config runs end-to-end on fabricated data in a couple of minutes.  U
 
 ```sh
 # Study 2/3 configs:
-.venv/bin/python -m zte.cli.run --config experiments/study_vicreg_on.yaml \
+.venv/bin/python -m zte.cli.run --config experiments/ablation/study_vicreg_on.yaml \
     --synthetic --epochs 2 --name smoke --device cpu
-.venv/bin/python -m zte.cli.run --config experiments/study_invariance_full_loso.yaml \
+.venv/bin/python -m zte.cli.run --config experiments/ablation/study_invariance_full_loso.yaml \
     --synthetic --epochs 2 --name smoke --device cpu
 # Study 4 sweep:
 .venv/bin/zte-benchmark --synthetic --objectives skipgram,cpc --pos-encodings rope \
@@ -105,16 +106,16 @@ Every study config runs end-to-end on fabricated data in a couple of minutes.  U
     --seeds 42,43,44 --out res/benchmark/et_confound
 # Full-scale flagships (report both; note they differ in more than ET, so the
 # benchmark above is the clean confound test and these are the headline runs):
-.venv/bin/zte-run --config experiments/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
-.venv/bin/zte-run --config experiments/exp6_skipgram_eegonly_invariant.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/archive/exp1_skipgram_rope_et.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/archive/exp6_skipgram_eegonly_invariant.yaml --root res/data/zuco_extracted
 ```
 
 ### Study 2 — subject-invariance A/B (LOSO)
 
 ```sh
 # Single held-out subject (ZAB by default in the config), one seed:
-.venv/bin/zte-run --config experiments/study_invariance_baseline_loso.yaml --root res/data/zuco_extracted
-.venv/bin/zte-run --config experiments/study_invariance_full_loso.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/ablation/study_invariance_baseline_loso.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/ablation/study_invariance_full_loso.yaml --root res/data/zuco_extracted
 ```
 
 For a **full** leave-one-subject-out sweep, rotate `train.loso_holdout_subject` across all 12 subjects (ZAB ZDM ZDN ZGW ZJM ZJN ZJS ZKB ZKH ZKW ZMG ZPH) — the runner shows the loop. Compare the baseline vs full curves subject-by-subject.
@@ -122,8 +123,8 @@ For a **full** leave-one-subject-out sweep, rotate `train.loso_holdout_subject` 
 ### Study 3 — anti-collapse ablation
 
 ```sh
-.venv/bin/zte-run --config experiments/study_vicreg_off.yaml --root res/data/zuco_extracted
-.venv/bin/zte-run --config experiments/study_vicreg_on.yaml  --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/ablation/study_vicreg_off.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/ablation/study_vicreg_on.yaml  --root res/data/zuco_extracted
 ```
 
 ### Study 4 — objective sweep
@@ -137,8 +138,8 @@ For a **full** leave-one-subject-out sweep, rotate `train.loso_holdout_subject` 
 ### Study 5 — representation (optional)
 
 ```sh
-.venv/bin/zte-run --config experiments/exp5_raw_conformer_masked.yaml --root res/data/zuco_extracted
-.venv/bin/zte-run --config experiments/exp2_masked_rope_eegonly.yaml  --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/archive/exp5_raw_conformer_masked.yaml --root res/data/zuco_extracted
+.venv/bin/zte-run --config experiments/archive/exp2_masked_rope_eegonly.yaml  --root res/data/zuco_extracted
 ```
 
 ### Peeking into a finished run
@@ -235,7 +236,7 @@ This is the north-star property (the thing that would make ZTE "like word embedd
 
 **How to *see* it, without guessing:** open `thought_space_explorer.html`. Its landing banners state, in plain language, whether same/related thoughts cluster; its **auto-analogy leaderboard** finds the working `A->B` analogies for you (no need to pick a word or a person); and its **neighbourhood view** shows a word's nearest thoughts across subjects.
 
-**How to *make* it emerge (and which config):** ZTE v1 largely does **not** have these properties yet — the space encodes *who*. The levers designed to produce them are all in `study_invariance_full_loso.yaml` / `exp6_skipgram_eegonly_invariant.yaml`: **cross-subject positives** (same stimulus across subjects pulled together), a **subject adversary** + **per-subject normalisation** (remove identity), and **VICReg** (stop collapse so there's room for content). The adversary is a gradient-reversal min-max on a subject classifier's cross-entropy $\mathcal{L}_{\text{adv}}=-\sum_c \mathbf{1}[s=c]\log p_c$: the referee minimises it while the reversed gradient trains the encoder to *hide* subject identity. Study 2 (baseline -> full) is precisely the A/B that shows whether the `emergence` gaps *move*. Turning the knobs up: raise `objective.subject_adversary_weight`, keep `cross_subject_positives: true`, raise `variance_weight`/`covariance_weight`, and use `normalize: zscore_subject`. Ultimately the parent project's LLM alignment (EEG-OT-CLIP) is what maps ZTE into a genuinely semantic space — this suite tells you how good a starting point ZTE is.
+**How to *make* it emerge (and which config):** ZTE v1 largely does **not** have these properties yet — the space encodes *who*. The levers designed to produce them are all in `ablation/study_invariance_full_loso.yaml` / the archived `archive/exp6_skipgram_eegonly_invariant.yaml`, and stay on as auxiliaries in the `flagship/` CLIP recipes: **cross-subject positives** (same stimulus across subjects pulled together), a **subject adversary** + **per-subject normalisation** (remove identity), and **VICReg** (stop collapse so there's room for content). The adversary is a gradient-reversal min-max on a subject classifier's cross-entropy $\mathcal{L}_{\text{adv}}=-\sum_c \mathbf{1}[s=c]\log p_c$: the referee minimises it while the reversed gradient trains the encoder to *hide* subject identity. Study 2 (baseline -> full) is precisely the A/B that shows whether the `emergence` gaps *move*. Turning the knobs up: raise `objective.subject_adversary_weight`, keep `cross_subject_positives: true`, raise `variance_weight`/`covariance_weight`, and use `normalize: zscore_subject`. Ultimately the parent project's LLM alignment (EEG-OT-CLIP) is what maps ZTE into a genuinely semantic space — this suite tells you how good a starting point ZTE is.
 
 ## Avoiding bias & overfitting — the guarantees, made explicit
 
@@ -271,7 +272,7 @@ Every run's `metrics.json` and `report.md` gain a `honesty` block whenever the e
 
 ## Implemented improvements
 
-These improvements are now wired into the config and objectives (all off by default; enabled in the flagship recipe configs `exp6_skipgram_eegonly_invariant.yaml` and `study_invariance_full_loso.yaml`).
+These improvements are now wired into the config and objectives (all off by default; enabled in the flagship recipes under `experiments/flagship/`, in the `ablation/study_invariance_full_loso.yaml` A/B arm, and in the archived `archive/exp6_skipgram_eegonly_invariant.yaml` where they were first assembled).
 
 ### Fix the dimensional collapse / the "cone"
 
@@ -286,7 +287,7 @@ $$\mathcal{L}_{\text{unif}} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-2\,\lVert 
 
 - Turn **VICReg** up (`variance_weight`, `covariance_weight`) to keep every dimension alive and decorrelated — the effective-rank half of collapse is a *training* matter and only shows on real data (synthetic already uses ~126/768 dims).
 
-A ready-made A/B ablation: `study_anticone_off.yaml` (VICReg only) vs `study_anticone_on.yaml` (VICReg + whitening + uniformity). Compare `embedding_health.anisotropy` and `effective_rank_ratio`.
+A ready-made A/B ablation: `ablation/study_anticone_off.yaml` (VICReg only) vs `ablation/study_anticone_on.yaml` (VICReg + whitening + uniformity). Compare `embedding_health.anisotropy` and `effective_rank_ratio`.
 
 ### Kill the stimulus shortcut, chase meaning
 
@@ -295,4 +296,4 @@ A ready-made A/B ablation: `study_anticone_off.yaml` (VICReg only) vs `study_ant
 
 ### Report on truly held-out data
 
-- The **LOSO sweep** (`scripts/run_loso.sh`) evaluates every held-out subject; the **honesty block** adds a permutation null, a held-out cross-subject decoder, and the anchor-calibration lift for the held-out subject (see above). The **raw-waveform path** for richer signal already exists as `exp5_raw_conformer_masked.yaml` (`frontend: raw_conformer`).
+- The **LOSO sweep** (`scripts/run_loso.sh`) evaluates every held-out subject; the **honesty block** adds a permutation null, a held-out cross-subject decoder, and the anchor-calibration lift for the held-out subject (see above). The **raw-waveform path** for richer signal already exists as `flagship/clip_e5_raw.yaml` (`frontend: raw_conformer`), with the earlier masked version kept as `archive/exp5_raw_conformer_masked.yaml`.
