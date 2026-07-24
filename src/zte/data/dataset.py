@@ -807,7 +807,30 @@ class ZuCoDataset:
         if meta.get('normalizer'):
             ds.normalizer = FeatureNormalizer.from_state(meta['normalizer'])
         ds._groups = None  # pylint: disable=protected-access
+        ds._backfill_derived_columns()
         return ds
+
+    def _backfill_derived_columns(self) -> None:
+        """Rebuilds the cheap derived word/sentence columns a stale cached bundle may lack.
+
+        `sentence_uid`, the linguistic features and the category labels are pure functions of the base
+        columns, so an older bundle (built before a column was added) is repaired in place on load rather
+        than triggering a multi-hour reprocess.
+        """
+        words = self.words
+        if words is None or not len(words):
+            return
+        if 'sentence_uid' not in words.columns:
+            _LOG.info('Cached bundle predates `sentence_uid`; backfilling linguistic features.')
+            self._add_linguistic_features()
+        if 'stimulus_key' not in words.columns or 'category' not in words.columns:
+            # Drop any partial category columns first, so `_attach_categories`'s merge cannot collide.
+            stale = ['category', 'category_scheme', 'length_band', 'stimulus_key']
+            self.words = words.drop(columns=[c for c in stale if c in words.columns])
+            try:
+                self._attach_categories()
+            except (OSError, KeyError, ValueError) as exc:  # pragma: no cover - defensive
+                _LOG.warning('Could not backfill categories on load: %r', exc)
 
     # -- remote ------------------------------------------------------------- #
 

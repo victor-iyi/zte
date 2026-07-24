@@ -203,6 +203,40 @@ def test_save_reload_roundtrip(small_dataset: ZuCoDataset, tmp_path: Path) -> No
     assert len(reloaded.words) == len(small_dataset.words)
 
 
+def test_stale_bundle_backfills_derived_columns(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """A cached bundle predating a derived column is repaired on load, not left to crash later.
+
+    Regression: an old raw bundle on Drive lacked `sentence_uid` (added in `_process`), so a cache hit
+    loaded a words table without it and `analyze()` raised KeyError after skipping the rebuild.
+    """
+    import pandas as pd
+
+    bundle = small_dataset.save(tmp_path / 'bundle')
+    derived = [
+        'sentence_uid',
+        'word_len',
+        'log_freq',
+        'is_omitted',
+        'rel_pos',
+        'category',
+        'category_scheme',
+        'length_band',
+        'stimulus_key',
+    ]
+    words = pd.read_pickle(bundle / 'words.pkl')
+    stripped = words.drop(columns=[c for c in derived if c in words.columns])
+    assert 'sentence_uid' not in stripped.columns
+    stripped.to_pickle(bundle / 'words.pkl')
+
+    reloaded = ZuCoDataset.load(bundle)
+    assert 'sentence_uid' in reloaded.words.columns
+    assert 'category' in reloaded.words.columns
+    # The exact call that crashed on Colab must now succeed.
+    summary = reloaded.analyze()
+    assert summary['n_sentences'] > 0
+    assert reloaded.split()['train'].size > 0
+
+
 @pytest.mark.parametrize(
     'method',
     ['zero', 'row_mean', 'col_mean', 'global_mean', 'median', 'knn', 'iterative', 'mask_only'],
