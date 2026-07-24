@@ -41,6 +41,9 @@ type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 type PoolName = Literal['mean', 'attention', 'cls']
 """How token embeddings are pooled into a sentence embedding."""
 
+type TemporalPool = Literal['mean', 'attention']
+"""How the raw-conformer collapses the within-word time axis: a flat average or a learned attentive pool."""
+
 type SchedulerName = Literal['cosine', 'linear', 'constant']
 """Learning-rate schedule shape after warmup."""
 

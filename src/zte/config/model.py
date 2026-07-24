@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from zte.config.types import FrontendName, PoolName, PosEncoding, SpatialEncoding
+from zte.config.types import FrontendName, PoolName, PosEncoding, SpatialEncoding, TemporalPool
 
 
 @dataclass
@@ -32,6 +32,16 @@ class ModelConfig:
 
     conformer_temporal_kernel: int = 25
     """Temporal conv kernel size (acts as a learnable band-pass filter)."""
+
+    conformer_multiscale_kernels: tuple[int, ...] = ()
+    """Optional parallel temporal-conv kernel widths for the raw conformer. Empty keeps the single
+    `conformer_temporal_kernel` filter. When set, a bank of band-passes at several widths runs in parallel and a
+    pointwise conv fuses them, so one wide token sees fast (gamma) through slow (theta) rhythms at once. At the 500 Hz
+    ZuCo rate `(15, 31, 63, 125)` spans roughly 33 Hz down to 4 Hz."""
+
+    conformer_temporal_pool: TemporalPool = 'mean'
+    """How the raw conformer collapses the within-word time axis after self-attention. `mean` is the flat average;
+    `attention` learns a per-time-step weighting so informative moments (e.g. the N400 window) dominate the token."""
 
     pos_encoding: PosEncoding = 'rope'
     """Positional encoding over the word axis of the context transformer. `rope` injects relative position inside

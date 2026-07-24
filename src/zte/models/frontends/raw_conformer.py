@@ -34,10 +34,18 @@ class RawConformer(nn.Module):
         super().__init__()
         self.spatial_mixer = spatial
         filters = config.conformer_filters
-        kernel = config.conformer_temporal_kernel
+        kernels = tuple(config.conformer_multiscale_kernels) or (config.conformer_temporal_kernel,)
 
-        # Temporal conv acts as a trainable band-pass, then a pointwise conv mixes the learned filters.
-        self.temporal = nn.Conv1d(n_channels, filters, kernel_size=kernel, padding=kernel // 2)
+        # Temporal convs act as trainable band-passes: one kernel by default, or a parallel multi-scale bank that
+        # spans fast (gamma) to slow (theta) rhythms. A pointwise conv then fuses the scales and mixes the filters.
+        self.temporal_scales = nn.ModuleList(
+            nn.Conv1d(n_channels, filters, kernel_size=k, padding=k // 2) for k in kernels
+        )
+        self.fuse = (
+            nn.Conv1d(filters * len(kernels), filters, kernel_size=1)
+            if len(kernels) > 1
+            else nn.Identity()
+        )
         self.spatial = nn.Conv1d(filters, filters, kernel_size=1)
         self.act = nn.GELU()
         self.norm = nn.LayerNorm(filters)
@@ -54,6 +62,9 @@ class RawConformer(nn.Module):
             encoder_layer, num_layers=max(1, config.n_layers // 2), enable_nested_tensor=False
         )
 
+        # Temporal pooling collapses the time axis: a flat mean, or a learned attentive weighting.
+        self.temporal_pool = config.conformer_temporal_pool
+        self.attn_pool = nn.Linear(filters, 1) if self.temporal_pool == 'attention' else None
         self.head = nn.Linear(filters, config.hidden_dim)
         self.out_dim = config.hidden_dim
 
@@ -71,12 +82,22 @@ class RawConformer(nn.Module):
         lead = x.shape[:-2]
         c, t = x.shape[-2:]
         flat = x.reshape(-1, c, t)
-        h = self.act(self.temporal(flat))
-        h = self.act(self.spatial(h))  # (n_tokens, filters, time_steps)
+        h = self.act(torch.cat([conv(flat) for conv in self.temporal_scales], dim=1))
+        h = self.fuse(
+            h
+        )  # Identity for a single scale; fuses the bank otherwise -> (n_tokens, filters, time_steps)
+        h = self.act(self.spatial(h))
         h = h.transpose(1, 2)  # (n_tokens, time_steps, filters)
         h = self.norm(h)
         h = self.transformer(h)  # (n_tokens, time_steps, filters)
-        pooled = h.mean(dim=1)  # temporal average pool -> (n_tokens, filters)
+        if self.attn_pool is not None:
+            # Softmax in float32 so the attention weights stay stable under fp16/bf16 autocast.
+            weights = torch.softmax(self.attn_pool(h).float(), dim=1).to(
+                h.dtype
+            )  # (n_tokens, time_steps, 1)
+            pooled = (h * weights).sum(dim=1)  # attentive temporal pool -> (n_tokens, filters)
+        else:
+            pooled = h.mean(dim=1)  # temporal average pool -> (n_tokens, filters)
         out = self.head(pooled)  # (n_tokens, hidden_dim)
         return out.reshape(*lead, self.out_dim)
 

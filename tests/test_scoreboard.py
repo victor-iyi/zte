@@ -153,3 +153,55 @@ def test_build_scoreboard_non_loso() -> None:
         SimpleNamespace(train=SimpleNamespace(split='by_sentence')),
     )
     assert board['is_loso'] is False and 'lift_over_raw' in board
+
+
+def test_positive_control_uses_genuinely_raw_band_power() -> None:
+    """Test that the content control probes raw band power, immune to a whitening normaliser.
+
+    The regression: the old control probed the model's *normalised* input, and a whitening normaliser
+    (riemannian/zscore_subject) strips the amplitude that word_len rides on, so it read ~0 and branded
+    the whole content probe broken even when raw EEG carries the signal.
+    """
+    from zte.evaluation.audit.scoreboard import raw_content_positive_control
+
+    rng = np.random.default_rng(0)
+    n = 1500
+    word_len = rng.integers(1, 12, n).astype(float)
+    # Band power whose amplitude scales with word length (the real ZuCo reading effect), plus omissions.
+    bp = (word_len[:, None, None] * 0.3 + rng.normal(0, 1, (n, 8, 105))).astype(np.float32)
+    bp[rng.random(n) < 0.1] = np.nan
+    meta = pd.DataFrame({'word_len': word_len, 'log_freq': rng.normal(0, 1, n)})
+
+    control = raw_content_positive_control(bp, meta)
+    assert control is not None
+    assert control['source'] == 'raw band-power'
+    assert control['passes']  # the signal is present in raw band power
+    assert control['per_target_r2']['word_len'] > 0.02
+
+    # A whitening normaliser that centres each row destroys the amplitude signal -> the OLD false FAIL.
+    from zte.training.metrics import linear_probe
+
+    flat = np.nan_to_num(bp.reshape(n, -1))
+    row_centred = flat - flat.mean(axis=1, keepdims=True)
+    assert linear_probe(row_centred, word_len, task='regression')['score'] < 0.02
+
+    # build_scoreboard must adopt the raw-band-power control over the normalised-features fallback.
+    board = build_scoreboard(
+        np.zeros((n, 4)),
+        meta.assign(subject=['a'] * n),
+        [],
+        np.zeros((4, 4)),
+        np.array([0, 0, 1, 1]),
+        None,
+        SimpleNamespace(train=SimpleNamespace(split='by_sentence')),
+        word_band_power=bp,
+    )
+    assert board['lift_over_raw']['content_probe']['source'] == 'raw band-power'
+    assert board['lift_over_raw']['content_probe']['passes']
+
+
+def test_positive_control_not_applicable_without_band_power() -> None:
+    """Test that a raw-signal frontend (no band power) yields no positive control rather than crashing."""
+    from zte.evaluation.audit.scoreboard import raw_content_positive_control
+
+    assert raw_content_positive_control(None, pd.DataFrame({'word_len': [1, 2, 3]})) is None

@@ -407,15 +407,27 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
     return True
 
 
-def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
-    """Rebuilds the manifest evaluation summary from an existing `metrics.json` (resume path)."""
-    metrics = read_json(metrics_path)
+def _eval_summary(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Extracts the manifest evaluation summary from a full metrics dict.
+
+    For a LOSO run the honest headline is `held_out_retrieval` (the never-seen subject alone), not the
+    pooled `sentence_retrieval` -- which is dominated by the training subjects and reads far higher. Both
+    are carried so the catalogue can show the honest one and flag the pooled one as inflated.
+    """
+    held = (metrics.get('scoreboard') or {}).get('held_out_retrieval') or {}
     return {
         'verdict': metrics.get('verdict'),
         'sentence_retrieval_top1': metrics.get('sentence_retrieval', {}).get('top1'),
+        'held_out_retrieval_top1': held.get('top1'),
+        'held_out_retrieval_lift': held.get('lift_top1'),
         'subject_transfer_top1': metrics.get('analogy', {}).get('subject_transfer', {}).get('top1'),
         'effective_rank_ratio': metrics.get('embedding_health', {}).get('effective_rank_ratio'),
     }
+
+
+def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
+    """Rebuilds the manifest evaluation summary from an existing `metrics.json` (resume path)."""
+    return _eval_summary(read_json(metrics_path))
 
 
 def _evaluate(
@@ -468,12 +480,7 @@ def _evaluate(
         train_vocab=train_vocab,
     )
 
-    return {
-        'verdict': metrics['verdict'],
-        'sentence_retrieval_top1': metrics['sentence_retrieval'].get('top1'),
-        'subject_transfer_top1': metrics['analogy'].get('subject_transfer', {}).get('top1'),
-        'effective_rank_ratio': metrics['embedding_health'].get('effective_rank_ratio'),
-    }
+    return _eval_summary(metrics)
 
 
 def _save_overview(dataset: ZuCoDataset, out: Path) -> None:
@@ -522,7 +529,16 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
         '## Headline results',
         '',
         f'- Final train loss: {manifest.get("final_train_loss")}',
-        f'- Cross-subject sentence retrieval Top-1: {ev.get("sentence_retrieval_top1")}',
+        *(
+            [
+                f'- **Held-out retrieval Top-1 (the honest LOSO headline): '
+                f'{ev.get("held_out_retrieval_top1")}** (lift over chance {ev.get("held_out_retrieval_lift")})',
+                f'- Pooled sentence retrieval Top-1 (inflated by training subjects): '
+                f'{ev.get("sentence_retrieval_top1")}',
+            ]
+            if ev.get('held_out_retrieval_top1') is not None
+            else [f'- Cross-subject sentence retrieval Top-1: {ev.get("sentence_retrieval_top1")}']
+        ),
         f'- Subject-transfer analogy Top-1: {ev.get("subject_transfer_top1")}',
         f'- Embedding effective-rank ratio: {ev.get("effective_rank_ratio")}',
         f'- Verdict: `{json.dumps(ev.get("verdict", {}))}`',
@@ -544,17 +560,26 @@ def _catalogue(out_root: Path, run_name: str, manifest: dict[str, Any]) -> None:
     """Appends/updates a one-line entry for this run in the experiments index."""
     index = out_root / 'INDEX.md'
     ev = manifest.get('evaluation', {})
+    # Held-out retrieval is the honest LOSO headline; pooled sentence retrieval is shown but flagged as
+    # inflated (it counts the training subjects). A non-LOSO run leaves the held-out column blank.
+    held = ev.get('held_out_retrieval_top1')
     row = (
         f'| {run_name} | {manifest.get("dataset", {}).get("n_words", "-")} | '
+        f'{held if held is not None else "-"} | '
         f'{ev.get("sentence_retrieval_top1", "-")} | {ev.get("subject_transfer_top1", "-")} | '
         f'{ev.get("effective_rank_ratio", "-")} |'
     )
     header = (
         '# ZTE experiment catalogue\n\n'
-        '| run | words | sent. retrieval Top-1 | subject-transfer Top-1 | eff-rank ratio |\n'
-        '| --- | --- | --- | --- | --- |\n'
+        '| run | words | held-out retrieval Top-1 (honest) | pooled retrieval Top-1 (inflated) | '
+        'subject-transfer Top-1 | eff-rank ratio |\n'
+        '| --- | --- | --- | --- | --- | --- |\n'
     )
     existing = index.read_text(encoding='utf-8') if index.exists() else header
+    # A pre-held-out INDEX has a different column layout, so its rows cannot be reconciled with the new
+    # header; rebuild from the header in that case rather than emit a ragged table.
+    if 'held-out retrieval' not in existing:
+        existing = header
     lines = [ln for ln in existing.splitlines() if not ln.startswith(f'| {run_name} |')]
     if not lines or not lines[0].startswith('# ZTE'):
         lines = header.rstrip('\n').splitlines()

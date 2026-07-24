@@ -258,7 +258,14 @@ def evaluate_representation(
     # losing it must not discard an evaluation whose numbers are already computed.
     try:
         metrics['scoreboard'] = build_scoreboard(
-            word_emb, word_meta, comparison, sent_emb, sent_content_ids, sent_meta, config
+            word_emb,
+            word_meta,
+            comparison,
+            sent_emb,
+            sent_content_ids,
+            sent_meta,
+            config,
+            word_band_power=word_band_power,
         )
     except (ValueError, KeyError, IndexError, MemoryError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Scoreboard skipped: %r', exc)

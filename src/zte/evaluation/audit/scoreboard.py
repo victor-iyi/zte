@@ -63,7 +63,11 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
             'is_identity': t in _IDENTITY_TARGETS,
         }
 
-    # Positive control: raw features must expose lexical content above the floor.
+    # Positive control: raw features must expose lexical content above the floor. This is filled in by
+    # `build_scoreboard` from the GENUINELY raw band power -- see `raw_content_positive_control`. The
+    # value derived here from the probe-comparison's "raw band-power" row is a fallback only, and is
+    # unreliable under whitening normalisers (riemannian/zscore_subject) that strip amplitude, which is
+    # exactly the signal word_len/log_freq ride on. Do not gate "content 0%" on this fallback.
     raw_content = [
         by_target[t]['raw band-power']['linear']
         for t in ('word_len', 'log_freq')
@@ -74,8 +78,60 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
         'raw_content_r2_best': best,
         'floor': _CONTENT_PROBE_FLOOR,
         'passes': bool(np.isfinite(best) and best >= _CONTENT_PROBE_FLOOR),
+        'source': 'normalised-features (fallback)',
     }
     return lifts
+
+
+def raw_content_positive_control(
+    word_band_power: np.ndarray | None, word_meta: 'pd.DataFrame'
+) -> dict[str, Any] | None:
+    """Probes GENUINELY raw band power for lexical content -- the honest positive control.
+
+    The `lift_over_raw` "raw" baseline is the model's *normalised* input, and whitening normalisers
+    (riemannian, zscore_subject) remove the per-subject amplitude that word length and frequency ride
+    on -- so that baseline reads ~0 even though the signal is present, wrongly branding the whole
+    content probe as broken. This re-runs the control on the untouched `(n, bands, channels)` band
+    power the model was built from, so it measures what raw EEG actually exposes, independent of the
+    normalisation the run happened to use.
+
+    Args:
+        word_band_power (np.ndarray | None): Raw band power `(n, bands, channels)`, or `None` (raw-signal
+            frontends carry no band power -- the control is then not applicable).
+        word_meta (pd.DataFrame): Per-word metadata carrying `word_len` and `log_freq`.
+
+    Returns:
+        dict | None: The positive-control block (best R2, per-target R2, floor, verdict), or `None`.
+    """
+    if word_band_power is None:
+        return None
+    flat = np.asarray(word_band_power, dtype=np.float32).reshape(len(word_band_power), -1)
+    # Omitted words carry NaN band power; impute to the column mean so the probe sees every row.
+    col_mean = np.nanmean(np.where(np.isfinite(flat), flat, np.nan), axis=0)
+    col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+    flat = np.where(np.isfinite(flat), flat, col_mean)
+
+    scores: dict[str, float] = {}
+    for target in ('word_len', 'log_freq'):
+        if target not in word_meta.columns:
+            continue
+        y = np.asarray(word_meta[target].to_numpy(), dtype=np.float64)
+        keep = np.isfinite(y)
+        if keep.sum() < 32:
+            continue
+        result = M.linear_probe(flat[keep], y[keep], task='regression')
+        scores[target] = round(float(result.get('score', float('nan'))), 4)
+
+    if not scores:
+        return None
+    best = max(scores.values())
+    return {
+        'raw_content_r2_best': best,
+        'per_target_r2': scores,
+        'floor': _CONTENT_PROBE_FLOOR,
+        'passes': bool(np.isfinite(best) and best >= _CONTENT_PROBE_FLOOR),
+        'source': 'raw band-power',
+    }
 
 
 def _sub(a: float | None, b: float | None) -> float | None:
@@ -197,6 +253,7 @@ def build_scoreboard(
     sent_content_ids: np.ndarray,
     sent_meta: 'pd.DataFrame | None',
     config: Any | None,
+    word_band_power: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Assembles the honest scoreboard from already-computed evaluation artefacts."""
     holdout = holdout_subject(config)
@@ -214,6 +271,11 @@ def build_scoreboard(
         'factored': bool(model_cfg is not None and getattr(model_cfg, 'factored', False)),
         'lift_over_raw': lift_over_raw(comparison),
     }
+
+    # Replace the whitening-corrupted fallback control with the genuinely-raw one when band power exists.
+    control = raw_content_positive_control(word_band_power, word_meta)
+    if control is not None:
+        board['lift_over_raw']['content_probe'] = control
 
     # The LOSO block: geometry and cross-subject retrieval for the stranger alone.
     if holdout is not None:
