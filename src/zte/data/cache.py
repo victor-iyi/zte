@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,62 @@ EXTRACT_SUBDIR: str = '_extracts'
 
 # Set in a Colab session (or a shell profile) to give every ZTE command the same persistent store.
 REMOTE_ENV_VAR: str = 'ZTE_CACHE_REMOTE'
+
+# Single-file artifacts (frozen text/meaning matrices, GloVe, the montage) share the persistent store
+# under their own namespace, so they survive a reclaimed VM like the bundles do.
+ARTIFACT_SUBDIR: str = '_artifacts'
+
+
+def _artifact_remote(local: str | Path) -> Path | None:
+    """Returns the persistent-store path for a local artifact file, or `None` without a remote."""
+    remote = remote_from_env()
+    return Path(remote) / ARTIFACT_SUBDIR / Path(local).name if remote else None
+
+
+def fetch_artifact(local: str | Path) -> bool:
+    """Stages a single cached artifact down from the persistent store when it is missing locally.
+
+    The frozen encoder passes (contextual BERT, E5 sentence embeddings) cost minutes and their file names
+    are already content-addressed, so a name match is a content match.
+
+    Args:
+        local (str | Path): Where the artifact is expected on this machine.
+
+    Returns:
+        bool: `True` if the file is present locally afterwards.
+    """
+    local = Path(local)
+    if local.is_file():
+        return True
+
+    remote = _artifact_remote(local)
+    if remote is None or not remote.is_file():
+        return False
+
+    local.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(remote, local)
+    except OSError as exc:
+        _LOG.warning('Could not stage artifact %s: %r', remote, exc)
+        return False
+    _LOG.info('Staged %s from the persistent store.', local.name)
+    return True
+
+
+def publish_artifact(local: str | Path) -> None:
+    """Copies a freshly built artifact to the persistent store, so the next session reuses it."""
+    local = Path(local)
+    remote = _artifact_remote(local)
+    if remote is None or not local.is_file() or remote.is_file():
+        return
+
+    remote.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(local, remote)
+    except OSError as exc:
+        _LOG.warning('Could not publish artifact %s: %r', local, exc)
+        return
+    _LOG.info('Published %s to the persistent store.', local.name)
 
 
 def remote_from_env() -> str | None:
@@ -115,8 +172,13 @@ class BundleStore:
         local_dir, remote_dir = self._dirs(key, kind)
         if remote_dir is None or not (local_dir / 'meta.json').is_file():
             return
+
+        # Entries are immutable, so an existing copy is already correct -- unless it is missing a file the
+        # local one has, which is how a bundle re-derived into the memory-mapped layout gets pushed up.
         if (remote_dir / 'meta.json').is_file():
-            return  # entries are immutable, so an existing copy is already correct
+            local_files = {p.name for p in local_dir.iterdir() if p.is_file()}
+            if local_files <= {p.name for p in remote_dir.iterdir() if p.is_file()}:
+                return
         copied, failed = mirror_tree(local_dir, remote_dir, exclude_dirs=())
         if failed:
             _LOG.warning(

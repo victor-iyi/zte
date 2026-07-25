@@ -13,6 +13,7 @@ import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
 
+from zte.data.cache import fetch_artifact, publish_artifact
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.glove')
@@ -73,6 +74,10 @@ def provision_glove(
         tuple[Path, int]: The written (or reused) path and the vector dimensionality.
     """
     out = Path(out)
+
+    # Layered onto the persistent store: without it a fresh Colab runtime re-downloads GloVe every session.
+    if not overwrite:
+        fetch_artifact(out)
     if out.is_file() and not overwrite:
         dim = _glove_dim(out)
         _LOG.info('Reusing cached GloVe vectors %s (dim %d).', out, dim)
@@ -99,4 +104,5 @@ def provision_glove(
             written += 1
 
     _LOG.info('Wrote %d vectors (dim %d) to %s', written, dim, out)
+    publish_artifact(out)
     return out, dim

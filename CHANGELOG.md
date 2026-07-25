@@ -1,8 +1,32 @@
 # Changelog
 
-## Fix: a warm Drive cache no longer re-prepares on every Colab session
+## Fix: raw runs were being OOM-killed, silently
 
-`zte-prepare --configs` re-did work on every fresh runtime even when every dataset was already sitting in the persistent Drive store. Two causes, both fixed:
+Every raw-conformer run on a standard Colab runtime died between `[1/4] Preparing dataset` and `[2/4] Training`, with no error — the notebook printed `done` having trained nothing. The raw bundle is **23.6 GB when materialised** (160k words x 105 channels x 350 samples), against ~12.7 GB of RAM, so the kernel OOM reaper killed the process; `!uv run …` swallows the exit code, so the loop moved on.
+
+- **Raw EEG is now memory-mapped.** It is saved to its own uncompressed `raw_eeg.npy` beside `arrays.npz`, and `load` maps it — only the windows a batch touches become resident. A compressed `.npz` member cannot be mapped; it must be inflated in full before a single window can be read.
+- **Existing bundles upgrade themselves, without a big-RAM session.** An `.npz` member *is* an `.npy`, so `_extract_raw_member` copies the decompressed stream byte-for-byte into place: peak allocation ~138 MB regardless of array size, and no re-processing.
+- **The alignment pass no longer allocates the whole tensor.** `raw[mask][::stride]` materialised a full copy *before* subsampling (measured: 2205 MB for a 2.21 GB array — ~23.6 GB at real scale) on top of the resident array. Covariances now stream in chunks over pre-subsampled indices, and whitening writes into its own memmap: peak allocation ~590 MB (fit) and ~216 MB (transform), independent of dataset size.
+- **Whitening runs on the GPU** when one is available (`torch.matmul` on CUDA/MPS, numpy otherwise) — a large batched matmul that was idling the accelerator while straining system RAM.
+- **Failures are visible again.** The notebook's `run_zte` helper checks exit codes, names the runs that did not complete, and calls out exit 137 as an out-of-RAM kill with the fix. A new `show_resources()` prints RAM/GPU/disk up front.
+
+## Fix: notebook explorer cells read the wrong location
+
+Section 5 writes runs to `{DRIVE_DIR}/experiments`; Section 6b trains under `res/experiments` then mirrors. The scorecard, run picker, deep-dive and `zte-visualize` cells all hard-coded `res/experiments`, which is empty on a fresh runtime — so they showed nothing regardless of how many runs existed. A single `run_dirs()` helper now resolves both locations, Drive first, deduped. The scorecard also switched to the honest held-out headline (rank percentile + CI, Top-5 hit counts with an exact tail, effective rank) instead of the pooled Top-1 that crowned the wrong champion.
+
+## Fix: a warm Drive cache no longer re-prepares (or re-unzips) on every Colab session
+
+Every command re-did expensive work on a fresh runtime even when the dataset was already sitting in the persistent Drive store. The ZuCo folder on Drive holds the task **`.zip` archives** (~63 GB), so "resolving the data source" meant unpacking tens of gigabytes onto the VM — and every CLI did that *before* consulting the bundle cache.
+
+- **The raw source is now resolved lazily, everywhere.** Cache keys exclude the data root, so `zte-run`, `zte-train`, `zte-explore`, `zte-benchmark` and `zte-prepare` all key their config, ask the store, and resolve (unzip / download / synthesise) only what is genuinely missing. A warm run logs `Processed bundle already persistent; skipping raw-data extraction.` and never touches the archives. Shared helpers: `resolve_root_if_needed` / `bundle_is_cached` in `cli.support.sources`.
+- **`zte-run` set its cache location *after* resolving the root**, so the probe had nowhere to look; the two are now ordered correctly.
+- **Frozen encoder artifacts layer onto the persistent store too** (`BundleStore` gains `fetch_artifact`/`publish_artifact`, mirroring to `<remote>/_artifacts/`). The contextual BERT meaning matrix, the E5/BGE sentence embeddings and the provisioned GloVe file are content-addressed but were cached only on the ephemeral disk, so every session re-ran BERT and E5 over the whole corpus.
+
+Measured on a zip-only root with the local cache, extracted tree and run directory all wiped: **3.4 s end-to-end including training, with the archives untouched.**
+
+### `zte-prepare --configs` specifically
+
+Two further causes, both fixed:
 
 - **It rebuilt what it had just found.** The loop computed `status = 'cached' if store.find(key) ...` and then called `ZuCoDataset(cfg).build()` **unconditionally** — staging each bundle down from Drive and loading it into RAM in full, only to discard it. Cached entries are now skipped outright; staging happens lazily, in the first run that actually needs that dataset.
 - **It resolved the raw data root before checking anything.** Cache keys exclude the data root, so every config is now keyed *first* and the `.mat` tree is resolved (or downloaded, or synthesised) only for entries genuinely absent. On a warm store the command never touches the raw data at all and finishes in under a second.

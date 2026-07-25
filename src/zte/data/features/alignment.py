@@ -6,6 +6,8 @@ a person the model has never seen. See `docs/SUBJECT_ALIGNMENT.md`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 
 from zte.logging_utils import get_logger
@@ -13,7 +15,14 @@ from zte.logging_utils import get_logger
 _LOG = get_logger('data.alignment')
 
 #: Trials below this count fall back to the cohort reference; a covariance from fewer is mostly noise.
-_MIN_TRIALS = 8
+_MIN_TRIALS: int = 8
+
+#: Trials sampled per reference. A 105x105 covariance is well determined long before this, and the raw
+#: tensor is tens of GB, so estimating from everything buys nothing and costs a runtime.
+_MAX_REF_TRIALS: int = 4000
+
+#: Windows converted to float64 at once. Bounds the working set to a few hundred MB per chunk.
+_COV_CHUNK: int = 512
 
 
 def _spd_power(cov: np.ndarray, power: float, shrinkage: float, eps: float) -> np.ndarray:
@@ -29,16 +38,67 @@ def _spd_power(cov: np.ndarray, power: float, shrinkage: float, eps: float) -> n
     return (v * (w**power)) @ v.T
 
 
-def _channel_covariance(windows: np.ndarray, eps: float) -> np.ndarray:
-    """Mean per-trial channel covariance `(n_channels, n_channels)` of `(n, n_channels, time)` windows."""
-    x = np.nan_to_num(np.asarray(windows, dtype=np.float64), nan=0.0)
-    n, _, t = x.shape
+def _matmul_backend() -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+    """Returns a `(C,C) x (N,C,T) -> (N,C,T)` multiplier, on the GPU when one is available.
 
-    # Per-trial normalisation by trace stops a few high-amplitude trials from owning the subject's reference.
-    cov = np.einsum('nct,ndt->ncd', x, x) / max(t, 1)
-    trace = np.trace(cov, axis1=1, axis2=2)[:, None, None]
-    cov = cov / np.clip(trace, eps, None)
-    return cov.sum(axis=0) / max(n, 1)
+    Whitening every window is a large batched matmul -- exactly what an idle accelerator is for, and it
+    keeps the working set off the system RAM that the raw tensor is already straining.
+    """
+    try:
+        import torch
+    except ImportError:
+        return lambda w, x: np.einsum('cd,ndt->nct', w, x, optimize=True)
+
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        return lambda w, x: np.einsum('cd,ndt->nct', w, x, optimize=True)
+
+    def _gpu(w: np.ndarray, x: np.ndarray) -> np.ndarray:
+        wt = torch.from_numpy(np.ascontiguousarray(w)).to(device)
+        xt = torch.from_numpy(np.ascontiguousarray(x)).to(device)
+        return torch.matmul(wt, xt).cpu().numpy()
+
+    return _gpu
+
+
+def _sample_rows(mask: np.ndarray, limit: int = _MAX_REF_TRIALS) -> np.ndarray:
+    """Evenly-spaced row indices where `mask` is set, capped at `limit`.
+
+    Indices are subsampled BEFORE any fancy-indexing, because `raw[mask]` on a boolean would materialise a
+    copy of the whole (tens of GB) tensor first.
+    """
+    idx = np.flatnonzero(mask)
+    if len(idx) > limit:
+        idx = idx[np.linspace(0, len(idx) - 1, limit).astype(int)]
+    return idx
+
+
+def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndarray:
+    """Mean per-trial channel covariance `(n_channels, n_channels)` over the rows `idx` of `raw`.
+
+    Accumulated in chunks so the float64 working set stays bounded regardless of how many trials are
+    requested -- the raw tensor does not fit in memory twice.
+    """
+    n_ch = int(raw.shape[1])
+    acc = np.zeros((n_ch, n_ch), dtype=np.float64)
+    seen = 0
+
+    for start in range(0, len(idx), _COV_CHUNK):
+        x = np.nan_to_num(
+            np.asarray(raw[idx[start : start + _COV_CHUNK]], dtype=np.float64), nan=0.0
+        )
+        t = x.shape[2]
+
+        # Per-trial trace normalisation stops a few high-amplitude trials owning the subject's reference.
+        cov = np.einsum('nct,ndt->ncd', x, x) / max(t, 1)
+        trace = np.trace(cov, axis1=1, axis2=2)[:, None, None]
+        acc += (cov / np.clip(trace, eps, None)).sum(axis=0)
+        seen += len(x)
+
+    return acc / max(seen, 1)
 
 
 class RawSubjectAligner:
@@ -93,7 +153,7 @@ class RawSubjectAligner:
         mask = np.ones(len(raw), dtype=bool) if present is None else np.asarray(present, dtype=bool)
 
         # The cohort reference doubles as the fallback for a subject with too few usable trials.
-        pooled = _channel_covariance(raw[mask][:: max(1, int(mask.sum()) // 4000 or 1)], self.eps)
+        pooled = _channel_covariance(raw, _sample_rows(mask), self.eps)
         self._global_reference = _spd_power(pooled, -0.5, self.shrinkage, self.eps)
         self._global_signature = self._signature_from(pooled)
 
@@ -106,7 +166,7 @@ class RawSubjectAligner:
                     _MIN_TRIALS,
                 )
                 continue
-            cov = _channel_covariance(raw[rows], self.eps)
+            cov = _channel_covariance(raw, _sample_rows(rows), self.eps)
             self.references[str(code)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(
                 np.float32
             )
@@ -156,19 +216,36 @@ class RawSubjectAligner:
             return sig
         return ((sig - self._sig_mean) / self._sig_std).astype(np.float32)
 
-    def transform(self, raw: np.ndarray, subjects: np.ndarray, chunk: int = 4096) -> np.ndarray:
-        """Whitens windows in place, subject by subject, so the full tensor is never duplicated."""
+    def transform(
+        self,
+        raw: np.ndarray,
+        subjects: np.ndarray,
+        out: np.ndarray | None = None,
+        chunk: int = 1024,
+    ) -> np.ndarray:
+        """Whitens windows subject by subject, streaming through `chunk` trials at a time.
+
+        Args:
+            raw (np.ndarray): `(n_words, n_channels, time_steps)` windows; may be a read-only memmap.
+            subjects (np.ndarray): `(n_words,)` subject codes.
+            out (np.ndarray | None): Destination (typically a writable memmap); `None` writes in place.
+            chunk (int): Trials per step. Bounds the working set; the full tensor is never duplicated.
+
+        Returns:
+            np.ndarray: The destination array.
+        """
         assert self._global_reference is not None
         subjects = np.asarray(subjects)
-        out = raw if raw.dtype == np.float32 else raw.astype(np.float32)
+        dest = raw if out is None else out
+        mm = _matmul_backend()
 
         for code in np.unique(subjects):
             w = self.references.get(str(code), self._global_reference.astype(np.float32))
             rows = np.flatnonzero(subjects == code)
             for start in range(0, len(rows), chunk):
                 idx = rows[start : start + chunk]
-                out[idx] = np.einsum('cd,ndt->nct', w, out[idx], optimize=True)
-        return out
+                dest[idx] = mm(w, np.asarray(raw[idx], dtype=np.float32))
+        return dest
 
     def calibrate_subject(self, baseline_raw: np.ndarray, subject: str) -> RawSubjectAligner:
         """Registers a brand-new brain from an unlabelled baseline recording -- the zero-shot path.
@@ -184,7 +261,9 @@ class RawSubjectAligner:
                 len(baseline_raw),
             )
             return self
-        cov = _channel_covariance(baseline_raw, self.eps)
+        cov = _channel_covariance(
+            baseline_raw, _sample_rows(np.ones(len(baseline_raw), dtype=bool)), self.eps
+        )
         self.references[str(subject)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(
             np.float32
         )

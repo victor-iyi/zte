@@ -10,7 +10,7 @@ from typing import Any
 
 from zte.cli.support.io import read_json, write_json
 from zte.cli.support.provision import add_provision_args, provision_from_args
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_root_if_needed
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.logging_utils import configure_logging, get_logger
@@ -137,20 +137,9 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> Path:
-    """Resolves the data source to a local directory of `.mat` files."""
-    if args.synthetic:
-        from zte.data.synthetic import generate_synthetic_zuco
-
-        root = Path('res/data/synthetic_zuco')
-        generate_synthetic_zuco(root, tasks=config.dataset.tasks)
-        return root
-    return resolve_data_root(
-        args,
-        default=config.dataset.root,
-        tasks=config.dataset.tasks,
-        subjects=config.dataset.subjects,
-    )
+def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
+    """Resolves the data source, skipping extraction entirely when the bundle is already cached."""
+    return resolve_root_if_needed(args, config.dataset)
 
 
 def main() -> None:
@@ -210,11 +199,14 @@ def _run(args: argparse.Namespace) -> None:
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
     # Every output goes under the run directory; only `--data-cache` moves the bundle to a shared store.
-    # `str`, not `Path`: `DatasetConfig.root` is typed `str` and a Path is not YAML-serialisable.
-    config.dataset.root = str(_resolve_root(args, config))
+    # The cache location must be settled BEFORE the root is resolved: `_resolve_root` asks the store
+    # whether the bundle already exists, and skips the (multi-GB, multi-minute) extraction if it does.
     config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     if args.data_cache_remote:
         config.dataset.cache_remote = args.data_cache_remote
+
+    # `str`, not `Path`: `DatasetConfig.root` is typed `str` and a Path is not YAML-serialisable.
+    config.dataset.root = _resolve_root(args, config)
     config.train.ckpt_dir = str(run_dir / 'checkpoints')
     config.train.tensorboard = not args.no_tensorboard
     if args.drive_backup:

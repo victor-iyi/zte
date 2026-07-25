@@ -6,7 +6,13 @@ import argparse
 import json
 from pathlib import Path
 
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import (
+    PENDING_ROOT,
+    add_data_source_args,
+    add_extract_dir,
+    resolve_data_root,
+    resolve_root_if_needed,
+)
 from zte.config import DatasetConfig, MissingConfig
 from zte.data.cache import REMOTE_ENV_VAR
 from zte.data.dataset import ZuCoDataset
@@ -14,10 +20,6 @@ from zte.data.synthetic import generate_synthetic_zuco
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.prepare')
-
-# Stands in for the data root while cache keys are computed, so a fully-prepared project never resolves
-# (or downloads) the raw ZuCo tree. Must not contain 'synthetic' -- that word is what the key keys on.
-_PENDING_ROOT: str = '<unresolved>'
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -129,7 +131,7 @@ def _prepare_configs(args: argparse.Namespace) -> None:
 
     # `root` is excluded from the cache key, so every config can be keyed BEFORE the raw data is
     # resolved. Only the synthetic/real distinction reaches the key, and the placeholder preserves it.
-    placeholder = args.synthetic_out if args.synthetic else _PENDING_ROOT
+    placeholder = args.synthetic_out if args.synthetic else PENDING_ROOT
 
     # One entry per distinct dataset; the configs that share it are recorded for the summary.
     wanted: dict[str, tuple[DatasetConfig, list[str]]] = {}
@@ -210,22 +212,9 @@ def main() -> None:
         _prepare_configs(args)
         return
 
-    # Resolve the data source, fabricating a synthetic tree when asked.
-    root = resolve_data_root(args) if not args.synthetic else None
-    if args.synthetic:
-        subjects = tuple(args.synthetic_subjects.split(','))
-        tasks = tuple(args.tasks.split(','))
-        generate_synthetic_zuco(
-            args.synthetic_out,
-            subjects=subjects,
-            tasks=tasks,
-            n_sentences=args.synthetic_sentences,
-        )
-        root = args.synthetic_out
-
     # Build the dataset, then save the bundle and optional overview figures.
     config = DatasetConfig(
-        root=root,
+        root=PENDING_ROOT,
         tasks=tuple(args.tasks.split(',')),
         subjects=tuple(args.subjects.split(',')) if args.subjects else None,
         representation=args.representation,
@@ -236,6 +225,9 @@ def main() -> None:
         cache_extracts=not args.no_extract_cache,
         missing=MissingConfig(method=args.missing_method),
     )
+
+    # Keyed first, resolved second: a cached bundle skips unzipping the archives entirely.
+    config.root = resolve_root_if_needed(args, config)
     dataset = ZuCoDataset(config).build()
     _LOG.info('Built dataset: %r', dataset)
     print(json.dumps(dataset.analyze(), indent=2, default=str))

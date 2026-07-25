@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from zte.cli.support.datasets import synthetic_root
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import (
+    PENDING_ROOT,
+    add_data_source_args,
+    add_extract_dir,
+    resolve_root_if_needed,
+)
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.logging_utils import configure_logging, get_logger
@@ -103,17 +107,16 @@ def load_dataset(args: argparse.Namespace, config: ZTEConfig) -> ZuCoDataset:
                 args.bundle,
             )
         return ZuCoDataset.load(args.bundle)
-    if args.synthetic:
-        root = synthetic_root(out=args.synthetic_out)
-    else:
-        root = resolve_data_root(args)
     ds_config = DatasetConfig(
-        root=root,
+        root=PENDING_ROOT,
         representation=config.dataset.representation,
         missing=MissingConfig(method=config.dataset.missing.method),
         normalize=config.dataset.normalize,
         raw_window=config.dataset.raw_window,
     )
+
+    # Keyed first, resolved second: a cached bundle skips unzipping the archives entirely.
+    ds_config.root = resolve_root_if_needed(args, ds_config)
     return ZuCoDataset(ds_config).build()
 
 

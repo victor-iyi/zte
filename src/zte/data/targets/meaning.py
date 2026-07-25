@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from zte.data.cache import fetch_artifact, publish_artifact
 from zte.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -170,7 +171,9 @@ def build_meaning_matrix_hf(
         _LOG.warning('words table has no `word` column; cannot build a contextual target.')
         return None, 0
 
+    # Layered like the dataset bundles: a Colab runtime wipes the local copy, the persistent store keeps it.
     cache = _hf_cache_path(model_name, layer, skey, widx, warr, cache_dir)
+    fetch_artifact(cache)
     if cache.is_file():
         mat = np.load(cache).astype(np.float32)
         if len(mat) == n:
@@ -260,6 +263,7 @@ def build_meaning_matrix_hf(
     out = out.astype(np.float32)
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache, out)
+    publish_artifact(cache)
     _LOG.info(
         'Contextual meaning target: %s layer %d over %d unique sentences -> %d/%d word rows covered '
         '(dim %d) -> cached %s.',

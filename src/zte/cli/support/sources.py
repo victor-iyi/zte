@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+from zte.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    from zte.config import DatasetConfig
+
+_LOG = get_logger('cli.sources')
 
 DEFAULT_EXTRACT_DIR: Final[Path] = Path('res/data/zuco_extracted')
 DEFAULT_DOWNLOAD_DIR: Final[Path] = Path('res/data/_downloads')
+
+# Stands in for the data root while a cache key is computed. Cache keys exclude the root, so this lets a
+# command ask "is the bundle already built?" before paying to resolve the raw source. Must not contain
+# 'synthetic' -- that substring is the one part of the root the key does look at.
+PENDING_ROOT: Final[str] = '<unresolved>'
+SYNTHETIC_ROOT: Final[str] = 'res/data/synthetic_zuco'
 
 _ROOT_HELP: Final[str] = (
     'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
@@ -96,4 +110,88 @@ def resolve_data_root(
         tasks=tasks,  # type: ignore[arg-type]
         subjects=subjects,  # type: ignore[arg-type]
         overwrite=bool(getattr(args, 'overwrite', False)),
+    )
+
+
+def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | None:
+    """Reports which cache layer already holds this dataset's processed bundle, without copying it.
+
+    Args:
+        dataset (DatasetConfig): The dataset config, with `cache_dir`/`cache_remote` already set.
+        synthetic (bool): Key against the synthetic tree rather than real ZuCo.
+
+    Returns:
+        str | None: `'local'`, `'persistent'`, or `None` when the bundle still has to be built.
+    """
+    from zte.data.cache import BundleStore
+    from zte.data.dataset import RAW_ARRAY_FILE, ZuCoDataset
+
+    probe = dataclasses.replace(dataset, root=SYNTHETIC_ROOT if synthetic else PENDING_ROOT)
+    key = ZuCoDataset(probe)._cache_key()  # noqa: SLF001
+    store = BundleStore.create(dataset.cache_dir, dataset.cache_remote)
+    where = store.has(key)
+
+    # A pre-mmap bundle keeps raw EEG inside the compressed npz, which must be inflated whole (~24 GB)
+    # before a single window can be read. The key cannot see the layout, so report it as needing a
+    # rebuild -- it re-derives from the cached .mat extraction in minutes and is then mappable forever.
+    if where is not None and dataset.representation in {'raw', 'both'}:
+        located = (store.remote if where == 'persistent' else store.local) / key
+        if not (located / RAW_ARRAY_FILE).is_file():
+            _LOG.warning(
+                'Bundle %s predates the memory-mapped layout; rebuilding it once so raw EEG need not '
+                'be held in RAM.',
+                key,
+            )
+            return None
+    return where
+
+
+def resolve_root_if_needed(
+    args: argparse.Namespace,
+    dataset: DatasetConfig,
+    *,
+    tasks: object = None,
+    subjects: object = None,
+) -> str:
+    """Resolves the raw data source, but only when the processed bundle is not already cached.
+
+    Resolving means unzipping the ZuCo archives -- tens of gigabytes and several minutes, redone from
+    scratch on every fresh Colab runtime. A run whose bundle is cached never reads a single `.mat`, so
+    the source is left unresolved and the configured spec is recorded as-is.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments (`--root` / `--drive` / `--synthetic`).
+        dataset (DatasetConfig): The dataset config, with `cache_dir`/`cache_remote` already set.
+        tasks (object): Tasks to extract; falls back to the config's own.
+        subjects (object): Subjects to extract; falls back to the config's own.
+
+    Returns:
+        str: A local `.mat` directory, or the unresolved spec when the bundle is already cached.
+    """
+    synthetic = bool(getattr(args, 'synthetic', False))
+    synth_out = str(getattr(args, 'synthetic_out', None) or SYNTHETIC_ROOT)
+
+    where = bundle_is_cached(dataset, synthetic=synthetic)
+    if where is not None:
+        spec = (
+            synth_out
+            if synthetic
+            else str(getattr(args, 'drive', None) or getattr(args, 'root', None) or dataset.root)
+        )
+        _LOG.info('Processed bundle already %s; skipping raw-data extraction.', where)
+        return spec
+
+    if synthetic:
+        from zte.data.synthetic import generate_synthetic_zuco
+
+        generate_synthetic_zuco(synth_out, tasks=tuple(dataset.tasks))
+        return synth_out
+
+    return str(
+        resolve_data_root(
+            args,
+            default=dataset.root,
+            tasks=tasks if tasks is not None else dataset.tasks,
+            subjects=subjects if subjects is not None else dataset.subjects,
+        )
     )

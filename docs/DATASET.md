@@ -272,7 +272,9 @@ uv run zte-prepare --root "<ZuCo>" --configs --check         # report what exist
 | `on-drive` | in the persistent store; pulled down on demand by the first run that needs it |
 | `MISSING` | about to be built (or, under `--check`, still outstanding) |
 
-**A prepared project never touches the raw data.** Cache keys exclude the data root, so `zte-prepare` keys every config and queries the store *before* resolving (or downloading) the `.mat` tree, and only resolves it for what is genuinely absent. On a warm store the whole command is a metadata check that finishes in well under a second.
+**A prepared project never touches the raw data.** Cache keys exclude the data root, so every command keys its config and queries the store *before* resolving the `.mat` tree, and only resolves it for what is genuinely absent. This matters because "resolving" a Drive folder of ZuCo task archives means unpacking tens of gigabytes: on a warm store `zte-run`, `zte-train`, `zte-explore`, `zte-benchmark` and `zte-prepare` all skip it entirely and log `Processed bundle already persistent; skipping raw-data extraction.`
+
+**Single-file artifacts layer too.** The frozen encoder passes — the contextual BERT meaning matrix (`res/cache/meaning/`) and the E5/BGE sentence embeddings (`res/cache/text/`) — are content-addressed and mirrored to `<remote>/_artifacts/`, so they are built once ever rather than once per runtime.
 
 That is what makes it safe to run at the top of every Colab session: the local cache dies with the runtime, but Drive does not, and re-running costs nothing. Do not gate it behind a local "already done" sentinel — a sentinel on the ephemeral disk never survives to fire, and one that does survive goes stale the moment a new experiment config needs a dataset it has not seen.
 

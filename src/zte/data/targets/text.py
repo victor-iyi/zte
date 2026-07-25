@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from zte.data.cache import fetch_artifact, publish_artifact
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.text')
@@ -135,9 +136,11 @@ def build_sentence_text_matrix(
     if not source or source == 'hash':
         return None, 0
 
-    # Reuse the cached matrix whenever it still matches the corpus length.
+    # Reuse the cached matrix whenever it still matches the corpus length. Layered like the dataset
+    # bundles: a Colab runtime wipes the local copy, the persistent store keeps it.
     resolved = _resolve_backend(source, backend)
     cache = _cache_path(texts, source, resolved, prefix, cache_dir)
+    fetch_artifact(cache)
     if cache.is_file():
         mat = np.load(cache).astype(np.float32)
         if len(mat) == len(texts):
@@ -177,6 +180,7 @@ def build_sentence_text_matrix(
 
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache, raw)
+    publish_artifact(cache)
     _LOG.info(
         'Built text embeddings for %d sentences with %s (%s backend, dim %d) -> cached %s.',
         len(texts),

@@ -11,7 +11,7 @@ import torch
 from scipy.io import loadmat
 
 from zte.config import MissingConfig
-from zte.data.dataset import ZuCoDataset
+from zte.data.dataset import RAW_ARRAY_FILE, ZuCoDataset
 from zte.data.features.missing import MissingValueImputer
 from zte.data.features.transforms import band_power_from_raw
 from zte.data.io.mat_loader import _raw_window
@@ -118,23 +118,62 @@ def test_raw_windows_are_sanitised_at_source(small_dataset: ZuCoDataset, tmp_pat
     raw = next(iter(loader))['raw']
     assert torch.isfinite(raw).all(), 'raw batch must be finite (no NaN/inf reaches the model)'
 
-    # A bundle written before sanitisation existed carries NaN/unscaled windows on disk; loading it
-    # must clean them in place of an expensive rebuild.
+    # New bundles keep raw EEG in its own uncompressed .npy so `load` can memory-map it: a ~24 GB tensor
+    # must never become resident just to read one window.
     bundle = ds.save(tmp_path / 'bundle')
+    assert (bundle / RAW_ARRAY_FILE).is_file(), 'raw EEG must be saved outside the compressed npz'
     with np.load(bundle / 'arrays.npz') as handle:
-        arrays = dict(handle)
+        assert 'raw_eeg' not in handle, 'raw EEG must not be duplicated inside the npz'
+
+    mapped = ZuCoDataset.load(bundle)
+    assert isinstance(mapped.raw_eeg, np.memmap), 'load must memory-map raw EEG'
+    assert np.isfinite(mapped.raw_eeg).all()
+
+    # A pre-mmap bundle carries NaN/unscaled windows inside the npz; loading it must still clean them
+    # in place of an expensive rebuild.
+    legacy = tmp_path / 'legacy'
+    legacy.mkdir()
+    for name in ('meta.json', 'words.pkl', 'sentences.pkl'):
+        (legacy / name).write_bytes((bundle / name).read_bytes())
     rng = np.random.default_rng(0)
-    stale = arrays['raw_eeg'].astype(np.float32) * 5e4  # unscaled microvolts
+    stale = np.asarray(ds.raw_eeg, dtype=np.float32) * 5e4  # unscaled microvolts
     stale[rng.random(stale.shape) < 0.1] = np.nan  # scattered rejected samples
     stale[0] = np.nan  # a fully-rejected word
-    arrays['raw_eeg'] = stale
-    np.savez_compressed(bundle / 'arrays.npz', **arrays)
+    with np.load(bundle / 'arrays.npz') as handle:
+        arrays = dict(handle)
+    np.savez_compressed(legacy / 'arrays.npz', raw_eeg=stale, **arrays)
 
-    reloaded = ZuCoDataset.load(bundle)
+    reloaded = ZuCoDataset.load(legacy)
     assert reloaded.raw_eeg is not None
     assert np.isfinite(reloaded.raw_eeg).all(), 'load must sanitise pre-fix bundles'
     assert abs(float(reloaded.raw_eeg.mean())) < 0.5, 'raw must be per-epoch z-scored'
     assert float(reloaded.raw_eeg.std()) < 5.0, 'raw must be per-epoch z-scored'
+
+
+def test_legacy_bundle_upgrades_by_streaming_not_loading(tmp_path: Path) -> None:
+    """A pre-mmap bundle gains its `.npy` without ever materialising the array.
+
+    Regression: raw bundles are ~24 GB inflated, so on a standard Colab runtime every raw run was killed
+    by the OOM reaper while loading -- silently, since the notebook loops ignored exit codes. An `.npz`
+    member is itself an `.npy`, so the upgrade is a byte copy of the decompressed stream.
+    """
+    from zte.data.dataset import _extract_raw_member
+
+    rng = np.random.default_rng(0)
+    raw = rng.standard_normal((64, 8, 32), dtype=np.float32)
+    np.savez_compressed(tmp_path / 'arrays.npz', raw_eeg=raw, presence=np.ones(64, bool))
+
+    assert _extract_raw_member(tmp_path) is True
+    mapped = np.load(tmp_path / RAW_ARRAY_FILE, mmap_mode='r')
+    assert isinstance(mapped, np.memmap)
+    assert np.array_equal(np.asarray(mapped), raw), 'the streamed copy must be byte-identical'
+
+    # A bundle with no raw member (band power only) is left alone rather than half-upgraded.
+    other = tmp_path / 'bp'
+    other.mkdir()
+    np.savez_compressed(other / 'arrays.npz', features=np.zeros((4, 4), np.float32))
+    assert _extract_raw_member(other) is False
+    assert not (other / RAW_ARRAY_FILE).exists()
 
 
 def test_band_power_from_raw_localises_frequency_and_is_probe_sized() -> None:

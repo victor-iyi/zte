@@ -14,9 +14,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from zte.cli.support.datasets import synthetic_root
 from zte.cli.support.render import dataframe_to_markdown
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, resolve_data_root
+from zte.cli.support.sources import (
+    PENDING_ROOT,
+    add_data_source_args,
+    add_extract_dir,
+    resolve_root_if_needed,
+)
 from zte.config import DatasetConfig, MissingConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.evaluation import metrics as M
@@ -112,27 +116,26 @@ def _dataset_for(
     With `--base-config` the base recipe's dataset settings are kept (representation, normalisation,
     window, montage), so a raw-conformer flagship is benchmarked on raw EEG rather than band power.
     """
-    if args.synthetic:
-        root = synthetic_root(tuple(args.tasks.split(',')))
-    else:
-        root = resolve_data_root(args)
     if base is not None:
         cfg = replace(
             base.dataset,
-            root=root,
+            root=PENDING_ROOT,
             tasks=tuple(args.tasks.split(',')),
             subjects=tuple(args.subjects.split(',')) if args.subjects else base.dataset.subjects,
             include_eye_tracking=include_et,
         )
     else:
         cfg = DatasetConfig(
-            root=root,
+            root=PENDING_ROOT,
             tasks=tuple(args.tasks.split(',')),
             subjects=tuple(args.subjects.split(',')) if args.subjects else None,
             representation='band_power',
             include_eye_tracking=include_et,
             missing=MissingConfig(method='mask_only'),
         )
+
+    # Keyed first, resolved second: a cached bundle skips unzipping the archives entirely.
+    cfg.root = resolve_root_if_needed(args, cfg)
     return ZuCoDataset(cfg).build()
 
 

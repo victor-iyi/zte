@@ -58,11 +58,12 @@ def test_prepare_skips_everything_when_the_persistent_store_is_warm(
     sentinel that used to gate it, live on a disk Colab throws away.
     """
     from zte.cli import prepare as prepare_cli
+    from zte.cli.support.sources import PENDING_ROOT
     from zte.config import ZTEConfig
 
     config = 'experiments/flagship/zte_raw_aligned.yaml'
     cfg = ZTEConfig.from_yaml(config).dataset
-    cfg.root, cfg.cache_dir, cfg.cache_remote = prepare_cli._PENDING_ROOT, tmp_path / 'local', None
+    cfg.root, cfg.cache_dir, cfg.cache_remote = PENDING_ROOT, tmp_path / 'local', None
     _entry(tmp_path / 'drive' / ZuCoDataset(cfg)._cache_key())
 
     # Resolving the raw root is the expensive step; a warm store must never reach it.
@@ -91,16 +92,48 @@ def test_prepare_check_never_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     )
 
 
+def test_artifacts_survive_a_wiped_local_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that frozen encoder matrices layer onto the persistent store like bundles do.
+
+    The BERT meaning matrix and the E5 sentence embeddings cost minutes to build; cached only on the
+    Colab VM's disk they were rebuilt every session.
+    """
+    from zte.data.cache import fetch_artifact, publish_artifact
+
+    monkeypatch.setenv(REMOTE_ENV_VAR, str(tmp_path / 'drive'))
+    local = tmp_path / 'local' / 'text_deadbeef.npy'
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'matrix')
+
+    publish_artifact(local)
+    assert (tmp_path / 'drive' / '_artifacts' / 'text_deadbeef.npy').is_file()
+
+    local.unlink()  # the runtime reset
+    assert fetch_artifact(local) is True
+    assert local.read_bytes() == b'matrix'
+
+
+def test_artifacts_are_a_no_op_without_a_persistent_store(tmp_path: Path) -> None:
+    """Test that artifact layering stays inert when no remote is configured."""
+    from zte.data.cache import fetch_artifact, publish_artifact
+
+    missing = tmp_path / 'text_x.npy'
+    publish_artifact(missing)  # must not raise
+    assert fetch_artifact(missing) is False
+
+
 def test_prepare_keys_are_independent_of_the_data_root(tmp_path: Path) -> None:
     """Test the assumption the deferred resolution rests on: `root` never reaches the cache key.
 
     If it did, keying with a placeholder would miss every bundle and re-prepare the whole project.
     """
-    from zte.cli.prepare import _PENDING_ROOT
+    from zte.cli.support.sources import PENDING_ROOT
     from zte.config import ZTEConfig
 
     keys = set()
-    for root in ('/local/zuco', '/gdrive/My Drive/ZuCo', _PENDING_ROOT, None):
+    for root in ('/local/zuco', '/gdrive/My Drive/ZuCo', PENDING_ROOT, None):
         cfg = ZTEConfig.from_yaml('experiments/flagship/zte_raw_aligned.yaml').dataset
         cfg.root, cfg.cache_dir = root, tmp_path
         keys.add(ZuCoDataset(cfg)._cache_key())

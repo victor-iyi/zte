@@ -30,6 +30,9 @@ from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.dataset')
 
+#: Raw EEG lives beside `arrays.npz`, uncompressed, so a bundle can be memory-mapped instead of inflated.
+RAW_ARRAY_FILE: str = 'raw_eeg.npy'
+
 
 # The only settings the `.mat` extraction depends on: `discover_files` selects by task/subject, and
 # `_load_mat` passes the rest to `mat_loader.extract_file`. Everything else is post-processing, which is
@@ -51,6 +54,43 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, tuple | list):
         return [_jsonable(v) for v in value]
     return value
+
+
+def _extract_raw_member(bundle: Path) -> bool:
+    """Upgrades a pre-mmap bundle in place by streaming `raw_eeg` out of `arrays.npz` into its own file.
+
+    A member of an `.npz` *is* a `.npy`, so copying the decompressed stream byte-for-byte yields a valid,
+    mappable file without ever holding the ~24 GB array. Cheaper than re-deriving the bundle, and it works
+    on a runtime far too small to load the old layout at all.
+    """
+    import shutil
+    import zipfile
+
+    archive = bundle / 'arrays.npz'
+    if not archive.is_file():
+        return False
+
+    target = bundle / RAW_ARRAY_FILE
+    partial = target.with_suffix('.npy.partial')
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            name = next((n for n in zf.namelist() if n in {'raw_eeg.npy', 'raw_eeg'}), None)
+            if name is None:
+                return False
+            _LOG.info(
+                'Upgrading %s to the memory-mapped layout (streaming, no full load) ...',
+                bundle.name,
+            )
+            with zf.open(name) as source, partial.open('wb') as sink:
+                shutil.copyfileobj(source, sink, length=32 << 20)
+        partial.replace(target)
+    except (OSError, zipfile.BadZipFile) as exc:
+        partial.unlink(missing_ok=True)
+        _LOG.warning(
+            'Could not upgrade %s (%r); falling back to the in-memory path.', bundle.name, exc
+        )
+        return False
+    return True
 
 
 def _word_freq_proxy(word: str) -> float:
@@ -292,13 +332,33 @@ class ZuCoDataset:
         self.aligner = RawSubjectAligner().fit(
             self.raw_eeg, subjects, present=fit_mask, region_index=self._region_index()
         )
-        self.raw_eeg = self.aligner.transform(self.raw_eeg, subjects)
+
+        # Stream the whitened windows into their own memmap: the source may be a read-only mapping, and
+        # materialising a second ~24 GB tensor is what was killing the runtime.
+        target = self._aligned_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        dest = np.lib.format.open_memmap(
+            target, mode='w+', dtype=np.float32, shape=self.raw_eeg.shape
+        )
+        self.aligner.transform(self.raw_eeg, subjects, out=dest)
+        dest.flush()
+        del dest
+
+        self.raw_eeg = np.load(target, mmap_mode='r')
         self._aligned = True
         _LOG.info(
             'Euclidean-aligned raw windows for %d subjects (fit=%s, signature dim %d).',
             len(self.aligner.references),
             self.config.raw_align_fit,
             self.aligner.signature_dim,
+        )
+
+    def _aligned_path(self) -> Path:
+        """Scratch memmap for the whitened windows, kept out of the shared bundle (which stays unaligned)."""
+        return (
+            Path(self.config.cache_dir)
+            / '_aligned'
+            / f'{self._cache_key()}_{self.config.raw_align_fit}.npy'
         )
 
     def _region_index(self) -> np.ndarray | None:
@@ -833,9 +893,13 @@ class ZuCoDataset:
             arrays['features'] = self.features
         if self.presence is not None:
             arrays['presence'] = self.presence
-        if self.raw_eeg is not None:
-            arrays['raw_eeg'] = self.raw_eeg
         np.savez_compressed(out / 'arrays.npz', **arrays)
+
+        # Raw windows go to their own UNCOMPRESSED .npy so `load` can memory-map them. At 105 channels x
+        # 350 samples the tensor is ~24 GB -- more than a standard Colab runtime has -- and a compressed
+        # member inside an .npz must be inflated into RAM in full before anything can read one window.
+        if self.raw_eeg is not None:
+            np.save(out / RAW_ARRAY_FILE, self.raw_eeg)
         self.words.to_pickle(out / 'words.pkl')
         self.sentences.to_pickle(out / 'sentences.pkl')
         meta = {
@@ -871,10 +935,29 @@ class ZuCoDataset:
             ds.band_power_raw = arrays['band_power_raw'] if 'band_power_raw' in arrays else None
             ds.features = arrays['features'] if 'features' in arrays else None
             ds.presence = arrays['presence'] if 'presence' in arrays else None
-            ds.raw_eeg = arrays['raw_eeg'] if 'raw_eeg' in arrays else None
-        if ds.raw_eeg is not None:
-            # Idempotent, so cleaning here spares an expensive rebuild for bundles holding NaN/unscaled windows.
-            ds.raw_eeg = sanitize_raw_windows(ds.raw_eeg)
+            has_legacy_raw = 'raw_eeg' in arrays
+
+        # Memory-mapped: only the windows a batch actually touches become resident, so a ~24 GB tensor
+        # costs page cache rather than RAM. Attempted BEFORE reading the npz member, since reading it is
+        # exactly the multi-GB allocation being avoided.
+        raw_file = src / RAW_ARRAY_FILE
+        if not raw_file.is_file() and has_legacy_raw:
+            _extract_raw_member(src)
+
+        if raw_file.is_file():
+            ds.raw_eeg = np.load(raw_file, mmap_mode='r')
+
+            # Bundles predating source sanitisation may hold NaN/unscaled windows; a sampled check is
+            # cheap, and only a bad one pays for the in-memory repair.
+            probe = ds.raw_eeg[:: max(1, len(ds.raw_eeg) // 256)]
+            if not np.isfinite(probe).all():
+                _LOG.warning('Bundle %s holds unsanitised windows; repairing in memory.', src.name)
+                ds.raw_eeg = sanitize_raw_windows(
+                    np.array(ds.raw_eeg)
+                )  # writable copy; repairs in place
+        elif has_legacy_raw:
+            with np.load(src / 'arrays.npz') as arrays:
+                ds.raw_eeg = sanitize_raw_windows(arrays['raw_eeg'])
         ds.feature_names = meta['feature_names']
         ds.bp_feature_names = meta['bp_feature_names']
         if meta.get('normalizer'):
