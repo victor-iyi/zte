@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from zte.logging_utils import get_logger
 
@@ -437,6 +438,7 @@ class SpatialChannelMixer(nn.Module):
         dropout: float = 0.0,
         learnable: bool = True,
         mix: bool = True,
+        grad_checkpoint: bool = False,
     ) -> None:
         """Builds the mixer.
 
@@ -448,10 +450,12 @@ class SpatialChannelMixer(nn.Module):
             dropout (float): Attention dropout.
             learnable (bool): Whether the encoding's per-degree gains/projection are trainable.
             mix (bool): If `True`, add cross-electrode self-attention; if `False`, only add the positional encoding.
+            grad_checkpoint (bool): Recompute the attention in the backward pass instead of storing it.
         """
         super().__init__()
         self.feat_dim = int(feat_dim)
         self.mix = bool(mix)
+        self.grad_checkpoint = bool(grad_checkpoint)
         self.approximate_geometry = bool(geometry.approximate)
         self.pos = SphericalHarmonicEncoding(geometry, l_max, feat_dim, learnable=learnable)
         if self.mix:
@@ -473,10 +477,20 @@ class SpatialChannelMixer(nn.Module):
         flat = x.reshape(-1, c, d)
         flat = flat + self.pos().to(flat.dtype)[None]
         if self.mix:
-            h = self.norm(flat)
-            attended, _ = self.attn(h, h, h, need_weights=False)
-            flat = flat + attended
+            # Every (sentence, word) token becomes its own attention problem, so the q/k/v activations
+            # scale with batch x sentence length -- gigabytes before the first backward on a raw window.
+            # Recomputing them in the backward pass is numerically identical and frees most of that.
+            if self.grad_checkpoint and self.training and flat.requires_grad:
+                flat = flat + checkpoint(self._mix, flat, use_reentrant=False)
+            else:
+                flat = flat + self._mix(flat)
         return flat.reshape(*lead, c, d)
+
+    def _mix(self, flat: torch.Tensor) -> torch.Tensor:
+        """Cross-electrode self-attention over the channel axis of `(n_tokens, n_channels, feat_dim)`."""
+        h = self.norm(flat)
+        attended, _ = self.attn(h, h, h, need_weights=False)
+        return attended
 
 
 class SpatialAttention(nn.Module):

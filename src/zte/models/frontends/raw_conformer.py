@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from zte.config import ModelConfig
 
@@ -33,6 +34,7 @@ class RawConformer(nn.Module):
         """
         super().__init__()
         self.spatial_mixer = spatial
+        self.grad_checkpoint = bool(config.grad_checkpoint)
         filters = config.conformer_filters
         kernels = tuple(config.conformer_multiscale_kernels) or (config.conformer_temporal_kernel,)
 
@@ -89,7 +91,13 @@ class RawConformer(nn.Module):
         h = self.act(self.spatial(h))
         h = h.transpose(1, 2)  # (n_tokens, time_steps, filters)
         h = self.norm(h)
-        h = self.transformer(h)  # (n_tokens, time_steps, filters)
+
+        # Self-attention over 350 time steps, repeated for every word of every sentence in the batch.
+        # Recomputing it in the backward pass is exact and is what makes a raw batch fit on a 16 GB GPU.
+        if self.grad_checkpoint and self.training and h.requires_grad:
+            h = checkpoint(self.transformer, h, use_reentrant=False)
+        else:
+            h = self.transformer(h)  # (n_tokens, time_steps, filters)
         if self.attn_pool is not None:
             # Softmax in float32 so the attention weights stay stable under fp16/bf16 autocast.
             weights = torch.softmax(self.attn_pool(h).float(), dim=1).to(

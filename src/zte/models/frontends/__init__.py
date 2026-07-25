@@ -71,6 +71,7 @@ def build_spatial_mixer(
         dropout=config.dropout,
         learnable=config.spatial_encoding_learnable,
         mix=config.spatial_mix,
+        grad_checkpoint=config.grad_checkpoint,
     )
 
 

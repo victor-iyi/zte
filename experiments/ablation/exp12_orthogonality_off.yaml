@@ -76,6 +76,7 @@ model:
   subject_adapter_spatial: true
   n_subjects: 12
   n_tasks: 3
+  grad_checkpoint: true
   projection_hidden: 512
   factored: true
   content_dim: 384

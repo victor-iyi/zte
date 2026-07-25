@@ -98,6 +98,12 @@ class ModelConfig:
     n_tasks: int = 3
     """Vocabulary size for task conditioning."""
 
+    grad_checkpoint: bool = False
+    """Recompute the spatial and temporal attention in the backward pass instead of storing their
+    activations. Numerically identical -- same gradients, ~30% slower -- so it never changes a result,
+    only whether it fits. A raw batch turns every (sentence, word) pair into its own 105x350 attention
+    problem, which is tens of GB of activations on a full batch; this is what makes it fit a 16 GB GPU."""
+
     projection_hidden: int = 512
     """Width of the projection head's hidden layer."""
 
