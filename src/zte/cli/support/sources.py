@@ -124,26 +124,11 @@ def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | N
         str | None: `'local'`, `'persistent'`, or `None` when the bundle still has to be built.
     """
     from zte.data.cache import BundleStore
-    from zte.data.dataset import RAW_ARRAY_FILE, ZuCoDataset
+    from zte.data.dataset import ZuCoDataset
 
     probe = dataclasses.replace(dataset, root=SYNTHETIC_ROOT if synthetic else PENDING_ROOT)
     key = ZuCoDataset(probe)._cache_key()  # noqa: SLF001
-    store = BundleStore.create(dataset.cache_dir, dataset.cache_remote)
-    where = store.has(key)
-
-    # A pre-mmap bundle keeps raw EEG inside the compressed npz, which must be inflated whole (~24 GB)
-    # before a single window can be read. The key cannot see the layout, so report it as needing a
-    # rebuild -- it re-derives from the cached .mat extraction in minutes and is then mappable forever.
-    if where is not None and dataset.representation in {'raw', 'both'}:
-        located = (store.remote if where == 'persistent' else store.local) / key
-        if not (located / RAW_ARRAY_FILE).is_file():
-            _LOG.warning(
-                'Bundle %s predates the memory-mapped layout; rebuilding it once so raw EEG need not '
-                'be held in RAM.',
-                key,
-            )
-            return None
-    return where
+    return BundleStore.create(dataset.cache_dir, dataset.cache_remote).has(key)
 
 
 def resolve_root_if_needed(

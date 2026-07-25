@@ -7,10 +7,11 @@ a person the model has never seen. See `docs/SUBJECT_ALIGNMENT.md`.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
-from zte.logging_utils import get_logger
+from zte.logging_utils import get_logger, progress
 
 _LOG = get_logger('data.alignment')
 
@@ -38,23 +39,31 @@ def _spd_power(cov: np.ndarray, power: float, shrinkage: float, eps: float) -> n
     return (v * (w**power)) @ v.T
 
 
-def _matmul_backend() -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
-    """Returns a `(C,C) x (N,C,T) -> (N,C,T)` multiplier, on the GPU when one is available.
+def _accel_device() -> Any | None:
+    """Returns a torch GPU device when one is available, else `None` for the numpy path.
 
-    Whitening every window is a large batched matmul -- exactly what an idle accelerator is for, and it
-    keeps the working set off the system RAM that the raw tensor is already straining.
+    Alignment is all batched linear algebra over a tensor too big for RAM; running it on the accelerator
+    that is otherwise idle during data prep is both faster and keeps the working set off system memory.
     """
     try:
         import torch
     except ImportError:
-        return lambda w, x: np.einsum('cd,ndt->nct', w, x, optimize=True)
+        return None
 
     if torch.cuda.is_available():
-        device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
-    else:
+        return torch.device('cuda')
+    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        return torch.device('mps')
+    return None
+
+
+def _matmul_backend() -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+    """Returns a `(C,C) x (N,C,T) -> (N,C,T)` multiplier, on the GPU when one is available."""
+    device = _accel_device()
+    if device is None:
         return lambda w, x: np.einsum('cd,ndt->nct', w, x, optimize=True)
+
+    import torch
 
     def _gpu(w: np.ndarray, x: np.ndarray) -> np.ndarray:
         wt = torch.from_numpy(np.ascontiguousarray(w)).to(device)
@@ -83,16 +92,35 @@ def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndar
     requested -- the raw tensor does not fit in memory twice.
     """
     n_ch = int(raw.shape[1])
+    device = _accel_device()
+    if device is not None:
+        import torch
+
+        # MPS has no float64; accumulating in float32 there is fine for a 105x105 covariance.
+        dtype = torch.float32 if device.type == 'mps' else torch.float64
+        acc_t = torch.zeros((n_ch, n_ch), dtype=dtype, device=device)
+        seen = 0
+        for start in range(0, len(idx), _COV_CHUNK):
+            block = np.ascontiguousarray(raw[idx[start : start + _COV_CHUNK]])
+            x = torch.nan_to_num(torch.from_numpy(block).to(device, dtype))
+            t = x.shape[2]
+
+            # Per-trial trace normalisation stops a few high-amplitude trials owning the reference.
+            cov = (x @ x.transpose(1, 2)) / max(t, 1)
+            trace = cov.diagonal(dim1=1, dim2=2).sum(-1)[:, None, None]
+            acc_t += (cov / trace.clamp_min(eps)).sum(dim=0)
+            seen += len(block)
+        return (acc_t / max(seen, 1)).cpu().numpy().astype(np.float64)
+
     acc = np.zeros((n_ch, n_ch), dtype=np.float64)
     seen = 0
-
     for start in range(0, len(idx), _COV_CHUNK):
         x = np.nan_to_num(
             np.asarray(raw[idx[start : start + _COV_CHUNK]], dtype=np.float64), nan=0.0
         )
         t = x.shape[2]
 
-        # Per-trial trace normalisation stops a few high-amplitude trials owning the subject's reference.
+        # Per-trial trace normalisation stops a few high-amplitude trials owning the reference.
         cov = np.einsum('nct,ndt->ncd', x, x) / max(t, 1)
         trace = np.trace(cov, axis1=1, axis2=2)[:, None, None]
         acc += (cov / np.clip(trace, eps, None)).sum(axis=0)
@@ -151,6 +179,12 @@ class RawSubjectAligner:
 
         subjects = np.asarray(subjects)
         mask = np.ones(len(raw), dtype=bool) if present is None else np.asarray(present, dtype=bool)
+
+        _LOG.info(
+            'Estimating per-subject references from %d windows on %s ...',
+            int(mask.sum()),
+            _accel_device() or 'cpu',
+        )
 
         # The cohort reference doubles as the fallback for a subject with too few usable trials.
         pooled = _channel_covariance(raw, _sample_rows(mask), self.eps)
@@ -238,13 +272,21 @@ class RawSubjectAligner:
         subjects = np.asarray(subjects)
         dest = raw if out is None else out
         mm = _matmul_backend()
+        codes = np.unique(subjects)
+        _LOG.info(
+            'Whitening %d windows for %d subjects on %s ...',
+            len(raw),
+            len(codes),
+            _accel_device() or 'cpu',
+        )
 
-        for code in np.unique(subjects):
+        for n_done, code in enumerate(progress(codes, description='aligning subjects'), start=1):
             w = self.references.get(str(code), self._global_reference.astype(np.float32))
             rows = np.flatnonzero(subjects == code)
             for start in range(0, len(rows), chunk):
                 idx = rows[start : start + chunk]
                 dest[idx] = mm(w, np.asarray(raw[idx], dtype=np.float32))
+            _LOG.info('  aligned %s (%d windows) [%d/%d]', code, len(rows), n_done, len(codes))
         return dest
 
     def calibrate_subject(self, baseline_raw: np.ndarray, subject: str) -> RawSubjectAligner:

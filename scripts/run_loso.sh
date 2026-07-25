@@ -66,6 +66,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Stream ZTE's logs live: Python block-buffers stdout when it is not a terminal, so without
+# this a long run looks frozen and then dumps everything at once.
+export PYTHONUNBUFFERED=1
+
 ROOT="${1:-res/data/zuco_extracted}"
 PY="${PY:-.venv/bin/python}"
 [ -x "${PY}" ] || PY="python"          # Colab / system python fallback

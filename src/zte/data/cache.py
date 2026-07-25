@@ -173,12 +173,11 @@ class BundleStore:
         if remote_dir is None or not (local_dir / 'meta.json').is_file():
             return
 
-        # Entries are immutable, so an existing copy is already correct -- unless it is missing a file the
-        # local one has, which is how a bundle re-derived into the memory-mapped layout gets pushed up.
+        # Entries are immutable, so an existing copy is already correct. In particular the memory-mapped
+        # raw array is a LOCAL derived artifact: re-deriving it costs minutes, whereas pushing ~24 GB of
+        # it up would bloat the persistent store for no gain.
         if (remote_dir / 'meta.json').is_file():
-            local_files = {p.name for p in local_dir.iterdir() if p.is_file()}
-            if local_files <= {p.name for p in remote_dir.iterdir() if p.is_file()}:
-                return
+            return
         copied, failed = mirror_tree(local_dir, remote_dir, exclude_dirs=())
         if failed:
             _LOG.warning(
