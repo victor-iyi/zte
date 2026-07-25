@@ -54,6 +54,7 @@ class ZTEEmbedder:
 
         # Populated by `from_checkpoint`, so new signals are normalised exactly as during training.
         self.normalizer: Any | None = None
+        self.aligner: Any | None = None
         self.subject_vocab: dict[str, int] | None = None
         self.in_dim: int | None = None
         self.raw_shape: tuple[int, int] | None = None
@@ -101,6 +102,7 @@ class ZTEEmbedder:
             n_channels=extra.get('n_channels'),
             bp_features_per_channel=extra.get('bp_features_per_channel'),
             montage_csv=extra.get('montage_csv'),
+            signature_dim=int(extra.get('signature_dim') or 0),
         )
         model.load_state_dict(payload['model'])
         embedder = cls(model, config, device)
@@ -111,6 +113,10 @@ class ZTEEmbedder:
             from zte.data.features.transforms import FeatureNormalizer
 
             embedder.normalizer = FeatureNormalizer.from_state(extra['normalizer'])
+        if extra.get('aligner'):
+            from zte.data.features.alignment import RawSubjectAligner
+
+            embedder.aligner = RawSubjectAligner.from_state(extra['aligner'])
         embedder.subject_vocab = extra.get('subject_vocab')
         _LOG.info('Loaded ZTE checkpoint %s (epoch %s)', ckpt_path, payload.get('epoch'))
         return embedder
@@ -182,21 +188,29 @@ class ZTEEmbedder:
         )
         return emb_array, pd.DataFrame(meta_rows)
 
-    def calibrate_subject(self, baseline_band_power: np.ndarray, subject_code: str) -> None:
+    def calibrate_subject(
+        self,
+        baseline_band_power: np.ndarray | None = None,
+        subject_code: str = '',
+        baseline_raw: np.ndarray | None = None,
+    ) -> None:
         """Calibrates a new subject into the shared space from an unlabelled baseline.
 
-        Registers their own normalisation from a short recording of them reading anything, placing their embeddings on
-        the training cohort's scale with no labels and no retraining. Pass their code to `embed_signals` afterwards.
+        The zero-shot new-brain path: a short recording of them reading anything yields their own whitening map and
+        signature, so their words land on the cohort's scale and the subject adapter configures itself for a person
+        the model never trained on. No labels, no retraining. Pass their code to `embed_signals` afterwards.
 
         Args:
-            baseline_band_power (np.ndarray): `(n, n_features)` un-normalised baseline tokens.
+            baseline_band_power (np.ndarray | None): `(n, n_features)` un-normalised baseline tokens.
             subject_code (str): The code to register the calibrated statistics under.
+            baseline_raw (np.ndarray | None): `(n, n_channels, time_steps)` baseline raw windows, for the raw frontend.
         """
-        if self.normalizer is None:
-            return
-        self.normalizer.calibrate_subject(
-            np.asarray(baseline_band_power, dtype=np.float32), subject_code
-        )
+        if self.normalizer is not None and baseline_band_power is not None:
+            self.normalizer.calibrate_subject(
+                np.asarray(baseline_band_power, dtype=np.float32), subject_code
+            )
+        if self.aligner is not None and baseline_raw is not None:
+            self.aligner.calibrate_subject(np.asarray(baseline_raw, dtype=np.float32), subject_code)
 
     @torch.no_grad()
     def embed_signals(
@@ -243,6 +257,10 @@ class ZTEEmbedder:
                 raise ValueError(
                     f'raw must be (n_tokens, n_channels, time_steps); got shape {signals.shape}.'
                 )
+
+            # Same per-subject whitening the model trained under; an uncalibrated code gets the cohort reference.
+            if apply_normalizer and self.aligner is not None and subject_codes is not None:
+                signals = self.aligner.transform(signals.copy(), np.asarray(subject_codes))
         else:
             if band_power is None:
                 raise ValueError(
@@ -271,6 +289,12 @@ class ZTEEmbedder:
             if subjects is None
             else np.asarray(subjects, dtype=np.int64)
         )
+
+        # The adapter reads the signature, so build one per token from whichever subject code it carries.
+        sig = None
+        if self.model.subject_adapter is not None and self.aligner is not None:
+            codes = np.asarray(subject_codes) if subject_codes is not None else np.array([''] * n)
+            sig = np.stack([self.aligner.signature_for(str(c)) for c in codes]).astype(np.float32)
         dev = self.device.device
         out: list[np.ndarray] = []
         for start in progress(
@@ -287,6 +311,9 @@ class ZTEEmbedder:
                 'pad_mask': torch.ones(count, 1, dtype=torch.bool, device=dev),
                 'presence': torch.ones(count, 1, dtype=torch.bool, device=dev),
                 'subject': torch.from_numpy(subj[start:end]).to(dev),
+                'subject_signature': None
+                if sig is None
+                else torch.from_numpy(sig[start:end]).to(dev),
                 'lengths': torch.ones(count, dtype=torch.long, device=dev),
             }
             batch['raw' if self.model.uses_raw else 'features'] = chunk.unsqueeze(1)

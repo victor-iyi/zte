@@ -81,6 +81,17 @@ class ModelConfig:
     so for any subject id unseen in training (the held-out LOSO subject) the transform is the identity rather than an
     untrained random vector."""
 
+    subject_adapter: bool = False
+    """Condition the encoder on a subject signature emitted by a hypernetwork instead of an id lookup, so a
+    held-out subject is interpolated rather than left unadapted. Requires `dataset.subject_signature`."""
+
+    subject_adapter_width: int = 128
+    """Hidden width of the subject hypernetwork's trunk."""
+
+    subject_adapter_spatial: bool = True
+    """Also emit a per-electrode gain applied before the frontend, correcting individual cap placement. Raw
+    frontend only; ignored for band power."""
+
     n_subjects: int = 12
     """Vocabulary size for subject conditioning."""
 

@@ -106,6 +106,9 @@ class SentenceSample:
         None  # (seq_len, hidden) per-occurrence contextual target or None
     )
     text_id: int = -1  # subject-agnostic sentence-text id (CLIP alignment target), or -1
+    signature: torch.Tensor | None = (
+        None  # (signature_dim,) covariance-geometry descriptor, or None
+    )
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -193,6 +196,15 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             self._meaning, self.meaning_dim = build_meaning_matrix_hf(
                 dataset.words, meaning_contextual, layer=meaning_context_layer
             )
+
+        # One signature per subject, keyed by code, so every sentence of that person carries the same descriptor.
+        sig_map = dataset.subject_signatures()
+        self._signatures: dict[int, torch.Tensor] = {}
+        self.signature_dim = 0
+        if sig_map:
+            self.signature_dim = int(len(next(iter(sig_map.values()))))
+            for code, vec in sig_map.items():
+                self._signatures[self.subject_vocab.get(code, 0)] = torch.from_numpy(vec).float()
 
         self._sequences: list[np.ndarray] = []
         self._subjects: list[int] = []
@@ -293,6 +305,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             raw=raw,
             presence=presence,
             subject=self._subjects[idx],
+            signature=self._signatures.get(self._subjects[idx]),
             length=len(rows),
             content=torch.from_numpy(np.ascontiguousarray(self._content[idx])).long(),
             word_id=torch.from_numpy(np.ascontiguousarray(self._word_id[idx])).long(),
@@ -370,12 +383,17 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         for i, sample in enumerate(batch):
             meaning[i, : sample.length] = sample.meaning
 
+    signature = None
+    if batch[0].signature is not None:
+        signature = torch.stack([s.signature for s in batch])  # type: ignore[arg-type]
+
     return {
         'features': features,
         'raw': raw,
         'pad_mask': pad_mask,
         'presence': presence,
         'subject': torch.tensor([s.subject for s in batch], dtype=torch.long),
+        'subject_signature': signature,
         'lengths': lengths,
         'content_id': content_id,
         'word_id': word_id,

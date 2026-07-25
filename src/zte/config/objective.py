@@ -70,6 +70,11 @@ class ObjectiveConfig:
     """Weight of the gradient-reversal subject-adversary loss (0 disables). A head classifies the subject from the token
     hiddens and the reversed gradient trains the encoder to hide subject identity."""
 
+    identity_orthogonality_weight: float = 0.0
+    """Weight of a rank-preserving identity penalty (0 disables): the normalised cross-covariance between content
+    and the subject signature. Unlike the adversary above, collapsing does not satisfy it. Requires
+    `dataset.subject_signature`."""
+
     stimulus_adversary_weight: float = 0.0
     """Weight of a second gradient-reversal adversary predicting which stimulus/passage a token came from (0 disables),
     removing the sentence-set shortcut. Requires `content_id` in the batch."""

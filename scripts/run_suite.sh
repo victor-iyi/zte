@@ -2,21 +2,30 @@
 #
 # run_suite.sh -- the fixed-seed driver for the ZTE experiment suite.
 #
-# Study order follows the 2026-07-24 real-ZuCo LOSO board (held out ZAB), a clean 2x2 over
-# {frontend} x {meaning distillation}:
+# THE BOARD THIS RUNS AGAINST. On 2026-07-25 every run on Drive was re-scored on the HELD-OUT subject
+# instead of the pooled set. Pooled retrieval includes the 11 training brains, so it rewards memorising
+# them rather than reaching the 12th; it is what made band power look like the champion. Held out on ZAB
+# (700 queries, chance 1/700, exact binomial tail):
 #
-#   | run                        | frontend       | meaning | sentence Top-1 | eff-rank | subject var |
-#   | -------------------------- | -------------- | ------- | -------------- | -------- | ----------- |
-#   | clip_e5_bandpower (exp8)   | band_power     | off     | 0.019          | 0.166    | 10.1%       |
-#   | clip_e5_meaning   (exp9)   | band_power     | ON      | 0.043  champion| 0.160    |  0.9%       |
-#   | clip_e5_raw       (exp8)   | raw_conformer  | off     | 0.010          | 0.264    |  6.9%       |
-#   | clip_e5_meaning_raw (exp10)| raw_conformer  | ON      |  ? missing cell|    ?     |    ?        |
+#   | run                          | frontend      | Top-5 hits/700 | p     | eff-rank | subj probe (raw) |
+#   | ---------------------------- | ------------- | -------------- | ----- | -------- | ---------------- |
+#   | exp8_clip_e5_raw             | raw_conformer |       32       | 7e-16 |  0.264   |  0.45  (0.81)    |
+#   | exp10_clip_e5_meaning_raw    | raw_conformer |       32       | 7e-16 |  0.264   |  0.41  (0.81)    |
+#   | exp10_..._raw_v2             | raw_conformer |       19       | 1e-06 |  0.535   |  0.36  (0.81)    |
+#   | exp9_clip_e5_meaning RETIRED | band_power    |       10       | 3e-02 |  0.160   |  0.23  (0.16)    |
 #
-# Two findings drive everything below: (1) meaning distillation is the DISENTANGLER -- turning it on under
-# band_power cut subject-variance 10x and 2.25x'd retrieval; (2) the raw conformer holds the richest space
-# (eff-rank 0.264) but, without meaning distillation, never disentangles subject. exp10 fills the empty cell
-# (raw + meaning), and exp10_v2 pushes the encoder itself (multiscale temporal + attentive pool + wider).
-# Qwen is a dead end (Top-1 0.002); skip-gram is a control, not a contender.
+# The raw conformer wins by 4x on the same fold. Band power's 0.23 subject probe was never
+# disentanglement -- its raw features only score 0.16, so there was nothing to remove, and its
+# effective-rank ratio of 0.160 shows the space had collapsed to ~123 of 768 directions. Every
+# band-power arm, plus the Qwen/BGE/MPNet text-encoder A/B (all p >= 0.07), is now in
+# experiments/archive/ with the number that retired it.
+#
+# WHAT THE SUITE RUNS NOW: the two measured raw arms, and the exp12 alignment stack built on top of
+# them. The raw path had never had cross-subject alignment of ANY kind -- `dataset.normalize` only
+# applied to band power, so `normalize: riemannian` was a silent no-op for every raw run above, and
+# the winning arm is training on unaligned voltages with a subject probe still at 0.41 of 0.81. exp12
+# closes that with three label-free steps (Euclidean alignment, a signature-driven subject adapter,
+# and a rank-preserving identity penalty); see experiments/flagship/zte_raw_aligned.yaml.
 #
 # Usage:
 #   bash scripts/run_suite.sh                         # real data (default root)
@@ -24,25 +33,25 @@
 #   SMOKE=1 bash scripts/run_suite.sh                 # tiny synthetic sanity pass (CPU, minutes)
 #   STUDIES="audit flagship" bash scripts/run_suite.sh   # run only some studies
 #
-# STUDIES (default: "audit flagship controls"):
+# STUDIES (default: "audit flagship ablate"):
 #   audit     -- model-free confound audit of the dataset (run this before believing any result)
-#   flagship  -- the CLIP arms held out on ZAB: band-power champion (exp9) + the exp10 raw+meaning cell and
-#                its encoder-leap v2 (multiscale temporal / attentive pool / wider conformer)
-#   text_ab   -- text-encoder A/B on the champion recipe (E5 vs Qwen vs BGE vs MPNet): what makes E5 unique
-#   controls  -- the skip-gram baseline and the Qwen text-encoder arm, for honest comparison
+#   flagship  -- the arms held out on ZAB: the exp12 alignment stack (narrow + wide encoder) against
+#                the two raw arms it must beat (exp10 raw+meaning at 32/700, exp8 raw at 32/700)
+#   ablate    -- the exp12 one-knob studies: alignment off, adapter off, orthogonality off, and
+#                alignment fit on train-only. Each isolates one lever of the new stack.
+#   controls  -- the skip-gram baseline, kept as the honest floor (a control, not a contender)
 #   benchmark -- objective sweep on top of the champion recipe (zte-benchmark, resumable)
-#   ablate    -- one-knob-at-a-time studies on the champion (zte-ablate generate + run + diff)
 #   loso      -- the full 12-subject LOSO sweep on the champion (multi-hour; delegates to run_loso.sh)
 #
 # PAUSE / RESUME: every run is launched with `zte-run --resume`, so you can stop at ANY time (Ctrl-C,
 # or a reclaimed Colab VM) and re-run the SAME command to continue exactly where you left off.
 # Finished runs are skipped instantly, an interrupted run resumes from its last checkpoint, and the
-# cached dataset bundle is reused. With DRIVE_BACKUP set, the whole run directory is mirrored to
-# Drive after every stage, so nothing but the epoch in flight is ever lost.
+# cached dataset bundle is reused. Alignment is applied AFTER the bundle loads, so enabling it never
+# invalidates a prepared bundle. With DRIVE_BACKUP set, the whole run directory is mirrored to Drive
+# after every stage, so nothing but the epoch in flight is ever lost.
 #
 # Anti-bias guarantees are baked into the configs (leakage-aware leave-one-subject-out splits, a
 # train-only normaliser, a held-out test subject) and into this runner (fixed seeds -> bootstrap CIs).
-
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -62,25 +71,25 @@ export ZTE_CACHE_REMOTE="${CACHE_REMOTE}"
 SMOKE="${SMOKE:-0}"                       # SMOKE=1 -> tiny synthetic run
 SPATIAL="${SPATIAL:-exact}"               # build + wire the true ZuCo-105 montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"                # leave each config's own meaning target alone
-STUDIES="${STUDIES:-audit flagship controls}"
+STUDIES="${STUDIES:-audit flagship ablate}"
 HOLDOUT="${HOLDOUT:-ZAB}"                 # held-out subject for the single-fold studies
 
 # The configs, by tier (see experiments/README.md).
+# The exp12 alignment stack first, then the two raw arms it has to beat.
 FLAGSHIP_CONFIGS="${FLAGSHIP_CONFIGS:-\
-experiments/flagship/clip_e5_meaning.yaml \
+experiments/flagship/zte_raw_aligned.yaml \
+experiments/flagship/zte_raw_aligned_wide.yaml \
 experiments/flagship/clip_e5_meaning_raw.yaml \
-experiments/flagship/clip_e5_meaning_raw_v2.yaml}"
-# Text-encoder A/B (same champion recipe, only the CLIP sentence target differs): what makes E5 unique.
-TEXT_CONFIGS="${TEXT_CONFIGS:-\
-experiments/flagship/clip_e5_meaning.yaml \
-experiments/benchmark/clip_qwen_bandpower.yaml \
-experiments/text_encoders/clip_bge_meaning.yaml \
-experiments/text_encoders/clip_mpnet_meaning.yaml}"
-CONTROL_CONFIGS="${CONTROL_CONFIGS:-\
-experiments/benchmark/baseline_skipgram_loso.yaml \
-experiments/benchmark/clip_qwen_bandpower.yaml}"
-CHAMPION="${CHAMPION:-experiments/flagship/clip_e5_meaning.yaml}"
-ABLATE_KNOBS="${ABLATE_KNOBS:-objective.meaning_distill_weight objective.subject_adversary_weight}"
+experiments/flagship/clip_e5_raw.yaml}"
+# One knob of the exp12 stack each, so a win is attributable rather than asserted.
+ABLATE_CONFIGS="${ABLATE_CONFIGS:-\
+experiments/ablation/exp12_align_off.yaml \
+experiments/ablation/exp12_adapter_off.yaml \
+experiments/ablation/exp12_orthogonality_off.yaml \
+experiments/ablation/exp12_align_fit_train.yaml}"
+# The honest floor. A control, not a contender -- it is here to be beaten, not to win.
+CONTROL_CONFIGS="${CONTROL_CONFIGS:-experiments/benchmark/baseline_skipgram_loso.yaml}"
+CHAMPION="${CHAMPION:-experiments/flagship/zte_raw_aligned.yaml}"
 
 # Turn-key provisioning shared by every run (built once, then reused from cache): --spatial exact
 # builds + wires the exact montage; --data-cache stores the processed bundle once so the .mat load +
@@ -158,34 +167,24 @@ study_audit() {
 
 # =========================================================================== #
 # FLAGSHIP -- the CLIP arms, held out on one subject.
-#   clip_e5_meaning        : the measured champion (band-power + contextual meaning distillation, Top-1 0.043).
-#   clip_e5_meaning_raw    : exp10 -- the missing 2x2 cell: raw-conformer frontend under the champion objective.
-#   clip_e5_meaning_raw_v2 : exp10 -- the encoder leap: + multiscale temporal bank + attentive temporal pool + wider.
+#   zte_raw_aligned        : exp12 -- the champion candidate. exp10's encoder byte-for-byte, plus Euclidean
+#                            alignment, the signature-driven subject adapter and the identity-orthogonality penalty.
+#   zte_raw_aligned_wide   : exp12 -- the same stack on the v2 encoder (64 filters, multiscale bank, attentive pool),
+#                            testing whether capacity pays once identity stops competing for the same parameters.
+#   clip_e5_meaning_raw    : exp10 -- the measured baseline to beat (32 hits @ Top-5 of 700, p ~ 7e-16).
+#   clip_e5_raw            : exp8  -- the same, without meaning distillation. Equal on retrieval, worse subject probe.
 # =========================================================================== #
 study_flagship() {
-  echo "=== FLAGSHIP: CLIP arms (champion · raw+meaning · encoder-leap v2) ==="
+  echo "=== FLAGSHIP: exp12 alignment stack vs the two measured raw arms ==="
   run_configs "${FLAGSHIP_CONFIGS}"
-}
-
-# =========================================================================== #
-# TEXT_AB -- what makes E5 unique. Same champion recipe, only the CLIP sentence target changes:
-#   clip_e5_meaning   : E5 (intfloat/e5-base-v2)          -- retrieval-contrastive, query prefix.
-#   clip_qwen_bandpower : Qwen2.5-0.5B (mean-pooled)      -- decoder LLM, no sentence head.
-#   clip_bge_meaning  : BGE (BAAI/bge-base-en-v1.5)       -- retrieval-contrastive, like E5 (isolates the family).
-#   clip_mpnet_meaning : MPNet (all-mpnet-base-v2)        -- classic NLI/paraphrase encoder, no prefix.
-# =========================================================================== #
-study_text_ab() {
-  echo "=== TEXT_AB: text-encoder A/B (E5 · Qwen · BGE · MPNet) on the champion recipe ==="
-  run_configs "${TEXT_CONFIGS}"
 }
 
 # =========================================================================== #
 # CONTROLS -- what the flagship must beat to earn its place.
 #   baseline_skipgram_loso : the previous SOTA recipe (skip-gram + full invariance stack).
-#   clip_qwen_bandpower    : the second arm of the text-encoder A/B (E5 vs Qwen).
 # =========================================================================== #
 study_controls() {
-  echo "=== CONTROLS: skip-gram baseline + Qwen text-encoder arm ==="
+  echo "=== CONTROLS: skip-gram baseline (the honest floor) ==="
   run_configs "${CONTROL_CONFIGS}"
 }
 
@@ -208,23 +207,13 @@ study_benchmark() {
 }
 
 # =========================================================================== #
-# ABLATE -- prove one lever at a time on the champion. Generates a config per
-# value, runs each (resumable), then diffs the held-out scoreboards.
+# ABLATE -- one lever of the exp12 stack at a time, each config byte-identical to
+# the flagship except for its single knob, so a win can be attributed rather than
+# asserted. Run this before claiming the alignment stack is what did it.
 # =========================================================================== #
 study_ablate() {
-  echo "=== ABLATE: one-knob studies on the champion ==="
-  local dir="${OUT_ROOT}/../ablate_configs"
-  for knob in ${ABLATE_KNOBS}; do
-    echo "--- knob: ${knob}"
-    "${PY}" -m zte.cli.ablate generate --config "${CHAMPION}" \
-      --knob "${knob}" --values "${ABLATE_VALUES:-0,0.1,1.0}" --out-dir "${dir}" || {
-      echo "✗ ablate generate failed for ${knob}; continuing."; FAILED="${FAILED} ablate/${knob}"; continue; }
-  done
-  for cfg in "${dir}"/*.yaml; do
-    [ -e "${cfg}" ] || continue
-    run_seeded "${cfg}" "$(echo "${SEEDS}" | awk '{print $1}')"
-  done
-  return 0
+  echo "=== ABLATE: exp12 one-knob studies (align / adapter / orthogonality / fit) ==="
+  run_configs "${ABLATE_CONFIGS}"
 }
 
 # =========================================================================== #
@@ -247,12 +236,11 @@ for study in ${STUDIES}; do
   case "${study}" in
     audit)     study_audit ;;
     flagship)  study_flagship ;;
-    text_ab)   study_text_ab ;;
     controls)  study_controls ;;
     benchmark) study_benchmark ;;
     ablate)    study_ablate ;;
     loso)      study_loso ;;
-    *) echo "Unknown study '${study}' (valid: audit flagship text_ab controls benchmark ablate loso)"; exit 2 ;;
+    *) echo "Unknown study '${study}' (valid: audit flagship ablate controls benchmark loso)"; exit 2 ;;
   esac
 done
 
@@ -265,4 +253,4 @@ else
 fi
 echo ">>> Compare the runs with:"
 echo "    ${PY} -m zte.cli.compare --experiments ${OUT_ROOT} --out ${OUT_ROOT}/COMPARE.html"
-echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/exp9_clip_e5_meaning_lo${HOLDOUT}_s42 --kind both"
+echo "    ${PY} -m zte.cli.visualize --run ${OUT_ROOT}/exp12_zte_raw_aligned_lo${HOLDOUT}_s42 --kind both"

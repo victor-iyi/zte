@@ -14,6 +14,10 @@ type Normalization = Literal[
 """Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std across the cohort; `zscore_subject` fits
 per subject, removing the constant offset that makes subject identity the cheapest thing to encode."""
 
+type RawAlign = Literal['none', 'euclidean']
+"""Per-subject alignment of raw EEG windows. `euclidean` whitens each subject by their own mean channel covariance,
+cancelling the linear part of the skull/cap/impedance difference without reading a single label."""
+
 type MissingMethod = Literal[
     'zero',
     'row_mean',

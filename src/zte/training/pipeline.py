@@ -68,9 +68,17 @@ def run_training(
     # Fit the normaliser (and imputer) on the TRAIN split only, so val/test statistics never leak in.
     dataset.refit_normalizer(splits['train'])
 
+    # Label-free, so unlike the normaliser this may see the held-out subject -- calibration, not a peek.
+    dataset.align_raw(splits['train'])
+
     # Size the encoder to the data, then build the objective on top of it.
     in_dim, raw_shape, feature_dim = _shapes(dataset, config)
     n_channels, bp_features_per_channel = _channel_shape(dataset, config, raw_shape)
+    signature_dim = (
+        dataset.aligner.signature_dim
+        if (dataset.aligner is not None and config.dataset.subject_signature)
+        else 0
+    )
     model = build_model(
         config.model,
         in_dim=in_dim,
@@ -78,6 +86,7 @@ def run_training(
         n_channels=n_channels,
         bp_features_per_channel=bp_features_per_channel,
         montage_csv=config.dataset.montage_csv,
+        signature_dim=signature_dim,
     )
     objective = build_objective(config.objective, model, feature_dim=feature_dim)
 
@@ -221,6 +230,8 @@ def run_training(
         'bp_features_per_channel': bp_features_per_channel,
         'montage_csv': config.dataset.montage_csv,
         'feature_names': dataset.feature_names,
+        'aligner': None if dataset.aligner is None else dataset.aligner.state,
+        'signature_dim': signature_dim,
     }
     trainer = Trainer(
         model=model,

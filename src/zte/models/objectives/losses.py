@@ -72,6 +72,32 @@ def vicreg_terms(
     return loss, metrics
 
 
+def identity_orthogonality(content: torch.Tensor, signature: torch.Tensor) -> torch.Tensor:
+    """Linear dependence (CKA) between the content subspace and the subject signature, in `[0, 1]`.
+
+    Asks only that content be uncorrelated with who produced it, so unlike a gradient-reversal adversary it cannot be
+    satisfied by collapsing: a full-rank identity-free space scores zero.
+
+    Args:
+        content (torch.Tensor): Content-subspace embeddings `(n_tokens, content_dim)`.
+        signature (torch.Tensor): Per-token subject signatures `(n_tokens, signature_dim)`.
+
+    Returns:
+        torch.Tensor: Scalar penalty (0 when either side is degenerate).
+    """
+    n = content.shape[0]
+    if n < 2:
+        return content.new_zeros(())
+
+    zc = content - content.mean(dim=0, keepdim=True)
+    zs = signature - signature.mean(dim=0, keepdim=True)
+
+    # Normalising by each side's own self-covariance makes the term scale-free, so shrinking earns no credit.
+    cross = (zc.t() @ zs).pow(2).sum()
+    denom = (zc.t() @ zc).pow(2).sum().sqrt() * (zs.t() @ zs).pow(2).sum().sqrt()
+    return cross / denom.clamp_min(1e-8)
+
+
 def alignment_penalty(
     center: torch.Tensor, context: torch.Tensor, pos_mask: torch.Tensor
 ) -> torch.Tensor:

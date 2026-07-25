@@ -4,36 +4,60 @@ Every file here is a plain, editable [`ZTEConfig`](../src/zte/config/) YAML, sor
 
 ```sh
 # Synthetic smoke test (no data) → a real run → straight from Google Drive:
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --synthetic --epochs 3
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/data/zuco_extracted --loso-holdout ZAB
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --drive <folder-id-or-url> --loso-holdout ZAB
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --synthetic --epochs 3
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --root res/data/zuco_extracted --loso-holdout ZAB
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --drive <folder-id-or-url> --loso-holdout ZAB
 ```
 
 | Tier             | What lives there                                                                               |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
 | `flagship/`      | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
-| `text_encoders/` | Text-encoder A/B: the champion recipe with only the CLIP sentence target swapped.              |
 | `benchmark/`     | The controls a flagship must beat to earn its place.                                           |
 | `ablation/`      | Single-lever studies — matched pairs that flip exactly one knob.                               |
 | `archive/`       | Superseded or failed arms, kept for the record and for reproducibility.                        |
 
-> **File paths moved; `run_name` did not.** `experiments/flagship/clip_e5_bandpower.yaml` still trains a run called `exp8_clip_e5`, so every run already on Drive keeps matching and `--resume` still skips it.
+> **File paths and `run_name` are independent.** A config's run directory is named by the `run_name` inside the YAML, not by its file path, so moving a config between tiers never breaks `--resume` against runs already on Drive.
 > The name in the left column below is the *file*; the run directory uses the `run_name` in brackets.
 
 ---
 
 ## The evidence
 
-Real ZuCo, leave-one-subject-out with `ZAB` held out, 12 subjects / 160,804 words / 8,400 sentences (session of 2026-07-24, on Drive under `Sharables/ZTE/2026-07-24`). The board is a clean 2×2 over {frontend} × {meaning distillation}. Chance Top-1 is ≈0.001.
+Real ZuCo, leave-one-subject-out with `ZAB` held out, 12 subjects / 160,804 words / 8,400 sentences (sessions of
+2026-07-24 and 2026-07-25, on Drive under `Sharables/ZTE/`).
 
-| Config (run_name)                                       | Frontend      | Meaning | Sentence Top-1 | Eff-rank | Subject var | Verdict        |
-| ------------------------------------------------------- | ------------- | ------- | -------------- | -------- | ----------- | -------------- |
-| `flagship/clip_e5_bandpower` (`exp8_clip_e5`)           | band_power    | off     | 0.019          | 0.166    | 10.1%       | ✓ beats chance |
-| `flagship/clip_e5_meaning` (`exp9_clip_e5_meaning`)     | band_power    | **ON**  | **0.043**      | 0.160    | **0.9%**    | ✓ **champion** |
-| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)             | raw_conformer | off     | 0.010          | **0.264**| 6.9%        | ✓ beats chance |
-| `benchmark/clip_qwen_bandpower` (`exp8_clip_qwen`)      | band_power    | qwen    | 0.002          | 0.165    | 27.5%       | ✗              |
+**Everything below is scored on the held-out subject only.** That distinction is the whole story. The earlier board
+ranked arms by *pooled* retrieval, which is computed over the 11 training subjects as well as the held-out one — so
+it rewards memorising the brains you have rather than reaching the one you do not. Re-scored honestly (700 queries,
+chance 1/700, exact binomial tail):
 
-Read that table as three findings. **Meaning distillation is the disentangler.** Turning it on under band power (exp8 → exp9) cut subject-variance ~10× (10.1% → 0.9%) and 2.25×'d retrieval (0.019 → 0.043), and it is the only change that made a new brain snap into the shared frame (anchor-calibration lift +0.084 vs ≈0). **The text encoder matters**: swapping E5 for a Qwen target collapses retrieval to 0.002 — the `text_encoders/` A/B asks whether that is E5 specifically or the retrieval-tuned family. And **the encoder is the open frontier**: the raw conformer already holds the richest space on the board (eff-rank 0.264, best content probes, best held-out category decode) but, with meaning distillation *off*, never disentangles subject — so its retrieval languishes. `clip_e5_meaning_raw` (exp10) fills that empty 2×2 cell; `clip_e5_meaning_raw_v2` pushes the encoder itself.
+| Config (run_name)                                        | Frontend      | Top-5 hits / 700 | *p*    | Eff-rank  | Subject probe (raw baseline) |
+| -------------------------------------------------------- | ------------- | ---------------- | ------ | --------- | ---------------------------- |
+| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)              | raw_conformer | **32**           | 7e-16  | 0.264     | 0.45 (0.81)                  |
+| `flagship/clip_e5_meaning_raw` (`exp10_..._raw`)         | raw_conformer | **32**           | 7e-16  | 0.264     | 0.41 (0.81)                  |
+| `flagship/clip_e5_meaning_raw_v2` (`exp10_..._raw_v2`)   | raw_conformer | 19               | 1e-06  | **0.535** | 0.36 (0.81)                  |
+| `archive/clip_e5_meaning` (`exp9_clip_e5_meaning`)       | band_power    | 10               | 3e-02  | 0.160     | 0.23 (0.16)                  |
+| `archive/clip_bge_meaning`                               | band_power    | 9                | 7e-02  | 0.160     | 0.23 (0.16)                  |
+| `archive/clip_qwen_bandpower` (`exp8_clip_qwen`)         | band_power    | 5                | 5.6e-01| 0.170     | 0.22 (0.16)                  |
+
+Read that table as three findings.
+
+**The frontend was the real variable.** The raw conformer beats band power by 4x on the same fold. `exp9`'s famous
+Top-1 of 0.043 was pooled; held out it is 4 hits in 700, and an identical re-run gave 2 — run-to-run noise the size
+of the effect.
+
+**Band power's "disentanglement" was an artifact of collapse.** Its subject probe of 0.23 was read as invariance,
+but the raw band-power features only score 0.16 to begin with: there was almost nothing there to remove. The
+effective-rank ratio of 0.160 is the tell — the 768-d space was spanned by ~123 directions. Invariance had been
+bought by destroying capacity, and the pooled metric was paying for it. The whole band-power family, and the
+E5/Qwen/BGE/MPNet text-encoder A/B built on top of it, is now in [`archive/`](archive/README.md).
+
+**Identity is still unsolved on the winning path, because it was never addressed there.** `dataset.normalize` only
+ever applied to band power, so `normalize: riemannian` was a *silent no-op* for every raw run above: the winning arm
+trains on unaligned voltages, and its subject probe is still 0.41 against a 0.81 raw-feature baseline. That gap is
+what `flagship/zte_raw_aligned` (exp12) closes, with three label-free steps — Euclidean alignment, a subject adapter
+driven by a hypernetwork over each person's covariance geometry rather than an ID lookup, and a rank-preserving
+identity-orthogonality penalty. See [`docs/SUBJECT_ALIGNMENT.md`](../docs/SUBJECT_ALIGNMENT.md).
 
 ### The full 12-subject LOSO sweep (exp8, 2026-07-24) — the honest trend
 
@@ -88,17 +112,6 @@ Per-subject **Riemannian normalisation**; **subject + stimulus adversaries**, re
 | `baseline_skipgram_loso` | The previous SOTA recipe (skip-gram + the full invariance stack). Answers "did CLIP earn it?". |
 | `clip_qwen_bandpower`    | The second arm of the text-encoder A/B (E5 vs Qwen), on an otherwise identical recipe.         |
 
-## `text_encoders/` — what makes E5 unique
-
-Every arm here is the champion recipe (`clip_e5_meaning`) with **only** the CLIP sentence target changed, so any delta isolates the frozen text encoder. Run them together with `STUDIES=text_ab bash scripts/run_suite.sh` (adds E5 and Qwen from the tiers above for the full four-way).
-
-| Config               | Text target                               | What it isolates                                                                       |
-| -------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------- |
-| `clip_bge_meaning`   | BAAI/bge-base-en-v1.5 (retrieval-tuned)   | The retrieval-contrastive *family* — if BGE ≈ E5, the win is the pretraining style.    |
-| `clip_mpnet_meaning` | all-mpnet-base-v2 (NLI/paraphrase, 768-d) | A strong non-retrieval encoder — if E5/BGE beat it, retrieval pretraining is the edge. |
-
-The champion (`flagship/clip_e5_meaning`, E5) and `benchmark/clip_qwen_bandpower` (Qwen) are the other two arms of the same A/B. To add another encoder, copy `clip_bge_meaning.yaml` and change only `objective.text_source` (and `text_query_prefix` if the model needs one — E5/BGE queries do, MPNet does not).
-
 ## `ablation/` — one lever at a time
 
 | Config pair                                                     | The one lever it flips                                |
@@ -150,7 +163,7 @@ Sweeps objectives **on top of a base recipe**, so the only thing differing betwe
 
 ```sh
 uv run zte-benchmark --root res/data/zuco_extracted \
-    --base-config experiments/flagship/clip_e5_bandpower.yaml --loso-holdout ZAB \
+    --base-config experiments/flagship/zte_raw_aligned.yaml --loso-holdout ZAB \
     --objectives clip,skipgram,masked,cpc --pos-encodings rope --eye-tracking off \
     --seeds 42 --out res/benchmark --resume
 ```
@@ -158,7 +171,7 @@ uv run zte-benchmark --root res/data/zuco_extracted \
 ### Prove one lever in isolation — `zte-ablate`
 
 ```sh
-uv run zte-ablate generate --config experiments/flagship/clip_e5_bandpower.yaml \
+uv run zte-ablate generate --config experiments/flagship/zte_raw_aligned.yaml \
     --knob objective.meaning_distill_weight --values 0,0.1,1.0 --out-dir res/ablate_configs
 for cfg in res/ablate_configs/*.yaml; do
   uv run zte-run --config "$cfg" --root res/data/zuco_extracted --loso-holdout ZAB --resume

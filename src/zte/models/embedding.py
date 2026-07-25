@@ -15,6 +15,7 @@ from torch import nn
 from zte.config import ModelConfig, ObjectiveName
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
+from zte.models.subject import SubjectAdapter
 from zte.models.transformer import ZTETransformerEncoder, sinusoidal_encoding
 
 
@@ -68,6 +69,7 @@ class ZTEModel(nn.Module):
         n_channels: int | None = None,
         bp_features_per_channel: int | None = None,
         montage_csv: str | None = None,
+        signature_dim: int = 0,
     ) -> None:
         """Builds the encoder for the configured representation.
 
@@ -78,6 +80,7 @@ class ZTEModel(nn.Module):
             n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`.
             bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power spatial encoding.
             montage_csv (str | None): Optional electrode-coordinate CSV (`channel,x,y,z`) for exact scalp geometry.
+            signature_dim (int): Width of the subject signature; 0 disables the subject adapter.
         """
         super().__init__()
         self.config = config
@@ -104,6 +107,20 @@ class ZTEModel(nn.Module):
         )
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)
+
+        # The id-free replacement for the two tables above: adapter weights are a function of the person's own
+        # statistics, so a subject absent from training is adapted rather than left at the identity map.
+        self.subject_adapter: SubjectAdapter | None = None
+        if config.subject_adapter and signature_dim:
+            self.subject_adapter = SubjectAdapter(
+                signature_dim,
+                self.hidden_dim,
+                n_channels=n_channels
+                if (self.uses_raw and config.subject_adapter_spatial)
+                else None,
+                width=config.subject_adapter_width,
+                dropout=config.dropout,
+            )
 
         # Absolute schemes are added to the inputs here; RoPE / ALiBi act inside the encoder's attention.
         self.pos_encoding = config.pos_encoding
@@ -162,7 +179,18 @@ class ZTEModel(nn.Module):
             torch.Tensor: `(batch_size, seq_len, hidden_dim)`.
         """
         x = self.select_input(batch)
+
+        # One adapter pass per batch: the spatial gain re-weights electrodes before the frontend, the FiLM after.
+        signature = batch.get('subject_signature')
+        adapter_params = None
+        if self.subject_adapter is not None and signature is not None:
+            adapter_params = self.subject_adapter(signature)
+            if self.uses_raw:
+                x = self.subject_adapter.apply_spatial(x, adapter_params[0])
+
         hidden = self.frontend(x)  # (batch_size, seq_len, hidden_dim)
+        if adapter_params is not None:
+            hidden = SubjectAdapter.apply_film(hidden, adapter_params[1], adapter_params[2])
         if self.subject_emb is not None:
             hidden = hidden + self.subject_emb(batch['subject']).unsqueeze(1)
         if self.subject_film is not None:
@@ -288,6 +316,7 @@ def build_model(
     n_channels: int | None = None,
     bp_features_per_channel: int | None = None,
     montage_csv: str | None = None,
+    signature_dim: int = 0,
 ) -> ZTEModel:
     """Factory that constructs a `ZTEModel` for the given input shapes.
 
@@ -298,6 +327,7 @@ def build_model(
         n_channels (int | None): EEG channel count for electrode `spatial_encoding` geometry.
         bp_features_per_channel (int | None): Band-power features per channel (band-power spatial encoding).
         montage_csv (str | None): Optional electrode-coordinate CSV for exact scalp geometry.
+        signature_dim (int): Width of the subject signature; 0 disables the subject adapter.
 
     Returns:
         ZTEModel: An initialised `ZTEModel`.
@@ -309,4 +339,5 @@ def build_model(
         n_channels=n_channels,
         bp_features_per_channel=bp_features_per_channel,
         montage_csv=montage_csv,
+        signature_dim=signature_dim,
     )

@@ -1,0 +1,176 @@
+# zte_raw_aligned -- exp12. The champion candidate: cancel the brain, keep the meaning.
+#
+# Held out on ZAB (700 queries, chance 1/700, exact binomial tail), re-scored 2026-07-25:
+#
+#   run                          frontend        Top-5 hits/700   p        eff-rank   subj probe (raw)
+#   exp8_clip_e5_raw             raw_conformer        32        7e-16      0.264       0.45 (0.81)
+#   exp10_clip_e5_meaning_raw    raw_conformer        32        7e-16      0.264       0.41 (0.81)
+#   exp9_clip_e5_meaning         band_power           10        3e-02      0.160       0.23 (0.16)
+#
+# The raw conformer wins 4x on the same fold. exp9's famous 0.043 was the POOLED number; held out it is 4
+# hits, and a re-run gave 2. Band power's low subject probe was collapse, not invariance -- eff-rank 0.160.
+#
+# The gap this closes: `dataset.normalize` only ever applied to band power, so `normalize: riemannian` was a
+# silent no-op for every raw run above. The winning arm trains on unaligned voltages with its subject probe
+# still at 0.41 of 0.81. Three label-free changes, each ablated in experiments/ablation/exp12_*.yaml:
+#
+#   1. raw_align: euclidean  -- whiten each subject by their own mean channel covariance.
+#   2. subject_adapter       -- condition on a covariance signature via a hypernetwork, not an id lookup,
+#                               which is inert for the held-out subject by construction.
+#   3. identity_orthogonality_weight -- decorrelate content from identity instead of adversarially hiding
+#                               it, since collapse satisfies an adversary for free. Adversary halved to 0.05.
+#
+# The encoder is byte-identical to exp10_clip_e5_meaning_raw, so every difference is attributable.
+# Full argument: docs/SUBJECT_ALIGNMENT.md.
+dataset:
+  root: res/data/zuco_extracted
+  tasks:
+  - SR
+  - NR
+  subjects: null
+  granularity: word
+  representation: raw
+  band_power_measures:
+  - TRT
+  include_eye_tracking: false
+  eye_tracking_measures:
+  - FFD
+  - GD
+  - GPT
+  - TRT
+  - n_fixations
+  - mean_pupil
+  bands:
+  - t1
+  - t2
+  - a1
+  - a2
+  - b1
+  - b2
+  - g1
+  - g2
+  raw_field: rawEEG
+  raw_window: 350
+  time_bins: 1
+  normalize: riemannian
+  normalizer_fit: train
+  montage_csv: res/montage_gsn105.csv
+  bandpass: null
+  raw_align: euclidean
+  raw_align_fit: all
+  subject_signature: true
+  missing:
+    method: mask_only
+    knn_neighbors: 5
+    iterative_max_iter: 10
+    interpolate_method: linear
+    add_missing_indicator: true
+  include_omitted: true
+  min_words: 1
+  max_words: null
+  cache_dir: res/cache
+  cache_format: npz
+model:
+  frontend: raw_conformer
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  conformer_filters: 40
+  conformer_temporal_kernel: 25
+  pos_encoding: rope
+  max_positions: 512
+  spatial_encoding: spherical_harmonics
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
+  pool: attention
+  subject_conditioning: false
+  subject_film: false
+  subject_adapter: true
+  subject_adapter_width: 128
+  subject_adapter_spatial: true
+  n_subjects: 12
+  n_tasks: 3
+  projection_hidden: 512
+  factored: true
+  content_dim: 384
+  band_routing: false
+objective:
+  name: clip
+  temperature: 0.07
+  context_window: 2
+  mask_ratio: 0.5
+  masked_target: latent
+  ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
+  cpc_steps: 4
+  variance_weight: 1.0
+  covariance_weight: 1.0
+  variance_target: 1.0
+  anisotropy_weight: 1.0
+  whiten: true
+  cross_subject_positives: true
+  meaning_positives: true
+  subject_adversary_weight: 0.05
+  identity_orthogonality_weight: 1.0
+  stimulus_adversary_weight: 0.3
+  meaning_distill_weight: 1.0
+  meaning_source: null
+  meaning_dim: 768
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.5
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 1
+  csls_neighbors: 10
+  subject_adversary_warmup_ratio: 0.3
+  alignment_weight: 0.1
+  tau_plus: 0.1
+  data2vec_aux_weight: 0.5
+  meaning_contextual: bert-base-uncased
+  meaning_context_layer: 8
+  eval_phase_shuffle: false
+  eval_seen_novel: true
+  eval_freq_matched: true
+  text_source: intfloat/e5-base-v2
+  text_backend: sentence-transformers
+  text_query_prefix: 'query: '
+  clip_temperature: 0.07
+  semantic_hard_negatives: true
+  hard_negative_pool: 8
+train:
+  epochs: 40
+  batch_size: 128
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_accum_steps: 1
+  grad_clip: 1.0
+  device: auto
+  precision: auto
+  num_workers: -1
+  static_shapes: auto
+  split: by_subject_loso
+  val_fraction: 0.1
+  test_fraction: 0.1
+  loso_holdout_subject: ZAB
+  seed: 42
+  deterministic: true
+  log_every: 10
+  eval_every: 1
+  ckpt_dir: res/checkpoints
+  ckpt_keep_last: 3
+  tensorboard: true
+  drive_backup_dir: null
+  compile_model: false
+run_name: exp12_zte_raw_aligned

@@ -81,16 +81,16 @@ uv sync --no-default-groups  # core only, without the `dev` group
 
 ```sh
 # No data needed: full pipeline on a synthetic ZuCo tree (great smoke test).
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --synthetic --epochs 5
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --synthetic --epochs 5
 
 # Real data from a local folder (extracted .mat files, or a folder of task .zip archives).
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/data/zuco_extracted
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --root res/data/zuco_extracted
 
 # Real data straight from Google Drive (folder id or shareable URL; needs the `drive` group).
 uv run zte-run --config experiments/flagship/clip_e5_raw.yaml --drive <folder-id-or-url>
 
 # Any subset, any override:
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml \
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml \
     --root res/data/zuco_extracted --subjects ZAB,ZDM,ZJS --tasks SR,NR --epochs 20 \
     --name my_first_run
 ```
@@ -108,17 +108,20 @@ The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte
 
 ### The experiment tiers
 
-`experiments/` is organised by what a config is *for*: **`flagship/`** are the recipes that won on real ZuCo, **`benchmark/`** are the controls a flagship has to beat, **`ablation/`** are single-lever studies, and **`archive/`** keeps superseded or failed arms for the record. The `run_name` lives *inside* each YAML and did not change when the files were tiered, so every config still writes to its historical directory — `experiments/flagship/clip_e5_bandpower.yaml` still produces the run `exp8_clip_e5`.
+`experiments/` is organised by what a config is *for*: **`flagship/`** are the recipes that won on real ZuCo, **`benchmark/`** are the controls a flagship has to beat, **`ablation/`** are single-lever studies, and **`archive/`** keeps superseded or failed arms for the record. The `run_name` lives *inside* each YAML, so a config's run directory is named by its `run_name`, not its file path.
 
-| Config                                  | Tier      | Objective                    | Why run it                                                                                                                     |
-| --------------------------------------- | --------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `flagship/clip_e5_bandpower.yaml`       | flagship  | CLIP vs E5, band power       | **Start here** — the only recipe that has beaten chance on real ZuCo (held-out ZAB: sentence Top-1 0.093 vs 0.0013, *p*=0.002) |
-| `flagship/clip_e5_raw.yaml`             | flagship  | CLIP vs E5, raw conformer    | Learns the band-pass instead of assuming it; best held-out lift so far (+0.71pp)                                               |
-| `flagship/clip_e5_meaning.yaml`         | flagship  | CLIP vs E5 + meaning distill | The champion recipe plus a contextual per-occurrence word-meaning target — a hypothesis, not yet a measured win                |
-| `benchmark/baseline_skipgram_loso.yaml` | benchmark | skip-gram                    | The control the flagships must beat; on held-out ZAB it scored 0.0004 (*p*=0.99)                                               |
-| `benchmark/clip_qwen_bandpower.yaml`    | benchmark | CLIP vs Qwen2.5-0.5B         | Text-encoder control: does the win survive swapping the frozen sentence target?                                                |
-| `ablation/study_*.yaml`                 | ablation  | one lever each               | VICReg off/on, anti-cone off/on, invariance baseline vs full — everything else held identical                                  |
-| `archive/exp1..exp7*.yaml`              | archive   | superseded                   | The v1 skip-gram / masked / CPC arms and `exp7_sota_geom_invariance` (scored 0.0, *p*=1.0), kept for the record                |
+> **The board was re-scored on 2026-07-25 and the champion changed.** Every run on Drive had been ranked by *pooled* retrieval, which includes the 11 training subjects and so rewards memorising them rather than reaching the 12th. Re-scored on the held-out subject alone, the band-power "champion" (`clip_e5_meaning`, headline Top-1 0.043) lands **4 hits in 700** — and an identical re-run landed 2. On the same fold the **raw conformer lands 32 at Top-5, *p* ≈ 7e-16**. Band power's low subject probe was never disentanglement: its effective-rank ratio of 0.160 means the 768-d space had collapsed to ~123 directions, leaving nothing to identify anyone by. Every band-power arm is now in [`experiments/archive/`](experiments/archive/README.md) with the number that retired it.
+
+| Config                                  | Tier      | Objective                    | Why run it                                                                                                                                                     |
+| --------------------------------------- | --------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flagship/zte_raw_aligned.yaml`         | flagship  | CLIP vs E5, raw conformer    | **Start here** — exp12, the champion candidate: the measured raw arm plus Euclidean alignment, the signature-driven subject adapter and identity orthogonality |
+| `flagship/zte_raw_aligned_wide.yaml`    | flagship  | + v2 encoder                 | The same stack on the multiscale/attentive encoder: does capacity pay once identity stops competing for it?                                                    |
+| `flagship/clip_e5_meaning_raw.yaml`     | flagship  | CLIP vs E5 + meaning distill | exp10 — **the measured baseline to beat** (held-out ZAB: 32 hits @ Top-5 of 700, *p* ≈ 7e-16)                                                                  |
+| `flagship/clip_e5_raw.yaml`             | flagship  | CLIP vs E5, raw conformer    | exp8 — the same without meaning distillation. Equal retrieval, worse subject probe (0.45 vs 0.41)                                                              |
+| `benchmark/baseline_skipgram_loso.yaml` | benchmark | skip-gram                    | The honest floor the flagships must beat; on held-out ZAB it scored 0.0004 (*p*=0.99)                                                                          |
+| `ablation/exp12_*.yaml`                 | ablation  | one exp12 lever each         | Alignment off, adapter off, orthogonality off, alignment fit on train-only — each byte-identical to the flagship but one knob                                  |
+| `ablation/study_*.yaml`                 | ablation  | one lever each               | VICReg off/on, invariance baseline vs full — everything else held identical                                                                                    |
+| `archive/*.yaml`                        | archive   | measured and set aside       | The band-power family, the text-encoder A/B, and the v1 skip-gram / masked / CPC arms — [with the number that retired each](experiments/archive/README.md)     |
 
 See [`experiments/README.md`](experiments/README.md) for the full rationale.
 
@@ -423,6 +426,10 @@ uv run zte-visualize --atlas --run res/experiments/exp8_clip_e5 --out res/atlas.
 ```
 
 Every evaluation also writes `evaluation/interactive/neuron_atlas.html` (and `neurons.json`). It ranks all 768 dimensions by how much they *fire* (variance share), colours each by what it **encodes** (amber for *who* = subject, cool hues for *what* = word length / frequency / task / category, grey for the negligible dead tail past the active-threshold line), and — on click — shows a neuron's selectivity, activation histogram, top-firing words, and scalp band × region attribution. The header reports the **who-vs-what variance budget**: the share of the space spent on identity versus content. This is the "encodes who, not what" story made legible at neuron resolution.
+
+### Cross-subject alignment — the "new brain" problem
+
+**[`docs/SUBJECT_ALIGNMENT.md`](docs/SUBJECT_ALIGNMENT.md)** covers exp12: why the standard per-subject layer is *guaranteed* to be inert on the held-out subject (an ID lookup has no row for a stranger), and what ZTE does instead — Euclidean alignment of the raw windows, a subject adapter whose weights a hypernetwork emits from that person's own covariance geometry, and a rank-preserving identity penalty that cannot be satisfied by collapsing. All three are label-free, so a subject the model has never seen needs one short unlabelled recording and no retraining.
 
 ### Reproducible experiment suite
 

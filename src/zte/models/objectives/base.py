@@ -11,7 +11,7 @@ from torch import nn
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
 from zte.models.heads import SubjectAdversary
-from zte.models.objectives.losses import vicreg_terms
+from zte.models.objectives.losses import identity_orthogonality, vicreg_terms
 
 
 def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
@@ -217,6 +217,15 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             metrics['adv_loss'] = float(adv_loss.detach())
             metrics['adv_acc'] = float((logits.argmax(dim=-1) == subj).float().mean().detach())
             metrics['adv_lambda'] = adv_lambda
+        # Rank-preserving identity removal: decorrelate content from the signature, don't just hide it.
+        signature = batch.get('subject_signature')
+        if self.config.identity_orthogonality_weight > 0.0 and signature is not None:
+            sig_tok = signature[:, None, :].expand(*usable.shape, signature.shape[-1])
+            sig_u = sig_tok.reshape(-1, signature.shape[-1])[flat]
+            id_loss = identity_orthogonality(self._content_slice(emb_u), sig_u)
+            loss = loss + self.config.identity_orthogonality_weight * id_loss
+            metrics['identity_orth'] = float(id_loss.detach())
+
         if self.stimulus_adversary is not None and batch.get('task_id') is not None:
             task = batch['task_id'][:, None].expand(usable.shape).reshape(-1)[flat].clamp(min=0)
             t_logits = self.stimulus_adversary(hid_u, lambda_=1.0)

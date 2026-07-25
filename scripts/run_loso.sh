@@ -5,10 +5,33 @@
 # Trains one config once per held-out subject, rotating the held-out subject over the whole
 # 12-person ZuCo cohort, so a single held-out number becomes a trend with error bars.
 #
-# DEFAULT CONFIG = experiments/flagship/clip_e5_meaning.yaml -- the measured champion on the 2026-07-24
-# real-ZuCo board (held-out ZAB: sentence Top-1 0.043 vs 0.001 chance, permutation p=0.002, subject-variance
-# down to 0.9% from meaning distillation). Override with FULL_CFG to sweep a different arm, e.g. the exp10
-# raw+meaning cell or its encoder-leap v2 once their single-fold spotlight looks good.
+# DEFAULT CONFIG = experiments/flagship/zte_raw_aligned.yaml -- the raw-conformer champion.
+#
+# WHY NOT BAND POWER ANY MORE (2026-07-25 re-scoring of every run on Drive). The old default,
+# clip_e5_meaning.yaml, was picked on its POOLED Top-1 of 0.043 -- a number computed over training
+# subjects as well as the held-out one. Re-scored on the held-out subject alone (700 queries,
+# chance 1/700) it lands 4 hits, and an identical re-run landed 2. On the same fold the raw
+# conformer lands 32 at Top-5 (p ~ 1e-15). Band power's low subject-probe score was never
+# disentanglement: its effective-rank ratio of 0.160 says the space had collapsed to ~123 of 768
+# directions, so there was nothing left to identify anyone by. The band-power arms are now in
+# experiments/archive/ with their numbers; see that README.
+#
+#   arm (held out ZAB)                 frontend        Top-5 hits/700   p        eff-rank
+#   exp8_clip_e5_raw                   raw_conformer        32        7e-16      0.264
+#   exp10_clip_e5_meaning_raw          raw_conformer        32        7e-16      0.264
+#   exp10_clip_e5_meaning_raw_v2       raw_conformer        19        1e-06      0.535
+#   exp9_clip_e5_meaning (retired)     band_power           10        3e-02      0.160
+#
+# WHAT THE DEFAULT ADDS ON TOP. The raw path had never had cross-subject alignment of any kind --
+# `dataset.normalize` only ever applied to band power, so `normalize: riemannian` was a silent
+# no-op for every raw run above. exp12 adds three label-free steps: Euclidean alignment of the raw
+# windows, a subject adapter driven by a hypernetwork over each person's covariance geometry
+# (rather than an id lookup, which is inert for the held-out subject by construction), and a
+# rank-preserving identity-orthogonality penalty. See the config header for the full argument.
+#
+# READING THE RESULT. LOSO_SUMMARY.md now leads with rank percentile (every query contributes) and
+# reports Top-K as raw hit counts against the handful expected by chance, with an exact binomial
+# tail. Top-1 on 700 queries at 1/700 expects ONE hit; "0.006 vs 0.001" is three hits and noise.
 #
 # SURVIVING A LOST COLAB VM
 #   Every run carries --resume, and with DRIVE_BACKUP set the *entire* run directory (config,
@@ -18,6 +41,7 @@
 #     2. re-run this exact command.
 #   Finished subjects are skipped instantly; the interrupted one resumes from its last epoch.
 #   Point DATA_CACHE at a Drive path so the processed dataset bundle is built ONCE, ever.
+#   Alignment is applied AFTER the bundle loads, so turning it on does not rebuild the cache.
 #
 # USAGE
 #   bash scripts/run_loso.sh                       # real data at res/data/zuco_extracted
@@ -25,9 +49,9 @@
 #   SMOKE=1 bash scripts/run_loso.sh               # fast synthetic dry-run (CPU, 3 subjects)
 #   CONTROL=1 bash scripts/run_loso.sh             # also run the skip-gram control arm (A/B)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh    # restrict the held-out set
-#   SEEDS="42 43 44" bash scripts/run_loso.sh       # repeat each fold at N seeds -> mean±std, exposes instability
-#   FULL_CFG=experiments/flagship/clip_e5_meaning_raw.yaml bash scripts/run_loso.sh      # exp10: raw + meaning
-#   FULL_CFG=experiments/flagship/clip_e5_meaning_raw_v2.yaml bash scripts/run_loso.sh   # exp10: encoder leap
+#   SEEDS="42 43 44" bash scripts/run_loso.sh      # repeat each fold at N seeds -> mean±std
+#   FULL_CFG=experiments/flagship/zte_raw_aligned_wide.yaml bash scripts/run_loso.sh  # v2 encoder
+#   FULL_CFG=experiments/flagship/clip_e5_meaning_raw.yaml bash scripts/run_loso.sh   # the 32/700 baseline
 #
 # WHY MULTI-SEED. The 2026-07-24 single-seed sweep converged bimodally: 5/12 folds trained to a healthy
 # subject-invariant code, 3/12 collapsed (pooled retrieval < 0.01, identity not removed). A single seed
@@ -52,7 +76,7 @@ DATA_CACHE="${DATA_CACHE:-}"                   # shared local PROCESSED-bundle d
 # copied down once, a freshly built one is published there immediately. Also honoured via $ZTE_CACHE_REMOTE.
 CACHE_REMOTE="${CACHE_REMOTE:-${ZTE_CACHE_REMOTE:-}}"
 export ZTE_CACHE_REMOTE="${CACHE_REMOTE}"
-FULL_CFG="${FULL_CFG:-experiments/flagship/clip_e5_meaning.yaml}"   # the champion (see header)
+FULL_CFG="${FULL_CFG:-experiments/flagship/zte_raw_aligned.yaml}"   # the raw-conformer champion (see header)
 CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
 SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"    # leave each config's own meaning target alone

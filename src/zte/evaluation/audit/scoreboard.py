@@ -235,7 +235,45 @@ def cross_subject_holdout_retrieval(
     out['n_queries'] = int(n_scored)
     out['lift_top1'] = _sub(out['top1'], out['chance_top1'])
 
+    # Top-1 on ~700 queries at 1/700 chance expects ONE hit, so rates there are unreadable: report an exact tail
+    # probability, plus a CI on the one statistic that uses every query rather than only the winners.
+    for k in ks:
+        out[f'top{k}_p'] = _binom_tail_p(
+            round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k
+        )
+    out['rank_percentile_ci'] = _bootstrap_ci(np.asarray(percentiles, dtype=np.float64))
+    out['headline_metric'] = 'rank_percentile'
+
     return out
+
+
+def _binom_tail_p(hits: int, n: int, p_chance: float) -> float:
+    """Exact probability of `hits` or more successes in `n` Bernoulli trials at rate `p_chance`."""
+    if n <= 0 or not np.isfinite(p_chance) or p_chance <= 0.0 or hits <= 0:
+        return 1.0
+
+    from math import comb
+
+    p = min(float(p_chance), 1.0)
+    below = sum(comb(n, i) * p**i * (1.0 - p) ** (n - i) for i in range(min(hits, n + 1)))
+    return float(np.clip(1.0 - below, 0.0, 1.0))
+
+
+def _bootstrap_ci(
+    values: np.ndarray, n_boot: int = 2000, alpha: float = 0.05, seed: int = 0
+) -> tuple[float, float, float]:
+    """Percentile bootstrap `(mean, lo, hi)` of a per-query statistic."""
+    if values.size == 0:
+        return (float('nan'), float('nan'), float('nan'))
+
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, values.size, size=(n_boot, values.size))
+    means = values[draws].mean(axis=1)
+    return (
+        float(values.mean()),
+        float(np.quantile(means, alpha / 2)),
+        float(np.quantile(means, 1 - alpha / 2)),
+    )
 
 
 def build_scoreboard(
@@ -317,11 +355,19 @@ def render_markdown(board: dict[str, Any]) -> str:
                 f'- Content variance budget (held-out only): **{_pct(g.get("content_variance"))}**',
             ]
         if r:
-            lines.append(
-                f'- Cross-subject held-out retrieval Top-1: **{_pct(r.get("top1"))}** '
-                f'vs chance {_pct(r.get("chance_top1"))} — lift **{_signed_pct(r.get("lift_top1"))}** '
-                f'({r.get("n_queries")} queries)'
-            )
+            n_q = r.get('n_queries') or 0
+            ci = r.get('rank_percentile_ci') or (float('nan'),) * 3
+            hits1, hits5 = round((r.get('top1') or 0) * n_q), round((r.get('top5') or 0) * n_q)
+
+            # Rank percentile leads because every query contributes to it; Top-K goes out as raw hit counts.
+            lines += [
+                f'- **Rank percentile: {ci[0]:.4f}** (95% CI {ci[1]:.4f}–{ci[2]:.4f}, chance 0.5) '
+                f'— the headline: it uses all {n_q} queries, not just the ones that landed.',
+                f'- Top-1: **{hits1} hits / {n_q}** vs {n_q * (r.get("chance_top1") or 0):.1f} expected '
+                f'by chance (p={r.get("top1_p", float("nan")):.1e})',
+                f'- Top-5: **{hits5} hits / {n_q}** vs {n_q * 5 * (r.get("chance_top1") or 0):.1f} expected '
+                f'by chance (p={r.get("top5_p", float("nan")):.1e})',
+            ]
         lines.append('')
 
     lines += [

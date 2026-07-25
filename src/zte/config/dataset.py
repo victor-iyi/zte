@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
 from zte.config._paths import PathFields
-from zte.config.types import Granularity, MissingMethod, Normalization, Representation
+from zte.config.types import Granularity, MissingMethod, Normalization, RawAlign, Representation
 from zte.data.schema import BANDS, Band, EyeTrackingMeasure, Task
 
 
@@ -100,6 +100,18 @@ class DatasetConfig(PathFields):
 
     bandpass: tuple[float, float] | None = None
     """Optional `(low, high)` Hz Butterworth band-pass for raw EEG."""
+
+    raw_align: RawAlign = 'none'
+    """Per-subject alignment of raw EEG windows. `euclidean` whitens each subject by their own mean channel
+    covariance. Note `normalize` only ever applied to band power, so this is the raw path's only alignment."""
+
+    raw_align_fit: Literal['train', 'all'] = 'all'
+    """Whose windows the alignment maps are fitted on. `all` includes the held-out subject, which is label-free
+    calibration rather than leakage; `train` withholds it as the strict ablation."""
+
+    subject_signature: bool = False
+    """Export each subject's covariance descriptor for `model.subject_adapter`. Computed before alignment, since
+    whitening would flatten it to a constant."""
 
     missing: MissingConfig = field(default_factory=MissingConfig)
     """Missing-value handling configuration."""

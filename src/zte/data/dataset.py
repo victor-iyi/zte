@@ -13,6 +13,7 @@ import pandas as pd
 
 from zte.config import DatasetConfig
 from zte.data.cache import BundleStore
+from zte.data.features.alignment import RawSubjectAligner
 from zte.data.features.features import (
     FeatureSelector,
     SelectionMethod,
@@ -96,6 +97,8 @@ class ZuCoDataset:
         self.feature_names: list[str] = []
         self.bp_feature_names: list[str] = []
         self.normalizer: FeatureNormalizer | None = None
+        self.aligner: RawSubjectAligner | None = None
+        self._aligned = False
         self._groups: list[tuple[tuple[str, str, int], np.ndarray]] | None = None
 
     # -- construction ------------------------------------------------------- #
@@ -256,6 +259,70 @@ class ZuCoDataset:
 
         if self.config.missing.method == 'drop' or not self.config.include_omitted:
             self._drop_missing_rows()
+
+    def align_raw(self, train_indices: np.ndarray | None = None) -> None:
+        """Whitens raw windows per subject and computes each subject's signature.
+
+        Applied after the cached bundle loads rather than inside `_process`, so enabling alignment never invalidates
+        a prepared bundle. Idempotent: a second call is a no-op.
+
+        Args:
+            train_indices (np.ndarray | None): Training rows, used only when `config.raw_align_fit == 'train'`.
+        """
+        if self._aligned or self.raw_eeg is None or self.config.raw_align == 'none':
+            return
+
+        subjects = self.words['subject'].to_numpy()
+        present = (
+            self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
+        )
+
+        # `train` restricts the fit to training rows; `all` lets every subject supply their own map.
+        fit_mask = present.copy()
+        if self.config.raw_align_fit == 'train' and train_indices is not None:
+            train_mask = np.zeros(len(self.words), dtype=bool)
+            keep = np.asarray(train_indices, dtype=int)
+            train_mask[keep[(keep >= 0) & (keep < len(self.words))]] = True
+            fit_mask &= train_mask
+
+        if not fit_mask.any():
+            _LOG.warning('align_raw: no usable rows to fit on; skipping alignment.')
+            return
+
+        self.aligner = RawSubjectAligner().fit(
+            self.raw_eeg, subjects, present=fit_mask, region_index=self._region_index()
+        )
+        self.raw_eeg = self.aligner.transform(self.raw_eeg, subjects)
+        self._aligned = True
+        _LOG.info(
+            'Euclidean-aligned raw windows for %d subjects (fit=%s, signature dim %d).',
+            len(self.aligner.references),
+            self.config.raw_align_fit,
+            self.aligner.signature_dim,
+        )
+
+    def _region_index(self) -> np.ndarray | None:
+        """Per-electrode scalp-region id from the montage, or `None` to fall back to contiguous blocks."""
+        if not self.config.montage_csv:
+            return None
+        try:
+            from zte.data.montage.regions import RegionMap
+
+            return np.asarray(RegionMap.from_csv(self.config.montage_csv).channel_region, dtype=int)
+        except Exception as exc:  # montage is optional; a coarse partition is a fine fallback
+            _LOG.warning(
+                'align_raw: could not read montage regions (%s); using contiguous blocks.', exc
+            )
+            return None
+
+    def subject_signatures(self) -> dict[str, np.ndarray]:
+        """Standardised signature per subject code (empty when signatures are disabled)."""
+        if self.aligner is None or not self.config.subject_signature:
+            return {}
+        return {
+            str(code): self.aligner.signature_for(str(code))
+            for code in np.unique(self.words['subject'].to_numpy())
+        }
 
     def refit_normalizer(self, train_indices: np.ndarray) -> None:
         """Re-fits the feature normaliser (and eye-tracking fill) on train rows only.
@@ -662,6 +729,8 @@ class ZuCoDataset:
         payload = dataclasses.asdict(cfg)
         # `cache_remote` / `cache_extracts` say WHERE and WHETHER to cache, never what the arrays hold,
         # so they must stay out of the digest -- including them would invalidate every existing bundle.
+        # `raw_align*` / `subject_signature` are applied by `align_raw` AFTER the bundle loads, not baked into it,
+        # precisely so turning alignment on does not invalidate a prepared bundle that took hours to build.
         for ignore in (
             'root',
             'cache_dir',
@@ -669,6 +738,9 @@ class ZuCoDataset:
             'cache_extracts',
             'cache_format',
             'montage_csv',
+            'raw_align',
+            'raw_align_fit',
+            'subject_signature',
         ):
             payload.pop(ignore, None)
         # `root` is excluded so the same recording hits one key from any machine (local, Colab, Drive)
