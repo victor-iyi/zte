@@ -241,11 +241,11 @@ Pass `--base-config` so every cell inherits the flagship recipe (encoder, spatia
 
 ```sh
 uv run zte-benchmark --root res/data/zuco_extracted \
-    --base-config experiments/flagship/clip_e5_bandpower.yaml --loso-holdout ZAB \
+    --base-config experiments/flagship/zte_raw_aligned.yaml --loso-holdout ZAB \
     --objectives clip,skipgram,masked,cpc --pos-encodings rope --eye-tracking off \
     --seeds 42 --out res/benchmark --resume
 # Quick, no-data version:
-uv run zte-benchmark --synthetic --base-config experiments/flagship/clip_e5_bandpower.yaml \
+uv run zte-benchmark --synthetic --base-config experiments/flagship/zte_raw_aligned.yaml \
     --objectives clip,skipgram --pos-encodings rope --eye-tracking off --seeds 42 --out res/benchmark
 ```
 

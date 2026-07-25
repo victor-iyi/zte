@@ -2,7 +2,7 @@
 
 The methods behind ZTE's second-generation thought embedding. The approach turns the EEG recorded while a person reads a word into a 768-dimensional code that depends on *what* was read rather than *who* read it, by treating the signal as a superposition of generative factors, disentangling them, and aligning them across brains.
 
-Configuration: `experiments/flagship/clip_e5_bandpower.yaml` (the champion recipe); the same levers in their skip-gram form are kept as the control, `experiments/benchmark/baseline_skipgram_loso.yaml`. Every method is an independent, config-gated lever, so each is validated in isolation with `zte-ablate` against the held-out-LOSO scoreboard (`zte.evaluation.audit.scoreboard`).
+Configuration: `experiments/flagship/zte_raw_aligned.yaml` (the champion recipe); the same levers in their skip-gram form are kept as the control, `experiments/benchmark/baseline_skipgram_loso.yaml`. Every method is an independent, config-gated lever, so each is validated in isolation with `zte-ablate` against the held-out-LOSO scoreboard (`zte.evaluation.audit.scoreboard`).
 
 ---
 
@@ -165,4 +165,4 @@ The **retrieval-and-honesty layer** is the implemented fix, layered on top of th
   (permutation-*p* AND-ed with the bootstrap CI; phase-shuffle, seen/novel, and frequency-matched
   controls; rank-percentile / median-rank reporting).
 
-The stack is carried by the flagship CLIP configs, `experiments/flagship/clip_e5_bandpower.yaml` (geometry-fixed spherical-harmonic recipe) and `experiments/flagship/clip_e5_raw.yaml` (the raw-conformer arm); `experiments/benchmark/baseline_skipgram_loso.yaml` runs the same levers under skip-gram as the control. The spatial-attention + FiLM + shrunk-`content_dim` A/B (`experiments/archive/exp7_sota_geom_invariance.yaml`) is archived — it scored 0.0 with permutation *p*=1.0 on held-out ZAB, so it is a recorded failed arm rather than an active comparison. The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).
+The stack is carried by the flagship CLIP configs, `experiments/flagship/zte_raw_aligned.yaml` (geometry-fixed spherical-harmonic recipe) and `experiments/flagship/clip_e5_raw.yaml` (the raw-conformer arm); `experiments/benchmark/baseline_skipgram_loso.yaml` runs the same levers under skip-gram as the control. The spatial-attention + FiLM + shrunk-`content_dim` A/B (`experiments/archive/exp7_sota_geom_invariance.yaml`) is archived — it scored 0.0 with permutation *p*=1.0 on held-out ZAB, so it is a recorded failed arm rather than an active comparison. The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).

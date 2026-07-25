@@ -57,8 +57,8 @@ VICReg / adversary / whiten / all_but_top / csls / eval-hardening keys are inher
 
 ## The A/B (both text encoders) and staged granularity
 
-- `experiments/flagship/clip_e5_bandpower.yaml` — **E5** sentence encoder (purpose-built sentence embeddings). On real ZuCo (held out ZAB, 2026-07-16) this is the only recipe that has ever beaten chance: sentence-retrieval Top-1 0.093 vs 0.0013 chance, permutation *p*=0.002.
-- `experiments/benchmark/clip_qwen_bandpower.yaml` — **Qwen2.5-0.5B**, mean-pooled (local, fast iteration). It sits in `benchmark/` as the text-encoder control.
+- `experiments/flagship/zte_raw_aligned.yaml` — **E5** sentence encoder (purpose-built sentence embeddings). On real ZuCo (held out ZAB, 2026-07-16) this is the only recipe that has ever beaten chance: sentence-retrieval Top-1 0.093 vs 0.0013 chance, permutation *p*=0.002.
+- `experiments/archive/clip_qwen_bandpower.yaml` — **Qwen2.5-0.5B**, mean-pooled (local, fast iteration). It sits in `benchmark/` as the text-encoder control.
 - `experiments/flagship/clip_e5_raw.yaml` — **Stage 2**: the raw-signal sentence encoder (the raw-conformer temporal-spatial-convolution encoder — `raw_conformer` frontend, `raw_window: 350` ≈ 700 ms to reach the N400). Ships after Stage 1 (word-pool) validates the objective; it took the best held-out lift (+0.71pp).
 
 The `run_name` inside each config is unchanged by the tiering, so these still write to `res/experiments/exp8_clip_e5/`, `exp8_clip_qwen/` and `exp8_clip_e5_raw/`.
@@ -71,8 +71,8 @@ The `run_name` inside each config is unchanged by the tiering, so these still wr
 # provision E5/Qwen once
 uv sync --group meaning
 # Stage-1 A/B, held out on ZAB (each writes the scoreboard + interactive dashboard, --resume-safe)
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml  --root "<ZuCo>" --loso-holdout ZAB --out-root res/experiments --resume
-uv run zte-run --config experiments/benchmark/clip_qwen_bandpower.yaml --root "<ZuCo>" --loso-holdout ZAB --out-root res/experiments --resume
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml  --root "<ZuCo>" --loso-holdout ZAB --out-root res/experiments --resume
+uv run zte-run --config experiments/archive/clip_qwen_bandpower.yaml --root "<ZuCo>" --loso-holdout ZAB --out-root res/experiments --resume
 # compare E5 vs Qwen vs the skip-gram control on the held-out north-star
 uv run zte-compare --experiments res/experiments
 ```

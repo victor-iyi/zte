@@ -10,10 +10,10 @@ The recommended entry point. It resolves the data source, prepares + caches the 
 
 ```sh
 # No data needed — full pipeline on a synthetic ZuCo tree (great smoke test).
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --synthetic --epochs 5
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --synthetic --epochs 5
 
 # Real data from a local folder (extracted .mat files, or a folder of task .zip archives).
-uv run zte-run --config experiments/flagship/clip_e5_bandpower.yaml --root res/data/zuco_extracted
+uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --root res/data/zuco_extracted
 
 # Real data straight from Google Drive (folder id or shareable URL; needs the `drive` group).
 uv run zte-run --config experiments/flagship/clip_e5_raw.yaml --drive <folder-id-or-url>
@@ -22,7 +22,7 @@ uv run zte-run --config experiments/flagship/clip_e5_raw.yaml --drive <folder-id
 
 Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir` (default `res/data/zuco_extracted`), `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
-Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. The `<run_name>` comes from inside the config, not from its file path, so a tiered config still writes to its historical directory (`experiments/flagship/clip_e5_bandpower.yaml` -> `res/experiments/exp8_clip_e5/`). See [`experiments/README.md`](../experiments/README.md) for the config tiers (`flagship/`, `benchmark/`, `ablation/`, `archive/`) and their rationale.
+Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. The `<run_name>` comes from inside the config, not from its file path, so a tiered config still writes to its historical directory (`experiments/flagship/zte_raw_aligned.yaml` -> `res/experiments/exp8_clip_e5/`). See [`experiments/README.md`](../experiments/README.md) for the config tiers (`flagship/`, `benchmark/`, `ablation/`, `archive/`) and their rationale.
 
 ## Prefer the individual steps? `zte-train`
 
