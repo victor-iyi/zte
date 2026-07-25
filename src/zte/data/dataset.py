@@ -790,7 +790,8 @@ class ZuCoDataset:
         src = Path(path)
         meta = json.loads((src / 'meta.json').read_text(encoding='utf-8'))
         config = DatasetConfig(**_coerce_dataset_meta(meta['config']))
-        ds = into or cls(config)
+
+        ds = into if into is not None else cls(config)
         ds.config = config
         ds.words = pd.read_pickle(src / 'words.pkl')
         ds.sentences = pd.read_pickle(src / 'sentences.pkl')
@@ -817,16 +818,20 @@ class ZuCoDataset:
         columns, so an older bundle (built before a column was added) is repaired in place on load rather
         than triggering a multi-hour reprocess.
         """
-        words = self.words
-        if words is None or not len(words):
+        if self.words is None or not len(self.words):
             return
-        if 'sentence_uid' not in words.columns:
+
+        # Re-read `self.words` at each step, never a captured local frame: under pandas Copy-on-Write the
+        # in-place column add can detach a stale reference, so a captured frame would drop the freshly
+        # added `sentence_uid` when the category block rebuilds from it.
+        if 'sentence_uid' not in self.words.columns:
             _LOG.info('Cached bundle predates `sentence_uid`; backfilling linguistic features.')
             self._add_linguistic_features()
-        if 'stimulus_key' not in words.columns or 'category' not in words.columns:
+
+        if 'stimulus_key' not in self.words.columns or 'category' not in self.words.columns:
             # Drop any partial category columns first, so `_attach_categories`'s merge cannot collide.
             stale = ['category', 'category_scheme', 'length_band', 'stimulus_key']
-            self.words = words.drop(columns=[c for c in stale if c in words.columns])
+            self.words = self.words.drop(columns=[c for c in stale if c in self.words.columns])
             try:
                 self._attach_categories()
             except (OSError, KeyError, ValueError) as exc:  # pragma: no cover - defensive

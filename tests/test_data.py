@@ -193,6 +193,24 @@ def test_splits_are_leakage_aware(small_dataset: ZuCoDataset) -> None:
     assert train_uids.isdisjoint(val_uids), 'sentences must not span splits'
 
 
+def test_load_into_populates_the_given_instance(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """`load(into=ds)` must populate that instance, even though a fresh dataset is falsy.
+
+    Regression: `ds = into or cls(config)` discarded a freshly-constructed `into` (empty `__len__` is
+    falsy) and populated a throwaway, so `build()`'s cache hit (`self.load(hit, into=self); return self`)
+    returned an empty `self` and the next `analyze()` raised `KeyError: 'sentence_uid'`.
+    """
+    from zte.config import DatasetConfig
+
+    bundle = small_dataset.save(tmp_path / 'bundle')
+    target = ZuCoDataset(DatasetConfig())
+    assert len(target) == 0  # a fresh dataset is falsy — the trigger for the bug
+    returned = target.load(bundle, into=target)
+    assert returned is target  # the caller's instance, not a throwaway
+    assert 'sentence_uid' in target.words.columns
+    assert len(target.words) == len(small_dataset.words)
+
+
 def test_save_reload_roundtrip(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
     """A saved bundle reloads with identical arrays and feature names."""
     bundle = small_dataset.save(tmp_path / 'bundle')
