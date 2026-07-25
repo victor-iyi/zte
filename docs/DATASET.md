@@ -253,6 +253,29 @@ ZuCoDataset.from_drive('<file id | url | mounted path>')
 
 A saved bundle is the unit of reuse: build once with `zte-prepare`, then train, evaluate and explore from it repeatedly without re-reading the `.mat` files.
 
+### The layered cache — prepare once, across machines and sessions
+
+`--cache-dir` is a fast local cache; `--cache-remote` (or `$ZTE_CACHE_REMOTE`, which every `zte-*` command honours) is a persistent one, typically a mounted Drive folder. Lookups read local first, then the persistent store, staging a hit down once; a freshly built bundle is published upward immediately, so an interrupted run never costs a rebuild.
+
+```sh
+export ZTE_CACHE_REMOTE="/content/drive/MyDrive/Sharables/ZTE/prepared"
+
+uv run zte-prepare --root "<ZuCo>" --configs                 # build every dataset the experiments need, once
+uv run zte-prepare --root "<ZuCo>" --configs --check         # report what exists; build nothing
+```
+
+`--configs` groups every config by its content-addressed cache key, so the many experiments sharing a dataset (all the raw arms, every LOSO fold, every seed) cost one build between them. The `status` column reads:
+
+| status | meaning |
+| --- | --- |
+| `cached` | already on this machine |
+| `on-drive` | in the persistent store; pulled down on demand by the first run that needs it |
+| `MISSING` | about to be built (or, under `--check`, still outstanding) |
+
+**A prepared project never touches the raw data.** Cache keys exclude the data root, so `zte-prepare` keys every config and queries the store *before* resolving (or downloading) the `.mat` tree, and only resolves it for what is genuinely absent. On a warm store the whole command is a metadata check that finishes in well under a second.
+
+That is what makes it safe to run at the top of every Colab session: the local cache dies with the runtime, but Drive does not, and re-running costs nothing. Do not gate it behind a local "already done" sentinel — a sentinel on the ephemeral disk never survives to fire, and one that does survive goes stale the moment a new experiment config needs a dataset it has not seen.
+
 [ARCHITECTURE.md]: ./ARCHITECTURE.md
 [EVALUATION.md]: ./EVALUATION.md
 [RESULTS.md]: ./RESULTS.md

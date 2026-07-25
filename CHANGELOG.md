@@ -1,5 +1,16 @@
 # Changelog
 
+## Fix: a warm Drive cache no longer re-prepares on every Colab session
+
+`zte-prepare --configs` re-did work on every fresh runtime even when every dataset was already sitting in the persistent Drive store. Two causes, both fixed:
+
+- **It rebuilt what it had just found.** The loop computed `status = 'cached' if store.find(key) ...` and then called `ZuCoDataset(cfg).build()` **unconditionally** — staging each bundle down from Drive and loading it into RAM in full, only to discard it. Cached entries are now skipped outright; staging happens lazily, in the first run that actually needs that dataset.
+- **It resolved the raw data root before checking anything.** Cache keys exclude the data root, so every config is now keyed *first* and the `.mat` tree is resolved (or downloaded, or synthesised) only for entries genuinely absent. On a warm store the command never touches the raw data at all and finishes in under a second.
+- **`BundleStore.has()`** reports which layer holds an entry (`local` / `persistent` / `None`) without copying, so a presence check costs one `meta.json` stat rather than a multi-GB download. `zte-prepare --check` reports the whole board and builds nothing.
+- **The notebook's "already prepared" sentinel is gone.** It lived at `res/cache/prepared/.prepared.done` — on the disk Colab wipes between sessions — so it never fired where it mattered; and a sentinel that *did* survive would silently skip preparing the dataset for any newly-added config. The command is now cheap and authoritative, so asking the store replaces guessing.
+
+Covered by `tests/test_cache.py` (warm-store no-op, `--check` builds nothing, and cache keys proven independent of the data root — the assumption the deferred resolution rests on).
+
 ## exp12 — cancel the brain, keep the meaning (and re-score the board honestly)
 
 Every run on Drive was re-scored on the **held-out subject** instead of the pooled set. Pooled retrieval includes the 11 training subjects, so it rewards memorising them rather than reaching the 12th — and it had crowned the wrong champion. The band-power arm `clip_e5_meaning` (headline Top-1 0.043, *pooled*) lands **4 hits in 700** held out, and an identical re-run landed 2. On the same fold the raw conformer lands **32 at Top-5, *p* ≈ 7e-16**. Band power's low subject probe (0.23) was never disentanglement: its raw features only score 0.16, and its effective-rank ratio of 0.160 shows the 768-d space had collapsed to ~123 directions. Invariance had been bought by destroying capacity.

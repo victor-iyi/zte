@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import json
 from pathlib import Path
@@ -20,6 +21,95 @@ def _entry(directory: Path, payload: str = '{}') -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'meta.json').write_text(payload, encoding='utf-8')
     return directory
+
+
+def _prepare_args(tmp_path: Path, config: str, check: bool = False) -> argparse.Namespace:
+    """Builds the `zte-prepare --configs` namespace against a scratch local/drive pair."""
+    return argparse.Namespace(
+        configs=[config],
+        synthetic=False,
+        synthetic_out='res/data/synthetic_zuco',
+        cache_dir=str(tmp_path / 'local'),
+        cache_remote=str(tmp_path / 'drive'),
+        no_extract_cache=False,
+        check=check,
+    )
+
+
+def test_has_reports_the_layer_without_staging(tmp_path: Path) -> None:
+    """Test that presence checks never copy, so gating a session on them is free."""
+    store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
+    _entry(tmp_path / 'drive' / 'k')
+
+    assert store.has('k') == 'persistent'
+    assert not (tmp_path / 'local' / 'k').exists()  # the whole point: nothing was pulled down
+
+    _entry(tmp_path / 'local' / 'k')
+    assert store.has('k') == 'local'
+    assert store.has('missing') is None
+
+
+def test_prepare_skips_everything_when_the_persistent_store_is_warm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test the Colab case: local cache wiped, Drive warm -> no rebuild and no raw-data resolution.
+
+    Guards the regression where a fresh runtime re-prepared every dataset because the local cache, and the
+    sentinel that used to gate it, live on a disk Colab throws away.
+    """
+    from zte.cli import prepare as prepare_cli
+    from zte.config import ZTEConfig
+
+    config = 'experiments/flagship/zte_raw_aligned.yaml'
+    cfg = ZTEConfig.from_yaml(config).dataset
+    cfg.root, cfg.cache_dir, cfg.cache_remote = prepare_cli._PENDING_ROOT, tmp_path / 'local', None
+    _entry(tmp_path / 'drive' / ZuCoDataset(cfg)._cache_key())
+
+    # Resolving the raw root is the expensive step; a warm store must never reach it.
+    def _boom(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError('touched the raw data despite a warm persistent store')
+
+    monkeypatch.setattr(prepare_cli, '_resolve_build_root', _boom)
+    monkeypatch.setattr(prepare_cli.ZuCoDataset, 'build', _boom)
+
+    prepare_cli._prepare_configs(_prepare_args(tmp_path, config))
+    assert not (tmp_path / 'local').exists()  # nothing staged either
+
+
+def test_prepare_check_never_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that `--check` reports a cold cache without building or resolving anything."""
+    from zte.cli import prepare as prepare_cli
+
+    def _boom(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError('--check must not build')
+
+    monkeypatch.setattr(prepare_cli, '_resolve_build_root', _boom)
+    monkeypatch.setattr(prepare_cli.ZuCoDataset, 'build', _boom)
+
+    prepare_cli._prepare_configs(
+        _prepare_args(tmp_path, 'experiments/flagship/zte_raw_aligned.yaml', check=True)
+    )
+
+
+def test_prepare_keys_are_independent_of_the_data_root(tmp_path: Path) -> None:
+    """Test the assumption the deferred resolution rests on: `root` never reaches the cache key.
+
+    If it did, keying with a placeholder would miss every bundle and re-prepare the whole project.
+    """
+    from zte.cli.prepare import _PENDING_ROOT
+    from zte.config import ZTEConfig
+
+    keys = set()
+    for root in ('/local/zuco', '/gdrive/My Drive/ZuCo', _PENDING_ROOT, None):
+        cfg = ZTEConfig.from_yaml('experiments/flagship/zte_raw_aligned.yaml').dataset
+        cfg.root, cfg.cache_dir = root, tmp_path
+        keys.add(ZuCoDataset(cfg)._cache_key())
+    assert len(keys) == 1, keys
+
+    # Synthetic must still key separately, or a smoke run would poison the real bundle.
+    cfg = ZTEConfig.from_yaml('experiments/flagship/zte_raw_aligned.yaml').dataset
+    cfg.root, cfg.cache_dir = 'res/data/synthetic_zuco', tmp_path
+    assert ZuCoDataset(cfg)._cache_key() not in keys
 
 
 def test_store_prefers_local_then_falls_back_to_remote(tmp_path: Path) -> None:

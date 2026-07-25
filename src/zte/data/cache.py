@@ -56,6 +56,26 @@ class BundleStore:
         suffix = Path(EXTRACT_SUBDIR) / key if kind == 'extract' else Path(key)
         return self.local / suffix, (self.remote / suffix if self.remote else None)
 
+    def has(self, key: str, kind: str = 'bundle') -> str | None:
+        """Reports where an entry lives without copying it: `'local'`, `'persistent'` or `None`.
+
+        The cheap counterpart to `find`, for callers that only need to know whether work is required.
+        Staging gigabytes down from Drive to answer that question is exactly the waste this avoids.
+
+        Args:
+            key (str): The content-addressed entry key.
+            kind (str): `'bundle'` for a processed bundle, `'extract'` for a raw extraction.
+
+        Returns:
+            str | None: Which layer holds the entry, or `None` if neither does.
+        """
+        local_dir, remote_dir = self._dirs(key, kind)
+        if (local_dir / 'meta.json').is_file():
+            return 'local'
+        if remote_dir is not None and (remote_dir / 'meta.json').is_file():
+            return 'persistent'
+        return None
+
     def find(self, key: str, kind: str = 'bundle') -> Path | None:
         """Locates a cache entry, pulling it down from the remote on first use.
 
