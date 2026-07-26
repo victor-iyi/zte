@@ -217,11 +217,21 @@ def _run(args: argparse.Namespace) -> None:
     # (and resumable) from its own directory, without reconstructing the CLI overrides by hand.
     config.to_yaml(run_dir / 'config.yaml')
 
+    # Recorded because "it OOMed / it was slow" is unanswerable without knowing which accelerator ran it,
+    # and a run's artifacts otherwise carry no trace of the hardware.
+    from zte.device import resolve_device
+
+    _spec = resolve_device(config.train.device, config.train.precision)
+
     manifest: dict[str, Any] = {
         'run_name': config.run_name,
         'data_root': config.dataset.root,
         # Lets tooling exclude smoke runs from backups (zte-pack --skip-synthetic).
         'synthetic': bool(args.synthetic),
+        'device': _spec.name,
+        'device_kind': _spec.kind,
+        'batch_size': config.train.batch_size,
+        'grad_checkpoint': bool(config.model.grad_checkpoint),
     }
 
     # A shared cache already holds the processed bundle, making the per-run copy redundant.
