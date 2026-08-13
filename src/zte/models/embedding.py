@@ -108,8 +108,7 @@ class ZTEModel(nn.Module):
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)
 
-        # The id-free replacement for the two tables above: adapter weights are a function of the person's own
-        # statistics, so a subject absent from training is adapted rather than left at the identity map.
+        # Id-free replacement for the two tables above: an unseen subject is adapted from its own statistics.
         self.subject_adapter: SubjectAdapter | None = None
         if config.subject_adapter and signature_dim:
             self.subject_adapter = SubjectAdapter(
@@ -271,6 +270,47 @@ class ZTEModel(nn.Module):
         mask = valid.unsqueeze(-1).float()
         return (hidden * mask).sum(1) / mask.sum(1).clamp_min(1.0)
 
+    def pooling_mask(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Returns the `(batch_size, seq_len)` mask of positions a sentence may attend to and pool over.
+
+        Omitted words are non-tokens for attention and pooling; a sentence with none left falls back to its padding
+        mask, because `AttentionPool` returns NaN for a fully masked row.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+
+        Returns:
+            torch.Tensor: Boolean `(batch_size, seq_len)`; `True` at usable positions.
+        """
+        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
+        empty = ~valid.any(dim=1)
+        if bool(empty.any()):
+            valid = valid.clone()
+            valid[empty] = batch['pad_mask'][empty]
+        return valid
+
+    def sentence_hidden(
+        self, batch: dict[str, Any], contextual: bool = True, causal: bool = False
+    ) -> torch.Tensor:
+        """Pools a sentence's word-EEG tokens into one hidden vector, keeping the gradient.
+
+        This is the differentiable half of `embed_sentence`, which a decoder loss needs and cannot get from that
+        `@torch.no_grad()` method.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+            contextual (bool, optional): Run the transformer before pooling. Defaults to True.
+            causal (bool, optional): Use a causal mask when `contextual`. Defaults to False.
+
+        Returns:
+            torch.Tensor: Pooled sentence hiddens `(batch_size, hidden_dim)`, before the projection head.
+        """
+        valid = self.pooling_mask(batch)
+        hidden = self.token_hidden(batch)
+        if contextual:
+            hidden = self.contextualize(hidden, valid, causal=causal)
+        return self._pool_tokens(hidden, valid)
+
     @torch.no_grad()
     def embed_sentence(
         self, batch: dict[str, Any], objective: ObjectiveName | None = None
@@ -290,22 +330,8 @@ class ZTEModel(nn.Module):
         Returns:
             torch.Tensor: Sentence embeddings `(batch_size, embed_dim)`.
         """
-        # Omitted words are non-tokens for attention and pooling; fall back so no sentence is fully masked.
-        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
-        empty = ~valid.any(dim=1)
-        if bool(empty.any()):
-            valid = valid.clone()
-            valid[empty] = batch['pad_mask'][empty]
-
-        hidden = self.token_hidden(batch)
-        if objective in {'skipgram', 'cbow'}:
-            pooled = self._pool_tokens(hidden, valid)
-        elif objective == 'cpc':
-            hidden = self.contextualize(hidden, valid, causal=True)
-            pooled = self._pool_tokens(hidden, valid)
-        else:
-            hidden = self.contextualize(hidden, valid, causal=False)
-            pooled = self._pool_tokens(hidden, valid)
+        contextual = objective not in {'skipgram', 'cbow'}
+        pooled = self.sentence_hidden(batch, contextual=contextual, causal=objective == 'cpc')
         return self.project(pooled)
 
 

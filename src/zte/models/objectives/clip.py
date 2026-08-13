@@ -81,11 +81,7 @@ class SentenceClipObjective(_ObjectiveBase):
         Returns:
             tuple[torch.Tensor, torch.Tensor]: `(sentence_embeddings (B, embed_dim), token_hiddens (B, L, H))`.
         """
-        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
-        empty = ~valid.any(dim=1)
-        if bool(empty.any()):
-            valid = valid.clone()
-            valid[empty] = batch['pad_mask'][empty]
+        valid = model.pooling_mask(batch)
         hidden = model.token_hidden(batch)  # (B, L, H)
         hidden_ctx = model.contextualize(hidden, valid)  # sentence-contextual (bidirectional)
         pooled = model._pool_tokens(hidden_ctx, valid)  # (B, H)  # noqa: SLF001 -- shared pooling

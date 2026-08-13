@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-AttnPos = Literal['rope', 'alibi', 'none']
+type AttnPos = Literal['rope', 'alibi', 'none']
 
 
 def sinusoidal_encoding(length: int, dim: int, device: torch.device | None = None) -> torch.Tensor:

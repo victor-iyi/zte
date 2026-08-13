@@ -30,6 +30,8 @@ _TRACKED_PACKAGES: tuple[str, ...] = (
     'scikit-learn',
     'pandas',
     'mne',
+    'transformers',
+    'sentence-transformers',
 )
 
 

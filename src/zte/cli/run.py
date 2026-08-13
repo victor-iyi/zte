@@ -93,6 +93,46 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--epochs', type=int, default=None, help='Override config epochs.')
     parser.add_argument(
+        '--mode',
+        choices=['encoder', 'decoder', 'joint'],
+        default=None,
+        help='Training stage: the encoder alone, a decoder over a frozen encoder, or both jointly '
+        '(overrides config.train.mode).',
+    )
+    parser.add_argument(
+        '--encoder-ckpt',
+        type=str,
+        default=None,
+        dest='encoder_ckpt',
+        help='Frozen encoder checkpoint a decoder/joint run starts from; its stored shapes, normaliser '
+        'and aligner are reused verbatim rather than refitted.',
+    )
+    parser.add_argument(
+        '--lm',
+        type=str,
+        default=None,
+        help="Override config.decoder.lm_source ('tiny' builds a 2-layer model locally, with no network).",
+    )
+    parser.add_argument(
+        '--conditioning',
+        choices=['pooled', 'pooled_plus_words'],
+        default=None,
+        help='What the prefix bridge reads (overrides config.decoder.conditioning).',
+    )
+    parser.add_argument(
+        '--stage0-epochs',
+        type=int,
+        default=None,
+        dest='stage0_epochs',
+        help='Text-only bridge pretraining epochs on train-split stimuli (0 disables Stage 0).',
+    )
+    parser.add_argument(
+        '--decode-eval',
+        action='store_true',
+        dest='decode_eval',
+        help='Force config.objective.eval_generation: decode the held-out cell with its controls after training.',
+    )
+    parser.add_argument(
         '--seed',
         type=int,
         default=None,
@@ -142,6 +182,39 @@ def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
     return resolve_root_if_needed(args, config.dataset)
 
 
+def warn_on_split_override(config: ZTEConfig, requested_split: str) -> bool:
+    """Warns when `--loso-holdout` traded a decoder run's honest split for `by_subject_loso`.
+
+    Args:
+        config (ZTEConfig): The configuration after every CLI override has been applied.
+        requested_split (str): The split the YAML named, before `--loso-holdout` touched it.
+
+    Returns:
+        bool: Whether the warning fired.
+
+    Note:
+        `by_subject_loso` shares all 700 stimuli between train and val, which is the one configuration in which
+        a decoder recites the corpus rather than reading one -- and the generation verdict refuses a headline on
+        it. An encoder run loses nothing by the swap, so this reports rather than refuses.
+    """
+    if (
+        config.train.mode == 'encoder'
+        or config.train.split != 'by_subject_loso'
+        or requested_split == 'by_subject_loso'
+    ):
+        return False
+
+    _LOG.warning(
+        '--loso-holdout replaced split %r with %r for a %r run: every held-out sentence is now also a '
+        'training sentence, so the generation verdict will fail its honest_split clause. Name '
+        'train.loso_holdout_subject in the config instead and drop the flag.',
+        requested_split,
+        config.train.split,
+        config.train.mode,
+    )
+    return True
+
+
 def main() -> None:
     """Runs the whole pipeline, catalogues it, and supports pause/resume via `--resume`."""
     args = parse_arguments()
@@ -159,6 +232,7 @@ def _run(args: argparse.Namespace) -> None:
     """The pipeline body (separated so `main` can wrap it for clean pause/resume)."""
     # CLI overrides, applied before anything derives from the config.
     config = ZTEConfig.from_yaml(args.config)
+    requested_split = config.train.split
     if args.seed is not None:
         config.train.seed = args.seed
     if args.loso_holdout is not None:
@@ -187,6 +261,20 @@ def _run(args: argparse.Namespace) -> None:
         config.dataset.subjects = tuple(args.subjects.split(','))
     if args.tasks is not None:
         config.dataset.tasks = tuple(args.tasks.split(','))
+    if args.mode is not None:
+        config.train.mode = args.mode
+    if args.encoder_ckpt is not None:
+        config.train.encoder_ckpt = args.encoder_ckpt
+    if args.lm is not None:
+        config.decoder.lm_source = args.lm
+    if args.conditioning is not None:
+        config.decoder.conditioning = args.conditioning
+    if args.stage0_epochs is not None:
+        config.decoder.stage0_epochs = args.stage0_epochs
+    if args.decode_eval:
+        config.objective.eval_generation = True
+
+    warn_on_split_override(config, requested_split)
 
     run_dir = Path(args.out_root) / config.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -273,14 +361,21 @@ def _run(args: argparse.Namespace) -> None:
     manifest['final_train_loss'] = (
         artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
     )
+    # Code state, hardware, schedule and library versions: without them a number cannot be placed.
+    manifest['provenance'] = artifacts.trainer.provenance()
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
     _mirror_to_drive(run_dir, args, 'train')
 
     # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
     metrics_path = run_dir / 'evaluation' / 'metrics.json'
     best_ckpt = run_dir / 'checkpoints' / 'best.pt'
-    eval_fresh = metrics_path.exists() and (
-        not best_ckpt.exists() or metrics_path.stat().st_mtime >= best_ckpt.stat().st_mtime
+    needs_generation = config.train.mode != 'encoder' and getattr(
+        config.objective, 'eval_generation', False
+    )
+    eval_fresh = (
+        metrics_path.exists()
+        and (not best_ckpt.exists() or metrics_path.stat().st_mtime >= best_ckpt.stat().st_mtime)
+        and (not needs_generation or (run_dir / 'evaluation' / 'generation.json').exists())
     )
     if not args.skip_eval:
         if args.resume and eval_fresh and not args.force:
@@ -399,6 +494,14 @@ def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace)
         return False
     if not args.skip_eval and not (run_dir / 'evaluation' / 'metrics.json').exists():
         return False
+    # A decoder run's deliverable is the generation block, so it is not complete without one.
+    if (
+        not args.skip_eval
+        and config.train.mode != 'encoder'
+        and getattr(config.objective, 'eval_generation', False)
+        and not (run_dir / 'evaluation' / 'generation.json').exists()
+    ):
+        return False
     if not args.skip_explore and not (run_dir / 'exploration' / 'report.md').exists():
         # Exploration only runs when band power is available, so a prior manifest is the arbiter.
         if (run_dir / 'manifest.json').exists():
@@ -416,7 +519,11 @@ def _eval_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     pooled `sentence_retrieval` -- which is dominated by the training subjects and reads far higher. Both
     are carried so the catalogue can show the honest one and flag the pooled one as inflated.
     """
-    held = (metrics.get('scoreboard') or {}).get('held_out_retrieval') or {}
+    board = metrics.get('scoreboard') or {}
+    held = board.get('held_out_retrieval') or {}
+    rescoring = board.get('decoder_rescoring_retrieval') or {}
+    generation = metrics.get('generation') or {}
+    worst = generation.get('worst_control_ci') or {}
     return {
         'verdict': metrics.get('verdict'),
         'sentence_retrieval_top1': metrics.get('sentence_retrieval', {}).get('top1'),
@@ -424,6 +531,11 @@ def _eval_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         'held_out_retrieval_lift': held.get('lift_top1'),
         'subject_transfer_top1': metrics.get('analogy', {}).get('subject_transfer', {}).get('top1'),
         'effective_rank_ratio': metrics.get('embedding_health', {}).get('effective_rank_ratio'),
+        # Generation is reported as a delta against its worst control, never as an absolute score.
+        'generation_worst_control': generation.get('worst_control'),
+        'generation_delta': worst.get('point'),
+        'generation_delta_ci': [worst.get('lo'), worst.get('hi')] if worst else None,
+        'decoder_rescoring_rank_percentile': rescoring.get('rank_percentile'),
     }
 
 
@@ -436,7 +548,14 @@ def _evaluate(
     config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
     """Embeds the best checkpoint and runs the full evaluation suite."""
-    from zte.cli.evaluate import collect_embeddings, phase_shuffled_word_emb, training_vocab
+    from zte.cli.decode import decoder_blocks
+    from zte.cli.evaluate import (
+        collect_embeddings,
+        phase_shuffled_sent_emb,
+        phase_shuffled_word_emb,
+        train_split_sent_emb,
+        training_vocab,
+    )
     from zte.evaluation.report import evaluate_representation
     from zte.inference.embed import ZTEEmbedder
 
@@ -453,16 +572,26 @@ def _evaluate(
     )
 
     # Opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
-    phase_emb = (
-        phase_shuffled_word_emb(embedder, dataset)
-        if getattr(config.objective, 'eval_phase_shuffle', False)
-        else None
-    )
+    phase_shuffle = bool(getattr(config.objective, 'eval_phase_shuffle', False))
+    phase_emb = phase_shuffled_word_emb(embedder, dataset) if phase_shuffle else None
+    phase_sent = phase_shuffled_sent_emb(embedder, dataset) if phase_shuffle else None
+
+    # Post-processing fitted on these rows is reproducible one sentence at a time; the scored rows are not.
+    train_sent = train_split_sent_emb(embedder, dataset, config)
 
     train_vocab = (
         training_vocab(dataset, config)
         if getattr(config.objective, 'eval_seen_novel', False)
         else None
+    )
+
+    generation, rescoring = decoder_blocks(
+        ckpt,
+        dataset,
+        config,
+        out_dir=run_dir / 'evaluation',
+        device=config.train.device,
+        run_name=config.run_name,
     )
 
     metrics = evaluate_representation(
@@ -480,9 +609,22 @@ def _evaluate(
         interactive=not args.no_interactive,
         phase_word_emb=phase_emb,
         train_vocab=train_vocab,
+        phase_sent_emb=phase_sent,
+        train_sent_emb=train_sent,
+        sent_n_words=_sent_n_words(config, sent_meta),
+        generation=generation,
+        rescoring=rescoring,
+        min_prefix_kl=config.decoder.min_prefix_kl,
     )
 
     return _eval_summary(metrics)
+
+
+def _sent_n_words(config: ZTEConfig, sent_meta: Any) -> Any:
+    """Word count per reading, which turns on the length-stratified gallery beside the full one."""
+    if not getattr(config.objective, 'eval_length_stratified', False):
+        return None
+    return None if 'n_words' not in sent_meta else sent_meta['n_words'].to_numpy()
 
 
 def _save_overview(dataset: ZuCoDataset, out: Path) -> None:
@@ -540,6 +682,18 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
             ]
             if ev.get('held_out_retrieval_top1') is not None
             else [f'- Cross-subject sentence retrieval Top-1: {ev.get("sentence_retrieval_top1")}']
+        ),
+        *(
+            [
+                f'- Free-running generation delta vs its worst control '
+                f'(`{ev.get("generation_worst_control")}`): {ev.get("generation_delta")} '
+                f'CI {ev.get("generation_delta_ci")} -- an absolute score here would not be a result',
+                f'- Decoder-rescoring **retrieval** rank percentile: '
+                f'{ev.get("decoder_rescoring_rank_percentile")}',
+            ]
+            if ev.get('generation_delta') is not None
+            or ev.get('decoder_rescoring_rank_percentile') is not None
+            else []
         ),
         f'- Subject-transfer analogy Top-1: {ev.get("subject_transfer_top1")}',
         f'- Embedding effective-rank ratio: {ev.get("effective_rank_ratio")}',

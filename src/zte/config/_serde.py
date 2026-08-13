@@ -25,6 +25,8 @@ def _build(cls: type, data: dict[str, Any]) -> Any:
             continue
         value = data[f.name]
         hint = hints.get(f.name)
+        if value is None and dataclasses.is_dataclass(_strip_optional(hint)):
+            continue  # a YAML section written with no keys parses as None; keep that section's defaults
         if dataclasses.is_dataclass(_strip_optional(hint)) and isinstance(value, dict):
             kwargs[f.name] = _build(_strip_optional(hint), value)
         elif _is_tuple_hint(hint) and isinstance(value, list):

@@ -158,6 +158,15 @@ class ObjectiveConfig:
     eval_freq_matched: bool = False
     """Restrict each query's distractor bank to its own frequency/length bin, so a hit cannot be a lexical shortcut."""
 
+    eval_generation: bool = False
+    """Run the free-running generation eval with its brain-independent controls and permutation null."""
+
+    eval_rescoring: bool = True
+    """Score the sentence gallery by decoder sequence likelihood. Reported as retrieval, never as generation."""
+
+    eval_length_stratified: bool = True
+    """Also report held-out retrieval inside word-count strata, so a hit cannot be a sentence-length shortcut."""
+
     # -- CLIP sentence-alignment objective (name='clip') ------------------------------------ #
     text_source: str | None = None
     """Frozen text-encoder model id for the CLIP sentence target, e.g. `'intfloat/e5-base-v2'` (sentence-transformers)

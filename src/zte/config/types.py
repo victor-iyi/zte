@@ -33,11 +33,29 @@ type MissingMethod = Literal[
 ]
 """How missing word-level values are filled; `drop` removes the row and `mask_only` leaves the NaN in place."""
 
-type SplitStrategy = Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
-"""What the train/val/test split groups on; `by_subject_loso` holds out whole subjects."""
+type SplitStrategy = Literal[
+    'random',
+    'by_sentence',
+    'by_stimulus',
+    'by_subject_loso',
+    'by_task',
+    'by_subject_and_stimulus',
+]
+"""What the train/val/test split groups on; `by_subject_loso` holds out whole subjects and
+`by_subject_and_stimulus` crosses that with a stimulus partition, so the test cell is unseen subject x unseen text."""
 
-type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc', 'clip']
-"""The self-supervised objective: word2vec-style contrastive, data2vec-style masked, CPC, or EEG-text CLIP."""
+type ObjectiveName = Literal['skipgram', 'cbow', 'masked', 'cpc', 'clip', 'decode']
+"""The self-supervised objective: word2vec-style contrastive, data2vec-style masked, CPC, EEG-text CLIP, or the
+frozen-LM prefix decoder."""
+
+type TrainMode = Literal['encoder', 'decoder', 'joint']
+"""Which stage the run trains: the encoder alone, a decoder over a frozen encoder, or both jointly."""
+
+type Conditioning = Literal['pooled', 'pooled_plus_words']
+"""What the prefix bridge reads: the pooled text-aligned sentence vector, or that plus resampled word tokens."""
+
+type GapCorrection = Literal['none', 'mean_scale', 'whiten']
+"""Train-fitted affine correction of the EEG-to-text modality gap before the bridge."""
 
 type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 """Per-token encoder: an MLP over band-power vectors or a conformer over raw time-series windows."""

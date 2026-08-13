@@ -22,7 +22,7 @@ uv run zte-run --config experiments/flagship/clip_e5_raw.yaml --drive <folder-id
 
 Handy overrides (all optional): `--name`, `--subjects ZAB,ZDM`, `--tasks SR,NR`, `--epochs N`, `--device auto|cpu|cuda|mps`, `--out-root`, `--extract-dir` (default `res/data/zuco_extracted`), `--no-tensorboard`, `--no-interactive`, `--skip-eval`, `--skip-explore`.
 
-Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. The `<run_name>` comes from inside the config, not from its file path, so a tiered config still writes to its historical directory (`experiments/flagship/zte_raw_aligned.yaml` -> `res/experiments/exp8_clip_e5/`). See [`experiments/README.md`](../experiments/README.md) for the config tiers (`flagship/`, `benchmark/`, `ablation/`, `archive/`) and their rationale.
+Each run writes `config.yaml`, `bundle/`, `checkpoints/`, `figures/`, `evaluation/`, `exploration/`, `tb/`, `manifest.json`, `README.md`, plus a row in `res/experiments/INDEX.md`. The `<run_name>` comes from inside the config, not from its file path, so a tiered config still writes to its historical directory (`experiments/flagship/zte_raw_aligned.yaml` -> `res/experiments/exp8_clip_e5/`). See [`experiments/README.md`](../experiments/README.md) for the config tiers (`flagship/`, `decoder/`, `benchmark/`, `ablation/`, `archive/`) and their rationale.
 
 ## Prefer the individual steps? `zte-train`
 
@@ -46,21 +46,23 @@ uv run zte-train --synthetic --objective masked --epochs 5
 
 `zte-train` flags (a data source — `--bundle` / `--root` / `--drive` / `--synthetic` — is required; everything else overrides the YAML/defaults):
 
-| Flag                                               | Choices / type                                     | Overrides                                          |
-| -------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
-| `--config`                                         | path                                               | base YAML (`ZTEConfig`)                            |
-| `--root` / `--drive`                               | path / Drive id or URL                             | local `.mat` dir, zip(s), or Drive folder          |
-| `--extract-dir`                                    | path (`res/data/zuco_extracted`)                   | where Drive/zips are unzipped                      |
-| `--objective`                                      | `skipgram`,`cbow`,`masked`,`cpc`                   | `objective.name`                                   |
-| `--frontend`                                       | `band_power_mlp`,`raw_conformer`                   | `model.frontend`                                   |
-| `--representation`                                 | `band_power`,`raw`,`both`                          | `dataset.representation` (ignored with `--bundle`) |
-| `--embed-dim`                                      | int                                                | `model.embed_dim`                                  |
-| `--epochs` / `--batch-size` / `--lr`               | int/int/float                                      | `train.*`                                          |
-| `--split`                                          | `random`,`by_sentence`,`by_subject_loso`,`by_task` | `train.split`                                      |
-| `--device`                                         | `auto`,`cpu`,`cuda`,`mps`                          | `train.device`                                     |
-| `--precision`                                      | `auto`,`fp32`,`fp16`,`bf16`                        | `train.precision`                                  |
-| `--tensorboard`                                    | flag                                               | `train.tensorboard`                                |
-| `--drive-backup-dir` / `--ckpt-dir` / `--run-name` | path/path/str                                      | `train.*` / `run_name`                             |
+| Flag                                               | Choices / type                                                                             | Overrides                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| `--config`                                         | path                                                                                       | base YAML (`ZTEConfig`)                            |
+| `--root` / `--drive`                               | path / Drive id or URL                                                                     | local `.mat` dir, zip(s), or Drive folder          |
+| `--extract-dir`                                    | path (`res/data/zuco_extracted`)                                                           | where Drive/zips are unzipped                      |
+| `--objective`                                      | `skipgram`,`cbow`,`masked`,`cpc`,`clip`,`decode`                                           | `objective.name`                                   |
+| `--frontend`                                       | `band_power_mlp`,`raw_conformer`                                                           | `model.frontend`                                   |
+| `--representation`                                 | `band_power`,`raw`,`both`                                                                  | `dataset.representation` (ignored with `--bundle`) |
+| `--embed-dim`                                      | int                                                                                        | `model.embed_dim`                                  |
+| `--epochs` / `--batch-size` / `--lr`               | int/int/float                                                                              | `train.*`                                          |
+| `--split`                                          | `random`,`by_sentence`,`by_stimulus`,`by_task`,`by_subject_loso`,`by_subject_and_stimulus` | `train.split`                                      |
+| `--mode` / `--encoder-ckpt`                        | `encoder`,`decoder`,`joint` / path                                                         | `train.mode` / `train.encoder_ckpt`                |
+| `--device`                                         | `auto`,`cpu`,`cuda`,`mps`                                                                  | `train.device`                                     |
+| `--precision`                                      | `auto`,`fp32`,`fp16`,`bf16`                                                                | `train.precision`                                  |
+| `--tensorboard`                                    | flag                                                                                       | `train.tensorboard`                                |
+| `--drive-backup-dir` / `--ckpt-dir` / `--run-name` | path/path/str                                                                              | `train.*` / `run_name`                             |
+| `--resume`                                         | flag                                                                                       | continue from `last.pt`                            |
 
 ## Config-driven runs
 
@@ -167,6 +169,32 @@ flowchart TD
 ```
 
 For the data2vec / masked objective, the `EMA teacher update` step above is an exponential moving average of the student parameters $\phi$ into the teacher parameters $\theta$, that is, $\theta \leftarrow \rho\,\theta + (1-\rho)\,\phi$, where the decay $\rho$ is the `ema_decay` field (typically ramped $\rho_0 \to \rho_1$ over training).
+
+## Three modes: `encoder`, `decoder`, `joint`
+
+`train.mode` selects what a run trains. The language model is frozen in all three — `joint` refers to the encoder and
+the bridge, never to the LM.
+
+| Mode                | Trains                                                                         | Encoder                                                  | Needs `train.encoder_ckpt` |
+| ------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- | -------------------------- |
+| `encoder` (default) | encoder + objective, one group at `train.lr`                                   | from scratch                                             | no                         |
+| `decoder`           | the prefix bridge at `train.bridge_lr`                                         | loaded, frozen, kept in `.eval()`                        | yes                        |
+| `joint`             | stage A the bridge; stage B also the encoder at `bridge_lr × encoder_lr_scale` | loaded, frozen for `train.stage_a_epochs`, then unfrozen | yes                        |
+
+`train.freeze_encoder` means the encoder never trains, so `joint` requires `freeze_encoder: false` and raises if it is
+`true`; there, `train.stage_a_epochs` alone decides when the encoder joins in.
+
+`encoder` is the pre-decoder pipeline unchanged: `run_training` branches away before the objective is built and
+`stages.parameter_groups` returns the single AdamW group it always returned. In the other two modes the source
+checkpoint's fitted **normaliser and aligner are restored, not refitted** — refitting does not fail a frozen encoder,
+it silently feeds it a scale it never trained on. Parameter groups are structural rather than conditional on
+`requires_grad`, so a resume whose freeze state differs cannot break the optimiser state, and `LambdaLR` decays each
+group against its own `initial_lr`.
+
+`train.early_stop_patience` (0 disables) stops after that many epochs without an improvement in the monitored metric,
+and the counter survives a resume. Every real run on record bottoms out its validation loss at epoch 5–6 of 40.
+
+Full method: [DECODER.md](DECODER.md).
 
 ## What a run produces
 

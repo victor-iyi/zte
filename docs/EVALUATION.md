@@ -215,6 +215,47 @@ trustworthy (direction was always correct). Evaluation now defaults to a **held-
 
 These are intentionally strict: on tiny synthetic data some will legitimately fail (there is little real cross-subject signal to find), which is exactly why the same commands must be run on real ZuCo to make claims. See [RESULTS.md].
 
+## Generation and rescoring (`zte-decode`)
+
+A decoder run adds two readouts, and the distinction between them is the whole point.
+
+**Rescoring retrieval is the powered one.** Every gallery sentence is scored by length-normalised
+$\log p(\text{text}_j \mid z_i)$ and reported as `scoreboard.decoder_rescoring_retrieval` — Top-1/5/10,
+`rank_percentile`, exact binomial tail, bootstrap CI, plus a length-stratified sub-block. At 700 queries that is ~9.5
+bits of forced choice. It is **retrieval** and is labelled as such wherever it appears.
+
+**Free-running generation is the secondary, expected-null one.** No reference length, no candidate set, greedy, EOS or
+`max_new_tokens`. `generation_report` scores it with BLEU-1..4, ROUGE-1/2/L, WER and content-word F1 (pure stdlib +
+numpy — no metric package is a dependency) against five brain-independent controls decoded through the identical path:
+`mean_prefix` (the train-split mean vector, which absorbs any learned text prior), `null_prefix`, `phase`, `noise`, and
+a length-stratified `mismatch` derangement. A true-text-embedding `oracle` bounds the achievable score.
+
+`_verdict['generation_above_controls']` is an AND over five clauses, each reported with its numbers: the readings come
+from the `test` cell of `by_subject_and_stimulus` (`report.HONEST_SPLIT`); `n_candidate_sentences is None`; the paired
+per-sentence bootstrap CI lower bound is above zero against **every** requested control, with one that could not be
+decoded counting as not beaten; the permutation null (hypotheses fixed, pairing permuted) gives *p* < 0.05; and the mean
+KL between a reading's own prefix and another reading's clears `decoder.min_prefix_kl`. A bridge whose prompt does not
+vary with the conditioning vector scores exactly 0 there, so below that last floor no delta means anything.
+
+`teacher_forced_ppl_DIAGNOSTIC` is computed, stored and **provably unread** by the verdict: `strip_quarantined` drops
+any `*_DIAGNOSTIC` / `*_RETRIEVAL` key at any depth and `_verdict` re-applies it to whatever it is handed. No
+`*_RETRIEVAL` key is emitted today; the suffix is the standing contract for any forced-choice number added later.
+Artifacts: `evaluation/generation.jsonl`, `generation.json`, and `evaluation/interactive/generation.html`.
+
+## The sentence-length confound (`zte-rebaseline`)
+
+Before believing any ZuCo retrieval number, ask how much of it is word count. On the real 700-stimulus gallery,
+`H(identity) = 9.4512` bits and `H(identity | n_words) = 4.3090`, so **sentence length alone carries 5.1422 bits** —
+and ZuCo's segmentation is eye-tracking-derived, so the model gets it free. A length-only oracle at ±2 words scores
+Top-1 0.0214 / Top-5 0.0786 / Top-10 0.1371 / MRR 0.0672 against the best encoder's 0.0143 / 0.0457 / 0.0886 / 0.0427.
+
+`zte-rebaseline --ckpt <best.pt> --root <data>` scores any existing checkpoint in a 3×2 grid — post-processing in
+{none, train-fitted whiten+ABTT, transductive whiten+ABTT} × gallery in {full 700, `|Δn_words| ≤ length_tol`} — beside
+the length-oracle floor and the bit budget, and writes `rebaseline.json` + `rebaseline.md`. It trains nothing and
+gates nothing; it tells you which column of your own result is length. The transductive column reproduces the
+published number and is contaminated by construction (the whitening is fitted over the held-out subject too); the
+train-fitted column is the one a decoder inherits.
+
 ## Reading a LOSO sweep honestly (`zte-loso-summary`)
 
 In a leave-one-subject-out sweep, a single fold's `sentence_retrieval.top1` is **pooled** over all subjects — every reading queries against every other, and most positives are the same sentence read by one of the 11 subjects the model *trained on*. That number is dominated by in-sample subjects and reads far higher than the model's generalisation. The honest metric is `scoreboard.held_out_retrieval`: retrieval among the never-seen subject's own readings alone.
@@ -258,7 +299,7 @@ The self-supervised objective sweep (`skipgram,cbow,masked,cpc`) is now a **cont
 | `zte.evaluation.metrics`                       | probes, retrieval, geometry/health                   |
 | `zte.evaluation.breakdown`                     | per-subject / per-task / per-category stratification |
 | `zte.evaluation.analogy`                       | subject/task vector-arithmetic transfer              |
-| `zte.data.montage.regions.region_importance`           | scalp-region information share                       |
+| `zte.data.montage.regions.region_importance`   | scalp-region information share                       |
 | `zte.evaluation.interactive`                   | self-contained interactive HTML explorer             |
 | `zte.evaluation.tensorboard`                   | projector + HParams + scalars + histograms + figures |
 | `zte.inference.retrieval.NearestNeighborIndex` | kNN decoder/probe over a labelled bank               |

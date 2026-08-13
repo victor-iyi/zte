@@ -15,22 +15,12 @@ from zte.models.objectives.losses import identity_orthogonality, vicreg_terms
 
 
 def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
-    """Returns the `(batch_size, seq_len)` mask of real, fixated tokens -- the anti-leakage gate."""
-    return batch['pad_mask'] & batch['presence']
+    """Returns the `(batch_size, seq_len)` mask of real, fixated tokens -- the anti-leakage gate.
 
-
-def _context_key_mask(batch: dict[str, Any]) -> torch.Tensor:
-    """Returns the attention key mask for contextual objectives (`True` = attend).
-
-    Omitted words are excluded from the keys/values so their zero-imputed states cannot leak into the contextual
-    representation. A sentence with no present tokens falls back to the padding mask, since a fully-masked row yields NaNs.
+    This is `ZTEModel.pooling_mask` without its all-omitted fallback: a loss term must contribute nothing for a
+    sentence whose words were all skipped, whereas a pooler must still emit a finite vector for it.
     """
-    valid = batch['pad_mask'] & batch['presence']
-    empty = ~valid.any(dim=1)
-    if bool(empty.any()):
-        valid = valid.clone()
-        valid[empty] = batch['pad_mask'][empty]
-    return valid
+    return batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
 
 
 class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method

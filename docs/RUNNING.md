@@ -73,6 +73,8 @@ uv run zte-encodability  --experiments res/experiments/loso   # per-subject enco
 
 Open **[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)** in Colab (there's an *Open in Colab* badge at the top). Pick a **GPU runtime** (`Runtime -> Change runtime type -> GPU`) and run the cells top to bottom. The notebook: installs `uv` + Python 3.14, confirms the GPU, runs a synthetic smoke test, runs the LOSO sweep (synthetic by default; switch to real Drive data in one cell), and renders the comparison view inline. Because every step is resumable, a disconnect just means re-running the last cell.
 
+**Section 8 is the decoder stage.** It runs `zte-rebaseline` against the source encoder first (the length-confound audit, which trains nothing), then `zte-run` over the frozen encoder with `--encoder-ckpt`, then tabulates the verdict, the decoder-rescoring retrieval and the generation delta against the five controls. Its configs already name `train.loso_holdout_subject` inside `by_subject_and_stimulus`, so **`--loso-holdout` must not be passed to them** — it forces `by_subject_loso`, which shares every stimulus between train and val, and `zte-run` warns when it does. See [`DECODER.md`](DECODER.md).
+
 ### Surviving a lost Colab runtime (continuous Drive backup + resume)
 
 Colab runtimes are ephemeral, so a long real run needs its checkpoints on Drive. Two options, both fully `--resume`-safe (a completed run is skipped instantly; an interrupted one continues from its last checkpoint):

@@ -9,6 +9,7 @@ import yaml
 
 from zte.config._serde import _build
 from zte.config.dataset import DatasetConfig
+from zte.config.decoder import DecoderConfig
 from zte.config.model import ModelConfig
 from zte.config.objective import ObjectiveConfig
 from zte.config.train import TrainConfig
@@ -29,6 +30,9 @@ class ZTEConfig:
 
     train: TrainConfig = field(default_factory=TrainConfig)
     """Optimisation / logging / checkpointing."""
+
+    decoder: DecoderConfig = field(default_factory=DecoderConfig)
+    """Frozen-LM prefix decoder."""
 
     run_name: str = 'zte-run'
     """Identifier used in log/checkpoint paths."""
@@ -55,19 +59,17 @@ class ZTEConfig:
     def from_dict(cls, data: dict[str, Any]) -> ZTEConfig:
         """Builds a `ZTEConfig` from a nested dict, coercing tuples/types.
 
+        Sections are read off the dataclass fields rather than enumerated, so a section added to `ZTEConfig` round-trips
+        through `to_dict` without a matching edit here; absent keys keep their defaults.
+
         Args:
             data (dict[str, Any]): A nested mapping such as one produced by `to_dict` or parsed from YAML.
 
         Returns:
             ZTEConfig: A fully constructed config with sub-dataclasses rebuilt.
         """
-        return cls(
-            dataset=_build(DatasetConfig, data.get('dataset', {})),
-            model=_build(ModelConfig, data.get('model', {})),
-            objective=_build(ObjectiveConfig, data.get('objective', {})),
-            train=_build(TrainConfig, data.get('train', {})),
-            run_name=data.get('run_name', 'zte-run'),
-        )
+        config: ZTEConfig = _build(cls, data)
+        return config
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ZTEConfig:

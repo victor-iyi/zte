@@ -332,9 +332,62 @@ class ZuCoDataset:
         self.aligner = RawSubjectAligner().fit(
             self.raw_eeg, subjects, present=fit_mask, region_index=self._region_index()
         )
+        self._write_aligned(subjects)
+        _LOG.info(
+            'Euclidean-aligned raw windows for %d subjects (fit=%s, signature dim %d).',
+            len(self.aligner.references),
+            self.config.raw_align_fit,
+            self.aligner.signature_dim,
+        )
 
-        # Stream the whitened windows into their own memmap: the source may be a read-only mapping, and
-        # materialising a second ~24 GB tensor is what was killing the runtime.
+    def set_normalizer_state(self, state: dict[str, Any] | None) -> None:
+        """Installs a previously fitted feature normaliser and re-transforms every row through it.
+
+        A frozen encoder only behaves as measured if its inputs arrive on the scale it was trained on, so a decoder
+        stage restores the source run's statistics instead of fitting its own. Getting this wrong is silent: the model
+        loads, trains and simply underperforms.
+
+        Args:
+            state (dict[str, Any] | None): A `FeatureNormalizer.state`; `None` leaves the current fit alone.
+        """
+        if state is None:
+            return
+        if self.features is None or self.normalizer is None:
+            _LOG.warning('set_normalizer_state: this dataset holds no band-power features.')
+            return
+        subjects = self.words['subject'].to_numpy()
+        combined = self.normalizer.inverse_transform(self.features, subjects=subjects).copy()
+        normalizer = FeatureNormalizer.from_state(state)
+        self.features = normalizer.transform(combined, subjects=subjects)
+        self.normalizer = normalizer
+        _LOG.info('Installed a source feature normaliser over %d rows.', len(self.words))
+
+    def set_aligner_state(self, state: dict[str, Any] | None) -> None:
+        """Installs a previously fitted raw subject aligner and whitens the raw windows with it.
+
+        Args:
+            state (dict[str, Any] | None): A `RawSubjectAligner.state`; `None` leaves the windows unaligned.
+        """
+        if state is None or self.raw_eeg is None:
+            return
+        if self._aligned:
+            _LOG.warning('set_aligner_state: the raw windows are already aligned; leaving them be.')
+            return
+        self.aligner = RawSubjectAligner.from_state(state)
+        self._write_aligned(self.words['subject'].to_numpy())
+        _LOG.info(
+            'Installed a source raw aligner for %d subjects (signature dim %d).',
+            len(self.aligner.references),
+            self.aligner.signature_dim,
+        )
+
+    def _write_aligned(self, subjects: np.ndarray) -> None:
+        """Streams the whitened windows into their own memmap and rebinds `raw_eeg` onto it.
+
+        The source may be a read-only mapping, and materialising a second ~24 GB tensor is what kills the runtime.
+        """
+        if self.aligner is None or self.raw_eeg is None:
+            return
         target = self._aligned_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         dest = np.lib.format.open_memmap(
@@ -343,15 +396,8 @@ class ZuCoDataset:
         self.aligner.transform(self.raw_eeg, subjects, out=dest)
         dest.flush()
         del dest
-
         self.raw_eeg = np.load(target, mmap_mode='r')
         self._aligned = True
-        _LOG.info(
-            'Euclidean-aligned raw windows for %d subjects (fit=%s, signature dim %d).',
-            len(self.aligner.references),
-            self.config.raw_align_fit,
-            self.aligner.signature_dim,
-        )
 
     def _aligned_path(self) -> Path:
         """Scratch memmap for the whitened windows, kept out of the shared bundle (which stays unaligned)."""
@@ -584,7 +630,14 @@ class ZuCoDataset:
 
     def split(
         self,
-        strategy: Literal['random', 'by_sentence', 'by_stimulus', 'by_subject_loso', 'by_task']
+        strategy: Literal[
+            'random',
+            'by_sentence',
+            'by_stimulus',
+            'by_subject_loso',
+            'by_task',
+            'by_subject_and_stimulus',
+        ]
         | None = None,
         val_fraction: float = 0.1,
         test_fraction: float = 0.0,
@@ -598,16 +651,19 @@ class ZuCoDataset:
             strategy (str | None): Split strategy, defaulting to `by_sentence`. `random` splits per word;
                 `by_sentence` keys on `subject|task|sentence_idx`, so the same text read by different subjects can
                 still land on both sides; `by_stimulus` keys on the normalised text and closes that cross-subject
-                leak; `by_subject_loso` and `by_task` hold out one group as `val`.
-            val_fraction (float): Validation fraction for `random`/`by_sentence`.
+                leak; `by_subject_loso` and `by_task` hold out one group as `val`; `by_subject_and_stimulus`
+                crosses a held-out subject with a stimulus partition (see `_split_subject_and_stimulus`).
+            val_fraction (float): Validation fraction for `random`/`by_sentence`/`by_subject_and_stimulus`.
             test_fraction (float): Disjoint test fraction for `random`/`by_sentence` (`0` omits the `test` key).
-                Ignored by the hold-out-group strategies, whose held-out group is already `val`.
+                Ignored by the hold-out-group strategies, whose held-out group is already `val`, and required to be
+                positive by `by_subject_and_stimulus`, whose test cell is a stimulus partition.
             holdout_subject (str | None): Subject to hold out for LOSO (else the last subject).
             holdout_task (str | None): Task to hold out for `by_task` (else the last task).
             seed (int): RNG seed for the randomised strategies.
 
         Returns:
-            dict[str, np.ndarray]: Disjoint `train`, `val` and (when `test_fraction > 0`) `test` row indices.
+            dict[str, np.ndarray]: Disjoint `train`, `val` and (when `test_fraction > 0`) `test` row indices, plus
+                `test_seen_stim` for `by_subject_and_stimulus`.
         """
         strategy = strategy or 'by_sentence'
         rng = np.random.default_rng(seed)
@@ -644,11 +700,68 @@ class ZuCoDataset:
             in_val = (self.words['subject'] == hold).to_numpy()
             return {'train': idx[~in_val], 'val': idx[in_val]}
 
+        if strategy == 'by_subject_and_stimulus':
+            return self._split_subject_and_stimulus(
+                idx, val_fraction, test_fraction, holdout_subject, seed
+            )
+
         # by_task
         tasks = sorted(self.words['task'].unique())
         hold = holdout_task or tasks[-1]
         in_val = (self.words['task'] == hold).to_numpy()
         return {'train': idx[~in_val], 'val': idx[in_val]}
+
+    def _split_subject_and_stimulus(
+        self,
+        idx: np.ndarray,
+        val_fraction: float,
+        test_fraction: float,
+        holdout_subject: str | None,
+        seed: int,
+    ) -> dict[str, np.ndarray]:
+        """Crosses a held-out subject with a seeded stimulus partition, naming each cell's generalisation axis.
+
+        Every cell states what it generalises over: `val` over language only (seen subjects, unseen stimuli, so it is
+        the model-selection cell), `test` over both (unseen subject reading unseen stimuli, the honest headline) and
+        `test_seen_stim` over the brain only (unseen subject reading training stimuli, a diagnostic that must never be
+        collapsed into `test`).
+
+        Args:
+            idx (np.ndarray): `(n_words,)` row indices of the dataset.
+            val_fraction (float): Fraction of unique stimulus keys reserved for `val`.
+            test_fraction (float): Fraction of unique stimulus keys reserved for `test`.
+            holdout_subject (str | None): Subject to hold out (else the last subject).
+            seed (int): RNG seed for the stimulus permutation.
+
+        Returns:
+            dict[str, np.ndarray]: `train`, `val`, `test` and `test_seen_stim` row indices.
+
+        Raises:
+            ValueError: If `test_fraction` is not positive, which would leave the headline cell empty.
+        """
+        if test_fraction <= 0:
+            raise ValueError(
+                'by_subject_and_stimulus needs test_fraction > 0: its test cell is the unseen-subject x '
+                'unseen-stimulus partition, which is empty without held-out stimuli.'
+            )
+        hold = holdout_subject or self.subjects[-1]
+        keys = self.words['stimulus_key'].fillna('')
+        unique = np.array(sorted(set(keys.tolist())), dtype=object)
+
+        # Drawn independently of the subject mask, so every LOSO fold holds out the same texts and the folds pool.
+        rng = np.random.default_rng(seed)
+        perm_keys = unique[rng.permutation(len(unique))]
+        buckets = _partition(np.arange(len(perm_keys)), val_fraction, test_fraction)
+        key_sets = {name: set(perm_keys[positions].tolist()) for name, positions in buckets.items()}
+
+        in_hold = (self.words['subject'] == hold).to_numpy()
+        in_train_keys = keys.isin(key_sets['train']).to_numpy()
+        return {
+            'train': idx[~in_hold & in_train_keys],
+            'val': idx[~in_hold & keys.isin(key_sets['val']).to_numpy()],
+            'test': idx[in_hold & keys.isin(key_sets['test']).to_numpy()],
+            'test_seen_stim': idx[in_hold & in_train_keys],
+        }
 
     # -- analysis & selection ---------------------------------------------- #
 

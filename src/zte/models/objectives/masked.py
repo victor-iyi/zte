@@ -11,7 +11,7 @@ from torch import nn
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
 from zte.models.heads import EMATeacher, Predictor
-from zte.models.objectives.base import _context_key_mask, _ObjectiveBase, _usable_mask
+from zte.models.objectives.base import _ObjectiveBase, _usable_mask
 
 
 class MaskedObjective(_ObjectiveBase):
@@ -75,7 +75,7 @@ class MaskedObjective(_ObjectiveBase):
             mask.view(-1)[flat[0]] = True
 
         # Encode the corrupted sequence through the exported projection.
-        key_mask = _context_key_mask(batch)  # exclude omitted tokens from attention
+        key_mask = model.pooling_mask(batch)  # exclude omitted tokens from attention
         student_in = torch.where(mask.unsqueeze(-1), self.mask_token.to(hidden.dtype), hidden)
         student_ctx = model.contextualize(student_in, key_mask)
         student_emb = model.project(

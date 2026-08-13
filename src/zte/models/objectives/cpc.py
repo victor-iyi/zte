@@ -11,7 +11,7 @@ from torch import nn
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
 from zte.models.heads import ProjectionHead
-from zte.models.objectives.base import _context_key_mask, _ObjectiveBase, _usable_mask
+from zte.models.objectives.base import _ObjectiveBase, _usable_mask
 
 
 class CPCObjective(_ObjectiveBase):
@@ -52,7 +52,7 @@ class CPCObjective(_ObjectiveBase):
         # Targets are per-token; the context is causal, with omitted tokens out of its keys/values.
         hidden = model.token_hidden(batch)
         targets = F.normalize(self.target_head(hidden), dim=-1)  # (batch_size, seq_len, embed_dim)
-        context_ctx = model.contextualize(hidden, _context_key_mask(batch), causal=True)
+        context_ctx = model.contextualize(hidden, model.pooling_mask(batch), causal=True)
         context_emb = model.project(context_ctx)  # (batch_size, seq_len, embed_dim), for VICReg
         context = F.normalize(context_emb, dim=-1)
         b, length, e = targets.shape

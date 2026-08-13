@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from zte.evaluation.audit.honesty import (
     anchor_calibration_lift,
@@ -40,6 +41,29 @@ def test_retrieval_permutation_detects_structure_and_null() -> None:
     perm = rng.permutation(len(emb))
     null = retrieval_permutation_test(emb[perm], groups, n_perm=200, seed=1)
     assert null['p_value'] > 0.05
+
+
+def test_retrieval_permutation_p_value_is_exactly_the_rank_formula() -> None:
+    """`p = (1 + #{null >= observed}) / (n_perm + 1)`, checked at both ends of its range."""
+    rng = np.random.default_rng(0)
+    d, n_groups, per = 8, 6, 3
+    centers = 10.0 * rng.normal(size=(n_groups, d))
+    emb = np.concatenate([centers[g] + 0.01 * rng.normal(size=(per, d)) for g in range(n_groups)])
+    groups = np.repeat(np.arange(n_groups), per)
+
+    # Every neighbour is a cluster-mate, and no shuffle of six labels over eighteen rows reproduces that.
+    out = retrieval_permutation_test(emb.astype(np.float32), groups, n_perm=99, seed=1)
+    assert out['observed_top1'] == pytest.approx(1.0)
+    assert out['p_value'] == pytest.approx(1 / 100)
+    assert out['above_chance'] is True
+
+    # One group: every shuffle is the same labelling, so every permutation ties and the null is never beaten.
+    flat = retrieval_permutation_test(
+        rng.normal(size=(8, d)).astype(np.float32), np.zeros(8, dtype=int), n_perm=99, seed=1
+    )
+    assert flat['observed_top1'] == pytest.approx(1.0)
+    assert flat['p_value'] == pytest.approx(100 / 100)
+    assert flat['above_chance'] is False
 
 
 def test_anchor_calibration_recovers_cohesion_under_per_subject_rotation() -> None:

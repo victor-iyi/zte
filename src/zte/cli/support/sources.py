@@ -9,6 +9,7 @@ from zte.logging_utils import get_logger
 
 if TYPE_CHECKING:
     from zte.config import DatasetConfig
+    from zte.data.dataset import ZuCoDataset
 
 _LOG = get_logger('cli.sources')
 
@@ -111,6 +112,29 @@ def resolve_data_root(
         subjects=subjects,  # type: ignore[arg-type]
         overwrite=bool(getattr(args, 'overwrite', False)),
     )
+
+
+def dataset_for_config(args: argparse.Namespace, dataset: DatasetConfig) -> ZuCoDataset:
+    """Builds the dataset a checkpoint was trained on, from `--bundle`, `--synthetic`, `--root` or `--drive`.
+
+    The checkpoint's own `DatasetConfig` supplies every processing option, so a raw-frontend run finds raw
+    tensors and a band-power run finds the exact feature width it was trained at.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments carrying the data-source flags.
+        dataset (DatasetConfig): The checkpoint's dataset configuration.
+
+    Returns:
+        ZuCoDataset: A built dataset.
+    """
+    from zte.data.dataset import ZuCoDataset
+
+    bundle = getattr(args, 'bundle', None)
+    if bundle:
+        return ZuCoDataset.load(bundle)
+    config = dataclasses.replace(dataset, root=PENDING_ROOT)
+    config.root = resolve_root_if_needed(args, config)
+    return ZuCoDataset(config).build()
 
 
 def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | None:

@@ -20,6 +20,12 @@ from zte.training.metrics import noise_matched
 
 _LOG = get_logger('evaluation.report')
 
+# The one (strategy, cell) pair whose held-out readings generalise over the subject AND the stimulus.
+HONEST_SPLIT: tuple[str, str] = ('by_subject_and_stimulus', 'test')
+
+# Stands in for the control stack of a block that never recorded which controls it pre-registered.
+UNRECORDED_CONTROLS: str = '<no controls_requested ledger>'
+
 
 def _encode(values: np.ndarray) -> np.ndarray:
     """Encodes categorical values to integer codes `(n_samples,)`."""
@@ -77,6 +83,13 @@ def evaluate_representation(
     interactive: bool = True,
     phase_word_emb: np.ndarray | None = None,
     train_vocab: set[str] | None = None,
+    *,
+    phase_sent_emb: np.ndarray | None = None,
+    train_sent_emb: np.ndarray | None = None,
+    sent_n_words: np.ndarray | None = None,
+    generation: dict[str, Any] | None = None,
+    rescoring: dict[str, Any] | None = None,
+    min_prefix_kl: float = 0.05,
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
 
@@ -101,6 +114,15 @@ def evaluate_representation(
         interactive (bool): Whether to write the interactive HTML explorer.
         phase_word_emb (np.ndarray | None): Embeddings of phase-scrambled EEG, added as a control representation.
         train_vocab (set[str] | None): Word types seen in training, enabling the seen-vs-novel retrieval split.
+        phase_sent_emb (np.ndarray | None): Sentence embeddings of phase-scrambled EEG through the identical
+            encoder, routed into retrieval, the scoreboard and the verdict rather than the probe table alone.
+        train_sent_emb (np.ndarray | None): Training-split sentence embeddings. When given, whitening and
+            all-but-the-top are fitted on these rows and both the train-fitted and the transductive
+            retrieval numbers are reported, since only the former is reproducible one sentence at a time.
+        sent_n_words (np.ndarray | None): Word count per sentence, enabling the length-stratified gallery.
+        generation (dict[str, Any] | None): A `generation.generation_report` block from a decoder run.
+        rescoring (dict[str, Any] | None): A `scoreboard.decoder_rescoring_retrieval` block.
+        min_prefix_kl (float): Minimum prefix-influence KL (nats) the generation verdict requires.
 
     Returns:
         dict[str, Any]: The full metrics dictionary (also written to `metrics.json`).
@@ -113,17 +135,24 @@ def evaluate_representation(
     obj_cfg = getattr(config, 'objective', None)
     # A raw snapshot, so report.md can show the geometry before vs after.
     word_emb_raw = np.asarray(word_emb, dtype=np.float32).copy()
-    if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
-        word_emb = M.whiten_features(word_emb)
-        sent_emb = M.whiten_features(sent_emb)
-        _LOG.info(
-            'Applied ZCA whitening to the exported embeddings (config.objective.whiten=True).'
-        )
+    do_whiten = obj_cfg is not None and bool(getattr(obj_cfg, 'whiten', False))
     n_top = int(getattr(obj_cfg, 'all_but_top', 0) or 0) if obj_cfg is not None else 0
-    if n_top > 0:
-        word_emb = M.all_but_the_top(word_emb, n_top)
-        sent_emb = M.all_but_the_top(sent_emb, n_top)
-        _LOG.info('Removed the top-%d principal directions (config.objective.all_but_top).', n_top)
+    sent_emb_transductive: np.ndarray | None = None
+    if do_whiten or n_top > 0:
+        # Fitting on the scored rows is transductive, and a decoder scoring one sentence cannot reproduce it.
+        sent_emb_transductive = _postprocess(sent_emb, None, do_whiten, n_top)
+        word_emb = _postprocess(word_emb, None, do_whiten, n_top)
+        sent_emb = (
+            sent_emb_transductive
+            if train_sent_emb is None
+            else _postprocess(sent_emb, train_sent_emb, do_whiten, n_top)
+        )
+        _LOG.info(
+            'Post-processed embeddings (whiten=%s, all_but_top=%d, fit=%s).',
+            do_whiten,
+            n_top,
+            'transductive' if train_sent_emb is None else 'train split',
+        )
     csls_k = int(getattr(obj_cfg, 'csls_neighbors', 0) or 0) if obj_cfg is not None else 0
     use_csls = csls_k > 0
     if use_csls:
@@ -140,11 +169,7 @@ def evaluate_representation(
     }
     if phase_word_emb is not None:
         # The control must get the same post-processing as ZTE or the comparison is rigged.
-        phase_word_emb = np.asarray(phase_word_emb, dtype=np.float32)
-        if obj_cfg is not None and getattr(obj_cfg, 'whiten', False):
-            phase_word_emb = M.whiten_features(phase_word_emb)
-        if n_top > 0:
-            phase_word_emb = M.all_but_the_top(phase_word_emb, n_top)
+        phase_word_emb = _postprocess(phase_word_emb, None, do_whiten, n_top)
         representations['phase-shuffled ZTE'] = phase_word_emb
     targets = _word_targets(word_meta)
     comparison = M.representation_comparison(representations, targets)
@@ -165,6 +190,25 @@ def evaluate_representation(
     # Popped, not kept: the per-query vectors feed the CI verdict but would bloat metrics.json.
     sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
     sent_ranks = sent_ret.pop('ranks', [])  # per-query ranks for the rank-distribution figure
+
+    # 3.1) The phase-scrambled control and the transductive counterpart, both through the identical path.
+    phase_ret: dict[str, Any] | None = None
+    phase_top1_hits: list[float] = []
+    if phase_sent_emb is not None:
+        phase_ret = M.content_retrieval(
+            _postprocess(phase_sent_emb, None, do_whiten, n_top),
+            np.asarray(sent_content_ids),
+            return_hits=True,
+            csls=use_csls,
+            csls_k=csls_k,
+        )
+        raw_hits: Any = phase_ret.pop('top1_hits', [])
+        phase_top1_hits = [float(h) for h in raw_hits] if isinstance(raw_hits, list) else []
+    sent_ret_transductive: dict[str, float] | None = None
+    if train_sent_emb is not None and sent_emb_transductive is not None:
+        sent_ret_transductive = M.content_retrieval(
+            sent_emb_transductive, np.asarray(sent_content_ids), csls=use_csls, csls_k=csls_k
+        )
     word_ret = M.content_retrieval(
         word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k
     )
@@ -225,6 +269,9 @@ def evaluate_representation(
         'n_sentence_embeddings': int(len(sent_emb)),
         'embedding_health': health,
         'sentence_retrieval': sent_ret,
+        'sentence_retrieval_phase_control': phase_ret,
+        'sentence_retrieval_transductive': sent_ret_transductive,
+        'postprocess_fit': _postprocess_fit(do_whiten or n_top > 0, train_sent_emb is not None),
         'word_retrieval': word_ret,
         'word_retrieval_by_novelty': word_ret_by_novelty,
         'word_retrieval_freq_matched': word_ret_freq_matched,
@@ -244,8 +291,15 @@ def evaluate_representation(
             sent_top1_hits=sent_top1_hits,
             subj_top1_hits=subj_top1_hits,
             subj_chances=subj_chances,
+            phase_top1_hits=phase_top1_hits,
+            generation=generation,
+            min_prefix_kl=min_prefix_kl,
         ),
     }
+    if generation is not None:
+        metrics['generation'] = generation
+    if rescoring is not None:
+        metrics['rescoring'] = rescoring
 
     # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
@@ -266,6 +320,14 @@ def evaluate_representation(
             sent_meta,
             config,
             word_band_power=word_band_power,
+            sent_n_words=sent_n_words,
+            phase_sent_emb=(
+                None
+                if phase_sent_emb is None
+                else _postprocess(phase_sent_emb, None, do_whiten, n_top)
+            ),
+            generation=generation,
+            rescoring=rescoring,
         )
     except (ValueError, KeyError, IndexError, MemoryError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Scoreboard skipped: %r', exc)
@@ -306,6 +368,7 @@ def evaluate_representation(
         metrics['scoreboard_html'] = _write_scoreboard_html(
             metrics.get('scoreboard'), out, run_name
         )
+        metrics['generation_html'] = _write_generation_html(generation, out, run_name)
 
     # 6b) The per-dimension arrays are large, so only the compact summary goes in metrics.json.
     # `default=str` never raises; `default=float` would turn an unexpected value into a crash on the
@@ -339,6 +402,48 @@ def evaluate_representation(
     )
     _LOG.info('Evaluation written to %s (%d figures)', out, len(figures))
     return metrics
+
+
+def _postprocess_fit(applied: bool, on_train: bool) -> str:
+    """Names what the retrieval geometry was fitted on: `none`, `train split` or `transductive`.
+
+    Args:
+        applied (bool): Whether whitening or all-but-the-top ran at all.
+        on_train (bool): Whether training-split rows were available to fit them on.
+
+    Returns:
+        str: The label carried in `metrics.json`.
+    """
+    if not applied:
+        return 'none'
+    return 'train split' if on_train else 'transductive'
+
+
+def _postprocess(
+    emb: np.ndarray, fit_on: np.ndarray | None, whiten: bool, n_top: int
+) -> np.ndarray:
+    """Whitening then all-but-the-top, fitted on `fit_on` when given and on `emb` itself otherwise.
+
+    Args:
+        emb (np.ndarray): Embeddings to transform `(n, d)`.
+        fit_on (np.ndarray | None): Rows the transform may be fitted on; `None` fits transductively.
+        whiten (bool): Apply ZCA whitening.
+        n_top (int): Leading principal directions to remove.
+
+    Returns:
+        np.ndarray: Post-processed embeddings `(n, d)`, float32.
+    """
+    if fit_on is not None:
+        from zte.evaluation.audit.rebaseline import fit_postprocess
+
+        fitted = fit_postprocess(np.asarray(fit_on, dtype=np.float32), whiten=whiten, n_top=n_top)
+        return fitted(emb)
+    out = np.asarray(emb, dtype=np.float32)
+    if whiten:
+        out = M.whiten_features(out)
+    if n_top > 0:
+        out = M.all_but_the_top(out, n_top)
+    return out
 
 
 def _honesty_block(
@@ -604,6 +709,26 @@ def _write_scoreboard_html(board: dict[str, Any] | None, out: Path, run_name: st
         return str(path.relative_to(out))
     except (ValueError, OSError, KeyError, TypeError) as exc:  # pragma: no cover
         _LOG.warning('Scoreboard dashboard failed: %r', exc)
+        return None
+
+
+def _write_generation_html(block: dict[str, Any] | None, out: Path, run_name: str) -> str | None:
+    """Writes the reference/hypothesis/controls side-by-side page, returning its path relative to `out`.
+
+    The page is the artifact that makes an absolute BLEU unreadable in isolation: every hypothesis sits
+    beside the same row for each brain-independent control. Degrades to `None` rather than aborting.
+    """
+    if not block or not block.get('applicable'):
+        return None
+    try:
+        from zte.evaluation.interactive import generation_html
+    except ImportError:  # pragma: no cover
+        return None
+    try:
+        path = generation_html(block, out / 'interactive' / 'generation.html', run_name)
+        return str(path.relative_to(out))
+    except (ValueError, OSError, KeyError, TypeError) as exc:  # pragma: no cover
+        _LOG.warning('Generation dashboard failed: %r', exc)
         return None
 
 
@@ -918,6 +1043,9 @@ def _verdict(
     sent_top1_hits: list[float] | None = None,
     subj_top1_hits: list[float] | None = None,
     subj_chances: list[float] | None = None,
+    phase_top1_hits: list[float] | None = None,
+    generation: dict[str, Any] | None = None,
+    min_prefix_kl: float = 0.05,
     effect_floor: float = 0.01,
     seed: int = 0,
 ) -> dict[str, Any]:
@@ -934,6 +1062,10 @@ def _verdict(
         sent_top1_hits (list[float] | None): Per-query sentence-retrieval Top-1 hits.
         subj_top1_hits (list[float] | None): Per-query subject-arithmetic Top-1 hits.
         subj_chances (list[float] | None): Per-query subject-arithmetic chance rates.
+        phase_top1_hits (list[float] | None): Per-query Top-1 hits of the phase-scrambled control through
+            the identical retrieval path; supplying them demotes `retrieval_above_chance`.
+        generation (dict[str, Any] | None): A `generation.generation_report` block.
+        min_prefix_kl (float): Minimum prefix-influence KL (nats) the generation clause requires.
         effect_floor (float): Minimum ZTE-minus-noise effect the CI must clear.
         seed (int): Bootstrap seed.
 
@@ -941,6 +1073,10 @@ def _verdict(
         dict[str, Any]: Named boolean checks, the CIs behind them (`beats_noise_ci`,
             `retrieval_ci`, `subject_arithmetic_ci`) and the `effect_size_floor` used.
     """
+    from zte.evaluation.generation import strip_quarantined
+
+    # No `*_DIAGNOSTIC` or `*_RETRIEVAL` key reaches a clause below, whatever the caller passed.
+    generation = strip_quarantined(generation) if generation else None
     zte = {r['target']: r for r in comparison if r['representation'] == 'ZTE'}
     noise = {r['target']: r for r in comparison if r['representation'] == 'noise (matched)'}
 
@@ -975,6 +1111,19 @@ def _verdict(
         'retrieval_above_chance': retrieval_pass,
         'retrieval_ci': [round(ret_point, 4), round(ret_lo, 4), round(ret_hi, 4)],
     }
+
+    # The phase-scrambled control travels the identical retrieval path, so the comparison is paired.
+    if phase_top1_hits and sent_top1_hits and len(phase_top1_hits) == len(sent_top1_hits):
+        real = np.asarray(sent_top1_hits, dtype=np.float64)
+        phase = np.asarray(phase_top1_hits, dtype=np.float64)
+        ph_point, ph_lo, ph_hi = M.bootstrap_ci(real - phase, seed=seed)
+        verdict['retrieval_above_phase'] = bool(np.isfinite(ph_lo) and ph_lo > 0.0)
+        verdict['retrieval_phase_ci'] = [round(ph_point, 4), round(ph_lo, 4), round(ph_hi, 4)]
+        verdict['retrieval_above_chance'] = bool(
+            verdict['retrieval_above_chance'] and verdict['retrieval_above_phase']
+        )
+    if generation:
+        verdict.update(_generation_verdict(generation, min_prefix_kl))
     if analogy:
         st = analogy.get('subject_transfer', {})
         subj_chance = (
@@ -990,6 +1139,92 @@ def _verdict(
             round(subj_hi, 4),
         ]
     return verdict
+
+
+def _missing_controls(generation: dict[str, Any], metric: str) -> list[str]:
+    """Names every pre-registered control that did not run, or ran and was not beaten.
+
+    A control the decode recorded in `controls_unavailable` or `controls_skipped` produced no delta, so
+    an AND over the deltas alone would silently drop it; here it counts as missing. A block that names no
+    `controls_requested` at all cannot show which controls it pre-registered, and a control that vanished
+    from such a block leaves no trace anywhere, so the absent ledger is itself reported as missing.
+
+    Args:
+        generation (dict[str, Any]): A `generation_report` block carrying the decode's
+            `controls_requested` / `controls_unavailable` / `controls_skipped` ledger.
+        metric (str): Primary metric whose paired delta decides whether a control was beaten.
+
+    Returns:
+        list[str]: Sorted control names, or `UNRECORDED_CONTROLS` for an absent ledger; empty only when a
+            block that named its controls ran and beat every one of them.
+    """
+    deltas = generation.get('deltas') or {}
+    unavailable = generation.get('controls_unavailable') or {}
+    skipped = generation.get('controls_skipped') or {}
+    requested = generation.get('controls_requested')
+    beaten = {name for name, d in deltas.items() if (d.get(metric) or {}).get('beats')}
+    missing = (set(requested or deltas) | set(unavailable) | set(skipped)) - beaten
+    if not requested:
+        missing.add(UNRECORDED_CONTROLS)
+    return sorted(missing)
+
+
+def _generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dict[str, Any]:
+    """The pre-registered generation gate: an AND over split, candidate set, controls, null and prefix KL.
+
+    Every clause is reported with its number even when it fails, and any failing clause demotes the
+    whole verdict -- the same demotion pattern the retrieval permutation null uses above.
+
+    Args:
+        generation (dict[str, Any]): A quarantine-stripped `generation_report` block.
+        min_prefix_kl (float): Minimum mean KL (nats) between a reading's own prefix and another
+            reading's; below it the prompt does not depend on the brain.
+
+    Returns:
+        dict[str, Any]: `generation_above_controls`, `generation_ci`, `generation_clauses` and the
+            numbers behind each clause.
+    """
+    if not generation.get('applicable'):
+        return {
+            'generation_above_controls': False,
+            'generation_clauses': {'applicable': False},
+            'generation_reason': generation.get('reason', 'not applicable'),
+        }
+
+    metric = generation.get('primary_metric', 'content_f1')
+    deltas = generation.get('deltas') or {}
+    perm = generation.get('permutation') or {}
+    p_value = perm.get('p_value') if perm.get('applicable') else None
+    kl = generation.get('prefix_influence_kl')
+    worst = generation.get('worst_control_ci') or {}
+    strategy = generation.get('split_strategy')
+    cell = generation.get('split')
+    missing = _missing_controls(generation, metric)
+    clauses = {
+        'honest_split': (strategy, cell) == HONEST_SPLIT,
+        'no_candidate_set': generation.get('n_candidate_sentences') is None,
+        'beats_every_control': bool(deltas) and not missing,
+        'permutation_significant': bool(p_value is not None and p_value < 0.05),
+        'prefix_influences_output': bool(kl is not None and kl >= min_prefix_kl),
+    }
+    return {
+        'generation_above_controls': all(clauses.values()),
+        'generation_clauses': clauses,
+        'generation_metric': metric,
+        'generation_split_strategy': strategy,
+        'generation_split_cell': cell,
+        'generation_controls_missing': missing,
+        'generation_ci': [
+            round(float(worst.get('point', float('nan'))), 4),
+            round(float(worst.get('lo', float('nan'))), 4),
+            round(float(worst.get('hi', float('nan'))), 4),
+        ],
+        'generation_worst_control': generation.get('worst_control'),
+        'generation_permutation_p': p_value,
+        'generation_prefix_kl': kl,
+        'generation_min_prefix_kl': float(min_prefix_kl),
+        'generation_n': generation.get('n'),
+    }
 
 
 def _diff_ci(hits: list[float] | None, chance: float, seed: int = 0) -> tuple[float, float, float]:
@@ -1068,6 +1303,22 @@ def _render_report(
         )
         + '). The headline requires BOTH the CI lift and the permutation null; '
         'rank-percentile (1.0 = correct match ranked first) shows the whole distribution, not just the tail.',
+    ]
+    if 'retrieval_above_phase' in verdict:
+        lines.append(
+            f'- Above the phase-scrambled control: **{verdict["retrieval_above_phase"]}** '
+            f'(paired Top-1 delta CI {_fmt_ci(verdict.get("retrieval_phase_ci"))}). The control runs '
+            'through the identical encoder and retrieval path, so this is the same-path floor, '
+            'not an analytic one.'
+        )
+    if 'generation_above_controls' in verdict:
+        lines.append(
+            f'- Free-running generation above every control: '
+            f'**{verdict["generation_above_controls"]}** '
+            f'(worst control `{verdict.get("generation_worst_control")}`, '
+            f'CI {_fmt_ci(verdict.get("generation_ci"))})'
+        )
+    lines += [
         '',
         '## Transfer probes (frozen embeddings)',
         '',
@@ -1128,6 +1379,104 @@ def _render_report(
     return '\n'.join(lines)
 
 
+def _generation_section(metrics: dict[str, Any]) -> list[str]:
+    """Markdown for free-running generation and decoder-rescoring retrieval, each labelled for what it is."""
+    generation = metrics.get('generation') or {}
+    rescoring = metrics.get('rescoring') or {}
+    if not generation.get('applicable') and not rescoring:
+        return []
+    verdict = metrics.get('verdict', {})
+    lines = ['## Decoding (free-running generation · decoder rescoring)', '']
+
+    if rescoring:
+        ci = rescoring.get('rank_percentile_ci') or (float('nan'),) * 3
+        lines += [
+            f'- **Decoder-rescoring retrieval** — {int(rescoring.get("n_queries", 0))} queries over a '
+            f'{int(rescoring.get("n_gallery", 0))}-sentence gallery: Top-1 '
+            f'{rescoring.get("top1", float("nan")):.4f} vs chance '
+            f'{rescoring.get("chance_top1", float("nan")):.4f} '
+            f'(p={rescoring.get("top1_p", float("nan")):.1e}), rank percentile {ci[0]:.4f} '
+            f'[{ci[1]:.4f}, {ci[2]:.4f}]. Forced choice over a known candidate set — this is '
+            'retrieval, and it is the statistically powered readout, not a generation claim.',
+            '',
+        ]
+
+    if generation.get('applicable'):
+        metric = generation.get('primary_metric', 'content_f1')
+        absolute = (generation.get('absolute') or {}).get('hypothesis') or {}
+        oracle = (generation.get('absolute') or {}).get('oracle') or {}
+        clauses = verdict.get('generation_clauses') or {}
+        lines += [
+            f'Free-running decode of {int(generation.get("n", 0))} held-out readings on the '
+            f'`{generation.get("split")}` cell of `{generation.get("split_strategy")}`, no reference '
+            f'length and '
+            f'{"no candidate set" if generation.get("n_candidate_sentences") is None else "A CANDIDATE SET"}. '
+            'Absolute scores are not results: a frozen LM reaches ROUGE-1 in the 0.10-0.18 range against '
+            'any English reference from function words alone.',
+            '',
+            f'- Absolute: BLEU-4 {absolute.get("bleu4", float("nan")):.4f}, '
+            f'ROUGE-1 {absolute.get("rouge1", float("nan")):.4f}, '
+            f'ROUGE-L {absolute.get("rougeL", float("nan")):.4f}, '
+            f'WER {absolute.get("wer", float("nan")):.4f}, '
+            f'content-word F1 {absolute.get("content_f1", float("nan")):.4f}',
+        ]
+        if oracle:
+            lines.append(
+                f'- Text oracle (true sentence embedding through the identical bridge and LM): '
+                f'BLEU-4 {oracle.get("bleu4", float("nan")):.4f}, '
+                f'content-word F1 {oracle.get("content_f1", float("nan")):.4f} — a positive control on '
+                'the head, saying nothing about EEG.'
+            )
+        lines += [
+            '',
+            f'| control | {metric} delta | 95% CI | clears zero |',
+            '| --- | --- | --- | --- |',
+        ]
+        for name, delta in (generation.get('deltas') or {}).items():
+            d = delta.get(metric, {})
+            lines.append(
+                f'| {name} | {d.get("point", float("nan")):+.4f} '
+                f'| [{d.get("lo", float("nan")):+.4f}, {d.get("hi", float("nan")):+.4f}] '
+                f'| {"✓" if d.get("beats") else "·"} |'
+            )
+        absent = (generation.get('controls_unavailable') or {}) | (
+            generation.get('controls_skipped') or {}
+        )
+        for name, reason in sorted(absent.items()):
+            lines.append(f'| {name} | NEVER RAN ({reason}) | -- | · |')
+        lines += [
+            '',
+            f'**Verdict — generation above controls: {verdict.get("generation_above_controls")}** '
+            f'(worst control `{verdict.get("generation_worst_control")}`, '
+            f'CI {_fmt_ci(verdict.get("generation_ci"))}). An AND over: '
+            + ', '.join(f'{k}={v}' for k, v in clauses.items())
+            + '.',
+        ]
+        if not clauses.get('honest_split', True):
+            lines.append(
+                f'- The headline is reserved for the `{HONEST_SPLIT[1]}` cell of `{HONEST_SPLIT[0]}`, '
+                'the only readings held out from the subject and the stimulus at once.'
+            )
+        missing = verdict.get('generation_controls_missing') or []
+        if missing:
+            registered = generation.get('controls_requested') or missing
+            lines.append(
+                f'- Pre-registered controls not beaten: {len(missing)} of {len(registered)} -- '
+                + ', '.join(f'`{c}`' for c in missing)
+                + '. A control that never ran fails its clause rather than being dropped from the AND.'
+            )
+        from zte.evaluation.generation import quarantined_keys
+
+        quarantined = quarantined_keys(generation)
+        if quarantined:
+            lines.append(
+                f'- Quarantined and never read by the verdict: '
+                f'{", ".join(f"`{k}`" for k in quarantined)}.'
+            )
+    lines.append('')
+    return lines
+
+
 def _honesty_section(honesty: dict[str, Any]) -> list[str]:
     """Markdown for the permutation null, held-out cross-subject decode and calibration lift."""
     if not honesty or not honesty.get('applicable'):
@@ -1181,6 +1530,7 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     """Markdown for the arithmetic, breakdown, per-category and region analyses."""
     lines: list[str] = []
     lines += _emergence_section(metrics.get('emergence', {}))
+    lines += _generation_section(metrics)
     lines += _honesty_section(metrics.get('honesty', {}))
     analogy = metrics.get('analogy', {})
     st = analogy.get('subject_transfer', {})

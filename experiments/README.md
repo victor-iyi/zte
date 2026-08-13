@@ -12,6 +12,7 @@ uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --drive <folde
 | Tier             | What lives there                                                                               |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
 | `flagship/`      | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
+| `decoder/`       | The frozen-LM prefix decoder over a trained encoder, its ablations and its length audit.       |
 | `benchmark/`     | The controls a flagship must beat to earn its place.                                           |
 | `ablation/`      | Single-lever studies — matched pairs that flip exactly one knob.                               |
 | `archive/`       | Superseded or failed arms, kept for the record and for reproducibility.                        |
@@ -79,15 +80,17 @@ State these next to any result from this directory; they are in every `evaluatio
 
 ## `flagship/` — start here
 
-| Config                   | Objective                                  | Encoder                                                                   | Why it is here                                                                                                                |
-| ------------------------ | ------------------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `clip_e5_meaning`        | sentence-level CLIP + meaning distillation | band-power MLP + spherical harmonics                                      | **The champion** (exp9). Best cross-subject retrieval measured here (Top-1 0.043); meaning distillation cut subject-var 10×.  |
-| `clip_e5_bandpower`      | sentence-level CLIP (symmetric InfoNCE)    | band-power MLP + spherical-harmonic spatial encoding                      | The pre-meaning champion (exp8); the meaning-distillation-off cell of the 2×2.                                                |
-| `clip_e5_raw`            | sentence-level CLIP                        | raw-conformer (temporal→spatial convolution, ~700 ms window)              | Richest space on the board (eff-rank 0.264, best content probes) but subject-entangled without meaning distillation.          |
-| `clip_e5_meaning_raw`    | sentence-level CLIP + meaning distillation | raw-conformer, ~700 ms window                                             | **exp10 — the missing 2×2 cell:** the raw frontend under the champion objective. Does richer content + invariance beat 0.043? |
-| `clip_e5_meaning_raw_v2` | sentence-level CLIP + meaning distillation | raw-conformer + multiscale temporal bank + attentive temporal pool, wider | **exp10 — the encoder leap:** the same objective, a deliberately richer per-word encoder. Run *after* `clip_e5_meaning_raw`.  |
+| Config (`run_name`)                         | Objective                                     | Encoder                                                                          | Why it is here                                                                                                                                         |
+| ------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                           | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline. |
+| `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation    | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                    |
+| `clip_e5_meaning_raw_v2` (`exp10_…_raw_v2`) | sentence-level CLIP + meaning distillation    | raw-conformer, 64 filters, multiscale 15/31/63/125 bank, attentive temporal pool | Fewer hits (19, *p* 1e-06) but the healthiest geometry on the board — eff-rank **0.535**, subject probe 0.36.                                          |
+| `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | The subject-alignment stack that closes the identity gap every row above leaves open. **Built; no real-ZuCo number yet.**                              |
+| `zte_raw_aligned_wide` (`exp12_…_wide`)     | + identity orthogonality, over CLIP + meaning | the v2 encoder under the same alignment stack                                    | exp12 on the richer encoder. Run *after* the narrow arm. **Built; no real-ZuCo number yet.**                                                           |
 
-All are EEG-only (an honest "thought, not gaze" choice — eye-tracking is a reading artefact absent from imagined thought), LOSO, and Riemannian-normalised per subject. The two exp10 arms share one `run_name` prefix (`exp10_…`) so they group as one study; run the plain `clip_e5_meaning_raw` first so the frontend-swap effect and the architecture effect stay separable.
+All five are EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
+
+Two things to keep straight when reading this table. **`dataset.normalize` only ever applied to band power**, so `normalize: riemannian` is a silent no-op on every raw arm: the first three rows train on unaligned voltages, which is exactly what `raw_align: euclidean` in the exp12 rows fixes. And **the exp12 arms are the current best *candidate*, not the current best *result*** — they were built after the 2026-07-25 re-scoring and have no real-data number yet. Until they earn one, the measured champions are `clip_e5_raw` and `clip_e5_meaning_raw` at 32 hits in 700. Run the narrow exp12 arm before the wide one so the alignment effect and the encoder effect stay separable.
 
 ### What the CLIP objective does
 
@@ -105,29 +108,73 @@ The only way to win is to encode *what the sentence means*. Because the same sen
 
 Per-subject **Riemannian normalisation**; **subject + stimulus adversaries**, rebalanced (≈0.1) and ramped from zero; **cross-subject positives**; **VICReg anti-collapse** plus an anti-cone uniformity term; **alignment** and **debiased** (`tau_plus`) contrastive terms and a frozen-target data2vec head; **spherical-harmonic spatial encoding** on the real electrode montage; a **factored embedding** with a dedicated content subspace; and the **eval-time geometry fix** (`whiten`, `all_but_top`, `csls_neighbors`) that strips the anisotropy and hubness which otherwise push retrieval below chance.  Derivations are in [`../docs/METHODS.md`](../docs/METHODS.md).
 
+## `decoder/` — text out, with the controls that make it readable
+
+The decoder does **not** replace the encoder arms; it consumes one. `train.mode: decoder` loads a trained encoder from
+`train.encoder_ckpt`, freezes it, freezes a 0.5B LM (`Qwen/Qwen2.5-0.5B`), and trains only a 226,560-parameter prefix
+bridge between them. Nothing else in the run can learn, which is what makes "the output is corpus recall" a checkable
+claim rather than a matter of trust: 700 ZuCo sentences cannot be stored in weights that are not being updated.
+
+| Config                          | What it is                                                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `decode_frozen_e5raw`           | **The headline.** Bridge only, over `exp8_clip_e5_raw`, on the honest four-cell `by_subject_and_stimulus` split.   |
+| `decode_joint_e5raw`            | The encoder unfreezes after 3 stage-A epochs at a tenth of the bridge LR; the CLIP loss stays on as an anchor.     |
+| `decode_encoder_only`           | The regression control: `mode: encoder` must still reproduce `exp8_clip_e5_raw`'s history under the same seed.     |
+| `decode_nostage0_ablation`      | Required reported ablation — text-only bridge pretraining off. If the delta needs it, Stage 0 was doing the work.  |
+| `decode_words_ablation`         | Registered ablation — `conditioning: pooled_plus_words` adds 8 resampled word slots to the 8 pooled ones.          |
+| `rebaseline_e5raw`              | The length-confound audit arm: the encoder recipe on the decoder's own split, then scored by `zte-rebaseline`.     |
+| `smoke/decode_tiny_mps`         | Wiring only (`lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`). Always `--synthetic`; never a result.   |
+
+```sh
+# The decoder needs a trained encoder; --encoder-ckpt overrides the path in the YAML. Do NOT add
+# --loso-holdout: these configs name train.loso_holdout_subject inside by_subject_and_stimulus, and the
+# flag would swap in by_subject_loso, which shares every stimulus between train and val. zte-run warns.
+uv run zte-run --config experiments/decoder/decode_frozen_e5raw.yaml --root res/data/zuco_extracted \
+    --encoder-ckpt res/experiments/exp8_clip_e5_raw_loZAB/checkpoints/best.pt --resume
+uv run zte-decode --ckpt res/experiments/exp13_decode_frozen_e5raw/checkpoints/best.pt \
+    --root res/data/zuco_extracted --split test
+```
+
+**Read the length audit before any decoder number.** On the real 700-stimulus gallery, `H(identity) = 9.4512` bits and
+`H(identity | n_words) = 4.3090`, so sentence length alone carries **5.1422 bits** — and ZuCo's word segmentation comes
+from eye tracking, so the model gets the word count for free. A length-only oracle at ±2 words scores Top-1 0.0214 /
+Top-5 0.0786 / Top-10 0.1371 against the best encoder's 0.0143 / 0.0457 / 0.0886. `zte-rebaseline` reports the whole
+3×2 grid (post-processing × gallery) against that floor plus the bit budget; it trains nothing, runs against
+checkpoints already on Drive, and gates nothing — it tells you how much of a number is length.
+
+Free-running generation is the **secondary**, expected-null readout, decoded with no reference length and no candidate
+set, against five brain-independent controls (`mean_prefix`, `null_prefix`, `phase`, `noise`, and a length-stratified
+`mismatch` derangement) plus a true-text-embedding oracle. The **primary** readout is decoder-rescoring retrieval over
+the 700-sentence gallery, which is ~9.5 bits of forced choice at 700 queries and is labelled retrieval, never
+generation. Full method, verdict gate and the pre-registered expectations: [`../docs/DECODER.md`](../docs/DECODER.md).
+
 ## `benchmark/` — the controls
 
 | Config                   | What it controls for                                                                           |
 | ------------------------ | ---------------------------------------------------------------------------------------------- |
 | `baseline_skipgram_loso` | The previous SOTA recipe (skip-gram + the full invariance stack). Answers "did CLIP earn it?". |
-| `clip_qwen_bandpower`    | The second arm of the text-encoder A/B (E5 vs Qwen), on an otherwise identical recipe.         |
+
+The text-encoder A/B that used to sit here (E5 vs Qwen vs BGE vs MPNet) is in [`archive/`](archive/README.md): every arm was band-power and none reached *p* < 0.07 on the held-out board.
 
 ## `ablation/` — one lever at a time
 
-| Config pair                                                     | The one lever it flips                                |
-| --------------------------------------------------------------- | ----------------------------------------------------- |
-| `study_invariance_baseline_loso` / `study_invariance_full_loso` | The whole invariance stack, off vs on, under LOSO.    |
-| `study_vicreg_off` / `study_vicreg_on`                          | The VICReg variance+covariance anti-collapse penalty. |
-| `study_anticone_off` / `study_anticone_on`                      | The anti-cone uniformity term.                        |
-| `study_all_levers`                                              | Everything on (the maximal ablation reference).       |
+| Config                                                          | The one lever it flips                                                    | Against                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------- |
+| `exp12_align_off`                                               | `dataset.raw_align` — Euclidean whitening off                             | `exp12_zte_raw_aligned` |
+| `exp12_align_fit_train`                                         | `raw_align_fit: train` — the strict no-holdout-calibration variant        | `exp12_zte_raw_aligned` |
+| `exp12_adapter_off`                                             | `model.subject_adapter` — the covariance-signature hypernetwork off       | `exp12_zte_raw_aligned` |
+| `exp12_orthogonality_off`                                       | `objective.identity_orthogonality_weight` — the decorrelation penalty off | `exp12_zte_raw_aligned` |
+| `study_invariance_baseline_loso` / `study_invariance_full_loso` | The whole invariance stack, off vs on, under LOSO                         | each other              |
+| `study_vicreg_off` / `study_vicreg_on`                          | The VICReg variance+covariance anti-collapse penalty                      | each other              |
 
-The four `study_invariance_*` / `study_vicreg_*` files are generated from `ZTEConfig` objects by
-`scripts/make_study_configs.py`, so they cannot drift from the schema. For a *new* lever, prefer
-`zte-ablate` (below) over hand-writing a pair.
+Each `exp12_*` arm is the flagship `zte_raw_aligned` recipe with exactly one of its three label-free changes
+disabled, so the delta attributable to that change is readable directly. The four `study_invariance_*` /
+`study_vicreg_*` files are generated from `ZTEConfig` objects by `scripts/make_study_configs.py`, so they cannot
+drift from the schema. For a *new* lever, prefer `zte-ablate` (below) over hand-writing a pair.
 
 ## `archive/` — retired, kept for the record
 
-`exp1_skipgram_rope_et`, `exp2_masked_rope_eegonly`, `exp3_cpc_rope_et`, `exp4_skipgram_loso`, `exp5_raw_conformer_masked`, `exp6_skipgram_eegonly_invariant` are the original objective/encoder studies. On the 2026-07-12 real-data sweep every one of them scored a sentence-retrieval Top-1 of 0.0 (permutation *p* ≈ 1.0) with a who-vs-what variance ratio up to 1.0 — the identity-encoding failure mode the invariance stack was built to fix. `exp7_sota_geom_invariance` (learned spatial attention + FiLM subject conditioning) is archived for the opposite reason: it was a serious contender and it failed hardest, retrieving nothing at all (Top-1 0.0, *p* = 1.0). Keep them for reproducing the history; do not start new work from them.
+`exp1_skipgram_rope_et`, `exp2_masked_rope_eegonly`, `exp3_cpc_rope_et`, `exp4_skipgram_loso`, `exp5_raw_conformer_masked`, `exp6_skipgram_eegonly_invariant` are the original objective/encoder studies. On the 2026-07-12 real-data sweep every one of them scored a sentence-retrieval Top-1 of 0.0 (permutation *p* ≈ 1.0) with a who-vs-what variance ratio up to 1.0 — the identity-encoding failure mode the invariance stack was built to fix. `exp7_sota_geom_invariance` (learned spatial attention + FiLM subject conditioning) is archived for the opposite reason: it was a serious contender and it failed hardest, retrieving nothing at all (Top-1 0.0, *p* = 1.0). Keep them for reproducing the history; do not start new work from them. The CLIP band-power family — `clip_e5_meaning` (the former "champion", exp9), `clip_e5_bandpower`, `clip_qwen_bandpower`, `clip_bge_meaning`, `clip_mpnet_meaning` — was retired on 2026-07-25 when every run was re-scored on the held-out subject; `archive/README.md` carries the number that retired each one, and `study_anticone_off` / `study_anticone_on` / `study_all_levers` went with them as pre-scoreboard studies.
 
 ---
 

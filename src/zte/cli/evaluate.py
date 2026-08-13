@@ -180,6 +180,84 @@ def phase_shuffled_word_emb(
     return np.concatenate(parts, axis=0)
 
 
+def phase_shuffled_sent_emb(
+    embedder: ZTEEmbedder,
+    dataset: ZuCoDataset,
+    indices: np.ndarray | None = None,
+    batch_size: int = 64,
+) -> np.ndarray | None:
+    """Embeds phase-scrambled EEG at sentence level, row-aligned with `collect_embeddings`.
+
+    The scramble is applied to the collated batch, so the control reaches retrieval, the scoreboard and the
+    verdict through the identical encoder, pooling and projection rather than a parallel path.
+
+    Args:
+        embedder (ZTEEmbedder): The restored embedder.
+        dataset (ZuCoDataset): A built dataset.
+        indices (np.ndarray | None): Optional word-row restriction, matching the real embedding's.
+        batch_size (int, optional): Sentences per forward pass. Defaults to 64.
+
+    Returns:
+        np.ndarray | None: Sentence embeddings `(n_sentences, d)`, or `None` for band-power models.
+    """
+    if not embedder.model.uses_raw or dataset.raw_eeg is None:
+        return None
+    import torch
+
+    from zte.cli.decode import phase_transform
+    from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, make_dataloader
+    from zte.logging_utils import progress
+
+    scramble = phase_transform()
+    torch_ds = ZuCoTorchDataset(
+        dataset, indices=indices, subject_vocab=build_subject_vocab(dataset)
+    )
+    loader = make_dataloader(torch_ds, batch_size=batch_size, shuffle=False, drop_last=False)
+    objective = embedder.config.objective.name
+    parts: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch in progress(loader, description='embedding (phase-scrambled sentence)'):
+            moved = {
+                k: (v.to(embedder.device.device) if torch.is_tensor(v) else v)
+                for k, v in batch.items()
+            }
+            parts.append(
+                embedder.model.embed_sentence(scramble(moved), objective=objective).cpu().numpy()
+            )
+    if not parts:
+        return None
+    return np.concatenate(parts, axis=0).astype(np.float32)
+
+
+def train_split_sent_emb(
+    embedder: ZTEEmbedder, dataset: ZuCoDataset, config: Any, batch_size: int = 64
+) -> np.ndarray | None:
+    """Embeds the training split at sentence level: the only rows retrieval post-processing may be fitted on.
+
+    Whitening and all-but-the-top fitted on the scored rows are transductive, and a decoder scoring one
+    sentence at a time cannot reproduce them; fitted here they are reproducible one sentence at a time.
+
+    Args:
+        embedder (ZTEEmbedder): The restored embedder.
+        dataset (ZuCoDataset): A built dataset.
+        config (ZTEConfig): The run config, whose `train` split settings are reused verbatim.
+        batch_size (int, optional): Sentences per forward pass. Defaults to 64.
+
+    Returns:
+        np.ndarray | None: `(n_train_sentences, d)` embeddings, or `None` when the run has no train cell.
+    """
+    from zte.cli.decode import split_indices
+
+    try:
+        train_idx = split_indices(dataset, config, 'train')
+    except ValueError, KeyError:  # pragma: no cover - defensive
+        return None
+    if train_idx is None:
+        return None
+    emb, _ = embedder.embed(dataset, level='sentence', indices=train_idx, batch_size=batch_size)
+    return emb if len(emb) else None
+
+
 def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:
     """Returns the set of word types in the training split (for the seen-vs-novel retrieval split).
 
@@ -228,14 +306,30 @@ def main() -> None:
 
     # Opt-in hardening controls, config-gated so default runs stay fast.
     obj_cfg = getattr(embedder.config, 'objective', None)
-    phase_emb = (
-        phase_shuffled_word_emb(embedder, dataset)
-        if getattr(obj_cfg, 'eval_phase_shuffle', False)
-        else None
-    )
+    phase_shuffle = bool(getattr(obj_cfg, 'eval_phase_shuffle', False))
+    phase_emb = phase_shuffled_word_emb(embedder, dataset) if phase_shuffle else None
+    phase_sent = phase_shuffled_sent_emb(embedder, dataset) if phase_shuffle else None
+    train_sent = train_split_sent_emb(embedder, dataset, embedder.config)
     train_vocab = (
         training_vocab(dataset, embedder.config)
         if getattr(obj_cfg, 'eval_seen_novel', False)
+        else None
+    )
+
+    # A decoder checkpoint decodes its held-out cell here; an encoder checkpoint returns `(None, None)`.
+    from zte.cli.decode import decoder_blocks
+
+    generation, rescoring = decoder_blocks(
+        args.ckpt,
+        dataset,
+        embedder.config,
+        out_dir=Path(args.out),
+        device=args.device,
+        run_name=args.run_name,
+    )
+    n_words = (
+        sent_meta['n_words'].to_numpy()
+        if getattr(obj_cfg, 'eval_length_stratified', False) and 'n_words' in sent_meta
         else None
     )
 
@@ -254,6 +348,12 @@ def main() -> None:
         interactive=not args.no_interactive,
         phase_word_emb=phase_emb,
         train_vocab=train_vocab,
+        phase_sent_emb=phase_sent,
+        train_sent_emb=train_sent,
+        sent_n_words=n_words,
+        generation=generation,
+        rescoring=rescoring,
+        min_prefix_kl=embedder.config.decoder.min_prefix_kl,
     )
     _LOG.info('Verdict: %s', json.dumps(metrics['verdict']))
     _LOG.info('Report + figures written to %s', args.out)

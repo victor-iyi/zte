@@ -15,14 +15,19 @@ if TYPE_CHECKING:
 # Probe targets a meaning code should carry, and those a thought code should not; mirrors zte.evaluation.neurons.
 _CONTENT_TARGETS: tuple[str, ...] = ('word_len', 'log_freq', 'category')
 _IDENTITY_TARGETS: tuple[str, ...] = ('subject',)
+
 # Positive-control floor: below this linear R2 on raw band power the content probe is not trustworthy.
 _CONTENT_PROBE_FLOOR: float = 0.02
+# Splits that hold one subject out entirely, so a held-out block is meaningful.
+_HOLDOUT_SPLITS: frozenset[str] = frozenset({'by_subject_loso', 'by_subject_and_stimulus'})
+# Word-count columns a sentence metadata frame may carry, for the length-stratified gallery.
+_LENGTH_COLUMNS: tuple[str, ...] = ('n_words', 'length', 'sentence_length')
 
 
 def holdout_subject(config: Any | None) -> str | None:
-    """Returns the LOSO held-out subject, or `None` when the run is not LOSO."""
+    """Returns the held-out subject, or `None` when the run's split does not hold a subject out."""
     train = getattr(config, 'train', None)
-    if train is None or getattr(train, 'split', None) != 'by_subject_loso':
+    if train is None or getattr(train, 'split', None) not in _HOLDOUT_SPLITS:
         return None
     return getattr(train, 'loso_holdout_subject', None)
 
@@ -247,6 +252,193 @@ def cross_subject_holdout_retrieval(
     return out
 
 
+def decoder_rescoring_retrieval(
+    scores: np.ndarray,
+    query_content_ids: np.ndarray,
+    gallery_content_ids: np.ndarray,
+    *,
+    subjects: np.ndarray | None = None,
+    holdout: str | None = None,
+    query_n_words: np.ndarray | None = None,
+    gallery_n_words: np.ndarray | None = None,
+    length_tol: int = 1,
+    ks: tuple[int, ...] = (1, 5, 10),
+    seed: int = 0,
+) -> dict[str, Any] | None:
+    """Retrieval by decoder sequence likelihood over the sentence gallery -- the powered readout.
+
+    Each query scores every gallery sentence by length-normalised `log p(text | z)`. This is forced
+    choice over a known candidate set, so it is retrieval and is named as such: it is directly
+    comparable to `held_out_retrieval` and is never reported as generation. It is also the statistically
+    powered one -- 700 queries at ~9.5 bits, against a generation delta at n = 105.
+
+    Args:
+        scores (np.ndarray): Query-by-gallery scores `(n_queries, n_gallery)`, higher is better.
+        query_content_ids (np.ndarray): Stimulus id of each query `(n_queries,)`.
+        gallery_content_ids (np.ndarray): Stimulus id of each gallery sentence `(n_gallery,)`.
+        subjects (np.ndarray | None, optional): Subject code per query, for filtering to `holdout`.
+        holdout (str | None, optional): Keep only this subject's queries. Requires `subjects`.
+        query_n_words (np.ndarray | None, optional): Word count per query, for the stratified gallery.
+        gallery_n_words (np.ndarray | None, optional): Word count per gallery sentence.
+        length_tol (int, optional): Word-count tolerance for the stratified gallery. Defaults to 1.
+        ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
+        seed (int, optional): Bootstrap seed. Defaults to 0.
+
+    Returns:
+        dict | None: `top{k}`, `top{k}_p`, `mrr`, `rank_percentile`, `rank_percentile_ci`, `mean_rank`,
+            `chance_top1`, `n_queries`, `n_gallery`, `headline_metric`, and a `length_stratified`
+            sub-block when both word-count arrays are given; `None` when nothing is scoreable.
+    """
+    mat = np.asarray(scores, dtype=np.float64)
+    q_ids = np.asarray(query_content_ids)
+    g_ids = np.asarray(gallery_content_ids)
+    if mat.ndim != 2 or mat.shape[0] != len(q_ids) or mat.shape[1] != len(g_ids):
+        return None
+    if subjects is not None and holdout is not None:
+        keep = np.asarray(subjects) == holdout
+        if keep.sum() < 2:
+            return None
+        mat, q_ids = mat[keep], q_ids[keep]
+        if query_n_words is not None:
+            query_n_words = np.asarray(query_n_words)[keep]
+    if len(mat) < 2 or len(g_ids) < 2:
+        return None
+
+    out = _rescore_cell(mat, q_ids, g_ids, None, None, length_tol, ks, seed)
+    if out is None:
+        return None
+    if query_n_words is not None and gallery_n_words is not None:
+        out['length_stratified'] = _rescore_cell(
+            mat,
+            q_ids,
+            g_ids,
+            np.asarray(query_n_words, dtype=np.float64),
+            np.asarray(gallery_n_words, dtype=np.float64),
+            length_tol,
+            ks,
+            seed,
+        )
+    return out
+
+
+def _rescore_cell(
+    scores: np.ndarray,
+    q_ids: np.ndarray,
+    g_ids: np.ndarray,
+    q_words: np.ndarray | None,
+    g_words: np.ndarray | None,
+    length_tol: int,
+    ks: tuple[int, ...],
+    seed: int,
+) -> dict[str, Any] | None:
+    """Ranks one query-by-gallery score matrix, optionally inside a matched word-count gallery."""
+    hits = {k: 0.0 for k in ks}
+    reciprocal = 0.0
+    percentiles: list[float] = []
+    ranks: list[float] = []
+    chances: list[float] = []
+    galleries: list[float] = []
+
+    for i in range(len(scores)):
+        cand = np.arange(len(g_ids))
+        if q_words is not None and g_words is not None:
+            cand = cand[np.abs(g_words - q_words[i]) <= length_tol]
+        if cand.size < 2:
+            continue
+        galleries.append(float(cand.size))
+        chances.append(float((g_ids[cand] == q_ids[i]).mean()))
+        order = cand[np.argsort(-scores[i, cand])]
+        same = g_ids[order] == q_ids[i]
+        if not same.any():
+            percentiles.append(0.0)
+            ranks.append(float(cand.size))
+            continue
+        for k in ks:
+            hits[k] += float(same[:k].any())
+        rank = int(np.argmax(same)) + 1
+        reciprocal += 1.0 / rank
+        ranks.append(float(rank))
+        percentiles.append(1.0 - (rank - 1) / max(cand.size - 1, 1))
+
+    n_scored = len(percentiles)
+    if n_scored == 0:
+        return None
+
+    out: dict[str, Any] = {f'top{k}': hits[k] / n_scored for k in ks}
+    out['mrr'] = reciprocal / n_scored
+    out['chance_top1'] = float(np.mean(chances))
+    out['rank_percentile'] = float(np.mean(percentiles))
+    out['mean_rank'] = float(np.mean(ranks))
+    out['median_rank'] = float(np.median(ranks))
+    out['mean_gallery'] = float(np.mean(galleries))
+    out['n_queries'] = int(n_scored)
+    out['n_gallery'] = int(len(g_ids))
+    out['length_tol'] = None if q_words is None else int(length_tol)
+    for k in ks:
+        out[f'top{k}_p'] = _binom_tail_p(
+            round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k
+        )
+    out['rank_percentile_ci'] = _bootstrap_ci(np.asarray(percentiles, dtype=np.float64), seed=seed)
+    out['headline_metric'] = 'rank_percentile'
+    out['readout'] = 'retrieval'
+    return out
+
+
+def held_out_generation(block: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Condenses a `generation.generation_report` into the scoreboard's held-out generation row.
+
+    Only the paired deltas, the permutation null and the prefix-influence KL survive; every absolute
+    score travels with the control that makes it readable, and every `*_DIAGNOSTIC` / `*_RETRIEVAL` key
+    is stripped so it cannot reach a verdict. A control recorded unavailable or skipped produced no
+    delta at all, so it is named in `controls_absent` and denies `beats_all_controls`.
+
+    Args:
+        block (dict[str, Any] | None): The generation report, or `None`.
+
+    Returns:
+        dict | None: `{'applicable', 'n', 'split', 'split_strategy', 'primary_metric', 'hypothesis',
+            'controls', 'oracle', 'deltas', 'worst_control', 'worst_control_ci', 'beats_all_controls',
+            'controls_requested', 'controls_absent', 'permutation_p', 'prefix_influence_kl',
+            'n_candidate_sentences', 'quarantined'}`.
+    """
+    if not block:
+        return None
+    from zte.evaluation.generation import quarantined_keys, strip_quarantined
+
+    quarantined = quarantined_keys(block)
+    clean = strip_quarantined(block)
+    if not clean.get('applicable'):
+        return {'applicable': False, 'reason': clean.get('reason', 'not applicable')}
+
+    metric = clean.get('primary_metric', 'content_f1')
+    absolute = clean.get('absolute') or {}
+    perm = clean.get('permutation') or {}
+    deltas = clean.get('deltas') or {}
+    absent = (clean.get('controls_unavailable') or {}) | (clean.get('controls_skipped') or {})
+    return {
+        'applicable': True,
+        'n': clean.get('n'),
+        'split': clean.get('split'),
+        'split_strategy': clean.get('split_strategy'),
+        'primary_metric': metric,
+        'headline_metric': f'{metric}_delta',
+        'hypothesis': absolute.get('hypothesis'),
+        'controls': absolute.get('controls'),
+        'oracle': absolute.get('oracle'),
+        'deltas': {name: d.get(metric) for name, d in deltas.items()},
+        'worst_control': clean.get('worst_control'),
+        'worst_control_ci': clean.get('worst_control_ci'),
+        'beats_all_controls': bool(clean.get('beats_all_controls')) and not absent,
+        'controls_requested': list(clean.get('controls_requested') or deltas),
+        'controls_absent': absent,
+        'permutation_p': perm.get('p_value') if perm.get('applicable') else None,
+        'prefix_influence_kl': clean.get('prefix_influence_kl'),
+        'n_candidate_sentences': clean.get('n_candidate_sentences'),
+        'quarantined': quarantined,
+        'readout': 'generation',
+    }
+
+
 def _binom_tail_p(hits: int, n: int, p_chance: float) -> float:
     """Exact probability of `hits` or more successes in `n` Bernoulli trials at rate `p_chance`."""
     if n <= 0 or not np.isfinite(p_chance) or p_chance <= 0.0 or hits <= 0:
@@ -285,8 +477,35 @@ def build_scoreboard(
     sent_meta: 'pd.DataFrame | None',
     config: Any | None,
     word_band_power: np.ndarray | None = None,
+    *,
+    sent_n_words: np.ndarray | None = None,
+    phase_sent_emb: np.ndarray | None = None,
+    generation: dict[str, Any] | None = None,
+    rescoring: dict[str, Any] | None = None,
+    length_tol: int = 1,
 ) -> dict[str, Any]:
-    """Assembles the honest scoreboard from already-computed evaluation artefacts."""
+    """Assembles the honest scoreboard from already-computed evaluation artefacts.
+
+    Args:
+        word_emb (np.ndarray): Word embeddings `(n_words, d)`.
+        word_meta (pd.DataFrame): Aligned word metadata.
+        comparison (list[dict[str, Any]]): Probe-comparison rows.
+        sent_emb (np.ndarray): Sentence embeddings `(n_sentences, d)`.
+        sent_content_ids (np.ndarray): Stimulus id per sentence `(n_sentences,)`.
+        sent_meta (pd.DataFrame | None): Aligned sentence metadata (needs `subject`).
+        config (Any | None): The run config, consulted for the split and the held-out subject.
+        word_band_power (np.ndarray | None, optional): Raw band power for the positive control.
+        sent_n_words (np.ndarray | None, optional): Word count per sentence, enabling the
+            length-stratified gallery. Falls back to a word-count column on `sent_meta`.
+        phase_sent_emb (np.ndarray | None, optional): Sentence embeddings of phase-scrambled EEG through
+            the identical encoder -- the same-path control for held-out retrieval.
+        generation (dict[str, Any] | None, optional): A `generation.generation_report` block.
+        rescoring (dict[str, Any] | None, optional): A `decoder_rescoring_retrieval` block.
+        length_tol (int, optional): Word-count tolerance for the stratified gallery. Defaults to 1.
+
+    Returns:
+        dict[str, Any]: The scoreboard, with a `held_out_*` block per readout that was supplied.
+    """
     holdout = holdout_subject(config)
 
     # A factored model's thought code is the content subspace, so the headline is judged on those dims.
@@ -321,7 +540,37 @@ def build_scoreboard(
             if subjects is not None
             else None
         )
+        n_words = _sentence_lengths(sent_n_words, sent_meta)
+        if subjects is not None and board['held_out_retrieval'] is not None and n_words is not None:
+            # A hit inside a matched-length gallery cannot be a sentence-length shortcut.
+            from zte.evaluation.audit.rebaseline import stratified_retrieval
+
+            board['held_out_retrieval']['length_stratified'] = stratified_retrieval(
+                sent_emb, sent_content_ids, subjects, holdout, n_words, length_tol=length_tol
+            )
+        if phase_sent_emb is not None and subjects is not None:
+            # The control travels the identical retrieval path, so the comparison is not rigged.
+            board['phase_control_retrieval'] = cross_subject_holdout_retrieval(
+                phase_sent_emb, sent_content_ids, subjects, holdout
+            )
+
+    board['held_out_generation'] = held_out_generation(generation)
+    board['decoder_rescoring_retrieval'] = rescoring
     return board
+
+
+def _sentence_lengths(
+    sent_n_words: np.ndarray | None, sent_meta: 'pd.DataFrame | None'
+) -> np.ndarray | None:
+    """Word count per sentence, from the explicit array or the first matching metadata column."""
+    if sent_n_words is not None:
+        return np.asarray(sent_n_words, dtype=np.float64).ravel()
+    if sent_meta is None:
+        return None
+    for column in _LENGTH_COLUMNS:
+        if column in sent_meta.columns:
+            return np.asarray(sent_meta[column].to_numpy(), dtype=np.float64)
+    return None
 
 
 def render_markdown(board: dict[str, Any]) -> str:
@@ -368,7 +617,15 @@ def render_markdown(board: dict[str, Any]) -> str:
                 f'- Top-5: **{hits5} hits / {n_q}** vs {n_q * 5 * (r.get("chance_top1") or 0):.1f} expected '
                 f'by chance (p={r.get("top5_p", float("nan")):.1e})',
             ]
+            lines += _length_stratified_lines(r.get('length_stratified'))
+            lines += _phase_control_lines(board.get('phase_control_retrieval'), r)
         lines.append('')
+
+    decoding = _rescoring_lines(board.get('decoder_rescoring_retrieval')) + _generation_lines(
+        board.get('held_out_generation')
+    )
+    if decoding:
+        lines += decoding + ['']
 
     lines += [
         '**Lift over raw band-power** (ZTE - raw; positive = the encoder earns its place):',
@@ -388,6 +645,99 @@ def render_markdown(board: dict[str, Any]) -> str:
         )
     lines.append('')
     return '\n'.join(lines)
+
+
+def _length_stratified_lines(block: dict[str, Any] | None) -> list[str]:
+    """Markdown for the matched-length gallery, where a hit cannot be a sentence-length shortcut."""
+    if not block:
+        return []
+    ci = block.get('rank_percentile_ci') or (float('nan'),) * 3
+    return [
+        f'- Length-stratified (|Δn_words| ≤ {block.get("length_tol")}, mean gallery '
+        f'{block.get("mean_gallery", float("nan")):.1f}, chance '
+        f'{block.get("chance_top1", float("nan")):.4f}): Top-1 '
+        f'**{block.get("top1", float("nan")):.4f}**, rank percentile {ci[0]:.4f} '
+        f'(95% CI {ci[1]:.4f}–{ci[2]:.4f}) — sentence length alone must not explain the hit.'
+    ]
+
+
+def _phase_control_lines(block: dict[str, Any] | None, real: dict[str, Any]) -> list[str]:
+    """Markdown for the phase-scrambled control run through the identical retrieval path."""
+    if not block:
+        return []
+    delta = _sub(real.get('rank_percentile'), block.get('rank_percentile'))
+    return [
+        f'- Phase-scrambled control (same encoder, same gallery): rank percentile '
+        f'{block.get("rank_percentile", float("nan")):.4f}, Top-1 '
+        f'{block.get("top1", float("nan")):.4f} — real minus control {_signed(delta)}.'
+    ]
+
+
+def _rescoring_lines(block: dict[str, Any] | None) -> list[str]:
+    """Markdown for decoder-rescoring retrieval, labelled retrieval rather than generation."""
+    if not block:
+        return []
+    ci = block.get('rank_percentile_ci') or (float('nan'),) * 3
+    lines = [
+        '',
+        f'**Decoder-rescoring retrieval** ({block.get("n_queries", 0)} queries over a '
+        f'{block.get("n_gallery", 0)}-sentence gallery, chance '
+        f'{block.get("chance_top1", float("nan")):.4f}). Forced choice over a known candidate set: '
+        'this is retrieval, directly comparable to the number above, and is never a generation claim.',
+        '',
+        f'- Top-1 **{block.get("top1", float("nan")):.4f}** '
+        f'(p={block.get("top1_p", float("nan")):.1e}), rank percentile {ci[0]:.4f} '
+        f'(95% CI {ci[1]:.4f}–{ci[2]:.4f})',
+    ]
+    lines += _length_stratified_lines(block.get('length_stratified'))
+    return lines
+
+
+def _generation_lines(block: dict[str, Any] | None) -> list[str]:
+    """Markdown for free-running generation: deltas against every control, never an absolute score."""
+    if not block or not block.get('applicable'):
+        return []
+    metric = block.get('primary_metric', 'content_f1')
+    hypothesis = block.get('hypothesis') or {}
+    free = block.get('n_candidate_sentences') is None
+    lines = [
+        '',
+        f'**Free-running generation** ({block.get("n", 0)} held-out readings, `{block.get("split")}` '
+        f'cell of `{block.get("split_strategy")}`, '
+        f'{"no candidate set" if free else "CONSTRAINED DECODE"}). '
+        f'Absolute {metric} is {hypothesis.get(metric, float("nan")):.4f} and means nothing on its '
+        'own -- a decoder reciting the corpus scores the same. Only the paired deltas below are readable.',
+        '',
+        '| control | delta | 95% CI | beats |',
+        '| --- | --- | --- | --- |',
+    ]
+    for name, delta in (block.get('deltas') or {}).items():
+        if not delta:
+            continue
+        lines.append(
+            f'| {name} | {delta.get("point", float("nan")):+.4f} '
+            f'| [{delta.get("lo", float("nan")):+.4f}, {delta.get("hi", float("nan")):+.4f}] '
+            f'| {"✓" if delta.get("beats") else "·"} |'
+        )
+    for name, reason in sorted((block.get('controls_absent') or {}).items()):
+        lines.append(f'| {name} | NEVER RAN ({reason}) | -- | · |')
+    perm_p = block.get('permutation_p')
+    kl = block.get('prefix_influence_kl')
+    lines += [
+        '',
+        f'- Beats every control: **{block.get("beats_all_controls")}** '
+        f'(worst: `{block.get("worst_control")}`, requested: '
+        f'{", ".join(f"`{c}`" for c in block.get("controls_requested") or []) or "none"})',
+        f'- Permutation p (pairing shuffled): {"n/a" if perm_p is None else f"{perm_p:.4f}"} '
+        f'| prefix-influence KL: {"n/a" if kl is None else f"{kl:.4f}"} nats',
+    ]
+    quarantined = block.get('quarantined') or []
+    if quarantined:
+        lines.append(
+            f'- Quarantined diagnostics (computed, never read by the verdict): '
+            f'{", ".join(f"`{k}`" for k in quarantined)}'
+        )
+    return lines
 
 
 def _num(v: float | None) -> str:
