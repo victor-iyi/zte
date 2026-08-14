@@ -20,7 +20,7 @@ def _orthogonal(d: int, seed: int) -> np.ndarray:
 
 
 def test_retrieval_permutation_detects_structure_and_null() -> None:
-    """Test that retrieval_permutation detects structure and null."""
+    """The permutation null separates real retrieval structure from chance."""
     rng = np.random.default_rng(0)
     d, n_groups, per = 12, 20, 4
     centers = rng.normal(size=(n_groups, d))
@@ -67,7 +67,7 @@ def test_retrieval_permutation_p_value_is_exactly_the_rank_formula() -> None:
 
 
 def test_anchor_calibration_recovers_cohesion_under_per_subject_rotation() -> None:
-    """Test that anchor_calibration recovers cohesion under per-subject rotation."""
+    """Anchor calibration recovers cross-subject cohesion after a per-subject rotation."""
     rng = np.random.default_rng(3)
     d, n_words, reps = 16, 30, 2
     base = rng.normal(size=(n_words, d))
@@ -91,7 +91,7 @@ def test_anchor_calibration_recovers_cohesion_under_per_subject_rotation() -> No
 
 
 def test_cross_subject_decode_runs_and_reports_folds() -> None:
-    """Test that cross_subject_decode runs and reports folds."""
+    """Held-out cross-subject decoding reports one score per fold."""
     rng = np.random.default_rng(5)
     d, n = 10, 240
     subj = rng.choice(['A', 'B', 'C'], size=n)
@@ -116,7 +116,7 @@ def test_cross_subject_decode_runs_and_reports_folds() -> None:
 
 
 def test_honesty_functions_degrade_on_tiny_input() -> None:
-    """Test that honesty functions degrade on tiny input."""
+    """Honesty functions degrade on tiny input."""
     emb = np.random.default_rng(0).normal(size=(3, 8)).astype(np.float32)
     meta = pd.DataFrame({'subject': ['A', 'A', 'A'], 'word': ['a', 'b', 'c']})
     assert not anchor_calibration_lift(emb, meta)['applicable']

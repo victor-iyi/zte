@@ -1,6 +1,5 @@
 """`zte-explore` -- score brain-region importance and eye-tracking's contribution, straight from band power."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse
@@ -47,9 +46,7 @@ def parse_arguments() -> argparse.Namespace:
         help='Exact channel->region CSV (else the default anterior-posterior map).',
     )
     parser.add_argument('--method', choices=['mutual_info', 'f_score'], default='mutual_info')
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
@@ -148,23 +145,17 @@ def run_exploration(
     out = Path(out)
     (out / 'figures').mkdir(parents=True, exist_ok=True)
     if ds.band_power_raw is None:
-        raise ValueError(
-            'Exploration needs band-power features; rebuild with representation band_power.'
-        )
+        raise ValueError('Exploration needs band-power features; rebuild with representation band_power.')
 
-    # Score regions, then quantify eye-tracking's contribution over the same channel grouping.
-    # This is the LAST stage of a multi-hour run, so a missing or coordinates-only montage degrades to
-    # the approximate cap (as `evaluation.report._load_region_map` already does) instead of discarding
-    # the whole run -- the montage lives outside the run directory and may not survive a new VM.
+    # Last stage of a multi-hour run, and the montage lives outside the run directory: a missing or
+    # coordinates-only file degrades to the approximate cap rather than discarding the whole run.
     region_map = default_region_map(ds.band_power_raw.shape[-1])
     if montage_csv:
         if Path(montage_csv).is_file():
             try:
                 region_map = RegionMap.from_csv(montage_csv, ds.band_power_raw.shape[-1])
             except (OSError, ValueError, KeyError) as exc:
-                _LOG.warning(
-                    'Could not load montage %s: %r; using approximate regions.', montage_csv, exc
-                )
+                _LOG.warning('Could not load montage %s: %r; using approximate regions.', montage_csv, exc)
         else:
             _LOG.warning('Montage %s not found; using approximate regions.', montage_csv)
     region_rows = region_importance(
@@ -176,13 +167,10 @@ def run_exploration(
     )
     et_rows = eye_tracking_contribution(ds, region_map)
 
-    # Write the tables, figures and report.
     pd.DataFrame(region_rows).to_csv(out / 'region_importance.csv', index=False)
     pd.DataFrame(et_rows).to_csv(out / 'eye_tracking_contribution.csv', index=False)
     figures = _render_figures(region_rows, et_rows, out / 'figures')
-    (out / 'report.md').write_text(
-        _render_report(ds, region_map, region_rows, et_rows, figures, out), encoding='utf-8'
-    )
+    (out / 'report.md').write_text(_render_report(ds, region_map, region_rows, et_rows, figures, out), encoding='utf-8')
     _LOG.info('Exploration written to %s (%d figures)', out, len(figures))
     return {
         'region_map_approximate': region_map.approximate,
@@ -209,9 +197,7 @@ def main() -> None:
     )
 
 
-def _render_figures(
-    region_rows: list[dict[str, Any]], et_rows: list[dict[str, Any]], fig_dir: Path
-) -> list[Path]:
+def _render_figures(region_rows: list[dict[str, Any]], et_rows: list[dict[str, Any]], fig_dir: Path) -> list[Path]:
     """Renders the region-importance heatmap and eye-tracking probe bars."""
     import matplotlib.pyplot as plt
 
@@ -228,10 +214,7 @@ def _render_figures(
         _LOG.warning('Region heatmap skipped: %r', exc)
     try:
         fig = P.bar_probe_comparison(
-            [
-                {**r, 'linear_score': r['score'], 'knn_score': r['score'], 'baseline': 0.0}
-                for r in et_rows
-            ],
+            [{**r, 'linear_score': r['score'], 'knn_score': r['score'], 'baseline': 0.0} for r in et_rows],
             'linear_score',
             title='Eye-tracking contribution by target (linear probe)',
         )
@@ -253,9 +236,7 @@ def _render_report(
     out: Path,
 ) -> str:
     """Builds the exploration Markdown report."""
-    region_frame = pd.DataFrame(region_rows).pivot(
-        index='region', columns='target', values='importance'
-    )
+    region_frame = pd.DataFrame(region_rows).pivot(index='region', columns='target', values='importance')
     et_frame = pd.DataFrame(et_rows).pivot(index='representation', columns='target', values='score')
     lines = [
         '# ZTE exploration -- brain regions & eye-tracking',
@@ -266,8 +247,7 @@ def _render_report(
         '',
         '## Region importance (share of decodable information)',
         '',
-        '`reading` targets vs `cognitive` targets; higher = that region carries more '
-        'of the attribute.',
+        '`reading` targets vs `cognitive` targets; higher = that region carries more of the attribute.',
         '',
         '| region | ' + ' | '.join(str(c) for c in region_frame.columns) + ' |',
         '| --- |' + ' --- |' * len(region_frame.columns),

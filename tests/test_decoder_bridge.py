@@ -78,9 +78,7 @@ def test_build_bridge_adds_a_resampler_only_for_word_conditioning() -> None:
     pooled, none = build_bridge(DecoderConfig(prefix_slots=4, bottleneck=8), 32, 24, 16)
     assert none is None and pooled.slots == 4
 
-    config = DecoderConfig(
-        conditioning='pooled_plus_words', prefix_slots=4, word_slots=3, bottleneck=8
-    )
+    config = DecoderConfig(conditioning='pooled_plus_words', prefix_slots=4, word_slots=3, bottleneck=8)
     _, resampler = build_bridge(config, 32, 24, 16)
     assert resampler is not None and resampler.slots == 3
 
@@ -185,9 +183,7 @@ def test_the_language_model_is_frozen_and_uncheckpointed(tiny_lm: FrozenLM) -> N
     assert not incompatible.missing_keys and not incompatible.unexpected_keys
 
 
-def test_a_checkpoint_carrying_the_language_model_stays_small(
-    tiny_lm: FrozenLM, tmp_path: Path
-) -> None:
+def test_a_checkpoint_carrying_the_language_model_stays_small(tiny_lm: FrozenLM, tmp_path: Path) -> None:
     """The LM sits inside the objective, so without the empty state dict every epoch would add its weights."""
     holder = torch.nn.Module()
     holder.lm = tiny_lm
@@ -276,9 +272,7 @@ def test_the_language_model_records_what_pins_it(tiny_lm: FrozenLM) -> None:
 # --------------------------------------------------------------------------- #
 def test_sentence_hidden_is_the_differentiable_half_of_embed_sentence() -> None:
     """The decoder loss conditions on the same pooled vector retrieval exports, and needs its gradient."""
-    model = build_model(
-        ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40
-    ).eval()
+    model = build_model(ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40).eval()
     batch = _batch()
 
     hidden = model.sentence_hidden(batch, contextual=True)
@@ -290,9 +284,7 @@ def test_sentence_hidden_is_the_differentiable_half_of_embed_sentence() -> None:
 
 def test_embed_sentence_still_routes_by_objective() -> None:
     """Skip-gram never trains its contextual path, so its exported vector must stay the per-token one."""
-    model = build_model(
-        ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40
-    ).eval()
+    model = build_model(ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40).eval()
     batch = _batch()
     with torch.no_grad():
         flat = model.project(model.sentence_hidden(batch, contextual=False))

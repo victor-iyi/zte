@@ -1,6 +1,5 @@
 """Inference: drive a frozen LM from a trained prefix bridge -- free-running decode and decoder-rescoring retrieval."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import weakref
@@ -135,16 +134,12 @@ class ZTEDecoder:
             )
         lm = build_lm(decoder_config)
         z_dim = int(state['bridge.to_bottleneck.weight'].shape[1])
-        bridge, _ = build_bridge(
-            decoder_config, z_dim, cast('int', model.hidden_dim), lm.hidden_dim
-        )
+        bridge, _ = build_bridge(decoder_config, z_dim, cast('int', model.hidden_dim), lm.hidden_dim)
         bridge.load_state_dict(_sub_state(state, 'bridge.'), strict=True)
 
         gap_state = extra.get('gap_correction')
         gap = (
-            GapCorrector.from_state(gap_state)
-            if gap_state
-            else GapCorrector(z_dim, mode=decoder_config.gap_correction)
+            GapCorrector.from_state(gap_state) if gap_state else GapCorrector(z_dim, mode=decoder_config.gap_correction)
         )
         decoder = cls(
             model=model,
@@ -231,9 +226,7 @@ class ZTEDecoder:
         loader = make_dataloader(torch_ds, batch_size=batch_size, shuffle=False, drop_last=False)
         vectors: list[np.ndarray] = []
         for batch in progress(loader, description='conditioning'):
-            moved = {
-                k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()
-            }
+            moved = {k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()}
             ready = moved if transform is None else transform(moved)
             vectors.append(self._sentence_z(ready).cpu().numpy())
         z = np.concatenate(vectors) if vectors else np.empty((0, self.z_dim), np.float32)
@@ -355,9 +348,7 @@ class ZTEDecoder:
         ids, mask = self._tokenise(candidate_texts)
         tensor = _as_tensor(z, self.device.device)
         scores: list[np.ndarray] = []
-        for lo, hi in progress(
-            list(_spans(tensor.shape[0], batch_size)), description='rescoring gallery'
-        ):
+        for lo, hi in progress(list(_spans(tensor.shape[0], batch_size)), description='rescoring gallery'):
             prefix = self.bridge(tensor[lo:hi])
             block = self.lm.sequence_logprob(prefix, ids, mask, length_normalise, chunk)
             scores.append(block.float().cpu().numpy())
@@ -366,9 +357,7 @@ class ZTEDecoder:
         return np.concatenate(scores).astype(np.float32)
 
     @torch.no_grad()
-    def teacher_forced_nll(
-        self, z: np.ndarray | torch.Tensor, texts: Sequence[str], batch_size: int = 8
-    ) -> np.ndarray:
+    def teacher_forced_nll(self, z: np.ndarray | torch.Tensor, texts: Sequence[str], batch_size: int = 8) -> np.ndarray:
         """Returns the per-sentence teacher-forced negative log-likelihood -- a DIAGNOSTIC, never a headline.
 
         Teacher forcing hands the model every previous reference token, so this number measures the LM's fluency far
@@ -395,9 +384,7 @@ class ZTEDecoder:
         return np.concatenate(out).astype(np.float32)
 
     @torch.no_grad()
-    def prefix_influence_kl(
-        self, z: np.ndarray | torch.Tensor, batch_size: int = 8, seed: int = 0
-    ) -> np.ndarray:
+    def prefix_influence_kl(self, z: np.ndarray | torch.Tensor, batch_size: int = 8, seed: int = 0) -> np.ndarray:
         """Returns the per-row KL in nats between a reading's own prefix and another reading's prefix.
 
         This is the bridge-collapse detector the generation verdict gates on, and it measures the one thing that
@@ -446,21 +433,14 @@ class ZTEDecoder:
         out: list[np.ndarray] = []
         for lo, hi in _spans(tensor.shape[0], batch_size):
             prefix = self.bridge(tensor[lo:hi])
-            out.append(
-                self.lm.next_token_kl(prefix, self.bridge.null(prefix.shape[0]))
-                .float()
-                .cpu()
-                .numpy()
-            )
+            out.append(self.lm.next_token_kl(prefix, self.bridge.null(prefix.shape[0])).float().cpu().numpy())
         if not out:
             return np.empty((0,), dtype=np.float32)
         return np.concatenate(out).astype(np.float32)
 
     # ---- Internals ---- #
 
-    def _decode(
-        self, prefix: torch.Tensor, max_new_tokens: int | None, beams: int | None
-    ) -> list[str]:
+    def _decode(self, prefix: torch.Tensor, max_new_tokens: int | None, beams: int | None) -> list[str]:
         """The single free-running decode path: the headline, all five controls and the oracle all land here.
 
         Raises:
@@ -540,9 +520,7 @@ def _decoder_config(extra: dict[str, Any], config: ZTEConfig) -> DecoderConfig:
     return DecoderConfig(**{k: v for k, v in stored.items() if k in fields})
 
 
-def _rebuild_encoder(
-    config: ZTEConfig, extra: dict[str, Any], dataset: ZuCoDataset | None
-) -> ZTEModel:
+def _rebuild_encoder(config: ZTEConfig, extra: dict[str, Any], dataset: ZuCoDataset | None) -> ZTEModel:
     """Rebuilds the encoder at the shapes the checkpoint records.
 
     Raises:
@@ -553,11 +531,7 @@ def _rebuild_encoder(
     raw_shape = tuple(raw_shape) if raw_shape is not None else None
     if in_dim is None and raw_shape is None and dataset is not None:
         in_dim = None if dataset.features is None else int(dataset.features.shape[1])
-        raw_shape = (
-            None
-            if dataset.raw_eeg is None
-            else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
-        )
+        raw_shape = None if dataset.raw_eeg is None else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
     if in_dim is None and raw_shape is None:
         raise ValueError('Checkpoint lacks input shapes; pass the dataset it was trained on.')
     return build_model(

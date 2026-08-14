@@ -153,9 +153,7 @@ def generation_permutation_test(
     }
 
 
-def _fit_score(
-    xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str
-) -> float | None:
+def _fit_score(xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str) -> float | None:
     """Fits a standardised linear probe on `(xtr, ytr)` and scores it on the held-out fold."""
     import warnings
 
@@ -268,7 +266,6 @@ def cross_subject_decode(
         if len(scores) < 2:
             continue
 
-        # Aggregate the folds into a point estimate with a bootstrap CI over chance.
         arr = np.asarray(scores, dtype=float)
         point, lo, hi = bootstrap_ci(arr, seed=seed)
         chance = float(np.mean(chances)) if chances else 0.0

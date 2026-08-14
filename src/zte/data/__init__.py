@@ -4,7 +4,6 @@ Heavy exports resolve lazily via `__getattr__` so importing `zte.data.schema` (a
 does not pull in `zte.data.dataset` and create an import cycle.
 """
 
-# pylint: disable=undefined-all-variable, import-outside-toplevel
 from __future__ import annotations
 
 __all__ = ['ZuCoDataset', 'generate_synthetic_zuco']  # type: ignore[reportUndefinedVariable]

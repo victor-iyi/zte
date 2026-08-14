@@ -1,4 +1,4 @@
-"""Tests for the honest scoreboard (Gate 1)."""
+"""Tests for the honest held-out scoreboard."""
 
 from __future__ import annotations
 
@@ -17,21 +17,19 @@ from zte.evaluation.audit.scoreboard import (
 
 
 def _loso_config(holdout: str = 'ZAB') -> SimpleNamespace:
-    """Test that the holdout subject is detected."""
-    return SimpleNamespace(
-        train=SimpleNamespace(split='by_subject_loso', loso_holdout_subject=holdout)
-    )
+    """The holdout subject is detected."""
+    return SimpleNamespace(train=SimpleNamespace(split='by_subject_loso', loso_holdout_subject=holdout))
 
 
 def test_holdout_subject_detection() -> None:
-    """Test that the holdout subject is detected."""
+    """The holdout subject is detected."""
     assert holdout_subject(_loso_config('ZAB')) == 'ZAB'
     assert holdout_subject(SimpleNamespace(train=SimpleNamespace(split='by_sentence'))) is None
     assert holdout_subject(None) is None
 
 
 def test_lift_over_raw_and_positive_control() -> None:
-    """Test that the lift over raw and positive control are computed correctly."""
+    """The lift over raw and positive control are computed correctly."""
     comparison = [
         {
             'target': 'word_len',
@@ -77,7 +75,7 @@ def test_lift_over_raw_and_positive_control() -> None:
 
 
 def test_positive_control_fails_when_raw_blind() -> None:
-    """Test that the positive control fails when the raw is blind."""
+    """The positive control fails when the raw is blind."""
     comparison = [
         {
             'target': 'word_len',
@@ -98,7 +96,7 @@ def test_positive_control_fails_when_raw_blind() -> None:
 
 
 def test_cross_subject_holdout_retrieval_perfect_and_degenerate() -> None:
-    """Test that the cross-subject holdout retrieval is perfect and degenerate."""
+    """The cross-subject holdout retrieval is perfect and degenerate."""
     # Two subjects, two stimuli; held-out ZAB's readings sit exactly on ZDM's same-stimulus readings.
     emb = np.array(
         [
@@ -116,14 +114,11 @@ def test_cross_subject_holdout_retrieval_perfect_and_degenerate() -> None:
     assert r['top1'] == 1.0 and r['n_queries'] == 2
     assert r['lift_top1'] is not None
     # Single subject -> not meaningful.
-    assert (
-        cross_subject_holdout_retrieval(emb[:2], content[:2], np.array(['ZAB', 'ZAB']), 'ZAB')
-        is None
-    )
+    assert cross_subject_holdout_retrieval(emb[:2], content[:2], np.array(['ZAB', 'ZAB']), 'ZAB') is None
 
 
 def test_held_out_geometry_masks_to_subject() -> None:
-    """Test that the held-out geometry masks to the subject."""
+    """The held-out geometry masks to the subject."""
     rng = np.random.default_rng(0)
     emb = rng.normal(size=(60, 16))
     meta = pd.DataFrame(
@@ -142,7 +137,7 @@ def test_held_out_geometry_masks_to_subject() -> None:
 
 
 def test_build_scoreboard_non_loso() -> None:
-    """Test that the scoreboard is built correctly for a non-LOSO run."""
+    """The scoreboard is built correctly for a non-LOSO run."""
     board = build_scoreboard(
         np.zeros((4, 4)),
         pd.DataFrame({'subject': ['a'] * 4}),
@@ -156,7 +151,7 @@ def test_build_scoreboard_non_loso() -> None:
 
 
 def test_positive_control_uses_genuinely_raw_band_power() -> None:
-    """Test that the content control probes raw band power, immune to a whitening normaliser.
+    """The content control probes raw band power, immune to a whitening normaliser.
 
     The regression: the old control probed the model's *normalised* input, and a whitening normaliser
     (riemannian/zscore_subject) strips the amplitude that word_len rides on, so it read ~0 and branded
@@ -201,7 +196,7 @@ def test_positive_control_uses_genuinely_raw_band_power() -> None:
 
 
 def test_positive_control_not_applicable_without_band_power() -> None:
-    """Test that a raw-signal frontend (no band power) yields no positive control rather than crashing."""
+    """A raw-signal frontend (no band power) yields no positive control rather than crashing."""
     from zte.evaluation.audit.scoreboard import raw_content_positive_control
 
     assert raw_content_positive_control(None, pd.DataFrame({'word_len': [1, 2, 3]})) is None

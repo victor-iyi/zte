@@ -16,9 +16,7 @@ from zte.logging_utils import get_logger, progress
 _LOG = get_logger('data.sources')
 
 # Subject and task read straight from the filename, so nothing depends on how a zip is named.
-_MAT_RE: Pattern[str] = re.compile(
-    r'results(?P<subj>[A-Za-z0-9]+)_(?P<task>TSR|NR|SR)\.mat$', re.IGNORECASE
-)
+_MAT_RE: Pattern[str] = re.compile(r'results(?P<subj>[A-Za-z0-9]+)_(?P<task>TSR|NR|SR)\.mat$', re.IGNORECASE)
 
 
 def _has_mat(directory: Path) -> bool:
@@ -128,7 +126,7 @@ def resolve_source(
     sset = {s.upper() for s in subjects} if subjects else None
 
     # A Drive spec is downloaded first, then re-resolved as a local path.
-    from zte.data.io.remote import (  # pylint: disable=import-outside-toplevel
+    from zte.data.io.remote import (
         download_to_dir,
         is_drive_spec,
     )
@@ -150,9 +148,7 @@ def resolve_source(
         raise FileNotFoundError(f'Source does not exist: {path}')
 
     def _extract(archives: list[Path]) -> Path:
-        return _finalise(
-            _extract_selected(archives, extract_dir, tasks=tset, subjects=sset, overwrite=overwrite)
-        )
+        return _finalise(_extract_selected(archives, extract_dir, tasks=tset, subjects=sset, overwrite=overwrite))
 
     # Zips are checked before `.mat` so that a staging directory extracts into `extract_dir`.
     if path.is_file() and path.suffix == '.zip':
@@ -187,7 +183,5 @@ def resolve_source(
 def _finalise(extract_dir: Path) -> Path:
     """Verifies extraction produced `.mat` files and returns the directory."""
     if not _has_mat(extract_dir):
-        raise FileNotFoundError(
-            f'Extraction to {extract_dir} produced no .mat files; check the archives.'
-        )
+        raise FileNotFoundError(f'Extraction to {extract_dir} produced no .mat files; check the archives.')
     return extract_dir

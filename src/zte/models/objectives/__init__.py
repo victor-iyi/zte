@@ -1,7 +1,7 @@
 """Self-supervised training objectives for ZTE -- the EEG analogues of word2vec.
 
-`build_objective` selects the objective named by `config.name`. Each objective is its own module: `skipgram`, `cbow`, `masked`,
-`cpc`, `clip`, `decode`; the shared base and loss terms live in `base` and `losses`.
+`build_objective` selects the objective named by `config.name`. Each objective is its own module: `skipgram`, `cbow`,
+`masked`, `cpc`, `clip`, `decode`; the shared base and loss terms live in `base` and `losses`.
 """
 
 from __future__ import annotations
@@ -54,7 +54,6 @@ def build_objective(
 
     Raises:
         ValueError: If `config.name` is unknown, or `'decode'` is requested with no `decoder_config`.
-
     """
     if config.name == 'skipgram':
         return SkipGramObjective(config, model)
@@ -68,8 +67,6 @@ def build_objective(
         return SentenceClipObjective(config, model)
     if config.name == 'decode':
         if decoder_config is None:
-            raise ValueError(
-                "objective 'decode' needs a DecoderConfig; pass decoder_config=config.decoder."
-            )
+            raise ValueError("objective 'decode' needs a DecoderConfig; pass decoder_config=config.decoder.")
         return PrefixDecodeObjective(config, model, decoder_config)
     raise ValueError(f'Unknown objective: {config.name!r}')

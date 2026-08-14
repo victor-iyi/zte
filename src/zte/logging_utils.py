@@ -1,6 +1,5 @@
 """Logging and progress-bar helpers, routed through `rich`/`tqdm` when installed."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import logging
@@ -29,15 +28,11 @@ def configure_logging(
     try:
         from rich.logging import RichHandler
 
-        console_handler: logging.Handler = RichHandler(
-            rich_tracebacks=True, show_path=False, markup=True
-        )
+        console_handler: logging.Handler = RichHandler(rich_tracebacks=True, show_path=False, markup=True)
         console_handler.setFormatter(logging.Formatter('%(message)s', datefmt='[%X]'))
     except ImportError:
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(
-            logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s | %(message)s')
-        )
+        console_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s | %(message)s'))
     logger.addHandler(console_handler)
 
     if log_file is not None:

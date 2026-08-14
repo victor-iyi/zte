@@ -106,8 +106,7 @@ def strip_compile_prefix(state: dict[str, Any]) -> dict[str, Any]:
     if not any(key.startswith(_COMPILE_PREFIX) for key in state):
         return state
     return {
-        (key[len(_COMPILE_PREFIX) :] if key.startswith(_COMPILE_PREFIX) else key): value
-        for key, value in state.items()
+        (key[len(_COMPILE_PREFIX) :] if key.startswith(_COMPILE_PREFIX) else key): value for key, value in state.items()
     }
 
 
@@ -152,13 +151,10 @@ def load_encoder(
     shapes['raw_shape'] = tuple(raw_shape) if raw_shape is not None else None
     if shapes['in_dim'] is None and shapes['raw_shape'] is None:
         raise ValueError(
-            f'{ckpt_path} carries no input shapes; it predates shape-bearing checkpoints and cannot '
-            'seed a decoder run.'
+            f'{ckpt_path} carries no input shapes; it predates shape-bearing checkpoints and cannot seed a decoder run.'
         )
     if source_config.model != config.model:
-        _LOG.warning(
-            'Encoder checkpoint model config differs from this run; the source config wins for the encoder.'
-        )
+        _LOG.warning('Encoder checkpoint model config differs from this run; the source config wins for the encoder.')
 
     model = build_model(
         source_config.model,

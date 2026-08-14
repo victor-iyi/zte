@@ -22,11 +22,6 @@ _IDENTITY = ('subject',)
 def _abs_pearson(x: np.ndarray, y: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """Returns `|Pearson r|` between every column of `x` and the vector `y`.
 
-    Args:
-        x (np.ndarray): Matrix `(n, d)`.
-        y (np.ndarray): Vector `(n,)`.
-        eps (float): Numerical floor.
-
     Returns:
         np.ndarray: `(d,)` absolute correlations in `[0, 1]` (0 where a column or `y` is constant).
     """
@@ -47,15 +42,8 @@ def _eta_squared(x: np.ndarray, groups: np.ndarray, eps: float = 1e-12) -> np.nd
     """Returns eta^2 (between-group variance share) of every column of `x` for a grouping.
 
     eta^2 in `[0, 1]` is the fraction of a dimension's variance explained by the categorical label --
+
     a clean "how subject-selective is this neuron?" measure.
-
-    Args:
-        x (np.ndarray): Matrix `(n, d)`.
-        groups (np.ndarray): Categorical labels `(n,)`.
-        eps (float): Numerical floor.
-
-    Returns:
-        np.ndarray: `(d,)` eta^2 values.
     """
     x = np.asarray(x, dtype=np.float64)
     codes, _ = _codes(groups)
@@ -142,9 +130,7 @@ def neuron_report(
         score_stack = np.vstack([scores[t] for t in targets])  # (T, d)
         dom_idx = score_stack.argmax(axis=0)
         dom_score = score_stack.max(axis=0)
-        dominant = np.array(
-            [targets[i] if dom_score[j] > 0.02 else 'none' for j, i in enumerate(dom_idx)]
-        )
+        dominant = np.array([targets[i] if dom_score[j] > 0.02 else 'none' for j, i in enumerate(dom_idx)])
     else:
         dominant = np.array(['none'] * d)
         dom_score = np.zeros(d)
@@ -188,20 +174,16 @@ def neuron_report(
             'selectivity': {t: float(scores[t][dim]) for t in targets},
             'activation_hist': {'counts': counts.tolist(), 'edges': edges.tolist()},
             'top_words': [
-                {'word': str(words[i]), 'subject': str(subjects[i]), 'activation': float(col[i])}
-                for i in hi
+                {'word': str(words[i]), 'subject': str(subjects[i]), 'activation': float(col[i])} for i in hi
             ],
             'bottom_words': [
-                {'word': str(words[i]), 'subject': str(subjects[i]), 'activation': float(col[i])}
-                for i in lo
+                {'word': str(words[i]), 'subject': str(subjects[i]), 'activation': float(col[i])} for i in lo
             ],
         }
         if region_cols is not None:
             attr = _abs_pearson(region_cols, col)
             top = np.argsort(-attr)[:6]
-            entry['attribution'] = [
-                {'feature': region_labels[i], 'corr': float(attr[i])} for i in top
-            ]
+            entry['attribution'] = [{'feature': region_labels[i], 'corr': float(attr[i])} for i in top]
         top_neurons.append(entry)
 
     # Importance is axis-dependent: rank by how much a neuron fires, or by what it is selective for.
@@ -254,9 +236,7 @@ def _budget(dominant: np.ndarray, active: np.ndarray) -> dict[str, int]:
     return out
 
 
-def _variance_budget(
-    dominant: np.ndarray, var_share: np.ndarray, active: np.ndarray
-) -> dict[str, float]:
+def _variance_budget(dominant: np.ndarray, var_share: np.ndarray, active: np.ndarray) -> dict[str, float]:
     """Sums the variance share of active neurons per dominant attribute."""
     out: dict[str, float] = {}
     idx = np.where(active)[0]

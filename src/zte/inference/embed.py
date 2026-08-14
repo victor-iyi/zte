@@ -4,7 +4,6 @@
 with aligned metadata or brand-new in-memory EEG token arrays.
 """
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from pathlib import Path
@@ -134,7 +133,8 @@ class ZTEEmbedder:
 
         Args:
             dataset (ZuCoDataset): A built dataset.
-            level (EmbeddingLevel): `word` for one embedding per present word, or `sentence` for one pooled per sentence.
+            level (EmbeddingLevel): `word` for one embedding per present word, or `sentence` for one pooled per
+                sentence.
             indices (np.ndarray | None): Optional word-row indices to restrict to (e.g. a split).
             batch_size (int): Sentences per forward pass.
             present_only (bool): For word level, keep only present (non-omitted) words.
@@ -151,9 +151,7 @@ class ZTEEmbedder:
         seq_ptr = 0
 
         for batch in progress(loader, description=f'embedding ({level})'):
-            dev_batch = {
-                k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()
-            }
+            dev_batch = {k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()}
             objective = self.config.objective.name
             if level == 'sentence':
                 emb = self.model.embed_sentence(dev_batch, objective=objective).cpu().numpy()
@@ -166,11 +164,7 @@ class ZTEEmbedder:
                 # Word-level routing mirrors each objective's trained representation.
                 contextual = objective in {'cpc', 'masked'}
                 causal = objective == 'cpc'
-                token_emb = (
-                    self.model.forward(dev_batch, contextual=contextual, causal=causal)
-                    .cpu()
-                    .numpy()
-                )
+                token_emb = self.model.forward(dev_batch, contextual=contextual, causal=causal).cpu().numpy()
                 lengths = batch['lengths'].tolist()
                 presence = batch['presence'].cpu().numpy()
                 for b, length in enumerate(lengths):
@@ -182,9 +176,7 @@ class ZTEEmbedder:
                         embeddings.append(token_emb[b, j])
                         meta_rows.append(self._word_meta(dataset, rows[j]))
         emb_array = (
-            np.asarray(embeddings, dtype=np.float32)
-            if embeddings
-            else np.empty((0, self.model.embed_dim), np.float32)
+            np.asarray(embeddings, dtype=np.float32) if embeddings else np.empty((0, self.model.embed_dim), np.float32)
         )
         return emb_array, pd.DataFrame(meta_rows)
 
@@ -206,9 +198,7 @@ class ZTEEmbedder:
             baseline_raw (np.ndarray | None): `(n, n_channels, time_steps)` baseline raw windows, for the raw frontend.
         """
         if self.normalizer is not None and baseline_band_power is not None:
-            self.normalizer.calibrate_subject(
-                np.asarray(baseline_band_power, dtype=np.float32), subject_code
-            )
+            self.normalizer.calibrate_subject(np.asarray(baseline_band_power, dtype=np.float32), subject_code)
         if self.aligner is not None and baseline_raw is not None:
             self.aligner.calibrate_subject(np.asarray(baseline_raw, dtype=np.float32), subject_code)
 
@@ -249,28 +239,20 @@ class ZTEEmbedder:
         """
         if self.model.uses_raw:
             if raw is None:
-                raise ValueError(
-                    'This checkpoint uses a raw frontend; pass raw=(n_tokens, n_channels, time_steps).'
-                )
+                raise ValueError('This checkpoint uses a raw frontend; pass raw=(n_tokens, n_channels, time_steps).')
             signals = np.asarray(raw, dtype=np.float32)
             if signals.ndim != 3:
-                raise ValueError(
-                    f'raw must be (n_tokens, n_channels, time_steps); got shape {signals.shape}.'
-                )
+                raise ValueError(f'raw must be (n_tokens, n_channels, time_steps); got shape {signals.shape}.')
 
             # Same per-subject whitening the model trained under; an uncalibrated code gets the cohort reference.
             if apply_normalizer and self.aligner is not None and subject_codes is not None:
                 signals = self.aligner.transform(signals.copy(), np.asarray(subject_codes))
         else:
             if band_power is None:
-                raise ValueError(
-                    'This checkpoint uses a band-power frontend; pass band_power=(n_tokens, n_features).'
-                )
+                raise ValueError('This checkpoint uses a band-power frontend; pass band_power=(n_tokens, n_features).')
             signals = np.asarray(band_power, dtype=np.float32)
             if signals.ndim != 2:
-                raise ValueError(
-                    f'band_power must be (n_tokens, n_features); got shape {signals.shape}.'
-                )
+                raise ValueError(f'band_power must be (n_tokens, n_features); got shape {signals.shape}.')
             if self.in_dim is not None and signals.shape[1] != self.in_dim:
                 include_et = self.config.dataset.include_eye_tracking
                 raise ValueError(
@@ -284,11 +266,7 @@ class ZTEEmbedder:
                 signals = self.normalizer.transform(signals, subjects=subject_codes)
 
         n = signals.shape[0]
-        subj = (
-            np.zeros(n, dtype=np.int64)
-            if subjects is None
-            else np.asarray(subjects, dtype=np.int64)
-        )
+        subj = np.zeros(n, dtype=np.int64) if subjects is None else np.asarray(subjects, dtype=np.int64)
 
         # The adapter reads the signature, so build one per token from whichever subject code it carries.
         sig = None
@@ -297,9 +275,7 @@ class ZTEEmbedder:
             sig = np.stack([self.aligner.signature_for(str(c)) for c in codes]).astype(np.float32)
         dev = self.device.device
         out: list[np.ndarray] = []
-        for start in progress(
-            range(0, n, batch_size), description='embedding signals', disable=not show_progress
-        ):
+        for start in progress(range(0, n, batch_size), description='embedding signals', disable=not show_progress):
             end = min(start + batch_size, n)
             count = end - start
             chunk = torch.from_numpy(np.ascontiguousarray(signals[start:end])).to(dev)
@@ -311,9 +287,7 @@ class ZTEEmbedder:
                 'pad_mask': torch.ones(count, 1, dtype=torch.bool, device=dev),
                 'presence': torch.ones(count, 1, dtype=torch.bool, device=dev),
                 'subject': torch.from_numpy(subj[start:end]).to(dev),
-                'subject_signature': None
-                if sig is None
-                else torch.from_numpy(sig[start:end]).to(dev),
+                'subject_signature': None if sig is None else torch.from_numpy(sig[start:end]).to(dev),
                 'lengths': torch.ones(count, dtype=torch.long, device=dev),
             }
             batch['raw' if self.model.uses_raw else 'features'] = chunk.unsqueeze(1)
@@ -374,9 +348,7 @@ class ZTEEmbedder:
         return out
 
     @staticmethod
-    def nearest_neighbors(
-        embeddings: np.ndarray, query_idx: int, k: int = 5
-    ) -> list[tuple[int, float]]:
+    def nearest_neighbors(embeddings: np.ndarray, query_idx: int, k: int = 5) -> list[tuple[int, float]]:
         """Returns the `k` nearest neighbours (cosine) of one embedding.
 
         Args:
@@ -397,16 +369,9 @@ class ZTEEmbedder:
 def _input_shapes(dataset: ZuCoDataset) -> tuple[int | None, tuple[int, int] | None]:
     """Infers `(in_dim, raw_shape)` for model construction from a dataset.
 
-    Args:
-        dataset (ZuCoDataset): A built dataset.
-
     Returns:
         tuple[int | None, tuple[int, int] | None]: `(in_dim, raw_shape)`, with unused entries `None`.
     """
     in_dim = None if dataset.features is None else int(dataset.features.shape[1])
-    raw_shape = (
-        None
-        if dataset.raw_eeg is None
-        else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
-    )
+    raw_shape = None if dataset.raw_eeg is None else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
     return in_dim, raw_shape

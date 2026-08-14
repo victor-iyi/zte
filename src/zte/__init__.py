@@ -1,6 +1,5 @@
 """ZuCo Thought Embedding: self-supervised word-level EEG embeddings aligned to language."""
 
-# pylint: disable=undefined-all-variable,import-outside-toplevel
 from __future__ import annotations
 
 import os as _os

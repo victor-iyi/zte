@@ -255,9 +255,7 @@ from zte.config import DatasetConfig
 from zte.data.dataset import ZuCoDataset
 
 new_ds = ZuCoDataset(
-    DatasetConfig(
-        root='res/data/new_subject', representation=embedder.config.dataset.representation
-    )
+    DatasetConfig(root='res/data/new_subject', representation=embedder.config.dataset.representation)
 ).build()
 word_emb, word_meta = embedder.embed(new_ds, level='word')
 

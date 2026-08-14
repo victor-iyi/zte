@@ -43,9 +43,7 @@ class PostProcess:
         return x.astype(np.float32)
 
 
-def fit_postprocess(
-    train_rows: np.ndarray, *, whiten: bool = True, n_top: int = 1, eps: float = 1e-3
-) -> PostProcess:
+def fit_postprocess(train_rows: np.ndarray, *, whiten: bool = True, n_top: int = 1, eps: float = 1e-3) -> PostProcess:
     """Fits ZCA whitening then all-but-the-top on the TRAIN rows only.
 
     Handed no training rows, `report._postprocess` fits `whiten_features` and `all_but_the_top` on the
@@ -91,9 +89,7 @@ def fit_postprocess(
 # --------------------------------------------------------------------------- #
 
 
-def length_oracle(
-    lengths: np.ndarray, *, tol: int = 0, ks: tuple[int, ...] = (1, 5, 10)
-) -> dict[str, float]:
+def length_oracle(lengths: np.ndarray, *, tol: int = 0, ks: tuple[int, ...] = (1, 5, 10)) -> dict[str, float]:
     """Retrieval scores achievable from word count alone -- the floor every encoder number sits on.
 
     The oracle knows each query's word count to within `tol` and nothing else, so it ranks the
@@ -282,12 +278,8 @@ def stratified_retrieval(
     out['n_queries'] = int(n_scored)
     out['length_tol'] = None if lengths is None else int(length_tol)
     for k in ks:
-        out[f'top{k}_p'] = _binom_tail_p(
-            round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k
-        )
-    out['rank_percentile_ci'] = _bootstrap_ci(
-        np.asarray(percentiles, dtype=np.float64), n_boot=n_boot, seed=seed
-    )
+        out[f'top{k}_p'] = _binom_tail_p(round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k)
+    out['rank_percentile_ci'] = _bootstrap_ci(np.asarray(percentiles, dtype=np.float64), n_boot=n_boot, seed=seed)
     out['headline_metric'] = 'rank_percentile'
     return out
 
@@ -342,11 +334,7 @@ def rebaseline_report(
     content_ids = np.asarray(content_ids)
     subjects = np.asarray(subjects)
     lengths = np.asarray(n_words, dtype=np.float64).ravel()
-    mask = (
-        np.asarray(subjects != holdout)
-        if train_mask is None
-        else np.asarray(train_mask, dtype=bool)
-    )
+    mask = np.asarray(subjects != holdout) if train_mask is None else np.asarray(train_mask, dtype=bool)
     errors: dict[str, str] = {}
 
     # One length per distinct stimulus, so the oracle and the bit budget describe the gallery, not the readings.
@@ -384,9 +372,7 @@ def rebaseline_report(
 
     oracle = {str(tol): length_oracle(stimulus_lengths, tol=tol, ks=ks) for tol in oracle_tols}
     honest = (grid.get('train_fitted') or {}).get('full') or {}
-    budget = bit_budget(
-        stimulus_lengths, mean_rank=honest.get('mean_rank'), n_gallery=int(uniq_ids.size)
-    )
+    budget = bit_budget(stimulus_lengths, mean_rank=honest.get('mean_rank'), n_gallery=int(uniq_ids.size))
 
     return {
         'holdout': str(holdout),
@@ -402,9 +388,7 @@ def rebaseline_report(
     }
 
 
-def _floor_comparison(
-    grid: dict[str, Any], oracle: dict[str, Any], length_tol: int
-) -> dict[str, Any]:
+def _floor_comparison(grid: dict[str, Any], oracle: dict[str, Any], length_tol: int) -> dict[str, Any]:
     """Puts the honest cell next to the matched length-only oracle; reported, never enforced."""
     cell = (grid.get('train_fitted') or {}).get('length_stratified') or {}
     floor = oracle.get(str(length_tol)) or {}
@@ -419,9 +403,7 @@ def _floor_comparison(
         'encoder_ci_low': encoder_lo,
         'oracle_tol': int(length_tol),
         'oracle': floor_value if np.isfinite(floor_value) else None,
-        'clears_floor': bool(
-            np.isfinite(encoder_lo) and np.isfinite(floor_value) and encoder_lo > floor_value
-        ),
+        'clears_floor': bool(np.isfinite(encoder_lo) and np.isfinite(floor_value) and encoder_lo > floor_value),
         'note': 'Diagnostic only: this comparison is reported and gates nothing.',
     }
 

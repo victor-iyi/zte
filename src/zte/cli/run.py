@@ -1,6 +1,5 @@
 """`zte-run` -- prepare, train, evaluate and catalogue one experiment under `res/experiments/<run_name>/`."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse
@@ -33,9 +32,7 @@ def parse_arguments() -> argparse.Namespace:
     add_extract_dir(parser)
     add_provision_args(parser)
 
-    parser.add_argument(
-        '--name', type=str, default=None, help='Run name (default: config run_name).'
-    )
+    parser.add_argument('--name', type=str, default=None, help='Run name (default: config run_name).')
     parser.add_argument('--out-root', type=Path, default=Path('res/experiments'))
     parser.add_argument(
         '--data-cache',
@@ -144,9 +141,7 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help='Comma-separated subject subset (overrides config).',
     )
-    parser.add_argument(
-        '--tasks', type=str, default=None, help='Comma-separated task subset (overrides config).'
-    )
+    parser.add_argument('--tasks', type=str, default=None, help='Comma-separated task subset (overrides config).')
     parser.add_argument(
         '--loso-holdout',
         type=str,
@@ -171,9 +166,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--skip-explore', action='store_true')
     parser.add_argument('--no-tensorboard', action='store_true')
     parser.add_argument('--no-interactive', action='store_true')
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
@@ -222,9 +215,7 @@ def main() -> None:
     try:
         _run(args)
     except KeyboardInterrupt:
-        _LOG.warning(
-            '\n⏸  Paused. Re-run the exact same command with --resume to continue where you left off.'
-        )
+        _LOG.warning('\n⏸  Paused. Re-run the exact same command with --resume to continue where you left off.')
         raise SystemExit(130) from None
 
 
@@ -286,9 +277,8 @@ def _run(args: argparse.Namespace) -> None:
 
     _LOG.info('=== Experiment %r -> %s ===', config.run_name, run_dir)
 
-    # Every output goes under the run directory; only `--data-cache` moves the bundle to a shared store.
-    # The cache location must be settled BEFORE the root is resolved: `_resolve_root` asks the store
-    # whether the bundle already exists, and skips the (multi-GB, multi-minute) extraction if it does.
+    # Settle the cache location BEFORE resolving the root: `_resolve_root` asks the store whether the
+    # bundle already exists, and skips the multi-GB, multi-minute extraction if it does.
     config.dataset.cache_dir = args.data_cache or str(run_dir / 'cache')
     if args.data_cache_remote:
         config.dataset.cache_remote = args.data_cache_remote
@@ -358,9 +348,7 @@ def _run(args: argparse.Namespace) -> None:
 
     artifacts = run_training(config, dataset, resume=args.resume)
     config.to_yaml(run_dir / 'config.yaml')
-    manifest['final_train_loss'] = (
-        artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
-    )
+    manifest['final_train_loss'] = artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
     # Code state, hardware, schedule and library versions: without them a number cannot be placed.
     manifest['provenance'] = artifacts.trainer.provenance()
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
@@ -369,9 +357,7 @@ def _run(args: argparse.Namespace) -> None:
     # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
     metrics_path = run_dir / 'evaluation' / 'metrics.json'
     best_ckpt = run_dir / 'checkpoints' / 'best.pt'
-    needs_generation = config.train.mode != 'encoder' and getattr(
-        config.objective, 'eval_generation', False
-    )
+    needs_generation = config.train.mode != 'encoder' and getattr(config.objective, 'eval_generation', False)
     eval_fresh = (
         metrics_path.exists()
         and (not best_ckpt.exists() or metrics_path.stat().st_mtime >= best_ckpt.stat().st_mtime)
@@ -395,9 +381,7 @@ def _run(args: argparse.Namespace) -> None:
             _LOG.info('[4/4] Exploring brain regions + eye-tracking ...')
             from zte.cli.explore import run_exploration
 
-            summary = run_exploration(
-                dataset, run_dir / 'exploration', montage_csv=config.dataset.montage_csv
-            )
+            summary = run_exploration(dataset, run_dir / 'exploration', montage_csv=config.dataset.montage_csv)
             manifest['region_map_approximate'] = summary['region_map_approximate']
     elif not args.skip_explore:
         # Exploration needs band power, which `representation: raw` never loads.
@@ -406,23 +390,17 @@ def _run(args: argparse.Namespace) -> None:
             "Use representation: 'both' to explore regions for a raw frontend.",
             config.dataset.representation,
         )
-        manifest['exploration_skipped'] = (
-            f'no band power (representation={config.dataset.representation})'
-        )
+        manifest['exploration_skipped'] = f'no band power (representation={config.dataset.representation})'
 
     # Catalogue: manifest, per-run README and the shared index row.
     write_json(run_dir / 'manifest.json', manifest, default=str)
-    (run_dir / 'README.md').write_text(
-        _render_run_readme(config, manifest, run_dir), encoding='utf-8'
-    )
+    (run_dir / 'README.md').write_text(_render_run_readme(config, manifest, run_dir), encoding='utf-8')
     _catalogue(Path(args.out_root), config.run_name, manifest)
     _mirror_to_drive(run_dir, args, 'catalogue', index=Path(args.out_root) / 'INDEX.md')
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
 
 
-def _mirror_to_drive(
-    run_dir: Path, args: argparse.Namespace, stage: str, index: Path | None = None
-) -> None:
+def _mirror_to_drive(run_dir: Path, args: argparse.Namespace, stage: str, index: Path | None = None) -> None:
     """Mirrors the run directory to the mounted Drive backup folder after a completed stage.
 
     The checkpoint manager already mirrors `checkpoints/` every epoch; this adds everything else the
@@ -479,11 +457,6 @@ def _last_completed_epoch(ckpt_dir: Path) -> int:
 
 def _run_is_complete(run_dir: Path, config: ZTEConfig, args: argparse.Namespace) -> bool:
     """Whether a run has finished every stage, so `--resume` can skip it without loading anything.
-
-    Args:
-        run_dir (Path): The run directory.
-        config (ZTEConfig): The (resolved) run config, for the target epoch count.
-        args (argparse.Namespace): Parsed CLI args (for `--skip-eval` / `--skip-explore`).
 
     Returns:
         bool: `True` when nothing remains to do.
@@ -544,9 +517,7 @@ def _eval_summary_from_disk(metrics_path: Path) -> dict[str, Any]:
     return _eval_summary(read_json(metrics_path))
 
 
-def _evaluate(
-    config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argparse.Namespace
-) -> dict[str, Any]:
+def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     """Embeds the best checkpoint and runs the full evaluation suite."""
     from zte.cli.decode import decoder_blocks
     from zte.cli.evaluate import (
@@ -559,17 +530,14 @@ def _evaluate(
     from zte.evaluation.report import evaluate_representation
     from zte.inference.embed import ZTEEmbedder
 
-    # `best.pt` is the normal target; `last.pt` is the fallback so a run whose best checkpoint never
-    # materialised (a diverged metric, or an older run) can still be evaluated instead of stranding
-    # hours of finished training behind a FileNotFoundError.
+    # `last.pt` is the fallback so a run whose best checkpoint never materialised (a diverged metric)
+    # can still be evaluated instead of stranding hours of finished training behind a FileNotFoundError.
     ckpt = run_dir / 'checkpoints' / 'best.pt'
     if not ckpt.is_file():
         ckpt = run_dir / 'checkpoints' / 'last.pt'
         _LOG.warning('No best.pt; evaluating %s instead.', ckpt.name)
     embedder = ZTEEmbedder.from_checkpoint(ckpt, dataset)
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
-        embedder, dataset
-    )
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, dataset)
 
     # Opt-in evaluation-hardening inputs (config-gated so default runs stay fast).
     phase_shuffle = bool(getattr(config.objective, 'eval_phase_shuffle', False))
@@ -579,11 +547,7 @@ def _evaluate(
     # Post-processing fitted on these rows is reproducible one sentence at a time; the scored rows are not.
     train_sent = train_split_sent_emb(embedder, dataset, config)
 
-    train_vocab = (
-        training_vocab(dataset, config)
-        if getattr(config.objective, 'eval_seen_novel', False)
-        else None
-    )
+    train_vocab = training_vocab(dataset, config) if getattr(config.objective, 'eval_seen_novel', False) else None
 
     generation, rescoring = decoder_blocks(
         ckpt,
@@ -688,11 +652,9 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
                 f'- Free-running generation delta vs its worst control '
                 f'(`{ev.get("generation_worst_control")}`): {ev.get("generation_delta")} '
                 f'CI {ev.get("generation_delta_ci")} -- an absolute score here would not be a result',
-                f'- Decoder-rescoring **retrieval** rank percentile: '
-                f'{ev.get("decoder_rescoring_rank_percentile")}',
+                f'- Decoder-rescoring **retrieval** rank percentile: {ev.get("decoder_rescoring_rank_percentile")}',
             ]
-            if ev.get('generation_delta') is not None
-            or ev.get('decoder_rescoring_rank_percentile') is not None
+            if ev.get('generation_delta') is not None or ev.get('decoder_rescoring_rank_percentile') is not None
             else []
         ),
         f'- Subject-transfer analogy Top-1: {ev.get("subject_transfer_top1")}',

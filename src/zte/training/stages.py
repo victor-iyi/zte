@@ -18,9 +18,7 @@ STAGE_B = 'b'
 """Joint stage: the encoder trains alongside the bridge at `bridge_lr * encoder_lr_scale`."""
 
 
-def parameter_groups(
-    model: nn.Module, objective: nn.Module, config: ZTEConfig
-) -> list[dict[str, Any]]:
+def parameter_groups(model: nn.Module, objective: nn.Module, config: ZTEConfig) -> list[dict[str, Any]]:
     """Builds the optimiser's named parameter groups for this run's training mode.
 
     Args:
@@ -74,10 +72,7 @@ def parameter_groups(
                 'name': 'encoder',
             }
         )
-    summary = [
-        f'{g["name"]}={sum(p.numel() for p in g["params"]) / 1e6:.2f}M@{g["lr"]:.2e}'
-        for g in groups
-    ]
+    summary = [f'{g["name"]}={sum(p.numel() for p in g["params"]) / 1e6:.2f}M@{g["lr"]:.2e}' for g in groups]
     _LOG.info('Optimiser groups: %s', ', '.join(summary))
     return groups
 

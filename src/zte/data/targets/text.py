@@ -61,9 +61,7 @@ def _l2norm(mat: np.ndarray) -> np.ndarray:
     return (mat / np.clip(norms, 1e-8, None)).astype(np.float32)
 
 
-def _encode_sentence_transformers(
-    texts: list[str], source: str, prefix: str, device: str
-) -> np.ndarray:
+def _encode_sentence_transformers(texts: list[str], source: str, prefix: str, device: str) -> np.ndarray:
     """Encodes with a sentence-transformers model (E5/BGE/...)."""
     from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 
@@ -99,9 +97,7 @@ def _encode_hf_meanpool(texts: list[str], source: str, prefix: str, device: str)
     with torch.no_grad():
         for start in range(0, len(inputs), 32):
             chunk = inputs[start : start + 32]
-            enc = tok(chunk, padding=True, truncation=True, max_length=256, return_tensors='pt').to(
-                device
-            )
+            enc = tok(chunk, padding=True, truncation=True, max_length=256, return_tensors='pt').to(device)
             hs = model(**enc).last_hidden_state  # (b, seq, hidden)
             mask = enc['attention_mask'].unsqueeze(-1).to(hs.dtype)  # (b, seq, 1)
             pooled = (hs * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
@@ -167,9 +163,8 @@ def build_sentence_text_matrix(
         )
         return None, 0
     except OSError as exc:
-        # The package is installed but the weights are not reachable (offline, cold HF cache, bad id).
-        # Same outcome as a missing package, so take the same documented fallback rather than killing
-        # the run -- with a loud warning, because a hash target makes the result meaningless.
+        # Weights unreachable (offline, cold HF cache, bad id): same outcome as a missing package, so
+        # take the same fallback -- loudly, because a hash target makes the result meaningless.
         _LOG.warning(
             'CLIP text target %r could not be loaded (%r); falling back to the hash target (NO '
             'semantics -- results are not meaningful). Pre-download the model or fix connectivity.',
@@ -218,9 +213,7 @@ def mine_hard_negatives(texts: list[str], text_matrix: np.ndarray, k: int = 8) -
             continue
 
         # Word-token Jaccard overlap against every other sentence.
-        jac = np.fromiter(
-            (len(ti & tj) / max(len(ti | tj), 1) for tj in tokens), dtype=np.float32, count=n
-        )
+        jac = np.fromiter((len(ti & tj) / max(len(ti | tj), 1) for tj in tokens), dtype=np.float32, count=n)
 
         # High overlap minus high cosine: surface-similar and semantically distinct.
         score = jac - sem[i]

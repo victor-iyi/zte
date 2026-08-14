@@ -153,9 +153,7 @@ from zte.data.synthetic import generate_synthetic_zuco
 generate_synthetic_zuco('res/data/synthetic_zuco')  # or point at real .mat files
 # EEG-only (include_eye_tracking=False) so brand-new EEG can be embedded later.
 ds = ZuCoDataset(
-    DatasetConfig(
-        root='res/data/synthetic_zuco', representation='band_power', include_eye_tracking=False
-    )
+    DatasetConfig(root='res/data/synthetic_zuco', representation='band_power', include_eye_tracking=False)
 ).build()
 
 cfg = ZTEConfig()

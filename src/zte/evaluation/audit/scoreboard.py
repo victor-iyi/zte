@@ -68,11 +68,8 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
             'is_identity': t in _IDENTITY_TARGETS,
         }
 
-    # Positive control: raw features must expose lexical content above the floor. This is filled in by
-    # `build_scoreboard` from the GENUINELY raw band power -- see `raw_content_positive_control`. The
-    # value derived here from the probe-comparison's "raw band-power" row is a fallback only, and is
-    # unreliable under whitening normalisers (riemannian/zscore_subject) that strip amplitude, which is
-    # exactly the signal word_len/log_freq ride on. Do not gate "content 0%" on this fallback.
+    # Fallback only -- `build_scoreboard` fills this from genuinely raw band power. The probe-row value
+    # is unreliable under whitening normalisers that strip amplitude, so never gate "content 0%" on it.
     raw_content = [
         by_target[t]['raw band-power']['linear']
         for t in ('word_len', 'log_freq')
@@ -139,9 +136,7 @@ def _sub(a: float | None, b: float | None) -> float | None:
     return round(float(a) - float(b), 4)
 
 
-def held_out_geometry(
-    word_emb: np.ndarray, word_meta: 'pd.DataFrame', holdout: str
-) -> dict[str, Any] | None:
+def held_out_geometry(word_emb: np.ndarray, word_meta: 'pd.DataFrame', holdout: str) -> dict[str, Any] | None:
     """Geometry + variance budget over the held-out subject's rows only, undiluted by the training subjects."""
     if 'subject' not in word_meta.columns:
         return None
@@ -243,9 +238,7 @@ def cross_subject_holdout_retrieval(
     # Top-1 on ~700 queries at 1/700 chance expects ONE hit, so rates there are unreadable: report an exact tail
     # probability, plus a CI on the one statistic that uses every query rather than only the winners.
     for k in ks:
-        out[f'top{k}_p'] = _binom_tail_p(
-            round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k
-        )
+        out[f'top{k}_p'] = _binom_tail_p(round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k)
     out['rank_percentile_ci'] = _bootstrap_ci(np.asarray(percentiles, dtype=np.float64))
     out['headline_metric'] = 'rank_percentile'
 
@@ -375,9 +368,7 @@ def _rescore_cell(
     out['n_gallery'] = int(len(g_ids))
     out['length_tol'] = None if q_words is None else int(length_tol)
     for k in ks:
-        out[f'top{k}_p'] = _binom_tail_p(
-            round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k
-        )
+        out[f'top{k}_p'] = _binom_tail_p(round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k)
     out['rank_percentile_ci'] = _bootstrap_ci(np.asarray(percentiles, dtype=np.float64), seed=seed)
     out['headline_metric'] = 'rank_percentile'
     out['readout'] = 'retrieval'
@@ -530,11 +521,7 @@ def build_scoreboard(
     # The LOSO block: geometry and cross-subject retrieval for the stranger alone.
     if holdout is not None:
         board['held_out_geometry'] = held_out_geometry(word_emb, word_meta, holdout)
-        subjects = (
-            sent_meta['subject'].to_numpy()
-            if sent_meta is not None and 'subject' in sent_meta.columns
-            else None
-        )
+        subjects = sent_meta['subject'].to_numpy() if sent_meta is not None and 'subject' in sent_meta.columns else None
         board['held_out_retrieval'] = (
             cross_subject_holdout_retrieval(sent_emb, sent_content_ids, subjects, holdout)
             if subjects is not None
@@ -559,9 +546,7 @@ def build_scoreboard(
     return board
 
 
-def _sentence_lengths(
-    sent_n_words: np.ndarray | None, sent_meta: 'pd.DataFrame | None'
-) -> np.ndarray | None:
+def _sentence_lengths(sent_n_words: np.ndarray | None, sent_meta: 'pd.DataFrame | None') -> np.ndarray | None:
     """Word count per sentence, from the explicit array or the first matching metadata column."""
     if sent_n_words is not None:
         return np.asarray(sent_n_words, dtype=np.float64).ravel()
@@ -599,8 +584,7 @@ def render_markdown(board: dict[str, Any]) -> str:
             lines += [
                 f'- Effective-rank ratio (held-out only): **{g.get("effective_rank_ratio", float("nan")):.3f}** '
                 '(want high — not collapsed)',
-                f'- Anisotropy (held-out only): **{g.get("anisotropy", float("nan")):.3f}** '
-                '(want low — not a cone)',
+                f'- Anisotropy (held-out only): **{g.get("anisotropy", float("nan")):.3f}** (want low — not a cone)',
                 f'- Content variance budget (held-out only): **{_pct(g.get("content_variance"))}**',
             ]
         if r:
@@ -636,9 +620,7 @@ def render_markdown(board: dict[str, Any]) -> str:
     for t, v in board['lift_over_raw'].items():
         if t == 'content_probe':
             continue
-        kind = (
-            'content ▲' if v.get('is_content') else ('identity ▼' if v.get('is_identity') else '—')
-        )
+        kind = 'content ▲' if v.get('is_content') else ('identity ▼' if v.get('is_identity') else '—')
         lines.append(
             f'| {t} | {kind} | {_num(v.get("zte_linear"))} | {_num(v.get("raw_linear"))} '
             f'| {_signed(v.get("lift_linear"))} |'

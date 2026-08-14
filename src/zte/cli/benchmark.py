@@ -1,6 +1,5 @@
 """`zte-benchmark` -- fixed-seed sweep over objective x positional-encoding x eye-tracking x seed."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse
@@ -108,9 +107,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _dataset_for(
-    args: argparse.Namespace, include_et: bool, base: ZTEConfig | None = None
-) -> ZuCoDataset:
+def _dataset_for(args: argparse.Namespace, include_et: bool, base: ZTEConfig | None = None) -> ZuCoDataset:
     """Builds (and caches) the dataset for one eye-tracking setting.
 
     With `--base-config` the base recipe's dataset settings are kept (representation, normalisation,
@@ -153,9 +150,7 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
     """
     from zte.cli.evaluate import collect_embeddings
 
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids, _sent_meta, _bp = collect_embeddings(
-        embedder, dataset
-    )
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, _sent_meta, _bp = collect_embeddings(embedder, dataset)
     sent_ret = M.content_retrieval(sent_emb, np.asarray(sent_ids))
     health = M.embedding_health(word_emb)
     analogy = analogy_report(word_emb, word_meta, raw_feats)['subject_transfer']
@@ -186,16 +181,12 @@ def headline_metrics(embedder: ZTEEmbedder, dataset: ZuCoDataset) -> dict[str, f
 
     return {
         'sent_retrieval_top1': round(float(sent_ret.get('top1', float('nan'))), 4),
-        'sent_retrieval_lift': round(
-            float(sent_ret.get('top1', 0) - sent_ret.get('chance_top1', 0)), 4
-        ),
+        'sent_retrieval_lift': round(float(sent_ret.get('top1', 0) - sent_ret.get('chance_top1', 0)), 4),
         'eff_rank_ratio': round(float(health['effective_rank_ratio']), 4),
         'anisotropy': round(float(health['anisotropy']), 4),
         'beats_noise': int(beats),
         'subject_transfer_top1': round(float(analogy.get('top1', float('nan'))), 4),
-        'subject_transfer_lift': round(
-            float(analogy.get('top1', 0) - analogy.get('chance_top1', 0)), 4
-        ),
+        'subject_transfer_lift': round(float(analogy.get('top1', 0) - analogy.get('chance_top1', 0)), 4),
     }
 
 
@@ -252,9 +243,7 @@ def main() -> None:
                 cfg.train.drive_backup_dir = str(Path(args.drive_backup) / tag)
 
             cell.mkdir(parents=True, exist_ok=True)
-            cfg.to_yaml(
-                cell / 'config.yaml'
-            )  # written first, so an interrupted cell is reproducible
+            cfg.to_yaml(cell / 'config.yaml')  # written first, so an interrupted cell is reproducible
             run_training(cfg, datasets[include_et], resume=args.resume)
             embedder = ZTEEmbedder.from_checkpoint(cell / 'best.pt', datasets[include_et])
             metrics = headline_metrics(embedder, datasets[include_et])
@@ -271,7 +260,6 @@ def main() -> None:
         )
         _LOG.info('[%s] %s', tag, json.dumps(metrics))
 
-    # Aggregate into the sortable CSV + Markdown tables.
     frame = pd.DataFrame(rows).sort_values('subject_transfer_lift', ascending=False)
     frame.to_csv(out / 'benchmark.csv', index=False)
     (out / 'benchmark.md').write_text(_render_markdown(frame), encoding='utf-8')

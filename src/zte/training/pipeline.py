@@ -75,7 +75,8 @@ def run_training(
         TrainingArtifacts: A `TrainingArtifacts` with the trainer, history and device.
 
     Raises:
-        ValueError: If the configured representation has no matching tensors in the dataset (e.g. raw frontend but band-power-only dataset).
+        ValueError: If the configured representation has no matching tensors in the dataset (e.g. raw frontend but
+            band-power-only dataset).
     """
     device = device or resolve_device(config.train.device, config.train.precision)
 
@@ -107,9 +108,7 @@ def run_training(
         model = build_model(config.model, **shapes)
     else:
         model, shapes = source.model, _source_shapes(source, shapes)
-    objective = build_objective(
-        config.objective, model, feature_dim=feature_dim, decoder_config=config.decoder
-    )
+    objective = build_objective(config.objective, model, feature_dim=feature_dim, decoder_config=config.decoder)
     if source is not None:
         _attach_source_head(objective, source)
 
@@ -117,15 +116,9 @@ def run_training(
     # Auto-pick DataLoader workers per backend when config.train.num_workers < 0 (else honour it).
     workers = auto_num_workers(device, config.train.num_workers)
     # Only emit per-word behaviour targets when the behaviour head is active.
-    beh_targets = (
-        config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
-    )
+    beh_targets = config.objective.behaviour_targets if config.objective.behaviour_weight > 0.0 else ()
     # `None` keeps the word-type-keyed static meaning path instead of a per-occurrence target.
-    mctx = (
-        config.objective.meaning_contextual
-        if config.objective.meaning_distill_weight > 0.0
-        else None
-    )
+    mctx = config.objective.meaning_contextual if config.objective.meaning_distill_weight > 0.0 else None
 
     # Build the torch datasets up front so static-shape padding can be sized from actual lengths.
     train_td = dataset.to_torch(
@@ -136,9 +129,7 @@ def run_training(
         meaning_context_layer=config.objective.meaning_context_layer,
     )
     val_td = (
-        dataset.to_torch(
-            split=splits['val'], subject_vocab=subject_vocab, behaviour_targets=beh_targets
-        )
+        dataset.to_torch(split=splits['val'], subject_vocab=subject_vocab, behaviour_targets=beh_targets)
         if len(splits['val']) > 0
         else None
     )
@@ -146,11 +137,7 @@ def run_training(
 
     # Attach the auxiliary targets, which need the word vocabulary and behaviour spec to exist first.
     obj = config.objective
-    if (
-        obj.meaning_distill_weight > 0.0
-        or obj.behaviour_weight > 0.0
-        or obj.data2vec_aux_weight > 0.0
-    ):
+    if obj.meaning_distill_weight > 0.0 or obj.behaviour_weight > 0.0 or obj.data2vec_aux_weight > 0.0:
         from zte.data.targets.meaning import build_meaning_matrix
 
         meaning_mat = None
@@ -161,9 +148,7 @@ def run_training(
         elif obj.meaning_distill_weight > 0.0 and obj.meaning_contextual:
             objective._meaning_contextual_dim = int(getattr(train_td, 'meaning_dim', 0))  # noqa: SLF001
         beh_binary = torch.from_numpy(train_td.behaviour_binary) if beh_targets else None
-        objective.attach_auxiliary(
-            meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim
-        )
+        objective.attach_auxiliary(meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim)
 
     # Embed every unique sentence once with the frozen text encoder, then attach it as the alignment target.
     ordered_texts = train_td.ordered_texts()
@@ -174,9 +159,7 @@ def run_training(
         if obj.semantic_hard_negatives:
             from zte.data.targets.text import mine_hard_negatives
 
-            clip_hard_negs = mine_hard_negatives(
-                ordered_texts, text_matrix, k=obj.hard_negative_pool
-            )
+            clip_hard_negs = mine_hard_negatives(ordered_texts, text_matrix, k=obj.hard_negative_pool)
             _LOG.info(
                 'Mined %d semantic-hard negatives per sentence (surface-similar, meaning-distinct).',
                 obj.hard_negative_pool,
@@ -239,9 +222,7 @@ def run_training(
         config.train.epochs,
         history['train_loss'][-1] if history['train_loss'] else float('nan'),
     )
-    return TrainingArtifacts(
-        trainer=trainer, history=history, device=device, test_indices=splits.get('test')
-    )
+    return TrainingArtifacts(trainer=trainer, history=history, device=device, test_indices=splits.get('test'))
 
 
 def _load_source(config: ZTEConfig, device: DeviceSpec) -> EncoderSource | None:
@@ -276,9 +257,7 @@ def _frontend_shapes(
     """Resolves the frontend geometry this dataset implies, in `build_model` keyword form."""
     n_channels, bp_features_per_channel = _channel_shape(dataset, config, raw_shape)
     signature_dim = (
-        dataset.aligner.signature_dim
-        if (dataset.aligner is not None and config.dataset.subject_signature)
-        else 0
+        dataset.aligner.signature_dim if (dataset.aligner is not None and config.dataset.subject_signature) else 0
     )
     return {
         'in_dim': in_dim,
@@ -341,9 +320,7 @@ def _text_matrix(config: ZTEConfig, texts: list[str], device: DeviceSpec) -> np.
         rng = np.random.default_rng(config.train.seed)
         mat = rng.standard_normal((max(len(texts), 1), dim)).astype(np.float32)
         mat /= np.clip(np.linalg.norm(mat, axis=1, keepdims=True), 1e-8, None)
-        _LOG.warning(
-            'CLIP text target unavailable; using a hash target (dim %d, no semantics).', dim
-        )
+        _LOG.warning('CLIP text target unavailable; using a hash target (dim %d, no semantics).', dim)
     _LOG.info(
         'Attached frozen text target: %d sentences x %d dims (%s).',
         len(mat),
@@ -404,9 +381,7 @@ def _wire_decoder(
     )
     n_fit = objective.fit_gap(model, warm_loader, device.device)
 
-    train_ids = sorted(
-        {train_td.text_vocab[k] for k in train_td.stimulus_keys if k in train_td.text_vocab}
-    )
+    train_ids = sorted({train_td.text_vocab[k] for k in train_td.stimulus_keys if k in train_td.text_vocab})
     holdout_ids = sorted(set(train_td.text_vocab.values()) - set(train_ids))
     metrics = objective.pretrain_text(
         train_ids,
@@ -417,9 +392,7 @@ def _wire_decoder(
         seed=config.train.seed,
     )
     if config.model.grad_checkpoint and config.train.freeze_encoder:
-        _LOG.info(
-            'model.grad_checkpoint is inert in this run: a frozen encoder produces no activations to recompute.'
-        )
+        _LOG.info('model.grad_checkpoint is inert in this run: a frozen encoder produces no activations to recompute.')
     _LOG.info(
         'Decoder wired: %d target sentences (truncation %.1f%%, tokeniser %s), gap fitted on %d readings, '
         'stage 0 over %d train stimuli to CE %.4f.',
@@ -440,27 +413,14 @@ def _ordered_keys(vocab: dict[str, int]) -> list[str]:
     return keys
 
 
-def _shapes(
-    dataset: ZuCoDataset, config: ZTEConfig
-) -> tuple[int | None, tuple[int, int] | None, int | None]:
+def _shapes(dataset: ZuCoDataset, config: ZTEConfig) -> tuple[int | None, tuple[int, int] | None, int | None]:
     """Resolves frontend input shapes from the dataset and config.
-
-    Args:
-        dataset (ZuCoDataset): A built dataset.
-        config (ZTEConfig): The run configuration.
-
-    Returns:
-        `(in_dim, raw_shape, feature_dim)` for model/objective construction.
 
     Raises:
         ValueError: If required tensors are missing for the chosen frontend.
     """
     in_dim = None if dataset.features is None else int(dataset.features.shape[1])
-    raw_shape = (
-        None
-        if dataset.raw_eeg is None
-        else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
-    )
+    raw_shape = None if dataset.raw_eeg is None else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
     if config.model.frontend == 'band_power_mlp' and in_dim is None:
         raise ValueError('band_power_mlp frontend needs band-power features in the dataset.')
     if config.model.frontend == 'raw_conformer' and raw_shape is None:

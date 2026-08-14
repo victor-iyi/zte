@@ -86,9 +86,7 @@ class DriveManifest:
         return local.is_file() and local.stat().st_size > 0
 
 
-def list_drive_folder_files(
-    gdown: object, folder_id: str, dest: Path, *, use_cookies: bool
-) -> list[DriveFileEntry]:
+def list_drive_folder_files(gdown: object, folder_id: str, dest: Path, *, use_cookies: bool) -> list[DriveFileEntry]:
     """Lists downloadable files in a Drive folder (no bytes transferred)."""
     download_folder = gdown.download_folder  # type: ignore[attr-defined]
     listed = download_folder(
@@ -114,7 +112,7 @@ def list_drive_folder_files(
 def download_drive_folder_resumable(gdown: object, folder_id: str, dest: Path) -> None:
     """Downloads every file in a Drive folder, resuming after interruption."""
     download = gdown.download  # type: ignore[attr-defined]
-    from gdown.exceptions import DownloadError  # pylint: disable=import-outside-toplevel
+    from gdown.exceptions import DownloadError
 
     dest.mkdir(parents=True, exist_ok=True)
     manifest = DriveManifest.load(dest, folder_id)
@@ -176,8 +174,6 @@ def _download_file_resumable(
             return
         except download_error as exc:
             last_err = exc
-            _LOG.warning(
-                'Download failed for %s (use_cookies=%s): %s', entry.name, use_cookies, exc
-            )
+            _LOG.warning('Download failed for %s (use_cookies=%s): %s', entry.name, use_cookies, exc)
     assert last_err is not None
     raise last_err

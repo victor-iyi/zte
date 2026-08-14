@@ -1,4 +1,4 @@
-"""Tests for the single-variable ablation harness (Gate 5)."""
+"""Tests for the single-variable ablation harness."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from zte.evaluation.ablation import (
 
 
 def test_set_dotted_changes_exactly_one_field() -> None:
-    """Test that set dotted changes exactly one field."""
+    """Setting a dotted path changes exactly that field and leaves the base config untouched."""
     base = ZTEConfig()
     changed = _set_dotted(base, 'objective.subject_adversary_weight', 1.0)
     assert changed.objective.subject_adversary_weight == 1.0
@@ -28,7 +28,7 @@ def test_set_dotted_changes_exactly_one_field() -> None:
 
 
 def test_set_dotted_rejects_bad_paths() -> None:
-    """Test that set dotted rejects bad paths."""
+    """An unknown section or field is rejected rather than silently ignored."""
     base = ZTEConfig()
     for bad in ('nope', 'objective.not_a_field', 'ghost.field'):
         with pytest.raises(ValueError):
@@ -36,7 +36,7 @@ def test_set_dotted_rejects_bad_paths() -> None:
 
 
 def test_single_variable_configs_sweep_and_coerce() -> None:
-    """Test that single variable configs sweep and coerce."""
+    """A sweep varies one knob, names each arm after it, and coerces values to the field type."""
     base = ZTEConfig()
     base.run_name = 'sota'
     pairs = single_variable_configs(base, 'model.factored', ['false', 'true'])
@@ -67,9 +67,7 @@ def test_grid_configs_takes_cartesian_product() -> None:
     hi = by_tag['model_spatial_encoding=spherical_harmonics__objective_meaning_distill_weight=0.5']
     assert hi.model.spatial_encoding == 'spherical_harmonics'
     assert hi.objective.meaning_distill_weight == 0.5
-    assert hi.run_name == (
-        'sota__model_spatial_encoding=spherical_harmonics__objective_meaning_distill_weight=0.5'
-    )
+    assert hi.run_name == ('sota__model_spatial_encoding=spherical_harmonics__objective_meaning_distill_weight=0.5')
     assert hi.train == base.train  # untouched sections identical
     # The base is never mutated by the sweep.
     assert base.model.spatial_encoding == 'none'
@@ -111,7 +109,7 @@ def _write_metrics(path: Path, retr_top1: float, lift_word_len: float, effrank: 
 
 
 def test_diff_scoreboards_isolates_delta(tmp_path: Path) -> None:
-    """Test that diff scoreboards isolates delta."""
+    """Diffing two scoreboards reports the per-metric delta between the two arms."""
     a = tmp_path / 'base' / 'evaluation' / 'metrics.json'
     b = tmp_path / 'var' / 'evaluation' / 'metrics.json'
     _write_metrics(a, retr_top1=0.10, lift_word_len=-0.5, effrank=0.10)

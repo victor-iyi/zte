@@ -183,9 +183,7 @@ def _prepare_configs(args: argparse.Namespace) -> None:
         print('Re-run without --check to build them.' if args.check else 'See the errors above.')
     else:
         print('\nEvery dataset these configs need is prepared; no run will re-process anything.')
-        print(
-            'Entries marked on-drive are pulled down once, on demand, by the first run that needs them.'
-        )
+        print('Entries marked on-drive are pulled down once, on demand, by the first run that needs them.')
 
 
 def _resolve_build_root(args: argparse.Namespace) -> Path:
@@ -212,7 +210,6 @@ def main() -> None:
         _prepare_configs(args)
         return
 
-    # Build the dataset, then save the bundle and optional overview figures.
     config = DatasetConfig(
         root=PENDING_ROOT,
         tasks=tuple(args.tasks.split(',')),
@@ -234,7 +231,7 @@ def main() -> None:
 
     dataset.save(args.out)
     if args.figures:
-        from zte.data.viz import save_overview  # pylint: disable=import-outside-toplevel
+        from zte.data.viz import save_overview
 
         save_overview(dataset, args.figures)
     _LOG.info('Saved bundle to %s', Path(args.out).resolve())

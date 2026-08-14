@@ -1,5 +1,4 @@
 """Tests for synthetic generation, .mat parsing, the dataset, missing values."""
-# pylint: disable=protected-access
 
 from __future__ import annotations
 
@@ -36,9 +35,7 @@ def test_raw_window_handles_ragged_cell_arrays() -> None:
     the largest segment and pads to the fixed window instead of raising.
     """
     window = 128
-    ragged = _obj_array(
-        [np.ones((N_CHANNELS, 40), np.float32), np.full((N_CHANNELS, 90), 2.0, np.float32)]
-    )
+    ragged = _obj_array([np.ones((N_CHANNELS, 40), np.float32), np.full((N_CHANNELS, 90), 2.0, np.float32)])
     out = _raw_window(ragged, N_CHANNELS, window)
     assert out.shape == (N_CHANNELS, window)
     # The larger (90-sample) segment is kept; the rest is zero-padded.
@@ -190,9 +187,7 @@ def test_band_power_from_raw_localises_frequency_and_is_probe_sized() -> None:
     raw += (3.0 * np.sin(2 * np.pi * tone * (np.arange(t) / SAMPLING_RATE_HZ))).astype(np.float32)
 
     bp = band_power_from_raw(raw)
-    assert bp.shape == (n, N_CHANNELS * len(BANDS)), (
-        'must match the band-power representation width'
-    )
+    assert bp.shape == (n, N_CHANNELS * len(BANDS)), 'must match the band-power representation width'
     assert np.isfinite(bp).all()
     per_band = bp.reshape(n, N_CHANNELS, len(BANDS)).mean(axis=(0, 1))
     assert BANDS[int(np.argmax(per_band))] == 'a1', 'a 10 Hz tone must dominate the a1 band'

@@ -20,17 +20,14 @@ def synthetic_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     Returns:
         The directory containing the synthetic `.mat` files.
-
     """
     out = tmp_path_factory.mktemp('zuco')
-    generate_synthetic_zuco(
-        out, subjects=('ZAB', 'ZDM'), tasks=('SR', 'NR'), n_sentences=6, show_progress=False
-    )
+    generate_synthetic_zuco(out, subjects=('ZAB', 'ZDM'), tasks=('SR', 'NR'), n_sentences=6, show_progress=False)
     return out
 
 
 @pytest.fixture()
-def small_dataset(synthetic_dir: Path, tmp_path: Path) -> ZuCoDataset:  # pylint: disable=redefined-outer-name
+def small_dataset(synthetic_dir: Path, tmp_path: Path) -> ZuCoDataset:
     """Builds a band-power + raw dataset over the synthetic tree.
 
     Args:
@@ -39,7 +36,6 @@ def small_dataset(synthetic_dir: Path, tmp_path: Path) -> ZuCoDataset:  # pylint
 
     Returns:
         ZuCoDataset: A built `ZuCoDataset`.
-
     """
     config = DatasetConfig(
         root=str(synthetic_dir),

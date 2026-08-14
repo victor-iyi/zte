@@ -18,18 +18,14 @@ from zte.training.pipeline import run_training
 def dataset(tmp_path_factory: pytest.TempPathFactory) -> ZuCoDataset:
     """A tiny built dataset for resume tests."""
     root = tmp_path_factory.mktemp('zuco_resume')
-    generate_synthetic_zuco(
-        root, subjects=('ZAB', 'ZDM'), tasks=('SR', 'NR'), n_sentences=6, show_progress=False
-    )
+    generate_synthetic_zuco(root, subjects=('ZAB', 'ZDM'), tasks=('SR', 'NR'), n_sentences=6, show_progress=False)
     cfg = DatasetConfig(root=str(root), cache_dir=str(root / 'cache'))
     return ZuCoDataset(cfg).build(show_progress=False)
 
 
 def _config(ckpt_dir: Path, epochs: int) -> ZTEConfig:
     return ZTEConfig(
-        model=ModelConfig(
-            embed_dim=32, hidden_dim=24, n_layers=1, projection_hidden=24, n_subjects=2
-        ),
+        model=ModelConfig(embed_dim=32, hidden_dim=24, n_layers=1, projection_hidden=24, n_subjects=2),
         objective=ObjectiveConfig(name='skipgram'),
         train=TrainConfig(
             epochs=epochs,
@@ -65,9 +61,7 @@ def test_resume_already_complete_is_noop(dataset: ZuCoDataset, tmp_path: Path) -
     assert CheckpointManager.load(ckpt / 'last.pt')['epoch'] == 2
 
 
-def test_interrupt_then_resume(
-    dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_interrupt_then_resume(dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A KeyboardInterrupt mid-run pauses cleanly; resume completes the remaining epochs."""
     ckpt = tmp_path / 'ckpts'
     real_epoch = trainer_mod.Trainer._train_one_epoch

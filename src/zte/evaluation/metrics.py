@@ -1,6 +1,5 @@
 """Decoder-free evaluation of ZTE embeddings: label-free geometry, transfer probes and content retrieval."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -424,14 +423,8 @@ def _group_ranks(
     """Exact 1-based rank of each query's best same-group neighbour over the full gallery.
 
     A query's rank is `1 + #{items strictly more similar than its best same-group item}`, computed on
-    plain cosine and block-tiled so the full `(n x n)` similarity is never materialised.
 
-    Args:
-        bank (np.ndarray): L2-normalised embeddings `(n, d)` (the index's `bank`).
-        group_ids (np.ndarray): Content/group id per row `(n,)`.
-        valid (np.ndarray): Boolean `(n,)` marking queries whose group has >= 2 members.
-        max_queries (int): Cap on the number of queries scored (random subsample above it).
-        seed (int): Subsample seed.
+    plain cosine and block-tiled so the full `(n x n)` similarity is never materialised.
 
     Returns:
         np.ndarray: 1-based ranks `(n_scored,)` (empty when no valid query).
@@ -551,9 +544,7 @@ def bootstrap_ci(
 
     # Each resample is drawn as it is consumed; a whole (n_boot, n) index would cost tens of GB.
     n = values.size
-    boot = np.array(
-        [statistic(values[rng.integers(0, n, size=n)]) for _ in range(n_boot)], dtype=np.float64
-    )
+    boot = np.array([statistic(values[rng.integers(0, n, size=n)]) for _ in range(n_boot)], dtype=np.float64)
     lo = float(np.quantile(boot, alpha / 2.0))
     hi = float(np.quantile(boot, 1.0 - alpha / 2.0))
     return (point, lo, hi)

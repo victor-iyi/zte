@@ -28,9 +28,7 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help='Output HTML path (default: <experiments>/COMPARE.html).',
     )
-    parser.add_argument(
-        '--title', type=str, default='ZTE — Experiment Comparison', help='Dashboard title.'
-    )
+    parser.add_argument('--title', type=str, default='ZTE — Experiment Comparison', help='Dashboard title.')
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()
 

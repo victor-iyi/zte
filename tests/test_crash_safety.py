@@ -15,7 +15,7 @@ from zte.utils.mirror import mirror_file, mirror_tree
 
 
 def test_path_fields_are_stored_as_strings(tmp_path: Path) -> None:
-    """Test that assigning a `Path` to a path-like config field stores a `str`.
+    """Assigning a `Path` to a path-like config field stores a `str`.
 
     Argparse hands `--data-cache` / `--drive-backup` a `Path`, and these are assigned after the config
     is constructed, so `__post_init__` cannot catch them.
@@ -41,7 +41,7 @@ def test_path_fields_are_stored_as_strings(tmp_path: Path) -> None:
 
 
 def test_config_with_assigned_paths_still_serialises(tmp_path: Path) -> None:
-    """Test that a config carrying assigned paths round-trips through YAML, JSON and the checkpoint."""
+    """A config carrying assigned paths round-trips through YAML, JSON and the checkpoint."""
     config = ZTEConfig()
     config.dataset.cache_dir = tmp_path / 'prepared'
     config.train.ckpt_dir = tmp_path / 'checkpoints'
@@ -61,7 +61,7 @@ def _state(epoch: int) -> dict[str, object]:
 
 
 def test_save_leaves_no_partial_files(tmp_path: Path) -> None:
-    """Test that a completed save leaves only real checkpoints, never a stray temp file."""
+    """A completed save leaves only real checkpoints, never a stray temp file."""
     manager = CheckpointManager(tmp_path, keep_last=3)
     manager.save(_state(1), epoch=1, metric=1.0)
 
@@ -71,7 +71,7 @@ def test_save_leaves_no_partial_files(tmp_path: Path) -> None:
 
 
 def test_last_and_best_match_the_epoch_file(tmp_path: Path) -> None:
-    """Test that `last.pt` and `best.pt` are byte-identical copies of the epoch checkpoint."""
+    """`last.pt` and `best.pt` are byte-identical copies of the epoch checkpoint."""
     manager = CheckpointManager(tmp_path, keep_last=3)
     manager.save(_state(1), epoch=1, metric=0.5)
 
@@ -81,7 +81,7 @@ def test_last_and_best_match_the_epoch_file(tmp_path: Path) -> None:
 
 
 def test_load_latest_prefers_last(tmp_path: Path) -> None:
-    """Test that a healthy directory resumes from `last.pt`."""
+    """A healthy directory resumes from `last.pt`."""
     manager = CheckpointManager(tmp_path, keep_last=3)
     manager.save(_state(1), epoch=1, metric=1.0)
     manager.save(_state(2), epoch=2, metric=0.5)
@@ -92,7 +92,7 @@ def test_load_latest_prefers_last(tmp_path: Path) -> None:
 
 
 def test_load_latest_falls_back_past_a_truncated_last(tmp_path: Path) -> None:
-    """Test that a `last.pt` torn apart by a killed VM costs one epoch, not the whole run."""
+    """A `last.pt` torn apart by a killed VM costs one epoch, not the whole run."""
     manager = CheckpointManager(tmp_path, keep_last=3)
     manager.save(_state(1), epoch=1, metric=1.0)
     manager.save(_state(2), epoch=2, metric=0.5)
@@ -107,7 +107,7 @@ def test_load_latest_falls_back_past_a_truncated_last(tmp_path: Path) -> None:
 
 
 def test_load_latest_returns_none_when_nothing_is_readable(tmp_path: Path) -> None:
-    """Test that an empty or wholly corrupt directory reports "start fresh" instead of raising."""
+    """An empty or wholly corrupt directory reports "start fresh" instead of raising."""
     assert CheckpointManager.load_latest(tmp_path) == (None, None)
 
     (tmp_path / 'last.pt').write_bytes(b'not a checkpoint')
@@ -116,7 +116,7 @@ def test_load_latest_returns_none_when_nothing_is_readable(tmp_path: Path) -> No
 
 
 def test_mirror_tree_copies_then_skips_unchanged(tmp_path: Path) -> None:
-    """Test that mirroring is incremental: unchanged files are not re-copied on the next pass."""
+    """Mirroring is incremental: unchanged files are not re-copied on the next pass."""
     src, dst = tmp_path / 'run', tmp_path / 'drive'
     (src / 'evaluation').mkdir(parents=True)
     (src / 'config.yaml').write_text('run_name: x', encoding='utf-8')
@@ -132,7 +132,7 @@ def test_mirror_tree_copies_then_skips_unchanged(tmp_path: Path) -> None:
 
 
 def test_mirror_tree_skips_heavy_dirs(tmp_path: Path) -> None:
-    """Test that regenerable heavy directories stay out of the Drive mirror."""
+    """Regenerable heavy directories stay out of the Drive mirror."""
     src, dst = tmp_path / 'run', tmp_path / 'drive'
     (src / 'cache').mkdir(parents=True)
     (src / 'bundle').mkdir(parents=True)
@@ -147,7 +147,7 @@ def test_mirror_tree_skips_heavy_dirs(tmp_path: Path) -> None:
 
 
 def test_mirror_tree_never_raises_on_a_bad_destination(tmp_path: Path) -> None:
-    """Test that an unusable Drive path degrades to a logged failure, never an exception."""
+    """An unusable Drive path degrades to a logged failure, never an exception."""
     src = tmp_path / 'run'
     src.mkdir()
     (src / 'a.txt').write_text('a', encoding='utf-8')
@@ -159,7 +159,7 @@ def test_mirror_tree_never_raises_on_a_bad_destination(tmp_path: Path) -> None:
 
 
 def test_mirror_file_is_incremental(tmp_path: Path) -> None:
-    """Test that a single-file mirror copies once and then only after a change."""
+    """A single-file mirror copies once and then only after a change."""
     index = tmp_path / 'INDEX.md'
     index.write_text('# catalogue', encoding='utf-8')
     dest = tmp_path / 'drive'
@@ -174,7 +174,7 @@ def test_mirror_file_is_incremental(tmp_path: Path) -> None:
 
 
 def test_best_checkpoint_exists_even_when_the_metric_is_nan(tmp_path: Path) -> None:
-    """Test that a diverged (NaN) metric still leaves a `best.pt` for evaluation to load.
+    """A diverged (NaN) metric still leaves a `best.pt` for evaluation to load.
 
     Evaluation loads `best.pt`; without this, a run whose loss went NaN would train for hours and then
     be unable to finish, identically on every restart.
@@ -189,7 +189,7 @@ def test_best_checkpoint_exists_even_when_the_metric_is_nan(tmp_path: Path) -> N
 
 
 def test_best_checkpoint_is_reseeded_if_it_goes_missing(tmp_path: Path) -> None:
-    """Test that a deleted `best.pt` is recreated on the next save rather than staying absent."""
+    """A deleted `best.pt` is recreated on the next save rather than staying absent."""
     manager = CheckpointManager(tmp_path, keep_last=3)
     manager.save(_state(1), epoch=1, metric=1.0)
     (tmp_path / 'best.pt').unlink()

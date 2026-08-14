@@ -79,9 +79,7 @@ def _same_state(left: Any, right: Any) -> bool:
     if isinstance(left, dict) and isinstance(right, dict):
         return set(left) == set(right) and all(_same_state(left[k], right[k]) for k in left)
     if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(
-            _same_state(a, b) for a, b in zip(left, right, strict=True)
-        )
+        return len(left) == len(right) and all(_same_state(a, b) for a, b in zip(left, right, strict=True))
     if isinstance(left, float) and isinstance(right, float):
         return bool(np.isclose(left, right, equal_nan=True))
     return bool(left == right)
@@ -192,9 +190,7 @@ def decoder_run(synthetic_dir: Path, tmp_path_factory: pytest.TempPathFactory) -
     root = tmp_path_factory.mktemp('decode')
     dataset_config = _dataset_config(synthetic_dir, root / 'cache')
 
-    encoder_config = _config(
-        dataset_config, root / 'enc', 'encoder', strategy=_ENCODER_STRATEGY, split=_ENCODER_SPLIT
-    )
+    encoder_config = _config(dataset_config, root / 'enc', 'encoder', strategy=_ENCODER_STRATEGY, split=_ENCODER_SPLIT)
     run_training(encoder_config, ZuCoDataset(dataset_config).build(show_progress=False))
     encoder_ckpt = root / 'enc' / 'best.pt'
     payload = CheckpointManager.load(encoder_ckpt)
@@ -238,9 +234,7 @@ def test_build_objective_requires_a_decoder_config(small_dataset: ZuCoDataset) -
 # --------------------------------------------------------------------------- #
 # the objective itself
 # --------------------------------------------------------------------------- #
-def _standalone_objective(
-    dataset: ZuCoDataset, *, inherit_head: bool = True, **overrides: Any
-) -> tuple[Any, Any, Any]:
+def _standalone_objective(dataset: ZuCoDataset, *, inherit_head: bool = True, **overrides: Any) -> tuple[Any, Any, Any]:
     """Builds a fully attached decode objective over a frozen encoder, mirroring the decoder-mode wiring."""
     model = build_model(
         ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2, projection_hidden=16),
@@ -262,9 +256,7 @@ def _standalone_objective(
     objective.attach_tokens(torch.from_numpy(targets.ids), torch.from_numpy(targets.mask))
     rng = np.random.default_rng(0)
     if inherit_head:
-        objective.attach_clip_head(
-            torch.from_numpy(rng.standard_normal((24, 16)).astype(np.float32))
-        )
+        objective.attach_clip_head(torch.from_numpy(rng.standard_normal((24, 16)).astype(np.float32)))
     matrix = rng.standard_normal((len(texts), 24)).astype(np.float32)
     matrix /= np.linalg.norm(matrix, axis=1, keepdims=True)
     objective.attach_text(torch.from_numpy(matrix))
@@ -487,9 +479,7 @@ def test_load_encoder_strips_a_compiled_prefix(decoder_run: _Run, tmp_path: Path
     assert source.provenance()['path'] == str(path)
 
 
-def test_a_decoder_run_without_a_source_encoder_is_refused(
-    decoder_run: _Run, tmp_path: Path
-) -> None:
+def test_a_decoder_run_without_a_source_encoder_is_refused(decoder_run: _Run, tmp_path: Path) -> None:
     """Decoder mode is defined over an encoder trained elsewhere, so an unset checkpoint fails before any training."""
     config = _config(decoder_run.dataset_config, tmp_path / 'x', 'decoder', None)
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
@@ -500,9 +490,7 @@ def test_a_decoder_run_without_a_source_encoder_is_refused(
 # --------------------------------------------------------------------------- #
 # training modes
 # --------------------------------------------------------------------------- #
-def test_encoder_mode_is_reproducible_under_a_fixed_seed(
-    synthetic_dir: Path, tmp_path: Path
-) -> None:
+def test_encoder_mode_is_reproducible_under_a_fixed_seed(synthetic_dir: Path, tmp_path: Path) -> None:
     """Two identical encoder runs at seed 42 must produce identical history, or no result can be reproduced.
 
     `Trainer` seeds itself, but weight initialisation happens in `run_training` before it is constructed, so the
@@ -531,9 +519,7 @@ def test_encoder_mode_builds_one_optimiser_group(small_dataset: ZuCoDataset) -> 
     assert len(groups) == 1
     assert groups[0]['name'] == 'encoder'
     assert groups[0]['lr'] == config.train.lr
-    assert len(groups[0]['params']) == len(list(model.parameters())) + len(
-        list(objective.parameters())
-    )
+    assert len(groups[0]['params']) == len(list(model.parameters())) + len(list(objective.parameters()))
     assert stages.apply_stage(1, model, objective, config) is False
 
 
@@ -587,9 +573,7 @@ def test_decoder_checkpoint_carries_its_payload(decoder_run: _Run) -> None:
     assert decoder_run.decoder_ckpt.stat().st_size < 1_000_000
 
 
-def test_the_checkpoint_pins_the_frozen_language_model(
-    decoder_run: _Run, decoder: ZTEDecoder
-) -> None:
+def test_the_checkpoint_pins_the_frozen_language_model(decoder_run: _Run, decoder: ZTEDecoder) -> None:
     """A decode is reproducible only if the checkpoint names the weights and the tokeniser that wrote it.
 
     The record has to come off the LM object: a configuration names a source and a revision, but it cannot count
@@ -605,9 +589,7 @@ def test_the_checkpoint_pins_the_frozen_language_model(
     assert record == decoder.lm.provenance()
 
 
-def test_joint_mode_unfreezes_the_encoder_after_stage_a(
-    decoder_run: _Run, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_joint_mode_unfreezes_the_encoder_after_stage_a(decoder_run: _Run, monkeypatch: pytest.MonkeyPatch) -> None:
     """Stage A moves the bridge and nothing else; stage B adds the encoder at its own, smaller rate.
 
     The curriculum is only real if the weights obey it, so each epoch is snapshotted around the loop that
@@ -652,9 +634,7 @@ def test_joint_mode_unfreezes_the_encoder_after_stage_a(
 
 def test_a_joint_run_that_freezes_its_encoder_is_refused(decoder_run: _Run, tmp_path: Path) -> None:
     """`freeze_encoder` would hold the encoder frozen through the stage B a joint run exists to reach."""
-    config = _config(
-        decoder_run.dataset_config, tmp_path / 'x', 'joint', str(decoder_run.encoder_ckpt)
-    )
+    config = _config(decoder_run.dataset_config, tmp_path / 'x', 'joint', str(decoder_run.encoder_ckpt))
     assert config.train.freeze_encoder is True
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     with pytest.raises(ValueError, match='freeze_encoder'):
@@ -680,9 +660,7 @@ def test_a_frozen_encoder_stays_in_eval_while_the_bridge_trains(decoder_run: _Ru
     assert objective.bridge.training is True
 
 
-def test_the_shared_schedule_keeps_the_group_ratio(
-    decoder_run: _Run, small_dataset: ZuCoDataset
-) -> None:
+def test_the_shared_schedule_keeps_the_group_ratio(decoder_run: _Run, small_dataset: ZuCoDataset) -> None:
     """One `lr_lambda` is applied against each group's own `initial_lr`, so the bridge stays ten times the encoder."""
     config = _config(decoder_run.dataset_config, Path('.'), 'joint', str(decoder_run.encoder_ckpt))
     config.train = replace(config.train, freeze_encoder=False)
@@ -714,9 +692,7 @@ def test_a_resumed_decoder_run_restores_its_bridge(decoder_run: _Run) -> None:
     saved = {k: v.clone() for k, v in trained.bridge.state_dict().items()}
 
     config.train = replace(config.train, epochs=2)
-    resumed = run_training(
-        config, ZuCoDataset(decoder_run.dataset_config).build(show_progress=False), resume=True
-    )
+    resumed = run_training(config, ZuCoDataset(decoder_run.dataset_config).build(show_progress=False), resume=True)
     reloaded: Any = resumed.trainer.objective
     restored = reloaded.bridge.state_dict()
     assert set(restored) == set(saved)
@@ -749,9 +725,7 @@ def test_generation_rejects_guidance(decoder: ZTEDecoder) -> None:
         decoder.decoder_config = replace(decoder.decoder_config, cfg_weight=1.0)
 
 
-def test_controls_share_decode_path(
-    decoder: ZTEDecoder, decoder_run: _Run, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_controls_share_decode_path(decoder: ZTEDecoder, decoder_run: _Run, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every control, the oracle and the headline reach one `generate_from_prefix` with identical arguments.
 
     The controls are the only floor free generation has, so a control that ran through a different decode -- a
@@ -761,9 +735,7 @@ def test_controls_share_decode_path(
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     indices = split_indices(dataset, decoder_run.decoder_config, 'test_seen_stim')
     assert indices is not None
-    monkeypatch.setattr(
-        'zte.data.targets.text.build_sentence_text_matrix', _text_matrix_stub(decoder.z_dim)
-    )
+    monkeypatch.setattr('zte.data.targets.text.build_sentence_text_matrix', _text_matrix_stub(decoder.z_dim))
 
     calls: list[tuple[Any, ...]] = []
     real = decoder.lm.generate_from_prefix
@@ -784,16 +756,12 @@ def test_controls_share_decode_path(
         indices,
         split='test_seen_stim',
         config=decoder_run.decoder_config,
-        options=DecodeOptions(
-            controls=CONTROLS, batch_size=16, n_perm=20, n_boot=50, rescore=False
-        ),
+        options=DecodeOptions(controls=CONTROLS, batch_size=16, n_perm=20, n_boot=50, rescore=False),
     )
 
     block = result['generation']
     ran = set(CONTROLS) - set(result['controls_unavailable'])
-    assert result['controls_unavailable'] == {
-        'phase': 'the encoder consumes no raw signal to destroy'
-    }
+    assert result['controls_unavailable'] == {'phase': 'the encoder consumes no raw signal to destroy'}
     assert set(block['deltas']) == ran
     assert 'oracle' in block['absolute']
 
@@ -825,9 +793,7 @@ def test_prefix_influence_kl_is_finite_per_reading(decoder: ZTEDecoder, decoder_
     assert decoder.prefix_influence_kl(z[:1]).tolist() == [0.0]
 
 
-def test_generate_conditions_the_language_model_on_z(
-    decoder: ZTEDecoder, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_generate_conditions_the_language_model_on_z(decoder: ZTEDecoder, monkeypatch: pytest.MonkeyPatch) -> None:
     """The headline decode reaches the frozen LM carrying `bridge(z)` and nothing else.
 
     Every published hypothesis and every control decode comes out of `generate`, so a `generate` that quietly dropped
@@ -881,9 +847,7 @@ def test_prefix_influence_kl_catches_a_bridge_that_cannot_read_z(decoder: ZTEDec
             decoder.bridge.to_bottleneck.weight.copy_(saved)
 
 
-def test_a_collapsed_bridge_is_refused_by_the_generation_gate(
-    decoder: ZTEDecoder, decoder_run: _Run
-) -> None:
+def test_a_collapsed_bridge_is_refused_by_the_generation_gate(decoder: ZTEDecoder, decoder_run: _Run) -> None:
     """The collapse detector driven end to end: `zte-decode`'s own block, through the pre-registered gate.
 
     A bridge that cannot read `z` still decodes, still scores and still produces deltas, so the clause is the only
@@ -893,9 +857,7 @@ def test_a_collapsed_bridge_is_refused_by_the_generation_gate(
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     indices = split_indices(dataset, decoder_run.decoder_config, 'test_seen_stim')
     assert indices is not None
-    options = DecodeOptions(
-        controls=('null_prefix',), oracle=False, batch_size=16, n_perm=20, n_boot=50, rescore=False
-    )
+    options = DecodeOptions(controls=('null_prefix',), oracle=False, batch_size=16, n_perm=20, n_boot=50, rescore=False)
 
     def decode() -> dict[str, Any]:
         block: dict[str, Any] = decode_evaluation(
@@ -982,9 +944,7 @@ def test_the_configured_prefix_kl_floor_refuses_a_real_collapsed_forward_pass(
     assert verdict['generation_above_controls'] is False
 
 
-def test_conditioning_puts_a_dataset_on_the_training_statistics(
-    decoder: ZTEDecoder, decoder_run: _Run
-) -> None:
+def test_conditioning_puts_a_dataset_on_the_training_statistics(decoder: ZTEDecoder, decoder_run: _Run) -> None:
     """A freshly built dataset normalises itself, and a frozen encoder handed those rows quietly underperforms."""
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     assert dataset.normalizer is not None

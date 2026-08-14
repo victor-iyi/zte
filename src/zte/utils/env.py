@@ -100,9 +100,7 @@ def ensure_dirs(root: str | Path | None = None) -> list[Path]:
     return dirs
 
 
-def clean_outputs(
-    targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False
-) -> list[Path]:
+def clean_outputs(targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False) -> list[Path]:
     """Deletes selected `res/` output subtrees, to free space or start fresh.
 
     Args:
@@ -117,9 +115,7 @@ def clean_outputs(
     base = Path(root) if root is not None else project_root()
     names = targets or ['experiments']
     paths = (
-        [base / _RES_TARGETS['all']]
-        if 'all' in names
-        else [base / _RES_TARGETS[n] for n in names if n in _RES_TARGETS]
+        [base / _RES_TARGETS['all']] if 'all' in names else [base / _RES_TARGETS[n] for n in names if n in _RES_TARGETS]
     )
     removed: list[Path] = []
     for p in paths:
@@ -139,7 +135,8 @@ def accelerator_info() -> dict[str, Any]:
     """Reports the available accelerator without raising, on any platform.
 
     Returns:
-        dict[str, Any]: `{kind, name, torch_version, cuda, mps, tpu}`, where `kind` is the backend `--device auto` picks.
+        dict[str, Any]: `{kind, name, torch_version, cuda, mps, tpu}`, where `kind` is the backend `--device auto`
+        picks.
     """
     import torch
 

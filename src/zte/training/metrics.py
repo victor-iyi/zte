@@ -1,6 +1,5 @@
 """Leakage-resistant probes for self-supervised embeddings, plus the matched-noise control."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import warnings
@@ -75,9 +74,7 @@ def linear_probe(
             if n_eff < 2:
                 return {**nan_out, 'baseline': 1.0}
             splitter = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
-            model: object = Pipeline(
-                [('scale', StandardScaler()), ('clf', LogisticRegression(max_iter=2000))]
-            )
+            model: object = Pipeline([('scale', StandardScaler()), ('clf', LogisticRegression(max_iter=2000))])
             scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='accuracy')
             baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
         else:
@@ -94,12 +91,11 @@ def linear_probe(
     }
 
 
-def retrieval_metrics(
-    query: np.ndarray, key: np.ndarray, ks: tuple[int, ...] = (1, 5, 10)
-) -> dict[str, float]:
+def retrieval_metrics(query: np.ndarray, key: np.ndarray, ks: tuple[int, ...] = (1, 5, 10)) -> dict[str, float]:
     """Computes Top-K accuracy and MRR for paired query/key embeddings.
 
-    Row `i` of `query` is assumed to match row `i` of `key`. Similarity is cosine; the diagonal rank determines the metrics.
+    Row `i` of `query` is assumed to match row `i` of `key`. Similarity is cosine; the diagonal rank determines the
+    metrics.
 
     Args:
         query (np.ndarray): Array `(n_samples, embed_dim)`.

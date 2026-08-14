@@ -200,9 +200,7 @@ def test_an_unfittable_split_degrades_to_the_identity_shift() -> None:
 def test_rebaseline_report_fills_every_cell_of_the_grid() -> None:
     """All three post-processing conditions x both galleries, plus the oracle floor and the bit budget."""
     emb, content, subjects, words = _cohort(n_stimuli=40, noise=0.4)
-    report = rebaseline_report(
-        emb, content, subjects, 'ZAB', words, oracle_tols=(0, 1, 2, 4), n_boot=200
-    )
+    report = rebaseline_report(emb, content, subjects, 'ZAB', words, oracle_tols=(0, 1, 2, 4), n_boot=200)
 
     assert set(report['grid']) == set(POSTPROCESS_CONDITIONS)
     for cond in POSTPROCESS_CONDITIONS:
@@ -251,9 +249,7 @@ def test_rebaseline_report_never_raises_on_a_cohort_it_cannot_score() -> None:
     subjects = np.array(['ZAB'] * len(emb))
     report = rebaseline_report(emb, content, subjects, 'ZAB', words, n_boot=100)
     assert all(
-        report['grid'][cond][gallery] is None
-        for cond in POSTPROCESS_CONDITIONS
-        for gallery in GALLERY_CONDITIONS
+        report['grid'][cond][gallery] is None for cond in POSTPROCESS_CONDITIONS for gallery in GALLERY_CONDITIONS
     )
     assert math.isnan(report['bit_budget']['bits_from_eeg'])
 

@@ -138,8 +138,7 @@ class WordResampler(nn.Module):
         nn.init.trunc_normal_(self.latents, std=0.02)
         heads = _largest_head_count(hidden_dim, n_heads)
         self.blocks = nn.ModuleList(
-            nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True)
-            for _ in range(n_blocks)
+            nn.MultiheadAttention(hidden_dim, heads, dropout=dropout, batch_first=True) for _ in range(n_blocks)
         )
         self.norms_q = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(n_blocks))
         self.norms_kv = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(n_blocks))

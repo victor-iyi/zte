@@ -4,7 +4,6 @@ Readers skip words, and those words carry no EEG. Treating the resulting NaN row
 of leakage in word-level ZuCo modelling, so every strategy also returns a presence mask for objectives to gate on.
 """
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import numpy as np
@@ -47,9 +46,7 @@ class MissingValueImputer:
         """
         return ~np.all(np.isnan(x), axis=1)
 
-    def fit_transform(
-        self, x: np.ndarray, group_ids: np.ndarray | None = None
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def fit_transform(self, x: np.ndarray, group_ids: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Fits any needed statistics and returns `(imputed, presence_mask)`.
 
         Args:
@@ -83,9 +80,7 @@ class MissingValueImputer:
 
         return out.astype(np.float32), mask
 
-    def transform(
-        self, x: np.ndarray, group_ids: np.ndarray | None = None
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def transform(self, x: np.ndarray, group_ids: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Re-applies a previously fitted fill to new data where possible.
 
         Column/global/median and sklearn methods reuse their fitted statistics; sequence and row methods recompute.
@@ -118,7 +113,7 @@ class MissingValueImputer:
 
     def _fill_row_mean(self, x: np.ndarray) -> np.ndarray:
         """Fills each row's NaNs with that row's mean of present features."""
-        import warnings  # pylint: disable=import-outside-toplevel
+        import warnings
 
         with warnings.catch_warnings():
             # All-NaN rows (omitted words) produce an intentional NaN row mean.
@@ -150,7 +145,8 @@ class MissingValueImputer:
 
                 imputer: object = KNNImputer(n_neighbors=self.config.knn_neighbors)
             else:
-                # from sklearn.experimental import enable_iterative_imputer
+                # `IterativeImputer` is experimental and refuses to import until this registers it.
+                from sklearn.experimental import enable_iterative_imputer  # noqa: F401
                 from sklearn.impute import IterativeImputer
 
                 imputer = IterativeImputer(max_iter=self.config.iterative_max_iter, random_state=0)
@@ -166,9 +162,7 @@ class MissingValueImputer:
         self._sklearn_imputer = imputer
         return np.asarray(out, dtype=np.float32)
 
-    def _fill_sequence(
-        self, x: np.ndarray, group_ids: np.ndarray | None, method: str
-    ) -> np.ndarray:
+    def _fill_sequence(self, x: np.ndarray, group_ids: np.ndarray | None, method: str) -> np.ndarray:
         """Forward-fills or interpolates along reading order within each group."""
         import pandas as pd
 

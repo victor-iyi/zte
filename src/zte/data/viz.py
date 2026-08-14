@@ -1,4 +1,3 @@
-# pylint: disable=wrong-import-position
 from __future__ import annotations
 
 from pathlib import Path
@@ -120,9 +119,7 @@ def plot_omission_by_length(ds: ZuCoDataset) -> Figure:
     if 'TRT' in w:
         trt = w.dropna(subset=['TRT']).groupby('word_len')['TRT'].mean()
         ax2.plot(trt.index, trt.to_numpy(), marker='o')
-        ax2.set(
-            xlabel='word length (chars)', ylabel='mean TRT (ms)', title='Reading time vs length'
-        )
+        ax2.set(xlabel='word length (chars)', ylabel='mean TRT (ms)', title='Reading time vs length')
     fig.tight_layout()
     return fig
 

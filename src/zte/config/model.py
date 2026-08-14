@@ -57,7 +57,7 @@ class ModelConfig:
     to a sphere. Needs coordinates: exact from `dataset.montage_csv`, else an approximate fallback that is flagged."""
 
     spatial_harmonic_degree: int = 6
-    """Maximum harmonic degree `l_max` for `spherical_harmonics`; `(l_max + 1) ** 2` harmonics resolve finer patterns."""
+    """Maximum harmonic degree `l_max` for `spherical_harmonics`; `(l_max + 1) ** 2` harmonics resolve finer detail."""
 
     spatial_mix: bool = True
     """Follow the additive electrode encoding with one self-attention layer over the channel axis (electrodes as

@@ -130,10 +130,7 @@ def correlate(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     table: dict[str, dict[str, float]] = {}
     for outcome, _ in _OUTCOMES:
         col = [r.get(outcome, float('nan')) for r in rows]
-        table[outcome] = {
-            prop: _spearman(col, [r.get(prop, float('nan')) for r in rows])
-            for prop, _ in _PROPERTIES
-        }
+        table[outcome] = {prop: _spearman(col, [r.get(prop, float('nan')) for r in rows]) for prop, _ in _PROPERTIES}
     return table
 
 
@@ -162,8 +159,7 @@ def render_markdown(rows: list[dict[str, Any]], table: dict[str, dict[str, float
 
     lines += [
         '',
-        '## What predicts encodability (Spearman rho; **bold** = |rho| > '
-        f'{_RHO_SIGNIFICANT_N12:.2f}, ~p<0.05 at n=12)',
+        f'## What predicts encodability (Spearman rho; **bold** = |rho| > {_RHO_SIGNIFICANT_N12:.2f}, ~p<0.05 at n=12)',
         '',
         '| outcome ↓ / property → | ' + ' | '.join(p for p, _ in _PROPERTIES) + ' |',
         '| --- | ' + ' | '.join('---' for _ in _PROPERTIES) + ' |',
@@ -231,9 +227,7 @@ def main() -> None:
     configure_logging(args.log_level)
     rows = collect_subjects(args.experiments)
     if len(rows) < 3:
-        raise SystemExit(
-            f'Need at least 3 held-out subjects under {args.experiments}; found {len(rows)}.'
-        )
+        raise SystemExit(f'Need at least 3 held-out subjects under {args.experiments}; found {len(rows)}.')
     table = correlate(rows)
     out = Path(args.out) if args.out else Path(args.experiments) / 'ENCODABILITY.md'
     out.parent.mkdir(parents=True, exist_ok=True)

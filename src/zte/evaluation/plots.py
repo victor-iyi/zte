@@ -4,7 +4,6 @@ Every function returns a Matplotlib `Figure` (Agg backend, headless-safe) so the
 2-D projections use a plain NumPy PCA to avoid extra dependencies.
 """
 
-# pylint: disable=import-outside-toplevel,wrong-import-position
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -20,14 +19,7 @@ if TYPE_CHECKING:
 
 
 def _pca_2d(embeddings: np.ndarray) -> np.ndarray:
-    """Projects embeddings to 2-D with PCA (centred SVD).
-
-    Args:
-        embeddings (np.ndarray): Array `(n_samples, embed_dim)`.
-
-    Returns:
-        np.ndarray: `(n_samples, 2)` projection.
-    """
+    """Projects embeddings to 2-D with PCA (centred SVD)."""
     x = np.asarray(embeddings, dtype=np.float64)
     x = x - x.mean(axis=0, keepdims=True)
     _, _, vt = np.linalg.svd(x, full_matrices=False)
@@ -69,9 +61,7 @@ def scatter_2d(
     return fig
 
 
-def bar_probe_comparison(
-    rows: list[dict[str, Any]], metric: str = 'linear_score', title: str | None = None
-) -> Figure:
+def bar_probe_comparison(rows: list[dict[str, Any]], metric: str = 'linear_score', title: str | None = None) -> Figure:
     """Grouped bar chart of probe scores per target across representations.
 
     Args:
@@ -217,7 +207,6 @@ def region_importance_heatmap(
 
     Returns:
         Figure: The created heatmap.
-
     """
     frame = _pivot(rows, index='region', column='target', value='importance')
     regions, targets = list(frame.index), list(frame.columns)
@@ -245,9 +234,7 @@ def region_importance_heatmap(
     return fig
 
 
-def breakdown_bars(
-    rows: list[dict[str, Any]], metric: str, group: str, title: str | None = None
-) -> Figure:
+def breakdown_bars(rows: list[dict[str, Any]], metric: str, group: str, title: str | None = None) -> Figure:
     """Bar chart of one metric across the values of one stratification column.
 
     Args:
@@ -406,9 +393,7 @@ def retrieval_rank_distribution(
     return fig
 
 
-def variance_budget_pie(
-    summary: dict[str, Any], title: str = 'Variance budget: who vs what'
-) -> Figure:
+def variance_budget_pie(summary: dict[str, Any], title: str = 'Variance budget: who vs what') -> Figure:
     """Pie of the variance budget (which attribute each dimension serves).
 
     Args:
@@ -525,9 +510,7 @@ def geometry_before_after(
         sims = np.sum(x[a] * x[b], axis=1)
         same = group_ids[a] == group_ids[b]
         if same.any():
-            ax.hist(
-                sims[same], bins=40, alpha=0.6, density=True, label='same content', color='#4C78A8'
-            )
+            ax.hist(sims[same], bins=40, alpha=0.6, density=True, label='same content', color='#4C78A8')
         if (~same).any():
             ax.hist(
                 sims[~same],
@@ -672,9 +655,7 @@ def neuron_selectivity_heatmap(
     Returns:
         Figure: The created heatmap.
     """
-    fig, ax = plt.subplots(
-        figsize=(1.2 * max(len(top_neurons), 1) + 3, 0.5 * max(len(top_neurons), 1) + 2)
-    )
+    fig, ax = plt.subplots(figsize=(1.2 * max(len(top_neurons), 1) + 3, 0.5 * max(len(top_neurons), 1) + 2))
     if not top_neurons:
         ax.text(0.5, 0.5, 'no neurons', ha='center', va='center', transform=ax.transAxes)
         ax.set_title(title)

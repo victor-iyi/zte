@@ -45,9 +45,7 @@ from zte.evaluation.report import evaluate_representation
 from zte.inference.embed import ZTEEmbedder
 
 embedder = ZTEEmbedder.from_checkpoint('res/checkpoints/best.pt', ds)
-word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
-    embedder, ds
-)
+word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, ds)
 metrics = evaluate_representation(
     word_emb,
     word_meta,

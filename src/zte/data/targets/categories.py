@@ -86,13 +86,8 @@ def _scan_label_files(root: Path) -> dict[str, str]:
     """Best-effort scan of ZuCo label CSVs -> `{normalised_text: LABEL}`.
 
     Delimiters are sniffed per file to tolerate ZuCo's irregular CSVs; any cell holding a known sentiment/relation
+
     token labels the longest text cell in its row, and unparseable files contribute nothing.
-
-    Args:
-        root (Path): Dataset root to search recursively for `*.csv` files.
-
-    Returns:
-        dict[str, str]: Normalised sentence text to upper-case label.
     """
     mapping: dict[str, str] = {}
     for csv_path in sorted(root.rglob('*.csv')):
@@ -102,9 +97,7 @@ def _scan_label_files(root: Path) -> dict[str, str]:
             continue
         for _, row in frame.iterrows():
             cells = [str(v) for v in row.to_numpy() if isinstance(v, str) or not pd.isna(v)]
-            label = next(
-                (c.strip().upper() for c in cells if c.strip().upper() in _LABEL_TOKENS), None
-            )
+            label = next((c.strip().upper() for c in cells if c.strip().upper() in _LABEL_TOKENS), None)
             if label is None:
                 continue
             text_cells = [c for c in cells if len(_WORD_RE.findall(c)) >= 3]

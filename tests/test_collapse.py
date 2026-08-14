@@ -1,4 +1,4 @@
-"""Tests for the anti-collapse / anti-cone fix (ZCA whitening + uniformity)."""
+"""Tests for the anti-collapse / anti-cone geometry: ZCA whitening and the uniformity term."""
 
 from __future__ import annotations
 
@@ -46,9 +46,7 @@ def test_uniformity_term_spreads_normalised_embeddings() -> None:
     a0 = aniso(emb)
     for _ in range(150):
         opt.zero_grad()
-        loss, metrics = vicreg_terms(
-            emb, gamma=1.0, var_weight=0.0, cov_weight=0.0, aniso_weight=1.0
-        )
+        loss, metrics = vicreg_terms(emb, gamma=1.0, var_weight=0.0, cov_weight=0.0, aniso_weight=1.0)
         assert 'uniformity_loss' in metrics
         loss.backward()
         opt.step()

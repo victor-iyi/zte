@@ -40,17 +40,13 @@ def parse_arguments() -> argparse.Namespace:
         action='append',
         help='Comma-separated values for the matching --knob (e.g. 0,1). Repeat once per --knob.',
     )
-    gen.add_argument(
-        '--out-dir', required=True, type=Path, help='Directory to write the config sweep into.'
-    )
+    gen.add_argument('--out-dir', required=True, type=Path, help='Directory to write the config sweep into.')
     add_provision_args(gen)
 
     dif = sub.add_parser('diff', help='Diff two finished runs on the honest scoreboard.')
     dif.add_argument('--knob', required=True, help='The knob that was varied (for the header).')
     dif.add_argument('--baseline', required=True, type=Path, help="Baseline run's metrics.json.")
-    dif.add_argument(
-        '--variant', required=True, type=Path, help="One-knob-changed run's metrics.json."
-    )
+    dif.add_argument('--variant', required=True, type=Path, help="One-knob-changed run's metrics.json.")
     dif.add_argument('--out', type=Path, default=None, help='Optional Markdown output path.')
 
     parser.add_argument('--log-level', default='INFO')
@@ -60,16 +56,13 @@ def parse_arguments() -> argparse.Namespace:
 def _generate(args: argparse.Namespace) -> None:
     """Writes one config per point of the knob grid."""
     if len(args.knob) != len(args.values):
-        raise SystemExit(
-            f'Got {len(args.knob)} --knob but {len(args.values)} --values; pass one --values per --knob.'
-        )
+        raise SystemExit(f'Got {len(args.knob)} --knob but {len(args.values)} --values; pass one --values per --knob.')
     # Provision the base once so every arm shares it, while a knob can still override per arm.
     base = ZTEConfig.from_yaml(args.config)
     provision_from_args(base, args)
 
     specs = [
-        (knob, [v.strip() for v in values.split(',') if v.strip()])
-        for knob, values in zip(args.knob, args.values)
+        (knob, [v.strip() for v in values.split(',') if v.strip()]) for knob, values in zip(args.knob, args.values)
     ]
     pairs = grid_configs(base, specs)
 

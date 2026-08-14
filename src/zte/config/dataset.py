@@ -13,7 +13,7 @@ class MissingConfig:
     """How missing word-level values (omitted words, rejected epochs) are filled."""
 
     method: MissingMethod = 'mask_only'
-    """Imputation strategy. `mask_only` leaves NaNs to the presence mask; `drop` removes incomplete rows; the rest fill."""
+    """Imputation strategy. `mask_only` defers to the presence mask; `drop` removes incomplete rows; the rest fill."""
 
     knn_neighbors: int = 5
     """Neighbour count for the `knn` method."""

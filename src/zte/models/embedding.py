@@ -1,8 +1,8 @@
 """The ZTE encoder: tokens -> (optionally contextual) word/sentence embeddings.
 
-`ZTEModel` is the trainable backbone shared by every objective: a per-token frontend, optional subject conditioning, an optional transformer
-(bidirectional for masked modelling, causal for CPC), and a projection to `embed_dim`. Skipping the transformer gives the word2vec analogue
-used by skip-gram/CBOW, where a word's embedding depends only on its own EEG.
+`ZTEModel` is the trainable backbone shared by every objective: a per-token frontend, optional subject conditioning, an
+optional transformer (bidirectional for masked modelling, causal for CPC), and a projection to `embed_dim`. Skipping the
+transformer gives the word2vec analogue used by skip-gram/CBOW, where a word's embedding depends only on its own EEG.
 """
 
 from __future__ import annotations
@@ -78,7 +78,8 @@ class ZTEModel(nn.Module):
             in_dim (int | None): Flattened band-power size `n_features` (band-power frontend).
             raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
             n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`.
-            bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power spatial encoding.
+            bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power
+                spatial encoding.
             montage_csv (str | None): Optional electrode-coordinate CSV (`channel,x,y,z`) for exact scalp geometry.
             signature_dim (int): Width of the subject signature; 0 disables the subject adapter.
         """
@@ -96,15 +97,10 @@ class ZTEModel(nn.Module):
         self.hidden_dim = self.frontend.out_dim  # type: ignore[attr-defined]
         self.embed_dim = config.embed_dim
 
-        self.subject_emb = (
-            nn.Embedding(config.n_subjects, self.hidden_dim)
-            if config.subject_conditioning
-            else None
-        )
+        self.subject_emb = nn.Embedding(config.n_subjects, self.hidden_dim) if config.subject_conditioning else None
         # Per-subject FiLM affine, zero-initialised so an unseen (held-out LOSO) subject id stays the identity.
-        self.subject_film = (
-            nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None  # type: ignore[operator]
-        )
+        film_dim = 2 * self.hidden_dim  # type: ignore[operator]
+        self.subject_film = nn.Embedding(config.n_subjects, film_dim) if config.subject_film else None
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)
 
@@ -114,9 +110,7 @@ class ZTEModel(nn.Module):
             self.subject_adapter = SubjectAdapter(
                 signature_dim,
                 self.hidden_dim,
-                n_channels=n_channels
-                if (self.uses_raw and config.subject_adapter_spatial)
-                else None,
+                n_channels=n_channels if (self.uses_raw and config.subject_adapter_spatial) else None,
                 width=config.subject_adapter_width,
                 dropout=config.dropout,
             )
@@ -142,9 +136,7 @@ class ZTEModel(nn.Module):
             dropout=config.dropout,
             pos=attn_pos,
         )
-        self.projection = ProjectionHead(
-            self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout
-        )
+        self.projection = ProjectionHead(self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout)
         self.pool = AttentionPool(self.hidden_dim) if config.pool == 'attention' else None
 
     def select_input(self, batch: dict[str, Any]) -> torch.Tensor:
@@ -154,7 +146,8 @@ class ZTEModel(nn.Module):
             batch (dict[str, Any]): A batch dict from `collate_sentences`.
 
         Returns:
-            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len, n_features)` band-power tensor.
+            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len,
+                n_features)` band-power tensor.
 
         Raises:
             ValueError: If the required representation is missing from `batch`.
@@ -198,9 +191,7 @@ class ZTEModel(nn.Module):
             hidden = (1.0 + gamma).unsqueeze(1) * hidden + beta.unsqueeze(1)
         return hidden
 
-    def contextualize(
-        self, hidden: torch.Tensor, pad_mask: torch.Tensor, causal: bool = False
-    ) -> torch.Tensor:
+    def contextualize(self, hidden: torch.Tensor, pad_mask: torch.Tensor, causal: bool = False) -> torch.Tensor:
         """Applies the transformer over the token sequence.
 
         Args:
@@ -237,9 +228,7 @@ class ZTEModel(nn.Module):
         """
         return self.projection(hidden)
 
-    def forward(
-        self, batch: dict[str, Any], contextual: bool = False, causal: bool = False
-    ) -> torch.Tensor:
+    def forward(self, batch: dict[str, Any], contextual: bool = False, causal: bool = False) -> torch.Tensor:
         """Computes token embeddings, optionally contextualised.
 
         Args:
@@ -257,10 +246,6 @@ class ZTEModel(nn.Module):
 
     def _pool_tokens(self, hidden: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """Pools per-token hiddens to one vector per sequence over `valid` positions.
-
-        Args:
-            hidden (torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
-            valid (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at poolable positions.
 
         Returns:
             torch.Tensor: Pooled `(batch_size, hidden_dim)` via attention pooling when configured, else a masked mean.
@@ -289,9 +274,7 @@ class ZTEModel(nn.Module):
             valid[empty] = batch['pad_mask'][empty]
         return valid
 
-    def sentence_hidden(
-        self, batch: dict[str, Any], contextual: bool = True, causal: bool = False
-    ) -> torch.Tensor:
+    def sentence_hidden(self, batch: dict[str, Any], contextual: bool = True, causal: bool = False) -> torch.Tensor:
         """Pools a sentence's word-EEG tokens into one hidden vector, keeping the gradient.
 
         This is the differentiable half of `embed_sentence`, which a decoder loss needs and cannot get from that
@@ -312,9 +295,7 @@ class ZTEModel(nn.Module):
         return self._pool_tokens(hidden, valid)
 
     @torch.no_grad()
-    def embed_sentence(
-        self, batch: dict[str, Any], objective: ObjectiveName | None = None
-    ) -> torch.Tensor:
+    def embed_sentence(self, batch: dict[str, Any], objective: ObjectiveName | None = None) -> torch.Tensor:
         """Produces one pooled embedding per sentence (for retrieval/inference).
 
         Routing is objective-aware so the exported sentence embedding matches the path the objective actually trained:
@@ -325,7 +306,8 @@ class ZTEModel(nn.Module):
 
         Args:
             batch (dict[str, Any]): A collated batch dict.
-            objective (ObjectiveName | None): Trained objective name; `None` defaults to the bidirectional-contextual path.
+            objective (ObjectiveName | None): Trained objective name; `None` defaults to the bidirectional-contextual
+                path.
 
         Returns:
             torch.Tensor: Sentence embeddings `(batch_size, embed_dim)`.

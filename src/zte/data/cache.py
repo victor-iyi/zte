@@ -1,4 +1,4 @@
-"""A layered, content-addressed store for dataset bundles: fast local cache backed by a persistent remote (docs/DATASET.md)."""
+"""A layered, content-addressed store for dataset bundles: local cache over persistent remote (docs/DATASET.md)."""
 
 from __future__ import annotations
 
@@ -147,9 +147,7 @@ class BundleStore:
         if (local_dir / 'meta.json').is_file():
             return local_dir
         if remote_dir is not None and (remote_dir / 'meta.json').is_file():
-            _LOG.info(
-                'Cache hit on the persistent store; copying %s -> %s ...', remote_dir, local_dir
-            )
+            _LOG.info('Cache hit on the persistent store; copying %s -> %s ...', remote_dir, local_dir)
             copied, failed = mirror_tree(remote_dir, local_dir, exclude_dirs=())
             if failed or not (local_dir / 'meta.json').is_file():
                 _LOG.warning('Could not stage %s locally (%d file(s) failed).', remote_dir, failed)
@@ -173,16 +171,13 @@ class BundleStore:
         if remote_dir is None or not (local_dir / 'meta.json').is_file():
             return
 
-        # Entries are immutable, so an existing copy is already correct. In particular the memory-mapped
-        # raw array is a LOCAL derived artifact: re-deriving it costs minutes, whereas pushing ~24 GB of
-        # it up would bloat the persistent store for no gain.
+        # Entries are immutable, so an existing copy is already correct. The memory-mapped raw array
+        # stays local: re-deriving costs minutes, where pushing ~24 GB up would bloat the store for none.
         if (remote_dir / 'meta.json').is_file():
             return
         copied, failed = mirror_tree(local_dir, remote_dir, exclude_dirs=())
         if failed:
-            _LOG.warning(
-                'Published %s with %d failure(s); it will be retried next time.', key, failed
-            )
+            _LOG.warning('Published %s with %d failure(s); it will be retried next time.', key, failed)
         else:
             _LOG.info('Published %s to the persistent store (%d file(s)).', key, copied)
 

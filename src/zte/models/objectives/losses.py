@@ -16,9 +16,9 @@ def vicreg_terms(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Computes the VICReg variance/covariance penalties plus an anti-cone anisotropy penalty.
 
-    The variance term hinges each dimension's batch std up toward `gamma` so no dimension goes silent; the covariance term decorrelates
-    dimensions to raise effective rank; the anisotropy term spreads the L2-normalised embeddings over the sphere so the space cannot
-    degenerate into a cone.
+    The variance term hinges each dimension's batch std up toward `gamma` so no dimension goes silent; the covariance
+    term decorrelates dimensions to raise effective rank; the anisotropy term spreads the L2-normalised embeddings over
+    the sphere so the space cannot degenerate into a cone.
 
     Args:
         emb (torch.Tensor): Embeddings `(n_tokens, embed_dim)` (un-normalised).
@@ -98,13 +98,12 @@ def identity_orthogonality(content: torch.Tensor, signature: torch.Tensor) -> to
     return cross / denom.clamp_min(1e-8)
 
 
-def alignment_penalty(
-    center: torch.Tensor, context: torch.Tensor, pos_mask: torch.Tensor
-) -> torch.Tensor:
+def alignment_penalty(center: torch.Tensor, context: torch.Tensor, pos_mask: torch.Tensor) -> torch.Tensor:
     """Mean squared distance over positive pairs of L2-normalised embeddings.
 
-    The alignment half of alignment + uniformity: for unit vectors `||c_i - x_j||^2 = 2 - 2 c_i . x_j`, so pulling positives together
-    tightens the same-word geometry retrieval depends on. `anisotropy_weight` supplies the uniformity half.
+    The alignment half of alignment + uniformity: for unit vectors `||c_i - x_j||^2 = 2 - 2 c_i . x_j`, so pulling
+    positives together tightens the same-word geometry retrieval depends on. `anisotropy_weight` supplies the uniformity
+    half.
 
     Args:
         center (torch.Tensor): L2-normalised anchor embeddings `(n_tokens, d)`.
@@ -129,9 +128,10 @@ def debiased_infonce(
 ) -> torch.Tensor:
     """Debiased multi-positive InfoNCE -- stops punishing false negatives.
 
-    Another EEG trial of the same word sits among the "negatives", and plain InfoNCE shoves it away. The debiased estimator corrects the
-    negative expectation with a class-prior: `E_neg = (mean_neg - tau_plus * mean_pos) / (1 - tau_plus)`, floored at `exp(-1/temp)`.
-    A per-anchor max-shift keeps the exponentials in range and cancels in the final log-ratio.
+    Another EEG trial of the same word sits among the "negatives", and plain InfoNCE shoves it away. The debiased
+    estimator corrects the negative expectation with a class-prior: `E_neg = (mean_neg - tau_plus * mean_pos) / (1 -
+    tau_plus)`, floored at `exp(-1/temp)`. A per-anchor max-shift keeps the exponentials in range and cancels in the
+    final log-ratio.
 
     Args:
         logits (torch.Tensor): Similarity logits `(n_anchor, n_items)` with non-candidates at `-inf`.

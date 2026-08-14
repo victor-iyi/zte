@@ -175,9 +175,7 @@ def _args(**overrides: object) -> argparse.Namespace:
 
 def test_options_fall_back_to_the_checkpoint_decoder_config() -> None:
     """An unset flag reads the value the run was trained under, not a CLI constant."""
-    config = ZTEConfig(
-        decoder=DecoderConfig(n_permutations=321, length_tol=3, rescore_gallery=False)
-    )
+    config = ZTEConfig(decoder=DecoderConfig(n_permutations=321, length_tol=3, rescore_gallery=False))
     options = options_from_args(_args(), config)
     assert options.n_perm == 321
     assert options.length_tol == 3

@@ -52,15 +52,7 @@ _CORPUS_NR: tuple[str, ...] = (
 
 
 def _word_dtype(measures: tuple[EyeTrackingMeasure, ...], bands: tuple[Band, ...]) -> np.dtype:
-    """Builds the structured dtype for a single ZuCo word struct.
-
-    Args:
-        measures (tuple[EyeTrackingMeasure, ...]): Eye-tracking measures to expose as band-feature fields.
-        bands (tuple[Band, ...]): Frequency bands to expose per measure.
-
-    Returns:
-        np.dtype: Object fields matching ZuCo's layout.
-    """
+    """Builds the structured dtype for a single ZuCo word struct."""
     fields: list[tuple[str, str]] = [
         ('content', 'O'),
         ('nFixations', 'O'),
@@ -85,14 +77,7 @@ def _sentence_dtype() -> np.dtype:
 
 
 def _word_frequency(word: str) -> float:
-    """Cheap pseudo-frequency proxy in `(0, 1]` (short words score higher).
-
-    Args:
-        word (str): The surface word form.
-
-    Returns:
-        float: Common short tokens approach 1 and long tokens approach 0.
-    """
+    """Cheap pseudo-frequency proxy in `(0, 1]` (short words score higher)."""
     return float(np.clip(1.0 / (1.0 + 0.35 * len(word.strip('.,;:'))), 0.05, 1.0))
 
 
@@ -106,17 +91,8 @@ def _band_power_vector(
     """Synthesises a 105-channel band-power vector with embedded structure.
 
     Power scales with word length and inverse frequency, so longer and rarer words evoke stronger responses, then picks
+
     up a per-band modulation, a subject gain, a spatial gradient across channels and channel-wise noise.
-
-    Args:
-        band (Band): The frequency band being generated.
-        word_len (int): Word length in characters.
-        freq (float): Word-frequency proxy in `(0, 1]`.
-        subject_gain (float): Per-subject multiplicative offset.
-        rng (np.random.Generator): Seeded random generator.
-
-    Returns:
-        np.ndarray: A `(N_CHANNELS,)` float32 vector.
     """
     band_scale = {'t': 1.0, 'a': 0.8, 'b': 0.6, 'g': 0.4}[band[0]]
     base = band_scale * subject_gain * (0.5 + 0.08 * word_len + 0.6 * (1.0 - freq))
@@ -127,11 +103,6 @@ def _band_power_vector(
 
 def _raw_segment(word_len: int, subject_gain: float, rng: np.random.Generator) -> np.ndarray:
     """Synthesises a short `(N_CHANNELS, time_steps)` raw EEG segment for a word.
-
-    Args:
-        word_len (int): Word length, which scales the fixation (segment) duration.
-        subject_gain (float): Per-subject amplitude offset.
-        rng (np.random.Generator): Seeded random generator.
 
     Returns:
         np.ndarray: A `(n_channels, time_steps)` float32 array with band-like oscillations.
@@ -156,19 +127,7 @@ def _build_word(
     bands: tuple[Band, ...],
     rng: np.random.Generator,
 ) -> dict[str, object]:
-    """Builds one word's field dict; omitted words get empty arrays.
-
-    Args:
-        word (str): Surface word form.
-        omitted (bool): Whether the reader skipped this word (no fixation).
-        subject_gain (float): Per-subject offset.
-        measures (tuple[EyeTrackingMeasure, ...]): Band-feature measures to populate.
-        bands (tuple[Band, ...]): Band-feature bands to populate.
-        rng (np.random.Generator): Seeded random generator.
-
-    Returns:
-        dict[str, object]: Field name to value, with scalars wrapped as arrays.
-    """
+    """Builds one word's field dict; omitted words get empty arrays."""
     empty = np.array([], dtype=np.float32)
     fields: dict[str, object] = {'content': word}
     word_len = len(word.strip('.,;:'))
@@ -198,16 +157,14 @@ def _build_word(
         fields[measure] = np.array(scalars[measure], dtype=np.float32)
     for measure in measures:
         for band in bands:
-            fields[band_feature_name(measure, band)] = _band_power_vector(
-                band, word_len, freq, subject_gain, rng
-            )
+            fields[band_feature_name(measure, band)] = _band_power_vector(band, word_len, freq, subject_gain, rng)
     return fields
 
 
 def generate_subject_file(
     path: str | Path,
-    subject: str,  # pylint: disable=unused-argument
-    task: str,  # pylint: disable=unused-argument
+    subject: str,
+    task: str,
     sentences: tuple[str, ...],
     measures: tuple[EyeTrackingMeasure, ...] = ET_MEASURES,
     bands: tuple[Band, ...] = BANDS,
@@ -250,17 +207,13 @@ def generate_subject_file(
 
         sentence_data[s_idx]['content'] = text
         sentence_data[s_idx]['word'] = word_arr
-        sentence_data[s_idx]['omissionRate'] = np.array(
-            n_omitted / max(len(tokens), 1), dtype=np.float32
-        )
+        sentence_data[s_idx]['omissionRate'] = np.array(n_omitted / max(len(tokens), 1), dtype=np.float32)
         sentence_data[s_idx]['rawData'] = rng.normal(
             0.0, subject_gain, size=(N_CHANNELS, max(8, 4 * len(tokens)))
         ).astype(np.float32)
 
         for band in bands:
-            sentence_data[s_idx][f'mean_{band}'] = _band_power_vector(
-                band, len(text), 0.5, subject_gain, rng
-            )
+            sentence_data[s_idx][f'mean_{band}'] = _band_power_vector(band, len(text), 0.5, subject_gain, rng)
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -311,9 +264,7 @@ def generate_synthetic_zuco(
     jobs = [(subj, task) for subj in subjects for task in tasks]
     paths: list[Path] = []
 
-    for i, (subject, task) in enumerate(
-        progress(jobs, description='Synthesising ZuCo', disable=not show_progress)
-    ):
+    for i, (subject, task) in enumerate(progress(jobs, description='Synthesising ZuCo', disable=not show_progress)):
         sentences = task_sentences[task]
         file_path = out_dir / f'results{subject}_{task}.mat'
         generate_subject_file(

@@ -1,6 +1,5 @@
 """`zte-extract` -- export thought embeddings + aligned metadata from a trained checkpoint as `.npz`."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse

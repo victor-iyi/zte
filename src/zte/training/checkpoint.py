@@ -128,17 +128,14 @@ class CheckpointManager:
         if metric is not None and self.is_improvement(metric):
             self.best_metric = metric
             is_best = True
-        # A run whose monitored metric is NaN every epoch (a diverged loss) would otherwise never write
-        # `best.pt` -- and evaluation loads exactly that file, so the run would train for hours and then
-        # be unable to finish, on every restart. Always keep a best.pt; the first epoch seeds it.
+        # Evaluation loads `best.pt`, so a run whose monitor is NaN every epoch (a diverged loss) would
+        # train for hours and still be unable to finish. Always keep one; the first epoch seeds it.
         best_path = self.ckpt_dir / 'best.pt'
         if not best_path.exists():
             is_best = True
         if is_best:
             _atomic_copy(path, best_path)
-            _LOG.info(
-                'New best checkpoint at epoch %d (metric=%.4f)', epoch, metric or float('nan')
-            )
+            _LOG.info('New best checkpoint at epoch %d (metric=%.4f)', epoch, metric or float('nan'))
         self._backup_to_drive()
         return path
 
@@ -240,14 +237,10 @@ class CheckpointManager:
             try:
                 state = CheckpointManager.load(candidate, map_location=map_location)
             except _LOAD_ERRORS as exc:
-                _LOG.warning(
-                    'Checkpoint %s is unreadable (%r); trying the previous one.', candidate, exc
-                )
+                _LOG.warning('Checkpoint %s is unreadable (%r); trying the previous one.', candidate, exc)
                 continue
             if candidate.name != 'last.pt':
-                _LOG.warning(
-                    'Resuming from %s -- `last.pt` was missing or corrupt.', candidate.name
-                )
+                _LOG.warning('Resuming from %s -- `last.pt` was missing or corrupt.', candidate.name)
             return state, candidate
         return None, None
 

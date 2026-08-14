@@ -16,21 +16,14 @@ _LOG = get_logger('cli.sources')
 DEFAULT_EXTRACT_DIR: Final[Path] = Path('res/data/zuco_extracted')
 DEFAULT_DOWNLOAD_DIR: Final[Path] = Path('res/data/_downloads')
 
-# Stands in for the data root while a cache key is computed. Cache keys exclude the root, so this lets a
-# command ask "is the bundle already built?" before paying to resolve the raw source. Must not contain
-# 'synthetic' -- that substring is the one part of the root the key does look at.
+# Stands in for the data root while a cache key is computed, so a command can ask "is the bundle built?"
+# before resolving the raw source. Must not contain 'synthetic' -- the key does look at that substring.
 PENDING_ROOT: Final[str] = '<unresolved>'
 SYNTHETIC_ROOT: Final[str] = 'res/data/synthetic_zuco'
 
-_ROOT_HELP: Final[str] = (
-    'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
-)
-_DRIVE_HELP: Final[str] = (
-    'Google Drive folder id or shareable URL (downloads + extracts task archives).'
-)
-_EXTRACT_HELP: Final[str] = (
-    'Where Drive/zips are extracted to (idempotent; default: res/data/zuco_extracted).'
-)
+_ROOT_HELP: Final[str] = 'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
+_DRIVE_HELP: Final[str] = 'Google Drive folder id or shareable URL (downloads + extracts task archives).'
+_EXTRACT_HELP: Final[str] = 'Where Drive/zips are extracted to (idempotent; default: res/data/zuco_extracted).'
 
 
 def add_data_source_args(
@@ -86,7 +79,7 @@ def resolve_data_root(
     Returns:
         Path: The resolved root directory.
     """
-    from zte.data.io.sources import resolve_source  # pylint: disable=import-outside-toplevel
+    from zte.data.io.sources import resolve_source
 
     spec = getattr(args, 'drive', None) or getattr(args, 'root', None) or default
     if spec is None:
@@ -183,9 +176,7 @@ def resolve_root_if_needed(
     where = bundle_is_cached(dataset, synthetic=synthetic)
     if where is not None:
         spec = (
-            synth_out
-            if synthetic
-            else str(getattr(args, 'drive', None) or getattr(args, 'root', None) or dataset.root)
+            synth_out if synthetic else str(getattr(args, 'drive', None) or getattr(args, 'root', None) or dataset.root)
         )
         _LOG.info('Processed bundle already %s; skipping raw-data extraction.', where)
         return spec

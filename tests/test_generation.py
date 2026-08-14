@@ -402,9 +402,7 @@ def test_the_report_says_which_cell_the_headline_is_reserved_for() -> None:
 def test_the_scoreboard_row_denies_a_pass_to_an_incomplete_control_stack() -> None:
     """The board reports the same completeness the gate demands, so the two can never disagree."""
     row = held_out_generation(
-        _working_block(
-            controls_unavailable={'phase': 'the encoder consumes no raw signal to destroy'}
-        )
+        _working_block(controls_unavailable={'phase': 'the encoder consumes no raw signal to destroy'})
     )
     complete = held_out_generation(_working_block())
     assert row is not None and complete is not None

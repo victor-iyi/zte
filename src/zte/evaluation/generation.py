@@ -110,9 +110,7 @@ def _ngrams(tokens: list[str], n: int) -> Counter[tuple[str, ...]]:
 # --------------------------------------------------------------------------- #
 
 
-def bleu(
-    hyps: list[str], refs: list[str], max_n: int = 4, smooth: bool = False
-) -> dict[str, float]:
+def bleu(hyps: list[str], refs: list[str], max_n: int = 4, smooth: bool = False) -> dict[str, float]:
     """Corpus BLEU-1..`max_n`: clipped modified n-gram precision with the brevity penalty.
 
     Corpus BLEU pools the clipped match and total counts across the whole corpus before taking the
@@ -321,9 +319,7 @@ def _set_f1(a: set[str], b: set[str]) -> float:
     return float(2.0 * precision * recall / (precision + recall))
 
 
-def content_word_f1(
-    hyps: list[str], refs: list[str], stopwords: frozenset[str] | None = None
-) -> np.ndarray:
+def content_word_f1(hyps: list[str], refs: list[str], stopwords: frozenset[str] | None = None) -> np.ndarray:
     """Per-sentence F1 over content-word types -- the most sensitive metric at this signal level.
 
     A frozen LM reproduces function words from its own prior, so BLEU and ROUGE are dominated by
@@ -344,10 +340,7 @@ def content_word_f1(
     if len(hyps) != len(refs):
         raise ValueError(f'hyps/refs length mismatch: {len(hyps)} vs {len(refs)}')
     return np.asarray(
-        [
-            _set_f1(content_words(h, stopwords), content_words(r, stopwords))
-            for h, r in zip(hyps, refs, strict=True)
-        ],
+        [_set_f1(content_words(h, stopwords), content_words(r, stopwords)) for h, r in zip(hyps, refs, strict=True)],
         dtype=np.float64,
     )
 
@@ -492,9 +485,7 @@ def pairwise_metric(hyps: list[str], refs: list[str], metric: str = 'content_f1'
         ValueError: When `metric` is not a known per-sentence metric.
     """
     if metric not in _SENTENCE_METRICS:
-        raise ValueError(
-            f'unknown per-sentence metric {metric!r}; expected one of {_SENTENCE_METRICS}'
-        )
+        raise ValueError(f'unknown per-sentence metric {metric!r}; expected one of {_SENTENCE_METRICS}')
 
     # The content-word set F1 factors into a boolean matrix product, which is what makes n = 1260 affordable.
     if metric == 'content_f1':
@@ -587,9 +578,7 @@ def strip_quarantined(block: Any) -> Any:
     """
     if isinstance(block, dict):
         return {
-            k: strip_quarantined(v)
-            for k, v in block.items()
-            if not (isinstance(k, str) and _QUARANTINE_RE.search(k))
+            k: strip_quarantined(v) for k, v in block.items() if not (isinstance(k, str) and _QUARANTINE_RE.search(k))
         }
     if isinstance(block, list):
         return [strip_quarantined(v) for v in block]
@@ -685,9 +674,7 @@ def generation_report(
 
     from zte.evaluation.audit.honesty import generation_permutation_test
 
-    permutation = generation_permutation_test(
-        hypotheses, references, metric=primary_metric, n_perm=n_perm, seed=seed
-    )
+    permutation = generation_permutation_test(hypotheses, references, metric=primary_metric, n_perm=n_perm, seed=seed)
 
     beaten = [name for name, d in deltas.items() if d[primary_metric]['beats']]
     worst = min(deltas, key=lambda k: deltas[k][primary_metric]['lo']) if deltas else None

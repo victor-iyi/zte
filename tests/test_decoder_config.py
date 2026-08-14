@@ -181,9 +181,7 @@ def test_no_committed_experiment_asks_for_guidance() -> None:
 
 
 @pytest.mark.parametrize('fraction', [0.0, -1.0])
-def test_the_four_cell_split_needs_a_test_fraction(
-    fraction: float, small_dataset: ZuCoDataset
-) -> None:
+def test_the_four_cell_split_needs_a_test_fraction(fraction: float, small_dataset: ZuCoDataset) -> None:
     """The unseen-subject x unseen-stimulus cell is the point of the strategy; an empty one is refused loudly."""
     with pytest.raises(ValueError, match='test_fraction'):
         small_dataset.split(

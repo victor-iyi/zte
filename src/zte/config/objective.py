@@ -29,7 +29,7 @@ class ObjectiveConfig:
     """Starting teacher EMA decay for `masked_target='latent'`."""
 
     ema_decay_end: float = 0.9999
-    """Final teacher EMA decay, ramped linearly from `ema_decay`: fast-moving early, stable late. Equal values = flat."""
+    """Final teacher EMA decay, ramped linearly from `ema_decay`: fast early, stable late. Equal values = flat."""
 
     teacher_variance_floor: float = 1e-4
     """Minimum per-dimension std when normalising the data2vec teacher target across tokens. A per-token LayerNorm
@@ -55,7 +55,8 @@ class ObjectiveConfig:
 
     whiten: bool = False
     """ZCA-whiten the exported embeddings at evaluation: centring removes the dominant shared direction and whitening
-    spreads variance across all dimensions. Label-free, so all downstream metrics are recomputed on the whitened space."""
+    spreads variance across all dimensions. Label-free, so all downstream metrics are recomputed on the whitened
+    space."""
 
     cross_subject_positives: bool = False
     """For skip-gram/CBOW, build positives from the same stimulus read by different subjects (via `content_id`) rather
@@ -86,7 +87,8 @@ class ObjectiveConfig:
 
     meaning_source: str | None = None
     """Where the frozen word vectors come from: a `word v1 v2 ...` text file (GloVe/fastText format) or an `.npy`+vocab
-    pair, or `None` / `hash` for a deterministic hash embedding (mechanism verification only -- carries no semantics)."""
+    pair, or `None` / `hash` for a deterministic hash embedding (mechanism verification only -- carries no
+    semantics)."""
 
     meaning_dim: int = 64
     """Meaning-vector dimensionality (must match `meaning_source`; used as-is for `'hash'`)."""
@@ -101,7 +103,8 @@ class ObjectiveConfig:
     # -- Eye-tracking privileged supervision -------------------------------- #
     behaviour_weight: float = 0.0
     """Weight of an auxiliary head predicting per-word reading behaviour from the embedding (0 disables). Behaviour is a
-    lexical-difficulty proxy the EEG-only space struggles to find, so predicting it injects a meaning-adjacent gradient."""
+    lexical-difficulty proxy the EEG-only space struggles to find, so predicting it injects a meaning-adjacent
+    gradient."""
 
     behaviour_targets: tuple[str, ...] = ('TRT', 'regression_time', 'is_omitted')
     """Which per-word behaviour signals the auxiliary head regresses/classifies."""
@@ -142,7 +145,8 @@ class ObjectiveConfig:
     meaning_contextual: str | None = None
     """HuggingFace model id for a per-occurrence contextual meaning target, or `None` for the word-type-keyed
     `meaning_source` file. Each word's target is its contextual last-hidden state from a frozen encoder run on the whole
-    sentence (sub-words mean-pooled), disambiguating polysemy. Requires `transformers`, else falls back with a warning."""
+    sentence (sub-words mean-pooled), disambiguating polysemy. Requires `transformers`, else falls back with a
+    warning."""
 
     meaning_context_layer: int = -1
     """Which hidden layer of the contextual model to read; a middle layer (~7-9) aligns best with brain activity."""
@@ -178,7 +182,7 @@ class ObjectiveConfig:
     mask, for decoder LLMs), or `auto` (sentence-transformers unless the id looks like a decoder LLM)."""
 
     text_query_prefix: str = ''
-    """Instruction prefix prepended before encoding; retrieval encoders such as E5 expect `'query: '` / `'passage: '`."""
+    """Instruction prefix prepended before encoding; retrieval encoders like E5 expect `'query: '` / `'passage: '`."""
 
     clip_temperature: float = 0.07
     """Initial CLIP temperature; the log-scale is a learnable, clamped parameter."""

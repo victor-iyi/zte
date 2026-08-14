@@ -1,4 +1,4 @@
-"""Small reusable network blocks shared across the objectives: projection head, predictor, EMA teacher and subject adversary."""
+"""Reusable blocks shared across the objectives: projection head, predictor, EMA teacher and subject adversary."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ class _GradientReversal(torch.autograd.Function):
 def gradient_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
     """Applies a gradient-reversal layer to `x`.
 
-    Forward is the identity; the backward gradient is negated and scaled by `lambda_`, so an encoder upstream of an adversary head
-    trains to fool it -- e.g. to become subject-invariant.
+    Forward is the identity; the backward gradient is negated and scaled by `lambda_`, so an encoder upstream of an
+    adversary head trains to fool it -- e.g. to become subject-invariant.
 
     Args:
         x (torch.Tensor): Any tensor on the encoder's gradient path.
@@ -43,8 +43,8 @@ def gradient_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
 class SubjectAdversary(nn.Module):
     """A subject classifier trained through a gradient-reversal layer (DANN).
 
-    The head predicts the subject from token hiddens; its input passes through `gradient_reverse`, so the encoder is pushed to strip
-    subject identity from its representation.
+    The head predicts the subject from token hiddens; its input passes through `gradient_reverse`, so the encoder is
+    pushed to strip subject identity from its representation.
 
     Attributes:
         net (nn.Sequential): The subject-classification MLP.
@@ -148,7 +148,8 @@ class Predictor(nn.Module):
 class EMATeacher:
     """An exponential-moving-average copy of a module (data2vec target network).
 
-    The teacher takes no gradients; its weights track the student, giving stable latent targets for the student to predict.
+    The teacher takes no gradients; its weights track the student, giving stable latent targets for the student to
+    predict.
 
     Attributes:
         decay (float): EMA decay applied each update.
@@ -176,9 +177,7 @@ class EMATeacher:
             decay (float | None): Override for this step's EMA decay (the data2vec ramp); falls back to `self.decay`.
         """
         d = self.decay if decay is None else decay
-        for teacher_param, student_param in zip(
-            self.module.parameters(), student.parameters(), strict=True
-        ):
+        for teacher_param, student_param in zip(self.module.parameters(), student.parameters(), strict=True):
             teacher_param.mul_(d).add_(student_param.detach(), alpha=1 - d)
         for teacher_buf, student_buf in zip(self.module.buffers(), student.buffers(), strict=True):
             teacher_buf.copy_(student_buf)

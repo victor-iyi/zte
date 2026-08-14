@@ -59,7 +59,8 @@ class PrefixDecodeObjective(_ObjectiveBase):
         decoder_config (DecoderConfig): Bridge geometry, LM identity and generation controls.
         lm (FrozenLM): The frozen causal LM, excluded from every optimiser and every checkpoint.
         bridge (PrefixBridge): The soft-prompt bridge, which is almost all of the trainable surface.
-        resampler (WordResampler | None): The word-level ablation arm, present only for `conditioning='pooled_plus_words'`.
+        resampler (WordResampler | None): The word-level ablation arm, present only for
+            `conditioning='pooled_plus_words'`.
         gap (GapCorrector): Train-fitted affine map from the EEG cloud onto the text cloud.
         clip_head (nn.Linear | None): Projection into the frozen text space the bridge reads.
         stage (str): The curriculum stage last announced by `set_stage`, recorded for logging.
@@ -71,9 +72,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
     cache_z: torch.Tensor | None
     cache_hit: torch.Tensor | None
 
-    def __init__(
-        self, config: ObjectiveConfig, model: ZTEModel, decoder_config: DecoderConfig
-    ) -> None:
+    def __init__(self, config: ObjectiveConfig, model: ZTEModel, decoder_config: DecoderConfig) -> None:
         """Builds the frozen LM and the trainable bridge over it.
 
         The bridge is sized to whatever space the conditioning vector lives in. That is the encoder's own embedding
@@ -93,23 +92,17 @@ class PrefixDecodeObjective(_ObjectiveBase):
         self.stage = 'a'
 
         self.clip_head: nn.Linear | None = None
-        self.logit_scale = nn.Parameter(
-            torch.tensor(math.log(1.0 / max(config.clip_temperature, 1e-4)))
-        )
+        self.logit_scale = nn.Parameter(torch.tensor(math.log(1.0 / max(config.clip_temperature, 1e-4))))
         for name in ('text_matrix', 'target_ids', 'target_mask', 'cache_z', 'cache_hit'):
             self.register_buffer(name, None, persistent=False)
 
         self.z_dim: int = int(model.embed_dim)
-        self.bridge, self.resampler = build_bridge(
-            decoder_config, self.z_dim, self._token_dim, self.lm.hidden_dim
-        )
+        self.bridge, self.resampler = build_bridge(decoder_config, self.z_dim, self._token_dim, self.lm.hidden_dim)
         self.gap = GapCorrector(self.z_dim, mode=decoder_config.gap_correction)
 
     # ---- Attachment ---- #
 
-    def attach_clip_head(
-        self, weight: torch.Tensor, bias: torch.Tensor | None = None, trainable: bool = False
-    ) -> None:
+    def attach_clip_head(self, weight: torch.Tensor, bias: torch.Tensor | None = None, trainable: bool = False) -> None:
         """Installs the source run's projection into the frozen text space.
 
         Args:
@@ -122,14 +115,10 @@ class PrefixDecodeObjective(_ObjectiveBase):
             ValueError: If `weight` is not two-dimensional or its input width is not the encoder's embedding width.
         """
         if weight.ndim != 2:
-            raise ValueError(
-                f'clip_head weight must be (text_dim, embed_dim), got {tuple(weight.shape)}.'
-            )
+            raise ValueError(f'clip_head weight must be (text_dim, embed_dim), got {tuple(weight.shape)}.')
         text_dim, embed_dim = int(weight.shape[0]), int(weight.shape[1])
         if embed_dim != self._embed_dim:
-            raise ValueError(
-                f'clip_head expects an encoder of width {embed_dim} but this one is {self._embed_dim}.'
-            )
+            raise ValueError(f'clip_head expects an encoder of width {embed_dim} but this one is {self._embed_dim}.')
         head = nn.Linear(embed_dim, text_dim, bias=bias is not None)
         with torch.no_grad():
             head.weight.copy_(weight)
@@ -160,8 +149,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         text_dim = int(text_matrix.shape[1])
         if self.clip_head is not None and self.clip_head.out_features != text_dim:
             raise ValueError(
-                f'Text matrix width {text_dim} does not match the attached clip_head '
-                f'({self.clip_head.out_features}).'
+                f'Text matrix width {text_dim} does not match the attached clip_head ({self.clip_head.out_features}).'
             )
         self.text_matrix = text_matrix
         if self.clip_head is None:
@@ -231,9 +219,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
 
     # ---- Conditioning ---- #
 
-    def conditioning(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def conditioning(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the gap-corrected sentence vector and the soft prompt it produces.
 
         Args:
@@ -248,9 +234,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         return z, self._prefix(model, z, encoded)
 
     @torch.no_grad()
-    def fit_gap(
-        self, model: ZTEModel, loader: Iterable[dict[str, Any]], device: torch.device
-    ) -> int:
+    def fit_gap(self, model: ZTEModel, loader: Iterable[dict[str, Any]], device: torch.device) -> int:
         """Fits the gap correction on the training split, warming the frozen-encoder cache in the same pass.
 
         Args:
@@ -323,9 +307,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
                 'Only train-split stimuli may reach the bridge before evaluation.'
             )
         if self.text_matrix is None or self.target_ids is None or self.target_mask is None:
-            raise ValueError(
-                'Text-only pretraining needs both attach_text and attach_tokens first.'
-            )
+            raise ValueError('Text-only pretraining needs both attach_text and attach_tokens first.')
         idle = {'stage0_loss': float('nan'), 'stage0_epochs': 0.0, 'stage0_texts': float(ids.size)}
         if epochs <= 0 or ids.size == 0:
             return idle
@@ -347,9 +329,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
                 prefix, _ = self.bridge.dropout_null(
                     self.bridge(self.text_matrix[sel]), self.decoder_config.null_prefix_prob
                 )
-                loss = self.lm.forward_with_prefix(
-                    prefix, self.target_ids[sel], self.target_mask[sel]
-                )
+                loss = self.lm.forward_with_prefix(prefix, self.target_ids[sel], self.target_mask[sel])
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
@@ -366,9 +346,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
 
     # ---- Loss ---- #
 
-    def compute(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the teacher-forced decode loss plus its grounding and joint-mode auxiliaries.
 
         Args:
@@ -391,9 +369,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
             )
         targets, target_mask = self.target_ids, self.target_mask
         if targets is None or target_mask is None:
-            raise ValueError(
-                'PrefixDecodeObjective needs attach_tokens before it can compute a loss.'
-            )
+            raise ValueError('PrefixDecodeObjective needs attach_tokens before it can compute a loss.')
 
         encoded = self._encode(model, batch, grad=joint)
         z = self.gap(encoded.z)
@@ -409,11 +385,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         dropped, replaced = self.bridge.dropout_null(
             prefix, self.decoder_config.null_prefix_prob if self.training else 0.0
         )
-        ce = (
-            self.lm.forward_with_prefix(dropped, ids, mask)
-            if bool(has_target.any())
-            else prefix.sum() * 0.0
-        )
+        ce = self.lm.forward_with_prefix(dropped, ids, mask) if bool(has_target.any()) else prefix.sum() * 0.0
         ground = self._grounding(prefix, ids, mask, text_id, has_target, has_target & ~replaced)
         loss = ce + self.decoder_config.ground_weight * ground
 
@@ -427,9 +399,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
             'n_valid': float(has_target.sum()),
         }
         if joint:
-            aux_loss, aux_metrics = self._joint_auxiliaries(
-                model, batch, encoded, text_id, has_target
-            )
+            aux_loss, aux_metrics = self._joint_auxiliaries(model, batch, encoded, text_id, has_target)
             loss = loss + aux_loss
             metrics.update(aux_metrics)
         metrics['loss'] = float(loss.detach())
@@ -442,9 +412,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         if z_dim == self.z_dim:
             return
         self.z_dim = z_dim
-        self.bridge, self.resampler = build_bridge(
-            self.decoder_config, z_dim, self._token_dim, self.lm.hidden_dim
-        )
+        self.bridge, self.resampler = build_bridge(self.decoder_config, z_dim, self._token_dim, self.lm.hidden_dim)
         self.gap = GapCorrector(z_dim, mode=self.decoder_config.gap_correction)
         self.cache_z, self.cache_hit = None, None
 
@@ -455,9 +423,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
 
     def _head_trains(self) -> bool:
         """Returns whether the text projection is learning, which makes every cached sentence vector stale."""
-        return self.clip_head is not None and any(
-            p.requires_grad for p in self.clip_head.parameters()
-        )
+        return self.clip_head is not None and any(p.requires_grad for p in self.clip_head.parameters())
 
     def _cache_view(
         self, batch: dict[str, Any], want_tokens: bool
@@ -505,9 +471,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
             hits = int(reading.numel()) - int(miss.sum())
             vectors[reading[miss]] = z[miss].detach().float()
             filled[reading[miss]] = True
-        return _Encoded(
-            z=z, token_mask=token_mask, hidden=hidden, hidden_ctx=hidden_ctx, cache_hits=hits
-        )
+        return _Encoded(z=z, token_mask=token_mask, hidden=hidden, hidden_ctx=hidden_ctx, cache_hits=hits)
 
     def _prefix(self, model: ZTEModel, z: torch.Tensor, encoded: _Encoded) -> torch.Tensor:
         """Builds the soft prompt, appending the resampled word slots for the `pooled_plus_words` arm."""
@@ -515,9 +479,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         if self.resampler is None:
             return prefix
         if encoded.hidden_ctx is None:
-            raise RuntimeError(
-                "conditioning='pooled_plus_words' needs the contextual token hiddens."
-            )
+            raise RuntimeError("conditioning='pooled_plus_words' needs the contextual token hiddens.")
         words = self.resampler(encoded.hidden_ctx, encoded.token_mask)
         return torch.cat([prefix, words], dim=1)
 
@@ -559,9 +521,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         rows = usable.nonzero(as_tuple=False).squeeze(1)
         negatives = torch.multinomial(allowed[rows].float(), n_neg, replacement=True)
         candidates = torch.cat([rows[:, None], negatives], dim=1)
-        scores = self.lm.candidate_logprobs(
-            prefix[rows], ids[candidates], mask[candidates], length_normalise=True
-        )
+        scores = self.lm.candidate_logprobs(prefix[rows], ids[candidates], mask[candidates], length_normalise=True)
         target = torch.zeros(rows.numel(), dtype=torch.long, device=scores.device)
         return F.cross_entropy(scores / _GROUND_TEMPERATURE, target)
 
@@ -602,12 +562,9 @@ class PrefixDecodeObjective(_ObjectiveBase):
         z_txt = F.embedding(text_id.clamp(min=0), self.text_matrix)
         scale = self.logit_scale.exp().clamp(max=100.0)
         logits = (encoded.z @ z_txt.t()) * scale
-        positives = (
-            (text_id[:, None] == text_id[None, :]) & has_target[:, None] & has_target[None, :]
-        )
+        positives = (text_id[:, None] == text_id[None, :]) & has_target[:, None] & has_target[None, :]
         clip_loss = 0.5 * (
-            _clip_direction(logits, positives, has_target)
-            + _clip_direction(logits.t(), positives, has_target)
+            _clip_direction(logits, positives, has_target) + _clip_direction(logits.t(), positives, has_target)
         )
         loss = loss + self.decoder_config.clip_aux_weight * clip_loss
         metrics['clip_loss'] = float(clip_loss.detach())

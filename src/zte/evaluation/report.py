@@ -1,6 +1,5 @@
 """Orchestrates the ZTE evaluation: embeddings in, `metrics.json` + tables + figures + `report.md` out."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import json
@@ -101,16 +100,20 @@ def evaluate_representation(
         word_emb (np.ndarray): Word-level ZTE embeddings `(n_words, embed_dim)`.
         word_meta (pd.DataFrame): Aligned word metadata (word/word_len/log_freq/subject/task/category/
             sentence_idx/word_idx), length `n_words`.
-        raw_word_feats (np.ndarray): Aligned raw band-power features `(n_words, n_features)` for the baseline comparison.
+        raw_word_feats (np.ndarray): Aligned raw band-power features `(n_words, n_features)` for the baseline
+            comparison.
         sent_emb (np.ndarray): Sentence-level embeddings `(n_sentences, embed_dim)`.
-        sent_content_ids (np.ndarray): Content/group id per sentence `(n_sentences,)` (same stimulus across subjects shares an id).
+        sent_content_ids (np.ndarray): Content/group id per sentence `(n_sentences,)` (same stimulus across subjects
+            shares an id).
         out_dir (str | Path): Output directory for artifacts.
         run_name (str): Identifier used in the report header.
-        sent_meta (pd.DataFrame | None): Aligned sentence metadata (with `category`) enabling per-category retrieval breakdowns and projector colouring.
+        sent_meta (pd.DataFrame | None): Aligned sentence metadata (with `category`) enabling per-category retrieval
+            breakdowns and projector colouring.
         word_band_power (np.ndarray | None): Aligned per-word band power
             `(n_words, n_bands, n_channels)` for scalp-region importance (skipped when `None`).
         config (Any | None): The run `ZTEConfig` for HParams logging.
-        tensorboard (bool | str): `True` (write under `out/tb/run_name`), a path string, or `False` to disable TensorBoard logging.
+        tensorboard (bool | str): `True` (write under `out/tb/run_name`), a path string, or `False` to disable
+            TensorBoard logging.
         interactive (bool): Whether to write the interactive HTML explorer.
         phase_word_emb (np.ndarray | None): Embeddings of phase-scrambled EEG, added as a control representation.
         train_vocab (set[str] | None): Word types seen in training, enabling the seen-vs-novel retrieval split.
@@ -209,9 +212,7 @@ def evaluate_representation(
         sent_ret_transductive = M.content_retrieval(
             sent_emb_transductive, np.asarray(sent_content_ids), csls=use_csls, csls_k=csls_k
         )
-    word_ret = M.content_retrieval(
-        word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k
-    )
+    word_ret = M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k)
     eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
     eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
     # 3.2c) Seen vs novel word types: does retrieval hold for types absent from the training split?
@@ -321,11 +322,7 @@ def evaluate_representation(
             config,
             word_band_power=word_band_power,
             sent_n_words=sent_n_words,
-            phase_sent_emb=(
-                None
-                if phase_sent_emb is None
-                else _postprocess(phase_sent_emb, None, do_whiten, n_top)
-            ),
+            phase_sent_emb=(None if phase_sent_emb is None else _postprocess(phase_sent_emb, None, do_whiten, n_top)),
             generation=generation,
             rescoring=rescoring,
         )
@@ -342,9 +339,7 @@ def evaluate_representation(
         )
 
     # 5) Figures (each guarded so tiny inputs never abort the run).
-    figures = _render_figures(
-        word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir
-    )
+    figures = _render_figures(word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir)
     figures += _render_extended_figures(analogy, breakdown_words, region_rows, fig_dir)
     montage_csv = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
     figures += _render_sota_figures(
@@ -365,14 +360,11 @@ def evaluate_representation(
     if interactive:
         metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
         metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
-        metrics['scoreboard_html'] = _write_scoreboard_html(
-            metrics.get('scoreboard'), out, run_name
-        )
+        metrics['scoreboard_html'] = _write_scoreboard_html(metrics.get('scoreboard'), out, run_name)
         metrics['generation_html'] = _write_generation_html(generation, out, run_name)
 
-    # 6b) The per-dimension arrays are large, so only the compact summary goes in metrics.json.
-    # `default=str` never raises; `default=float` would turn an unexpected value into a crash on the
-    # last write of a multi-hour run, which is exactly the wrong trade here.
+    # 6b) Per-dimension arrays are large, so metrics.json keeps only the compact summary. `default=str`
+    # never raises, where `default=float` would crash on the last write of a multi-hour run.
     (out / 'neurons.json').write_text(json.dumps(neurons, indent=2, default=str), encoding='utf-8')
 
     # 7) Persist the results BEFORE the optional extras below, so nothing optional can cost the run
@@ -384,9 +376,7 @@ def evaluate_representation(
     if tensorboard:
         tb_dir = tensorboard if isinstance(tensorboard, str) else str(out / 'tb' / run_name)
         try:
-            _write_tensorboard(
-                tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config
-            )
+            _write_tensorboard(tb_dir, word_emb, word_meta, sent_emb, sent_meta, metrics, figures, config)
         except (OSError, ValueError, KeyError, RuntimeError) as exc:  # pragma: no cover - defensive
             _LOG.warning('TensorBoard export skipped: %r', exc)
     # `linear_scores` is dropped from the flat CSV so the table keeps one scalar per cell.
@@ -397,31 +387,19 @@ def evaluate_representation(
         pd.DataFrame(breakdown_words).to_csv(out / 'breakdown.csv', index=False)
     if region_rows:
         pd.DataFrame(region_rows).to_csv(out / 'region_importance.csv', index=False)
-    (out / 'report.md').write_text(
-        _render_report(metrics, comparison, figures, out), encoding='utf-8'
-    )
+    (out / 'report.md').write_text(_render_report(metrics, comparison, figures, out), encoding='utf-8')
     _LOG.info('Evaluation written to %s (%d figures)', out, len(figures))
     return metrics
 
 
 def _postprocess_fit(applied: bool, on_train: bool) -> str:
-    """Names what the retrieval geometry was fitted on: `none`, `train split` or `transductive`.
-
-    Args:
-        applied (bool): Whether whitening or all-but-the-top ran at all.
-        on_train (bool): Whether training-split rows were available to fit them on.
-
-    Returns:
-        str: The label carried in `metrics.json`.
-    """
+    """Names what the retrieval geometry was fitted on: `none`, `train split` or `transductive`."""
     if not applied:
         return 'none'
     return 'train split' if on_train else 'transductive'
 
 
-def _postprocess(
-    emb: np.ndarray, fit_on: np.ndarray | None, whiten: bool, n_top: int
-) -> np.ndarray:
+def _postprocess(emb: np.ndarray, fit_on: np.ndarray | None, whiten: bool, n_top: int) -> np.ndarray:
     """Whitening then all-but-the-top, fitted on `fit_on` when given and on `emb` itself otherwise.
 
     Args:
@@ -429,9 +407,6 @@ def _postprocess(
         fit_on (np.ndarray | None): Rows the transform may be fitted on; `None` fits transductively.
         whiten (bool): Apply ZCA whitening.
         n_top (int): Leading principal directions to remove.
-
-    Returns:
-        np.ndarray: Post-processed embeddings `(n, d)`, float32.
     """
     if fit_on is not None:
         from zte.evaluation.audit.rebaseline import fit_postprocess
@@ -518,7 +493,8 @@ def _region_importance(
     Args:
         word_band_power (np.ndarray | None): Per-word band power `(n_words, n_bands, n_channels)`.
         word_meta (pd.DataFrame): Aligned word metadata.
-        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the approximate coordinate-free default is used inside `region_importance`.
+        region_map (Any | None): Exact montage-derived `RegionMap`; when `None` the approximate coordinate-free default
+            is used inside `region_importance`.
 
     Returns:
         list[dict[str, Any]]: Tidy region-importance rows (empty when no band power)
@@ -573,9 +549,7 @@ def _write_interactive(
     except (ValueError, OSError, np.linalg.LinAlgError) as exc:  # pragma: no cover
         _LOG.warning('Thought-space explorer failed: %r', exc)
     try:
-        path = embedding_explorer_html(
-            word_emb, word_meta, out / 'interactive' / 'word_explorer.html'
-        )
+        path = embedding_explorer_html(word_emb, word_meta, out / 'interactive' / 'word_explorer.html')
         classic = str(path.relative_to(out))
     except (ValueError, OSError, np.linalg.LinAlgError) as exc:  # pragma: no cover
         _LOG.warning('Interactive explorer failed: %r', exc)
@@ -662,9 +636,7 @@ def _emergence_section(emergence: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _emergence_report(
-    word_emb: np.ndarray, word_meta: pd.DataFrame, analogy: dict[str, Any]
-) -> dict[str, Any]:
+def _emergence_report(word_emb: np.ndarray, word_meta: pd.DataFrame, analogy: dict[str, Any]) -> dict[str, Any]:
     """Computes the cross-subject clustering / semantic-coherence metrics, degrading gracefully."""
     from zte.evaluation.emergence import emergence_report
 
@@ -792,9 +764,7 @@ def _render_sota_figures(
         builders.append(('variance_budget_pie.png', lambda: P.variance_budget_pie(summary)))
     top_neurons = neurons.get('top_neurons', [])
     if top_neurons:
-        builders.append(
-            ('neuron_selectivity.png', lambda: P.neuron_selectivity_heatmap(top_neurons[:12]))
-        )
+        builders.append(('neuron_selectivity.png', lambda: P.neuron_selectivity_heatmap(top_neurons[:12])))
     if 'subject' in word_meta.columns and word_meta['subject'].nunique() > 1:
         builders.append(
             (
@@ -945,20 +915,7 @@ def _render_figures(
     sent_ret: dict[str, float],
     fig_dir: Path,
 ) -> list[Path]:
-    """Renders and saves all evaluation figures, skipping any that fail.
-
-    Args:
-        word_emb (np.ndarray): Word embeddings.
-        word_meta (pd.DataFrame): Word metadata.
-        sent_emb (np.ndarray): Sentence embeddings.
-        sent_content_ids (np.ndarray): Sentence content ids.
-        comparison (list[dict[str, Any]]): Probe comparison rows.
-        sent_ret (dict[str, float]): Sentence retrieval metrics.
-        fig_dir (Path): Output directory.
-
-    Returns:
-        list[Path]: Written figure paths.
-    """
+    """Renders and saves all evaluation figures, skipping any that fail."""
     import matplotlib.pyplot as plt
 
     written: list[Path] = []
@@ -1007,15 +964,11 @@ def _render_figures(
         builders.append(
             (
                 'retrieval_sentence.png',
-                lambda: P.retrieval_curve(
-                    ks, sent_ret.get('chance_top1', 0.0), 'Cross-subject sentence retrieval'
-                ),
+                lambda: P.retrieval_curve(ks, sent_ret.get('chance_top1', 0.0), 'Cross-subject sentence retrieval'),
             )
         )
     if 'log_freq' in word_meta:
-        builders.append(
-            ('probe_logfreq_scatter.png', lambda: _logfreq_scatter(word_emb, word_meta))
-        )
+        builders.append(('probe_logfreq_scatter.png', lambda: _logfreq_scatter(word_emb, word_meta)))
 
     for name, builder in builders:
         try:
@@ -1028,9 +981,7 @@ def _render_figures(
 def _logfreq_scatter(word_emb: np.ndarray, word_meta: pd.DataFrame) -> Any:
     """Builds a kNN leave-one-out predicted-vs-true scatter for log frequency."""
     index = NearestNeighborIndex(word_emb, word_meta[['log_freq']].reset_index(drop=True))
-    pred = index.predict(
-        word_emb, 'log_freq', k=10, task='regression', self_indices=np.arange(len(word_emb))
-    )
+    pred = index.predict(word_emb, 'log_freq', k=10, task='regression', self_indices=np.arange(len(word_emb)))
     return P.probe_scatter(word_meta['log_freq'].to_numpy(), pred, 'kNN probe: log frequency')
 
 
@@ -1105,9 +1056,7 @@ def _verdict(
         'beats_noise_all_targets': len(beats_noise) == len(zte) and len(zte) > 0,
         'beats_noise_ci': beats_noise_ci,
         'effect_size_floor': effect_floor,
-        'no_collapse': bool(
-            health.get('effective_rank_ratio', 0) > 0.1 and health.get('dead_dim_fraction', 1) < 0.5
-        ),
+        'no_collapse': bool(health.get('effective_rank_ratio', 0) > 0.1 and health.get('dead_dim_fraction', 1) < 0.5),
         'retrieval_above_chance': retrieval_pass,
         'retrieval_ci': [round(ret_point, 4), round(ret_lo, 4), round(ret_hi, 4)],
     }
@@ -1119,18 +1068,12 @@ def _verdict(
         ph_point, ph_lo, ph_hi = M.bootstrap_ci(real - phase, seed=seed)
         verdict['retrieval_above_phase'] = bool(np.isfinite(ph_lo) and ph_lo > 0.0)
         verdict['retrieval_phase_ci'] = [round(ph_point, 4), round(ph_lo, 4), round(ph_hi, 4)]
-        verdict['retrieval_above_chance'] = bool(
-            verdict['retrieval_above_chance'] and verdict['retrieval_above_phase']
-        )
+        verdict['retrieval_above_chance'] = bool(verdict['retrieval_above_chance'] and verdict['retrieval_above_phase'])
     if generation:
         verdict.update(_generation_verdict(generation, min_prefix_kl))
     if analogy:
         st = analogy.get('subject_transfer', {})
-        subj_chance = (
-            float(np.mean(subj_chances))
-            if subj_chances
-            else float(st.get('chance_top1', float('nan')))
-        )
+        subj_chance = float(np.mean(subj_chances)) if subj_chances else float(st.get('chance_top1', float('nan')))
         subj_point, subj_lo, subj_hi = _diff_ci(subj_top1_hits, subj_chance, seed=seed)
         verdict['subject_arithmetic_above_chance'] = bool(np.isfinite(subj_lo) and subj_lo > 0.0)
         verdict['subject_arithmetic_ci'] = [
@@ -1145,14 +1088,12 @@ def _missing_controls(generation: dict[str, Any], metric: str) -> list[str]:
     """Names every pre-registered control that did not run, or ran and was not beaten.
 
     A control the decode recorded in `controls_unavailable` or `controls_skipped` produced no delta, so
-    an AND over the deltas alone would silently drop it; here it counts as missing. A block that names no
-    `controls_requested` at all cannot show which controls it pre-registered, and a control that vanished
-    from such a block leaves no trace anywhere, so the absent ledger is itself reported as missing.
 
-    Args:
-        generation (dict[str, Any]): A `generation_report` block carrying the decode's
-            `controls_requested` / `controls_unavailable` / `controls_skipped` ledger.
-        metric (str): Primary metric whose paired delta decides whether a control was beaten.
+    an AND over the deltas alone would silently drop it; here it counts as missing. A block that names no
+
+    `controls_requested` at all cannot show which controls it pre-registered, and a control that vanished
+
+    from such a block leaves no trace anywhere, so the absent ledger is itself reported as missing.
 
     Returns:
         list[str]: Sorted control names, or `UNRECORDED_CONTROLS` for an absent ledger; empty only when a
@@ -1173,12 +1114,8 @@ def _generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dic
     """The pre-registered generation gate: an AND over split, candidate set, controls, null and prefix KL.
 
     Every clause is reported with its number even when it fails, and any failing clause demotes the
-    whole verdict -- the same demotion pattern the retrieval permutation null uses above.
 
-    Args:
-        generation (dict[str, Any]): A quarantine-stripped `generation_report` block.
-        min_prefix_kl (float): Minimum mean KL (nats) between a reading's own prefix and another
-            reading's; below it the prompt does not depend on the brain.
+    whole verdict -- the same demotion pattern the retrieval permutation null uses above.
 
     Returns:
         dict[str, Any]: `generation_above_controls`, `generation_ci`, `generation_clauses` and the
@@ -1248,17 +1185,7 @@ def _render_report(
     figures: list[Path],
     out: Path,
 ) -> str:
-    """Renders the Markdown evaluation report.
-
-    Args:
-        metrics (dict[str, Any]): Full metrics dictionary.
-        comparison (list[dict[str, Any]]): Probe comparison rows.
-        figures (list[Path]): Written figure paths.
-        out (Path): Report root (for relative figure links).
-
-    Returns:
-        str: The Markdown document.
-    """
+    """Renders the Markdown evaluation report."""
     health = metrics['embedding_health']
     sent = metrics['sentence_retrieval']
     verdict = metrics['verdict']
@@ -1291,11 +1218,7 @@ def _render_report(
         f'(Top-1 {sent.get("top1", float("nan")):.3f} vs query-weighted chance '
         f'{sent.get("chance_top1", float("nan")):.3f}; '
         f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))}'
-        + (
-            f'; permutation p={verdict["retrieval_permutation_p"]:.3f}'
-            if 'retrieval_permutation_p' in verdict
-            else ''
-        )
+        + (f'; permutation p={verdict["retrieval_permutation_p"]:.3f}' if 'retrieval_permutation_p' in verdict else '')
         + (
             f'; rank-percentile {sent["rank_percentile"]:.3f}, median rank {sent["median_rank"]:.0f}'
             if 'rank_percentile' in sent
@@ -1334,8 +1257,7 @@ def _render_report(
         f'- Uniformity: {health["uniformity"]:.3f} (lower = more spread)',
         f'- Anisotropy: {health["anisotropy"]:.3f} (lower = better)',
         f'- Alignment (adjacent words): {health.get("alignment", float("nan")):.3f}',
-        f'- Dead dimensions: {health["dead_dim_fraction"]:.1%} | mean norm '
-        f'{health["mean_norm"]:.2f}',
+        f'- Dead dimensions: {health["dead_dim_fraction"]:.1%} | mean norm {health["mean_norm"]:.2f}',
         '',
         '## Retrieval',
         '',
@@ -1439,9 +1361,7 @@ def _generation_section(metrics: dict[str, Any]) -> list[str]:
                 f'| [{d.get("lo", float("nan")):+.4f}, {d.get("hi", float("nan")):+.4f}] '
                 f'| {"✓" if d.get("beats") else "·"} |'
             )
-        absent = (generation.get('controls_unavailable') or {}) | (
-            generation.get('controls_skipped') or {}
-        )
+        absent = (generation.get('controls_unavailable') or {}) | (generation.get('controls_skipped') or {})
         for name, reason in sorted(absent.items()):
             lines.append(f'| {name} | NEVER RAN ({reason}) | -- | · |')
         lines += [
@@ -1469,10 +1389,7 @@ def _generation_section(metrics: dict[str, Any]) -> list[str]:
 
         quarantined = quarantined_keys(generation)
         if quarantined:
-            lines.append(
-                f'- Quarantined and never read by the verdict: '
-                f'{", ".join(f"`{k}`" for k in quarantined)}.'
-            )
+            lines.append(f'- Quarantined and never read by the verdict: {", ".join(f"`{k}`" for k in quarantined)}.')
     lines.append('')
     return lines
 
@@ -1569,8 +1486,7 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
         if examples:
             lines += ['', '| expression | retrieved | hit | cos |', '| --- | --- | --- | --- |']
             lines += [
-                f'| {e["expression"]} | {e["retrieved"]} | {"✓" if e["hit"] else "·"} | '
-                f'{e["similarity"]} |'
+                f'| {e["expression"]} | {e["retrieved"]} | {"✓" if e["hit"] else "·"} | {e["similarity"]} |'
                 for e in examples[:6]
             ]
         lines.append('')
@@ -1594,9 +1510,7 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
         lines.append('| region | ' + ' | '.join(str(c) for c in frame.columns) + ' |')
         lines.append('| --- |' + ' --- |' * len(frame.columns))
         for region_name, row in frame.iterrows():
-            lines.append(
-                f'| {region_name} | ' + ' | '.join(f'{v:.2f}' for v in row.to_numpy()) + ' |'
-            )
+            lines.append(f'| {region_name} | ' + ' | '.join(f'{v:.2f}' for v in row.to_numpy()) + ' |')
         lines.append('')
 
     neurons = metrics.get('neurons', {})
@@ -1650,8 +1564,7 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
             '| --- | --- | --- | --- | --- | --- |',
         ]
         lines += [
-            f'| {r["value"]} | {r["n"]} | {r["top1"]} | {r["top5"]} | {r["mrr"]} | {r["chance_top1"]} |'
-            for r in by_cat
+            f'| {r["value"]} | {r["n"]} | {r["top1"]} | {r["top5"]} | {r["mrr"]} | {r["chance_top1"]} |' for r in by_cat
         ]
         lines.append('')
 

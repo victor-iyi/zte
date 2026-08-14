@@ -166,7 +166,7 @@ def main() -> None:
 
     # Training curves are a convenience; a missing viz backend must not fail the run.
     try:
-        from zte.data.viz import plot_training_curves  # pylint: disable=import-outside-toplevel
+        from zte.data.viz import plot_training_curves
 
         fig = plot_training_curves(artifacts.history)
         fig.savefig(out_dir / 'training_curves.png', dpi=120, bbox_inches='tight')

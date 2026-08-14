@@ -29,7 +29,6 @@ def stratum_metrics(emb: np.ndarray, meta: pd.DataFrame, min_probe: int = 30) ->
     Returns:
         A dict with `n`, per-target probe R^2, within-stratum same-word retrieval Top-1 (and chance),
             and two geometry markers (effective-rank ratio, anisotropy).
-
     """
     out: dict[str, Any] = {'n': int(len(emb))}
     if len(emb) >= min_probe:
@@ -64,12 +63,9 @@ def stratified_report(
 
     Returns:
         Tidy rows, each with `group` (`'ALL'` or the column name), `value` and the `stratum_metrics` fields.
-
     """
     word_meta = word_meta.reset_index(drop=True)
-    rows: list[dict[str, Any]] = [
-        {'group': 'ALL', 'value': 'all', **stratum_metrics(word_emb, word_meta)}
-    ]
+    rows: list[dict[str, Any]] = [{'group': 'ALL', 'value': 'all', **stratum_metrics(word_emb, word_meta)}]
     for col in group_cols:
         if col not in word_meta:
             continue
@@ -96,7 +92,8 @@ def stratified_retrieval(
 ) -> list[dict[str, Any]]:
     """Cross-subject sentence retrieval computed *within* each group value.
 
-    Answers "does the same sentence read by different people retrieve itself equally well across sentence categories / tasks?".
+    Answers "does the same sentence read by different people retrieve itself equally well across sentence categories /
+    tasks?".
 
     Args:
         sent_emb (np.ndarray): Sentence embeddings `(n_sentences, embed_dim)`.

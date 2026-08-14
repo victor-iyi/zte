@@ -1,6 +1,5 @@
 """`zte-decode` -- free-running generation with its brain-independent controls, plus decoder-rescoring retrieval."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse
@@ -74,9 +73,7 @@ def parse_arguments() -> argparse.Namespace:
         'brain-independent controls and a text oracle, and rank the sentence gallery by decoder likelihood.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        '--ckpt', type=str, required=True, help='Decoder checkpoint (best.pt/last.pt).'
-    )
+    parser.add_argument('--ckpt', type=str, required=True, help='Decoder checkpoint (best.pt/last.pt).')
     add_data_source_args(parser, include_bundle=True, include_synthetic=True)
     add_extract_dir(parser)
 
@@ -138,9 +135,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--run-name', type=str, default=None, dest='run_name')
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
@@ -198,9 +193,7 @@ def split_indices(dataset: ZuCoDataset, config: ZTEConfig, name: str) -> np.ndar
     )
     idx = splits.get(name)
     if idx is None or len(idx) == 0:
-        _LOG.warning(
-            'Split %r has no %r cell (it produces %s).', config.train.split, name, sorted(splits)
-        )
+        _LOG.warning('Split %r has no %r cell (it produces %s).', config.train.split, name, sorted(splits))
         return None
     return np.asarray(idx, dtype=int)
 
@@ -338,7 +331,8 @@ def decode_evaluation(
         indices (np.ndarray | None): Word-row indices of the split to decode; `None` decodes everything.
         split (str): Cell being decoded; it and `config.train.split` are carried into the verdict, which
             headlines only the cell that generalises over the subject and the stimulus at once.
-        config (ZTEConfig): The run configuration, for the split strategy and the text-encoder settings behind the oracle.
+        config (ZTEConfig): The run configuration, for the split strategy and the text-encoder settings behind the
+            oracle.
         options (DecodeOptions | None, optional): Decode options. Defaults to None, which uses the defaults.
         out_dir (Path | None, optional): Where `generation.jsonl` / `generation.json` / the interactive page are
             written. Defaults to None, which writes nothing.
@@ -355,9 +349,7 @@ def decode_evaluation(
 
     references = [str(t) for t in meta['text']]
     _LOG.info('Decoding %d held-out readings from split %r ...', n, split)
-    hypotheses = decoder.generate(
-        z, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size
-    )
+    hypotheses = decoder.generate(z, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size)
 
     controls, unavailable = _controls(decoder, dataset, indices, z, meta, opts, config)
     gallery = _gallery_dataset(decoder, dataset)
@@ -380,9 +372,7 @@ def decode_evaluation(
     block['split_strategy'] = config.train.split
     block['controls_requested'] = list(opts.controls)
     block['controls_unavailable'] = unavailable
-    block['prefix_influence_kl_median'] = (
-        float(np.median(prefix_kl)) if prefix_kl.size else float('nan')
-    )
+    block['prefix_influence_kl_median'] = float(np.median(prefix_kl)) if prefix_kl.size else float('nan')
     block['teacher_forced_ppl_DIAGNOSTIC'] = _teacher_forced_ppl(decoder, z, references, opts)
 
     rescoring = _rescoring(decoder, gallery, z, meta, opts) if opts.rescore and n >= 2 else None
@@ -537,9 +527,7 @@ def _oracle(
     )
 
 
-def _teacher_forced_ppl(
-    decoder: ZTEDecoder, z: np.ndarray, references: list[str], opts: DecodeOptions
-) -> float:
+def _teacher_forced_ppl(decoder: ZTEDecoder, z: np.ndarray, references: list[str], opts: DecodeOptions) -> float:
     """Mean teacher-forced perplexity of the references -- quarantined, and provably unread by any verdict."""
     nll = decoder.teacher_forced_nll(z, references, batch_size=opts.batch_size)
     return float(np.exp(np.mean(nll))) if nll.size else float('nan')
@@ -616,9 +604,7 @@ def _gallery_lengths(torch_ds: ZuCoTorchDataset, n_text: int) -> np.ndarray:
     return lengths
 
 
-def _provenance(
-    decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: DecodeOptions, n: int
-) -> dict[str, Any]:
+def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: DecodeOptions, n: int) -> dict[str, Any]:
     """Records the LM, tokeniser, device, seeds and code state a decode cannot be reproduced without."""
     from zte.utils.provenance import git_info, package_versions
 
@@ -682,9 +668,7 @@ def _write_artifacts(
         generation_html(block, out_dir / 'interactive' / 'generation.html', run_name=run_name)
     except (OSError, ValueError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Interactive generation page skipped: %r', exc)
-    _LOG.info(
-        'Wrote generation.jsonl, generation.json and interactive/generation.html to %s', out_dir
-    )
+    _LOG.info('Wrote generation.jsonl, generation.json and interactive/generation.html to %s', out_dir)
 
 
 def _jsonl_rows(
@@ -699,9 +683,7 @@ def _jsonl_rows(
     hyp_scores = per_sentence_scores(hypotheses, references)
     control_scores = {n: per_sentence_scores(t, references) for n, t in controls.items()}
     oracle_scores = per_sentence_scores(oracle, references) if oracle is not None else None
-    columns = [
-        c for c in ('subject', 'task', 'sentence_idx', 'n_words', 'stimulus_key') if c in meta
-    ]
+    columns = [c for c in ('subject', 'task', 'sentence_idx', 'n_words', 'stimulus_key') if c in meta]
 
     rows: list[dict[str, Any]] = []
     for i in range(len(references)):

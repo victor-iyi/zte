@@ -23,11 +23,12 @@ def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
     return batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
 
 
-class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
+class _ObjectiveBase(nn.Module):
     """Shared base wiring the anti-collapse (VICReg) and subject-adversary regularisers.
 
     Subclasses compute their main self-supervised loss and call `regularize` with the token hiddens (for the adversary)
-    and the exported embeddings (for VICReg); the returned extra loss is added to the objective's loss and its metrics merged in.
+    and the exported embeddings (for VICReg); the returned extra loss is added to the objective's loss and its metrics
+    merged in.
 
     Attributes:
         config (ObjectiveConfig): The objective configuration.
@@ -52,16 +53,12 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         self._content_dim = model.config.content_dim if self._factored else model.embed_dim
         adv_in = self._content_dim if self._factored else model.hidden_dim
         self.subject_adversary: SubjectAdversary | None = (
-            SubjectAdversary(adv_in, model.config.n_subjects)
-            if config.subject_adversary_weight > 0.0
-            else None
+            SubjectAdversary(adv_in, model.config.n_subjects) if config.subject_adversary_weight > 0.0 else None
         )
         # A second referee predicting which passage/task a token came from, blocking the stimulus shortcut.
         self._n_tasks = getattr(model.config, 'n_tasks', 3)
         self.stimulus_adversary: SubjectAdversary | None = (
-            SubjectAdversary(model.hidden_dim, self._n_tasks)
-            if config.stimulus_adversary_weight > 0.0
-            else None
+            SubjectAdversary(model.hidden_dim, self._n_tasks) if config.stimulus_adversary_weight > 0.0 else None
         )
 
         # Auxiliary heads, all sized in `attach_auxiliary` once the dataset targets are known.
@@ -98,7 +95,8 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         """Ramped gradient-reversal strength for the subject adversary, in `[0, 1]`.
 
         Ramps linearly `0 -> 1` over `subject_adversary_warmup_ratio * total_steps`, then holds at 1; a cold adversary
-        early lets the encoder learn content before invariance pressure is applied. Unset progress or a 0 ratio gives 1.0.
+        early lets the encoder learn content before invariance pressure is applied. Unset progress or a 0 ratio gives
+        1.0.
         """
         ratio = self.config.subject_adversary_warmup_ratio
         if self._cur_step is None or self._cur_total is None or ratio <= 0.0:
@@ -112,16 +110,17 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
         behaviour_binary: 'torch.Tensor | None' = None,
         feature_dim: int | None = None,
     ) -> None:
-        """Attaches dataset-derived auxiliary targets (meaning, behaviour, and the collapse-proof regression auxiliary) after construction.
+        """Attaches dataset-derived auxiliary targets (meaning, behaviour, and the collapse-proof regression auxiliary)
+        after construction.
 
         Args:
-            meaning_matrix (torch.Tensor | None): Frozen `(vocab, meaning_dim)` word vectors indexed by `batch['word_id']`;
-                required when `meaning_distill_weight > 0` and the target is word-type-keyed (the per-occurrence contextual
-                path carries its target in the batch instead -- see `meaning_contextual`).
-            behaviour_binary (torch.Tensor | None): Bool `(n_behaviour,)` mask marking which behaviour targets are binary;
-                its length sizes the behaviour head.
-            feature_dim (int | None): Flattened band-power input width, used to build the frozen regression target for the data2vec
-                collapse-insurance head. `None` (or a raw frontend) disables that head.
+            meaning_matrix (torch.Tensor | None): Frozen `(vocab, meaning_dim)` word vectors indexed by
+                `batch['word_id']`; required when `meaning_distill_weight > 0` and the target is word-type-keyed (the
+                per-occurrence contextual path carries its target in the batch instead -- see `meaning_contextual`).
+            behaviour_binary (torch.Tensor | None): Bool `(n_behaviour,)` mask marking which behaviour targets are
+                binary; its length sizes the behaviour head.
+            feature_dim (int | None): Flattened band-power input width, used to build the frozen regression target for
+                the data2vec collapse-insurance head. `None` (or a raw frontend) disables that head.
         """
         # Sized from the attached word-type matrix, else from the contextual target's width.
         if self.config.meaning_distill_weight > 0.0:
@@ -138,12 +137,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             self._behaviour_binary = behaviour_binary.bool()
 
         # The nuisance subspace regresses toward a frozen projection, which cannot co-collapse with it.
-        if (
-            self.config.data2vec_aux_weight > 0.0
-            and self._factored
-            and self._nuisance_dim > 0
-            and feature_dim
-        ):
+        if self.config.data2vec_aux_weight > 0.0 and self._factored and self._nuisance_dim > 0 and feature_dim:
             target_dim = min(64, self._nuisance_dim)
             self.data2vec_head = nn.Linear(self._nuisance_dim, target_dim)
             proj = nn.Linear(int(feature_dim), target_dim, bias=False)
@@ -222,9 +216,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             stim_loss = F.cross_entropy(t_logits, task)
             loss = loss + self.config.stimulus_adversary_weight * stim_loss
             metrics['stim_adv_loss'] = float(stim_loss.detach())
-            metrics['stim_adv_acc'] = float(
-                (t_logits.argmax(dim=-1) == task).float().mean().detach()
-            )
+            metrics['stim_adv_acc'] = float((t_logits.argmax(dim=-1) == task).float().mean().detach())
 
         # Meaning distillation: a per-occurrence contextual target is preferred (it disambiguates polysemy).
         if self.meaning_head is not None and batch.get('meaning_target') is not None:
@@ -232,24 +224,16 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
             ok = torch.isfinite(tgt).all(dim=-1)  # skip padding / uncovered rows (NaN)
             if bool(ok.any()):
                 pred = self.meaning_head(self._content_slice(emb_u)[ok])
-                m_loss = (
-                    1.0 - F.cosine_similarity(F.normalize(pred, dim=-1), tgt[ok], dim=-1)
-                ).mean()
+                m_loss = (1.0 - F.cosine_similarity(F.normalize(pred, dim=-1), tgt[ok], dim=-1)).mean()
                 loss = loss + self.config.meaning_distill_weight * m_loss
                 metrics['meaning_loss'] = float(m_loss.detach())
-        elif (
-            self.meaning_head is not None
-            and self.meaning_matrix is not None
-            and batch.get('word_id') is not None
-        ):
+        elif self.meaning_head is not None and self.meaning_matrix is not None and batch.get('word_id') is not None:
             wid = batch['word_id'].reshape(-1)[flat]
             has_w = wid >= 0
             if bool(has_w.any()):
                 pred = self.meaning_head(self._content_slice(emb_u)[has_w])
                 target = F.embedding(wid[has_w], self.meaning_matrix)
-                m_loss = (
-                    1.0 - F.cosine_similarity(F.normalize(pred, dim=-1), target, dim=-1)
-                ).mean()
+                m_loss = (1.0 - F.cosine_similarity(F.normalize(pred, dim=-1), target, dim=-1)).mean()
                 loss = loss + self.config.meaning_distill_weight * m_loss
                 metrics['meaning_loss'] = float(m_loss.detach())
 
@@ -271,11 +255,7 @@ class _ObjectiveBase(nn.Module):  # pylint: disable=abstract-method
                 metrics['behaviour_loss'] = float(b_loss.detach())
 
         # The nuisance subspace reconstructs the input against a frozen target that cannot co-collapse.
-        if (
-            self.data2vec_head is not None
-            and self.data2vec_proj is not None
-            and batch.get('features') is not None
-        ):
+        if self.data2vec_head is not None and self.data2vec_proj is not None and batch.get('features') is not None:
             feats = batch['features'].reshape(-1, batch['features'].shape[-1])[flat]
             with torch.no_grad():
                 target = F.normalize(self.data2vec_proj(feats), dim=-1)

@@ -38,10 +38,8 @@ def _content_key_arrays(ds: ZuCoDataset) -> tuple[np.ndarray, np.ndarray]:
     """Returns positional `(stimulus_key, word_idx)` arrays aligned with `ds.words` rows.
 
     The normalised sentence text plus the within-sentence index identifies the same word of the same sentence
-    regardless of who read it, which is what cross-subject positives are built from.
 
-    Args:
-        ds (ZuCoDataset): A built dataset.
+    regardless of who read it, which is what cross-subject positives are built from.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: `(stimulus_key[str], word_idx[int])`, each `(n_words,)`.
@@ -62,13 +60,8 @@ def _build_content_vocab(ds: ZuCoDataset) -> dict[tuple[str, int], int]:
     """Builds a stable `{(stimulus_key, word_idx): int}` id map over the whole dataset.
 
     Ids are shared across splits, and different subjects reading the same word share one, which is what lets an
+
     objective treat same-word-across-subjects as a positive.
-
-    Args:
-        ds (ZuCoDataset): A built dataset.
-
-    Returns:
-        dict[tuple[str, int], int]: The stimulus-id vocabulary.
     """
     skey, widx = _content_key_arrays(ds)
     vocab: dict[tuple[str, int], int] = {}
@@ -104,13 +97,9 @@ class SentenceSample:
     word_id: torch.Tensor | None = None
     task_id: int = 0
     behaviour: torch.Tensor | None = None  # (seq_len, n_behaviour) or None
-    meaning: torch.Tensor | None = (
-        None  # (seq_len, hidden) per-occurrence contextual target or None
-    )
+    meaning: torch.Tensor | None = None  # (seq_len, hidden) per-occurrence contextual target or None
     text_id: int = -1  # subject-agnostic sentence-text id (CLIP alignment target), or -1
-    signature: torch.Tensor | None = (
-        None  # (signature_dim,) covariance-geometry descriptor, or None
-    )
+    signature: torch.Tensor | None = None  # (signature_dim,) covariance-geometry descriptor, or None
     reading_id: int = -1  # dataset-wide sentence position, the key of the frozen-encoder cache
 
 
@@ -160,20 +149,12 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         presence = dataset.presence
 
         # One id per unique sentence text, so any subject's reading maps to the same CLIP text target.
-        self._text_vocab: dict[str, int] = {
-            key: i for i, key in enumerate(sorted({str(s) for s in skey_arr}))
-        }
+        self._text_vocab: dict[str, int] = {key: i for i, key in enumerate(sorted({str(s) for s in skey_arr}))}
 
         # Word identity drives meaning positives; the per-sentence task id drives the passage adversary.
-        word_arr = (
-            dataset.words['word'].fillna('').astype(str).to_numpy()
-            if 'word' in dataset.words.columns
-            else None
-        )
+        word_arr = dataset.words['word'].fillna('').astype(str).to_numpy() if 'word' in dataset.words.columns else None
         self._word_vocab: dict[str, int] = (
-            {w: i for i, w in enumerate(sorted(set(word_arr.tolist())))}
-            if word_arr is not None
-            else {}
+            {w: i for i, w in enumerate(sorted(set(word_arr.tolist())))} if word_arr is not None else {}
         )
         self._task_vocab: dict[str, int] = (
             {t: i for i, t in enumerate(sorted(set(dataset.words['task'].astype(str).tolist())))}
@@ -238,9 +219,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             self._task_id.append(self._task_vocab.get(str(task), 0))
             self._stimulus_keys.append(str(skey_arr[kept[0]]) if len(kept) else '')
 
-        self._sentence_text_id: list[int] = [
-            self._text_vocab.get(k, -1) for k in self._stimulus_keys
-        ]
+        self._sentence_text_id: list[int] = [self._text_vocab.get(k, -1) for k in self._stimulus_keys]
 
     @property
     def text_vocab(self) -> dict[str, int]:
@@ -675,6 +654,4 @@ def make_dataloader(
     if batch_sampler is not None:
         return DataLoader(torch_dataset, batch_sampler=batch_sampler, **common)
 
-    return DataLoader(
-        torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common
-    )
+    return DataLoader(torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common)

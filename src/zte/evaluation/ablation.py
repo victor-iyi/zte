@@ -15,15 +15,6 @@ from zte.config import ZTEConfig
 def _set_dotted(config: ZTEConfig, dotted: str, value: Any) -> ZTEConfig:
     """Returns a deep copy of `config` with the single dotted field set to `value`.
 
-    Args:
-        config (ZTEConfig): The base configuration.
-        dotted (str): A `section.field` path, e.g. `objective.subject_adversary_weight`,
-            `model.factored`, `dataset.normalize`, `train.split`.
-        value (Any): The new value for that field.
-
-    Returns:
-        ZTEConfig: A new config identical to `config` except for that one field.
-
     Raises:
         ValueError: If the path does not name a `section.field` on the config.
     """
@@ -57,9 +48,7 @@ def _coerce(value: str) -> Any:
     return value
 
 
-def single_variable_configs(
-    base: ZTEConfig, knob: str, values: list[str]
-) -> list[tuple[str, ZTEConfig]]:
+def single_variable_configs(base: ZTEConfig, knob: str, values: list[str]) -> list[tuple[str, ZTEConfig]]:
     """Builds `(label, config)` pairs differing only in `knob`.
 
     Args:
@@ -74,9 +63,7 @@ def single_variable_configs(
     return grid_configs(base, [(knob, values)])
 
 
-def grid_configs(
-    base: ZTEConfig, specs: list[tuple[str, list[str]]]
-) -> list[tuple[str, ZTEConfig]]:
+def grid_configs(base: ZTEConfig, specs: list[tuple[str, list[str]]]) -> list[tuple[str, ZTEConfig]]:
     """Builds `(label, config)` pairs for the Cartesian product of several knobs' values.
 
     One spec is a clean single-variable sweep; several explore how knobs interact. Every config
@@ -150,13 +137,9 @@ def diff_scoreboards(baseline: Path, variant: Path) -> dict[str, Any]:
 
     return {
         'lift_over_raw_delta': lift_delta,
-        'held_out_effrank_delta': _delta(
-            geom(a, 'effective_rank_ratio'), geom(b, 'effective_rank_ratio')
-        ),
+        'held_out_effrank_delta': _delta(geom(a, 'effective_rank_ratio'), geom(b, 'effective_rank_ratio')),
         'held_out_anisotropy_delta': _delta(geom(a, 'anisotropy'), geom(b, 'anisotropy')),
-        'held_out_content_budget_delta': _delta(
-            geom(a, 'content_variance'), geom(b, 'content_variance')
-        ),
+        'held_out_content_budget_delta': _delta(geom(a, 'content_variance'), geom(b, 'content_variance')),
         'held_out_retrieval_top1_delta': _delta(retr(a, 'top1'), retr(b, 'top1')),
         'held_out_retrieval_lift_delta': _delta(retr(a, 'lift_top1'), retr(b, 'lift_top1')),
     }

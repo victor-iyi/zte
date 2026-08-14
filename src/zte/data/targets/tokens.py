@@ -143,9 +143,7 @@ class TextTargets:
         return ids, mask
 
 
-def _cache_path(
-    texts: Sequence[str], source: str, revision: str | None, max_length: int, cache_dir: str
-) -> Path:
+def _cache_path(texts: Sequence[str], source: str, revision: str | None, max_length: int, cache_dir: str) -> Path:
     """Deterministic cache file for a (corpus, tokeniser, revision, width) target-token matrix."""
     h = hashlib.sha1()
     h.update(f'{source}|{revision or "main"}|{max_length}|{len(texts)}'.encode())
@@ -205,9 +203,7 @@ def fingerprint_tokenizer(tokenizer: Any, source: str, revision: str | None) -> 
     return h.hexdigest()[:16]
 
 
-def _encode(
-    tokenizer: Any, texts: Sequence[str], max_length: int
-) -> tuple[np.ndarray, np.ndarray, int, int]:
+def _encode(tokenizer: Any, texts: Sequence[str], max_length: int) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Encodes `texts` into padded `(ids, mask)` plus the pad id and the count of truncated rows."""
     n = len(texts)
     if isinstance(tokenizer, TinyByteTokenizer):

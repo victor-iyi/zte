@@ -8,9 +8,7 @@ type Granularity = Literal['word', 'sentence']
 type Representation = Literal['band_power', 'raw', 'both']
 """Use compact band-power vectors, raw time-series windows, or both."""
 
-type Normalization = Literal[
-    'zscore_channel', 'zscore_global', 'zscore_subject', 'riemannian', 'minmax', 'none'
-]
+type Normalization = Literal['zscore_channel', 'zscore_global', 'zscore_subject', 'riemannian', 'minmax', 'none']
 """Feature normalisation. `zscore_channel`/`zscore_global` fit one mean/std across the cohort; `zscore_subject` fits
 per subject, removing the constant offset that makes subject identity the cheapest thing to encode."""
 

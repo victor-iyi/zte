@@ -115,9 +115,7 @@ def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndar
     acc = np.zeros((n_ch, n_ch), dtype=np.float64)
     seen = 0
     for start in range(0, len(idx), _COV_CHUNK):
-        x = np.nan_to_num(
-            np.asarray(raw[idx[start : start + _COV_CHUNK]], dtype=np.float64), nan=0.0
-        )
+        x = np.nan_to_num(np.asarray(raw[idx[start : start + _COV_CHUNK]], dtype=np.float64), nan=0.0)
         t = x.shape[2]
 
         # Per-trial trace normalisation stops a few high-amplitude trials owning the reference.
@@ -172,9 +170,7 @@ class RawSubjectAligner:
         """
         n_ch = raw.shape[1]
         if region_index is None:
-            region_index = np.minimum(
-                np.arange(n_ch) * self.n_regions // max(n_ch, 1), self.n_regions - 1
-            )
+            region_index = np.minimum(np.arange(n_ch) * self.n_regions // max(n_ch, 1), self.n_regions - 1)
         self._region_index = np.asarray(region_index, dtype=int)
 
         subjects = np.asarray(subjects)
@@ -201,23 +197,15 @@ class RawSubjectAligner:
                 )
                 continue
             cov = _channel_covariance(raw, _sample_rows(rows), self.eps)
-            self.references[str(code)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(
-                np.float32
-            )
+            self.references[str(code)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(np.float32)
             self.signatures[str(code)] = self._signature_from(cov)
 
         # Standardise across the cohort so the hypernetwork sees a zero-mean, unit-scale descriptor.
-        stack = (
-            np.stack(list(self.signatures.values()))
-            if self.signatures
-            else self._global_signature[None, :]
-        )
+        stack = np.stack(list(self.signatures.values())) if self.signatures else self._global_signature[None, :]
         self._sig_mean = stack.mean(axis=0).astype(np.float32)
         self._sig_std = np.clip(stack.std(axis=0), 1e-3, None).astype(np.float32)
 
-        _LOG.info(
-            'Fitted Euclidean alignment for %d subjects (%d channels).', len(self.references), n_ch
-        )
+        _LOG.info('Fitted Euclidean alignment for %d subjects (%d channels).', len(self.references), n_ch)
         return self
 
     def _signature_from(self, cov: np.ndarray) -> np.ndarray:
@@ -303,12 +291,8 @@ class RawSubjectAligner:
                 len(baseline_raw),
             )
             return self
-        cov = _channel_covariance(
-            baseline_raw, _sample_rows(np.ones(len(baseline_raw), dtype=bool)), self.eps
-        )
-        self.references[str(subject)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(
-            np.float32
-        )
+        cov = _channel_covariance(baseline_raw, _sample_rows(np.ones(len(baseline_raw), dtype=bool)), self.eps)
+        self.references[str(subject)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(np.float32)
         self.signatures[str(subject)] = self._signature_from(cov)
         return self
 

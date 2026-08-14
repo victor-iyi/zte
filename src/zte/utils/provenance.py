@@ -172,8 +172,7 @@ def provenance_markdown(prov: dict[str, Any]) -> str:
         verdict = (run.get('headline') or {}).get('verdict')
         lines.append(
             f'- **{run["name"]}** — best.pt: {run.get("has_best_checkpoint")}; '
-            f'eval: `{json.dumps(head)[:160]}`'
-            + (f'; verdict: `{json.dumps(verdict)[:120]}`' if verdict else '')
+            f'eval: `{json.dumps(head)[:160]}`' + (f'; verdict: `{json.dumps(verdict)[:120]}`' if verdict else '')
         )
     lines += [
         '',

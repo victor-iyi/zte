@@ -31,7 +31,8 @@ class DeviceSpec:
     Attributes:
         device (torch.device): The concrete `torch.device` to place tensors/modules on.
         kind (DeviceKind): The backend family (`cpu`, `cuda` or `mps`).
-        autocast_dtype (torch.dtype | None): The dtype to use under `torch.autocast`, or `None` when mixed precision is disabled.
+        autocast_dtype (torch.dtype | None): The dtype to use under `torch.autocast`, or `None` when mixed precision is
+            disabled.
         use_amp (bool): Whether automatic mixed precision should be enabled.
         supports_pin_memory (bool): Whether `DataLoader(pin_memory=True)` helps.
         name (str): A human-readable device name for logging.
@@ -139,9 +140,7 @@ def _select_kind(prefer: DeviceKind | Literal['auto']) -> DeviceKind:
     return 'cpu'
 
 
-def _resolve_precision(
-    kind: DeviceKind, precision: PrecisionPreference
-) -> tuple[torch.dtype | None, bool]:
+def _resolve_precision(kind: DeviceKind, precision: PrecisionPreference) -> tuple[torch.dtype | None, bool]:
     """Maps a (backend, precision) request to an (autocast dtype, use_amp) pair."""
     if precision == 'fp32':
         return None, False
@@ -253,7 +252,6 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         yield
 
 
-# pylint: disable=import-outside-toplevel
 def seed_everything(seed: int, deterministic: bool = False) -> None:
     """Seeds Python, NumPy and Torch RNGs for reproducible runs.
 

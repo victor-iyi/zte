@@ -1,7 +1,6 @@
 """The ZTE Trainer: a device-agnostic, pausable, checkpointing self-supervised loop."""
 
 # pyright: reportFunctionMemberAccess=false, reportPrivateImportUsage=false
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import dataclasses
@@ -55,7 +54,8 @@ class Trainer:
         objective (nn.Module): The self-supervised objective module.
         train_loader (DataLoader[Any]): Training DataLoader (yields collated batch dicts).
         val_loader (DataLoader[Any] | None): Optional validation DataLoader.
-        extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
+        extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every
+            checkpoint for reproducible inference.
         history (dict[str, list[float]]): Per-epoch metric history (train/val loss, lr).
     """
 
@@ -79,7 +79,8 @@ class Trainer:
             train_loader (DataLoader[Any]): Training DataLoader (yields collated batch dicts).
             val_loader (DataLoader[Any] | None): Optional validation DataLoader.
             device (DeviceSpec | None): Pre-resolved device spec; auto-resolved when `None`.
-            extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
+            extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every
+                checkpoint for reproducible inference.
             resume (bool): Restore model, optimiser, scheduler, scaler, objective/teacher, best metric,
                 history and step from `last.pt` and continue from the next epoch.
         """
@@ -99,9 +100,7 @@ class Trainer:
         groups = stages.parameter_groups(self.model, self.objective, config)
         # `optimizer.load_state_dict` replaces each group's keys with the saved ones, dropping `name`.
         self._group_names = [str(group.get('name', f'group{i}')) for i, group in enumerate(groups)]
-        self.optimizer = torch.optim.AdamW(
-            groups, lr=config.train.lr, weight_decay=config.train.weight_decay
-        )
+        self.optimizer = torch.optim.AdamW(groups, lr=config.train.lr, weight_decay=config.train.weight_decay)
         self._trainable_params = stages.trainable_parameters(self.model, self.objective)
         steps_per_epoch = max(1, len(train_loader) // max(1, config.train.grad_accum_steps))
         self.total_steps = steps_per_epoch * config.train.epochs
@@ -175,9 +174,7 @@ class Trainer:
                     self.history['val_loss'].append(val_loss)
 
                 monitor = val_loss if not _isnan(val_loss) else train_loss
-                self._epochs_since_best = (
-                    0 if self.ckpt.is_improvement(monitor) else self._epochs_since_best + 1
-                )
+                self._epochs_since_best = 0 if self.ckpt.is_improvement(monitor) else self._epochs_since_best + 1
                 self.ckpt.save(self._checkpoint_state(epoch, monitor), epoch=epoch, metric=monitor)
                 _LOG.info(
                     '[epoch %d/%d] train_loss=%.4f val_loss=%.4f lr=%.2e',
@@ -240,9 +237,7 @@ class Trainer:
             'torch': torch.__version__,
         }
         # `torch.__version__` keeps the build suffix (`+cu121`) that the distribution version drops.
-        record.update(
-            {k: v for k, v in package_versions().items() if v is not None and k != 'torch'}
-        )
+        record.update({k: v for k, v in package_versions().items() if v is not None and k != 'torch'})
         return record
 
     def _record_learning_rates(self) -> None:
@@ -282,9 +277,7 @@ class Trainer:
             'include_eye_tracking': cfg.dataset.include_eye_tracking,
         }
         final = {
-            'hparam/final_train_loss': self.history['train_loss'][-1]
-            if self.history['train_loss']
-            else float('nan'),
+            'hparam/final_train_loss': self.history['train_loss'][-1] if self.history['train_loss'] else float('nan'),
         }
         if self.history.get('val_loss'):
             final['hparam/final_val_loss'] = self.history['val_loss'][-1]
@@ -424,9 +417,7 @@ class Trainer:
                 pass
         if getattr(self.objective, 'needs_teacher', False) and hasattr(self.objective, 'post_step'):
             # Pass the global step so the objective can ramp its EMA teacher decay across training.
-            self.objective.post_step(
-                self.model, step=self._global_step, total_steps=self.total_steps
-            )
+            self.objective.post_step(self.model, step=self._global_step, total_steps=self.total_steps)
 
     def _checkpoint_state(self, epoch: int, monitor: float | None = None) -> dict[str, Any]:
         """Builds the checkpoint payload, including objective/teacher/resume state and extras.
@@ -435,9 +426,6 @@ class Trainer:
             epoch (int): The epoch being written.
             monitor (float | None, optional): This epoch's monitored value. Defaults to `None`; supplying it records
                 the best metric this checkpoint will leave behind rather than the one it inherited.
-
-        Returns:
-            dict[str, Any]: The payload for `CheckpointManager.save`.
         """
         extra = dict(self.extra_state)
         extra['objective_state'] = self.objective.state_dict()
@@ -516,9 +504,7 @@ class Trainer:
         Reads whichever checkpoint is newest *and* readable, so a write torn apart by a reclaimed VM
         costs one epoch rather than the run.
         """
-        ckpt, last = CheckpointManager.load_latest(
-            self.ckpt.ckpt_dir, map_location=self.device.device
-        )
+        ckpt, last = CheckpointManager.load_latest(self.ckpt.ckpt_dir, map_location=self.device.device)
         if ckpt is None:
             _LOG.info(
                 'resume requested but no readable checkpoint in %s; starting fresh.',

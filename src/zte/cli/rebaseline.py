@@ -46,8 +46,7 @@ def parse_arguments() -> argparse.Namespace:
         '--holdout',
         type=str,
         default=None,
-        help='Held-out subject whose readings are the queries. Default: the run config'
-        "'s loso_holdout_subject.",
+        help="Held-out subject whose readings are the queries. Default: the run config's loso_holdout_subject.",
     )
     parser.add_argument(
         '--length-tol',
@@ -72,9 +71,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
@@ -146,17 +143,13 @@ def run_rebaseline(
     _, _, _, sent_emb, sent_ids, sent_meta, _ = collect_embeddings(embedder, dataset)
     for column in ('subject', 'n_words'):
         if column not in sent_meta.columns:
-            raise ValueError(
-                f'Sentence metadata carries no {column!r} column; cannot audit length.'
-            )
+            raise ValueError(f'Sentence metadata carries no {column!r} column; cannot audit length.')
 
     subjects = sent_meta['subject'].astype(str).to_numpy()
     n_words = sent_meta['n_words'].to_numpy()
     subject = resolve_holdout(embedder.config, holdout, subjects)
     if subject is None:
-        raise ValueError(
-            'Nothing to hold out: the dataset has a single subject and none was named.'
-        )
+        raise ValueError('Nothing to hold out: the dataset has a single subject and none was named.')
 
     report = rebaseline_report(
         sent_emb,
@@ -178,9 +171,7 @@ def run_rebaseline(
     return report
 
 
-def _provenance(
-    ckpt: str | Path, config: ZTEConfig, n_boot: int, seed: int, device: str
-) -> dict[str, Any]:
+def _provenance(ckpt: str | Path, config: ZTEConfig, n_boot: int, seed: int, device: str) -> dict[str, Any]:
     """Records what a results table needs to place this audit next to the run it re-scores."""
     from zte.training.init import file_sha256
     from zte.utils.provenance import git_info

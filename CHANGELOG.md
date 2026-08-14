@@ -1,5 +1,11 @@
 # Changelog
 
+## Fix: `missing.method: iterative` silently imputed column means
+
+`IterativeImputer` is experimental in scikit-learn and raises `ImportError` unless `sklearn.experimental.enable_iterative_imputer` is imported first. That import was present in [`data/features/missing.py`](src/zte/data/features/missing.py) but **commented out**, so `_fill_sklearn` took its `except ImportError` branch, logged *"scikit-learn unavailable; falling back to column mean"* on a machine where scikit-learn was installed and working, and imputed column means instead of running the model-based imputer.
+
+No committed config selects `iterative` — every one uses `mask_only` or `linear` — so no result on the board is affected. `test_missing_methods_fill_all_nans` passed throughout because it asserts only that no NaNs remain, which the wrong fallback also satisfies; it is a test that would not have failed had the behaviour been removed.
+
 ## exp13 — text out, on a 227k-parameter leash (and the length confound that governs it)
 
 The decoder stage. `train.mode: decoder` loads a trained encoder, freezes it, freezes `Qwen/Qwen2.5-0.5B`, and trains **only** a 226,560-parameter prefix bridge between them — LayerNorm, a rank-128 map, per-slot FiLM, and a learned null prefix. There is no LoRA and no LM fine-tuning in any mode, which is the point: 700 ZuCo sentences cannot be memorised into weights that are never updated, so "the output is corpus recall" becomes a checkable claim rather than a matter of trust. `mode: encoder` is the pre-decoder pipeline unchanged, and `experiments/decoder/decode_encoder_only.yaml` exists to keep it that way.

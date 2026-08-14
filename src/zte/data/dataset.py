@@ -1,6 +1,5 @@
 """The tunable `ZuCoDataset`, whose lifecycle runs `build` -> `analyze`/`select_features` -> `split` -> `to_torch`."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import json
@@ -34,9 +33,8 @@ _LOG = get_logger('data.dataset')
 RAW_ARRAY_FILE: str = 'raw_eeg.npy'
 
 
-# The only settings the `.mat` extraction depends on: `discover_files` selects by task/subject, and
-# `_load_mat` passes the rest to `mat_loader.extract_file`. Everything else is post-processing, which is
-# why an extraction can be reused across configs that differ only in how it is processed.
+# The only settings `.mat` extraction depends on -- everything else is post-processing, which is why
+# one extraction is reusable across configs that differ solely in how they process it.
 _EXTRACT_FIELDS: Final[tuple[str, ...]] = (
     'tasks',
     'subjects',
@@ -86,18 +84,13 @@ def _extract_raw_member(bundle: Path) -> bool:
         partial.replace(target)
     except (OSError, zipfile.BadZipFile) as exc:
         partial.unlink(missing_ok=True)
-        _LOG.warning(
-            'Could not upgrade %s (%r); falling back to the in-memory path.', bundle.name, exc
-        )
+        _LOG.warning('Could not upgrade %s (%r); falling back to the in-memory path.', bundle.name, exc)
         return False
     return True
 
 
 def _word_freq_proxy(word: str) -> float:
     """Dependency-free word-frequency proxy in `(0, 1]` where short words score high.
-
-    Args:
-        word (str): Surface word form.
 
     Returns:
         float: A frequency-like value matching the synthetic generator, so models behave the same on both.
@@ -166,8 +159,7 @@ class ZuCoDataset:
             keep.append(path)
         if not keep:
             raise FileNotFoundError(
-                f'No .mat files under {root} matched tasks={self.config.tasks} '
-                f'subjects={self.config.subjects}.'
+                f'No .mat files under {root} matched tasks={self.config.tasks} subjects={self.config.subjects}.'
             )
         return keep
 
@@ -192,8 +184,7 @@ class ZuCoDataset:
             )
         if self.config.cache_format != 'npz':
             raise NotImplementedError(
-                f'cache_format={self.config.cache_format!r} is reserved; only '
-                "'npz' is currently implemented."
+                f"cache_format={self.config.cache_format!r} is reserved; only 'npz' is currently implemented."
             )
         store = BundleStore.create(self.config.cache_dir, self.config.cache_remote)
         key, extract_key = self._cache_key(), self._extract_key()
@@ -313,9 +304,7 @@ class ZuCoDataset:
             return
 
         subjects = self.words['subject'].to_numpy()
-        present = (
-            self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
-        )
+        present = self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
 
         # `train` restricts the fit to training rows; `all` lets every subject supply their own map.
         fit_mask = present.copy()
@@ -390,9 +379,7 @@ class ZuCoDataset:
             return
         target = self._aligned_path()
         target.parent.mkdir(parents=True, exist_ok=True)
-        dest = np.lib.format.open_memmap(
-            target, mode='w+', dtype=np.float32, shape=self.raw_eeg.shape
-        )
+        dest = np.lib.format.open_memmap(target, mode='w+', dtype=np.float32, shape=self.raw_eeg.shape)
         self.aligner.transform(self.raw_eeg, subjects, out=dest)
         dest.flush()
         del dest
@@ -401,11 +388,7 @@ class ZuCoDataset:
 
     def _aligned_path(self) -> Path:
         """Scratch memmap for the whitened windows, kept out of the shared bundle (which stays unaligned)."""
-        return (
-            Path(self.config.cache_dir)
-            / '_aligned'
-            / f'{self._cache_key()}_{self.config.raw_align_fit}.npy'
-        )
+        return Path(self.config.cache_dir) / '_aligned' / f'{self._cache_key()}_{self.config.raw_align_fit}.npy'
 
     def _region_index(self) -> np.ndarray | None:
         """Per-electrode scalp-region id from the montage, or `None` to fall back to contiguous blocks."""
@@ -416,9 +399,7 @@ class ZuCoDataset:
 
             return np.asarray(RegionMap.from_csv(self.config.montage_csv).channel_region, dtype=int)
         except Exception as exc:  # montage is optional; a coarse partition is a fine fallback
-            _LOG.warning(
-                'align_raw: could not read montage regions (%s); using contiguous blocks.', exc
-            )
+            _LOG.warning('align_raw: could not read montage regions (%s); using contiguous blocks.', exc)
             return None
 
     def subject_signatures(self) -> dict[str, np.ndarray]:
@@ -426,8 +407,7 @@ class ZuCoDataset:
         if self.aligner is None or not self.config.subject_signature:
             return {}
         return {
-            str(code): self.aligner.signature_for(str(code))
-            for code in np.unique(self.words['subject'].to_numpy())
+            str(code): self.aligner.signature_for(str(code)) for code in np.unique(self.words['subject'].to_numpy())
         }
 
     def refit_normalizer(self, train_indices: np.ndarray) -> None:
@@ -449,9 +429,7 @@ class ZuCoDataset:
             return
 
         subjects = self.words['subject'].to_numpy()
-        presence = (
-            self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
-        )
+        presence = self.presence if self.presence is not None else np.ones(len(self.words), dtype=bool)
         # Recover the raw (pre-normalisation) matrix from the currently-stored features.
         combined = self.normalizer.inverse_transform(self.features, subjects=subjects).copy()
 
@@ -493,13 +471,7 @@ class ZuCoDataset:
         w['corpus_freq'] = corpus_frequencies(w['word']).to_numpy()
         w['corpus_log_freq'] = np.log10(np.clip(w['corpus_freq'].astype(float), 1e-6, None))
         w['is_omitted'] = w['FFD'].isna().astype(int)
-        w['sentence_uid'] = (
-            w['subject'].astype(str)
-            + '|'
-            + w['task'].astype(str)
-            + '|'
-            + w['sentence_idx'].astype(str)
-        )
+        w['sentence_uid'] = w['subject'].astype(str) + '|' + w['task'].astype(str) + '|' + w['sentence_idx'].astype(str)
         max_idx = w.groupby('sentence_uid')['word_idx'].transform('max')
         w['rel_pos'] = (w['word_idx'] / (max_idx + 1)).astype(float)
 
@@ -523,19 +495,12 @@ class ZuCoDataset:
             'length_band',
             'stimulus_key',
         ]
-        self.words = self.words.merge(
-            self.sentences[cols], on=['subject', 'task', 'sentence_idx'], how='left'
-        )
+        self.words = self.words.merge(self.sentences[cols], on=['subject', 'task', 'sentence_idx'], how='left')
 
     def _maybe_add_eye_tracking(
         self, band_flat: np.ndarray, names: list[str], presence: np.ndarray
     ) -> tuple[np.ndarray, list[str]]:
         """Appends per-word eye-tracking scalars to the band-power matrix if enabled.
-
-        Args:
-            band_flat (np.ndarray): Imputed `(n_words, n_bp_features * n_channels)` band-power matrix.
-            names (list[str]): Feature names for `band_flat`.
-            presence (np.ndarray): Boolean `(n_words,)` present-word mask (used to fit the fill).
 
         Returns:
             tuple[np.ndarray, list[str]]: `(features, names)` -- unchanged when `include_eye_tracking` is `False` or no
@@ -701,9 +666,7 @@ class ZuCoDataset:
             return {'train': idx[~in_val], 'val': idx[in_val]}
 
         if strategy == 'by_subject_and_stimulus':
-            return self._split_subject_and_stimulus(
-                idx, val_fraction, test_fraction, holdout_subject, seed
-            )
+            return self._split_subject_and_stimulus(idx, val_fraction, test_fraction, holdout_subject, seed)
 
         # by_task
         tasks = sorted(self.words['task'].unique())
@@ -783,17 +746,10 @@ class ZuCoDataset:
             'tasks': sorted(w['task'].unique().tolist()),
             # `int(...)`: pandas counts are `np.int64`, which is NOT an `int` subclass, so it would be
             # stringified by `json.dumps(default=str)` and read back as `"18432"`.
-            'words_per_task': {
-                str(k): int(v) for k, v in w.groupby('task')['word_idx'].count().to_dict().items()
-            },
+            'words_per_task': {str(k): int(v) for k, v in w.groupby('task')['word_idx'].count().to_dict().items()},
             'omission_rate_overall': float(w['is_omitted'].mean()),
-            'omission_rate_by_subject': w.groupby('subject')['is_omitted']
-            .mean()
-            .round(4)
-            .to_dict(),
-            'missing_rate_by_measure': {
-                m: float(w[m].isna().mean()) for m in ET_MEASURES if m in w
-            },
+            'omission_rate_by_subject': w.groupby('subject')['is_omitted'].mean().round(4).to_dict(),
+            'missing_rate_by_measure': {m: float(w[m].isna().mean()) for m in ET_MEASURES if m in w},
             'include_eye_tracking': bool(self.config.include_eye_tracking),
             'n_features': int(self.features.shape[1]) if self.features is not None else 0,
         }
@@ -802,10 +758,7 @@ class ZuCoDataset:
             summary['sentences_by_category'] = (
                 {
                     str(k): int(v)
-                    for k, v in self.sentences.groupby('category')['sentence_idx']
-                    .count()
-                    .to_dict()
-                    .items()
+                    for k, v in self.sentences.groupby('category')['sentence_idx'].count().to_dict().items()
                 }
                 if 'category' in self.sentences
                 else {}
@@ -880,9 +833,7 @@ class ZuCoDataset:
 
         cfg = self.config
         payload = {field: _jsonable(getattr(cfg, field)) for field in _EXTRACT_FIELDS}
-        digest = hashlib.sha1(
-            json.dumps(payload, sort_keys=True, default=str).encode()
-        ).hexdigest()[:12]
+        digest = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:12]
         synthetic = 'synthetic' in str(cfg.root).lower()
         readable = '_'.join(['-'.join(cfg.tasks), cfg.representation, f'rw{cfg.raw_window}'])
         return f'{"synthetic_" if synthetic else ""}{readable}_{digest}'
@@ -900,10 +851,8 @@ class ZuCoDataset:
 
         cfg = self.config
         payload = dataclasses.asdict(cfg)
-        # `cache_remote` / `cache_extracts` say WHERE and WHETHER to cache, never what the arrays hold,
-        # so they must stay out of the digest -- including them would invalidate every existing bundle.
-        # `raw_align*` / `subject_signature` are applied by `align_raw` AFTER the bundle loads, not baked into it,
-        # precisely so turning alignment on does not invalidate a prepared bundle that took hours to build.
+        # Excluded because they say WHERE/WHETHER to cache, or are applied by `align_raw` after the
+        # bundle loads -- baking either in would invalidate bundles that took hours to build.
         for ignore in (
             'root',
             'cache_dir',
@@ -916,32 +865,24 @@ class ZuCoDataset:
             'subject_signature',
         ):
             payload.pop(ignore, None)
-        # `root` is excluded so the same recording hits one key from any machine (local, Colab, Drive)
-        # -- but synthetic data must never share a key with real ZuCo, or a smoke run and a real run
-        # would silently swap bundles. Only the synthetic/real distinction re-enters the key.
-        # The prefix (not the digest) carries it, so real-data keys stay byte-identical to previously
-        # built caches -- an existing Drive bundle keeps hitting instead of rebuilding for hours.
+        # `root` is excluded so one recording keys the same from any machine, but synthetic must never
+        # share a key with real ZuCo. The prefix carries that split, leaving real-data digests untouched.
         synthetic = 'synthetic' in str(cfg.root).lower()
-        digest = hashlib.sha1(
-            json.dumps(payload, sort_keys=True, default=str).encode()
-        ).hexdigest()[:12]
-        readable = '_'.join(
-            ['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}']
-        )
+        digest = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        readable = '_'.join(['-'.join(cfg.tasks), cfg.representation, cfg.normalize, f'rw{cfg.raw_window}'])
         return f'{"synthetic_" if synthetic else ""}{readable}_{digest}'
 
     def _save_extract(self, path: str | Path) -> Path:
         """Saves the raw `.mat` extraction (pre-processing) so other configs can skip the parse.
 
         Only what `_load_mat` produced is stored: the word/sentence tables and the raw arrays. The
+
         processed `features`, `presence` and fitted normaliser are deliberately absent -- they are the
+
         cheap, config-specific part that `_process` re-derives.
 
         Args:
             path (str | Path): Destination directory (created if needed).
-
-        Returns:
-            Path: The extraction directory.
         """
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
@@ -957,9 +898,7 @@ class ZuCoDataset:
             'extract_key': self._extract_key(),
             'bp_feature_names': self.bp_feature_names,
             # Informational only: the fields below are what the extraction actually depends on.
-            'extract_config': {
-                field: _jsonable(getattr(self.config, field)) for field in _EXTRACT_FIELDS
-            },
+            'extract_config': {field: _jsonable(getattr(self.config, field)) for field in _EXTRACT_FIELDS},
         }
         (out / 'meta.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
         _LOG.info('Saved .mat extraction to %s', out)
@@ -1008,9 +947,8 @@ class ZuCoDataset:
             arrays['presence'] = self.presence
         np.savez_compressed(out / 'arrays.npz', **arrays)
 
-        # Raw windows go to their own UNCOMPRESSED .npy so `load` can memory-map them. At 105 channels x
-        # 350 samples the tensor is ~24 GB -- more than a standard Colab runtime has -- and a compressed
-        # member inside an .npz must be inflated into RAM in full before anything can read one window.
+        # Raw windows get their own UNCOMPRESSED .npy so `load` can memory-map them: at ~24 GB a
+        # compressed .npz member must be inflated into RAM in full before one window can be read.
         if self.raw_eeg is not None:
             np.save(out / RAW_ARRAY_FILE, self.raw_eeg)
         self.words.to_pickle(out / 'words.pkl')
@@ -1050,9 +988,8 @@ class ZuCoDataset:
             ds.presence = arrays['presence'] if 'presence' in arrays else None
             has_legacy_raw = 'raw_eeg' in arrays
 
-        # Memory-mapped: only the windows a batch actually touches become resident, so a ~24 GB tensor
-        # costs page cache rather than RAM. Attempted BEFORE reading the npz member, since reading it is
-        # exactly the multi-GB allocation being avoided.
+        # Memory-mapped so only the windows a batch touches become resident. Attempted BEFORE reading
+        # the npz member, since that read is exactly the multi-GB allocation being avoided.
         raw_file = src / RAW_ARRAY_FILE
         if not raw_file.is_file() and has_legacy_raw:
             _extract_raw_member(src)
@@ -1065,9 +1002,7 @@ class ZuCoDataset:
             probe = ds.raw_eeg[:: max(1, len(ds.raw_eeg) // 256)]
             if not np.isfinite(probe).all():
                 _LOG.warning('Bundle %s holds unsanitised windows; repairing in memory.', src.name)
-                ds.raw_eeg = sanitize_raw_windows(
-                    np.array(ds.raw_eeg)
-                )  # writable copy; repairs in place
+                ds.raw_eeg = sanitize_raw_windows(np.array(ds.raw_eeg))  # writable copy; repairs in place
         elif has_legacy_raw:
             with np.load(src / 'arrays.npz') as arrays:
                 ds.raw_eeg = sanitize_raw_windows(arrays['raw_eeg'])
@@ -1075,7 +1010,7 @@ class ZuCoDataset:
         ds.bp_feature_names = meta['bp_feature_names']
         if meta.get('normalizer'):
             ds.normalizer = FeatureNormalizer.from_state(meta['normalizer'])
-        ds._groups = None  # pylint: disable=protected-access
+        ds._groups = None
         ds._backfill_derived_columns()
         return ds
 
@@ -1089,9 +1024,8 @@ class ZuCoDataset:
         if self.words is None or not len(self.words):
             return
 
-        # Re-read `self.words` at each step, never a captured local frame: under pandas Copy-on-Write the
-        # in-place column add can detach a stale reference, so a captured frame would drop the freshly
-        # added `sentence_uid` when the category block rebuilds from it.
+        # Re-read `self.words` at each step, never a captured frame: under pandas Copy-on-Write an
+        # in-place column add can detach a stale reference, dropping the fresh `sentence_uid`.
         if 'sentence_uid' not in self.words.columns:
             _LOG.info('Cached bundle predates `sentence_uid`; backfilling linguistic features.')
             self._add_linguistic_features()
@@ -1152,15 +1086,8 @@ class ZuCoDataset:
         )
 
 
-def _partition(
-    items: np.ndarray, val_fraction: float, test_fraction: float
-) -> dict[str, np.ndarray]:
+def _partition(items: np.ndarray, val_fraction: float, test_fraction: float) -> dict[str, np.ndarray]:
     """Splits a (pre-shuffled) index array into train/val (and optional test).
-
-    Args:
-        items (np.ndarray): A permuted 1-D array of indices (rows or sentence positions).
-        val_fraction (float): Fraction assigned to `val`.
-        test_fraction (float): Fraction assigned to `test` (`0` omits the `test` key).
 
     Returns:
         dict[str, np.ndarray]: Disjoint `train`, `val` and (when `test_fraction > 0`) `test` index arrays.

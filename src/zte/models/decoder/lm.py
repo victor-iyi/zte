@@ -95,9 +95,7 @@ class FrozenLM(nn.Module):
         self.bos_id = int(_first_id(config.bos_token_id, 1))
         self.eos_id = int(_first_id(config.eos_token_id, 2))
         self.pad_id = int(_first_id(config.pad_token_id, self.eos_id))
-        self.tokenizer_fingerprint = fingerprint_tokenizer(
-            self.tokenizer, self.tokenizer_name, revision
-        )
+        self.tokenizer_fingerprint = fingerprint_tokenizer(self.tokenizer, self.tokenizer_name, revision)
         self.register_buffer(
             'scaffold',
             torch.as_tensor(self._encode(prompt_template), dtype=torch.long),
@@ -142,9 +140,7 @@ class FrozenLM(nn.Module):
         """
         return {}
 
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ) -> Any:
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False) -> Any:
         """Ignores `state_dict`, since the weights come from the pinned `source`/`revision` and never from a run.
 
         Args:
@@ -222,11 +218,7 @@ class FrozenLM(nn.Module):
         mask = torch.ones(batch_size, start, dtype=torch.long, device=device)
         if target_ids is not None:
             parts.append(self.embed_tokens(target_ids))
-            real = (
-                torch.ones_like(target_ids, dtype=torch.long)
-                if target_mask is None
-                else target_mask.to(torch.long)
-            )
+            real = torch.ones_like(target_ids, dtype=torch.long) if target_mask is None else target_mask.to(torch.long)
             mask = torch.cat([mask, real], dim=1)
         return torch.cat(parts, dim=1), mask, start
 
@@ -292,8 +284,8 @@ class FrozenLM(nn.Module):
     ) -> torch.Tensor:
         """Scores several candidate sentences against each prefix.
 
-        Differentiable, so the in-batch grounding loss can force a prefix to prefer its own reference; `sequence_logprob`
-        is the no-grad wrapper used at evaluation time.
+        Differentiable, so the in-batch grounding loss can force a prefix to prefer its own reference;
+        `sequence_logprob` is the no-grad wrapper used at evaluation time.
 
         Args:
             prefix (torch.Tensor): Soft prompts `(batch_size, slots, hidden_dim)`.
@@ -351,9 +343,7 @@ class FrozenLM(nn.Module):
         return self.candidate_logprobs(prefix, cand_ids, cand_mask, length_normalise, chunk)
 
     @torch.no_grad()
-    def next_token_logits(
-        self, prefix: torch.Tensor, scaffold_ids: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def next_token_logits(self, prefix: torch.Tensor, scaffold_ids: torch.Tensor | None = None) -> torch.Tensor:
         """Returns the logits for the first generated token.
 
         Args:
@@ -463,9 +453,6 @@ def _build_causal_lm(source: str, revision: str | None, cache_dir: str | None) -
         source (str): HuggingFace model id, or `'tiny'`.
         revision (str | None): Pinned commit SHA.
         cache_dir (str | None): Local snapshot directory.
-
-    Returns:
-        nn.Module: The loaded model.
 
     Raises:
         RuntimeError: If `transformers` is missing or the weights cannot be resolved.

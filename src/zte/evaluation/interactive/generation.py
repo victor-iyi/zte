@@ -93,9 +93,7 @@ def _build_payload(block: dict[str, Any], run_name: str) -> dict[str, Any]:
         'metrics': [metric, *[m for m in _METRICS if m != metric]],
         'condition_order': order,
         'absolute': scores,
-        'deltas': {
-            name: delta.get(metric, {}) for name, delta in (block.get('deltas') or {}).items()
-        },
+        'deltas': {name: delta.get(metric, {}) for name, delta in (block.get('deltas') or {}).items()},
         'verdict': {
             'beats_all_controls': bool(block.get('beats_all_controls')) and not absent,
             'controls_absent': sorted(absent),
@@ -128,13 +126,7 @@ def _clean(obj: Any) -> Any:
 
 def _esc(text: str) -> str:
     """Minimal HTML escaping for text substituted into the template."""
-    return (
-        str(text)
-        .replace('&', '&amp;')
-        .replace('<', '&lt;')
-        .replace('>', '&gt;')
-        .replace('"', '&quot;')
-    )
+    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
 _TEMPLATE: str = load_page('generation')

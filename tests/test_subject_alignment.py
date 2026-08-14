@@ -72,9 +72,7 @@ def test_calibrating_a_new_brain_recovers_its_own_map() -> None:
     calibrated = _identity_gap(aligner.transform(stranger.copy(), codes))
 
     # A 100-trial baseline buys the stranger the same alignment a fitted subject gets.
-    fitted = _identity_gap(
-        RawSubjectAligner().fit(raw, subjects).transform(raw.copy(), subjects)[subjects == 'C']
-    )
+    fitted = _identity_gap(RawSubjectAligner().fit(raw, subjects).transform(raw.copy(), subjects)[subjects == 'C'])
     assert calibrated < uncalibrated / 2, (calibrated, uncalibrated)
     assert abs(calibrated - fitted) < 0.01, (calibrated, fitted)
 
@@ -103,9 +101,7 @@ def test_signature_survives_a_checkpoint_round_trip() -> None:
     restored = RawSubjectAligner.from_state(aligner.state)
 
     assert np.allclose(aligner.signature_for('B'), restored.signature_for('B'))
-    assert np.allclose(
-        aligner.transform(raw.copy(), subjects), restored.transform(raw.copy(), subjects)
-    )
+    assert np.allclose(aligner.transform(raw.copy(), subjects), restored.transform(raw.copy(), subjects))
 
 
 def test_adapter_starts_as_a_no_op_but_can_learn() -> None:
@@ -207,9 +203,7 @@ def test_objective_reports_the_orthogonality_term() -> None:
         n_subjects=4,
     )
     model = build_model(config, raw_shape=(N_CH, N_T), n_channels=N_CH, signature_dim=16)
-    objective = build_objective(
-        ObjectiveConfig(name='clip', identity_orthogonality_weight=1.0), model
-    )
+    objective = build_objective(ObjectiveConfig(name='clip', identity_orthogonality_weight=1.0), model)
     objective.attach_text(torch.nn.functional.normalize(torch.randn(4, 16), dim=-1))
 
     batch = {

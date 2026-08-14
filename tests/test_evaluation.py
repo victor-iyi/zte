@@ -24,9 +24,7 @@ def _clustered(n_groups: int, per_group: int, dim: int, scale: float = 0.05) -> 
     rng = np.random.default_rng(0)
     centres = rng.normal(size=(n_groups, dim)).astype(np.float32)
     groups = np.repeat(np.arange(n_groups), per_group)
-    emb = centres[groups] + rng.normal(scale=scale, size=(n_groups * per_group, dim)).astype(
-        np.float32
-    )
+    emb = centres[groups] + rng.normal(scale=scale, size=(n_groups * per_group, dim)).astype(np.float32)
     return emb, groups
 
 
@@ -163,9 +161,7 @@ def test_representation_comparison_rows() -> None:
     assert all('linear_score' in r and 'knn_score' in r for r in rows)
 
 
-def test_evaluate_representation_writes_artifacts(
-    small_dataset: ZuCoDataset, tmp_path: Path
-) -> None:
+def test_evaluate_representation_writes_artifacts(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
     """End-to-end: train, embed, evaluate -> metrics + report + figures on disk."""
     cfg = ZTEConfig()
     cfg.objective.name = 'skipgram'
@@ -182,9 +178,7 @@ def test_evaluate_representation_writes_artifacts(
     from zte.cli.evaluate import collect_embeddings
 
     embedder = ZTEEmbedder.from_checkpoint(tmp_path / 'ckpt' / 'best.pt', small_dataset)
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
-        embedder, small_dataset
-    )
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, small_dataset)
     assert len(word_emb) == len(word_meta) == len(raw_feats)
 
     out = tmp_path / 'eval'
@@ -234,9 +228,7 @@ def _whitened_config(run_dir: Path) -> ZTEConfig:
     return cfg
 
 
-def test_a_real_evaluation_fits_its_geometry_on_the_training_split(
-    small_dataset: ZuCoDataset, tmp_path: Path
-) -> None:
+def test_a_real_evaluation_fits_its_geometry_on_the_training_split(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
     """The shipped evaluation reports `train split`, so the headline retrieval number is reproducible one row at a time.
 
     Whitening fitted on the scored rows is transductive: it reads every held-out sentence to decide how to
@@ -353,9 +345,7 @@ def test_the_sentence_phase_control_lines_up_with_the_real_rows(
     assert not np.allclose(scrambled, real)
 
 
-def test_the_sentence_phase_control_is_absent_without_a_waveform(
-    small_dataset: ZuCoDataset, tmp_path: Path
-) -> None:
+def test_the_sentence_phase_control_is_absent_without_a_waveform(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
     """Band power is near phase-invariant, so no control is claimed rather than a flattering one reported."""
     from zte.cli.evaluate import phase_shuffled_sent_emb
     from zte.device import resolve_device
@@ -368,18 +358,14 @@ def test_the_sentence_phase_control_is_absent_without_a_waveform(
     assert phase_shuffled_sent_emb(embedder, small_dataset) is None
 
 
-def test_the_training_split_embedding_holds_the_training_readings(
-    small_dataset: ZuCoDataset, tmp_path: Path
-) -> None:
+def test_the_training_split_embedding_holds_the_training_readings(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
     """The rows post-processing is fitted on are the training readings, not the ones about to be scored."""
     from zte.cli.decode import split_indices
     from zte.cli.evaluate import train_split_sent_emb
 
     config = _whitened_config(tmp_path / 'run')
     run_training(config, small_dataset)
-    embedder = ZTEEmbedder.from_checkpoint(
-        tmp_path / 'run' / 'checkpoints' / 'best.pt', small_dataset
-    )
+    embedder = ZTEEmbedder.from_checkpoint(tmp_path / 'run' / 'checkpoints' / 'best.pt', small_dataset)
     train_idx = split_indices(small_dataset, config, 'train')
     assert train_idx is not None
 

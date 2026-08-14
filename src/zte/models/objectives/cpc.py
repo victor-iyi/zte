@@ -30,16 +30,10 @@ class CPCObjective(_ObjectiveBase):
             model (ZTEModel): The encoder, used to size the heads.
         """
         super().__init__(config, model)
-        self.target_head = ProjectionHead(
-            model.hidden_dim, model.config.projection_hidden, model.embed_dim
-        )
-        self.predictors = nn.ModuleList(
-            nn.Linear(model.embed_dim, model.embed_dim) for _ in range(config.cpc_steps)
-        )
+        self.target_head = ProjectionHead(model.hidden_dim, model.config.projection_hidden, model.embed_dim)
+        self.predictors = nn.ModuleList(nn.Linear(model.embed_dim, model.embed_dim) for _ in range(config.cpc_steps))
 
-    def compute(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the multi-step CPC InfoNCE loss for a batch.
 
         Args:

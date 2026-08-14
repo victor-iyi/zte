@@ -6,7 +6,6 @@ ship no electrode coordinates, so the default map only approximates the montage;
 one and every downstream analysis is exact for whatever mapping it is given.
 """
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -235,7 +234,8 @@ def region_importance(
 
     Args:
         band_power (np.ndarray): Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words.
-        targets (dict[str, tuple[np.ndarray, Literal['classification', 'regression']]]): Mapping `name -> (values (n_words,), task)`.
+        targets (dict[str, tuple[np.ndarray, Literal['classification', 'regression']]]): Mapping `name -> (values
+            (n_words,), task)`.
         region_map (RegionMap | None): Channel grouping (defaults to `default_region_map`).
         presence (np.ndarray | None): Optional boolean `(n_words,)` restricting scoring to present words.
         method (Literal['mutual_info', 'f_score']): Per-feature scorer -- mutual information or ANOVA F-score.
@@ -267,10 +267,7 @@ def region_importance(
             x, y = flat[presence], y[presence]
         scores = _feature_scores(x, y, task, method)
         per_region = np.array(
-            [
-                float(scores[region_of_col == ri].mean()) if (region_of_col == ri).any() else 0.0
-                for ri in range(r)
-            ]
+            [float(scores[region_of_col == ri].mean()) if (region_of_col == ri).any() else 0.0 for ri in range(r)]
         )
         total = float(per_region.sum()) or 1.0
         for ri, name in enumerate(region_map.names):
