@@ -184,8 +184,9 @@ the bridge, never to the LM.
 `train.freeze_encoder` means the encoder never trains, so `joint` requires `freeze_encoder: false` and raises if it is
 `true`; there, `train.stage_a_epochs` alone decides when the encoder joins in.
 
-`encoder` is the pre-decoder pipeline unchanged: `run_training` branches away before the objective is built and
-`stages.parameter_groups` returns the single AdamW group it always returned. In the other two modes the source
+`encoder` is the pre-decoder pipeline unchanged: `stages.parameter_groups` returns the single AdamW group it always
+returned, and the decoder wiring keys off the objective rather than the mode, so an `objective.name` other than
+`decode` never builds a bridge or loads an LM. In the other two modes the source
 checkpoint's fitted **normaliser and aligner are restored, not refitted** — refitting does not fail a frozen encoder,
 it silently feeds it a scale it never trained on. Parameter groups are structural rather than conditional on
 `requires_grad`, so a resume whose freeze state differs cannot break the optimiser state, and `LambdaLR` decays each

@@ -1,5 +1,78 @@
 # Changelog
 
+## The 2026-08-13 board: two demotions, one no-op, and a metric that can actually rank arms
+
+Re-scoring the flagship set against Drive (held out on `ZAB`, 700 queries) settled three things and unsettled one.
+
+**Rank percentile is the only metric here that survives a seed change.** Two seeds of `zte_raw_aligned` give 0.9672
+and 0.9670; their Top-1 moves 9 hits to 8. Every arm comparison this project has made on Top-1 was made on noise, and
+the tier tables now quote rank percentile with its bootstrap CI.
+
+**`flagship/` drops to three, and they are tied.** `zte_raw_aligned` 0.9672 (0.9635–0.9708), `clip_e5_meaning_raw`
+0.9667 (0.9629–0.9705), `clip_e5_raw` 0.9635 (0.9599–0.9673) — overlapping intervals, no champion. `clip_e5_raw`
+keeps its place on the strength of being the only arm whose length-stratified Top-1 clears *p* < 0.05.
+`zte_raw_aligned_wide` (0.9523, interval disjoint from all three, stratified Top-1 *below* chance) and
+`clip_e5_meaning_raw_v2` (never scored on this board; its one honest number is 2 hits in 700 where chance expects 1)
+move to `archive/`, with the numbers that retired them recorded there.
+
+**The exp12 alignment stack does not do anything measurable.** `ablation/exp12_align_off` matches the full stack to
+four decimal places on rank percentile, effective rank and the subject probe. `zte_raw_aligned` stays in `flagship/`
+because it is tied for best measured, not because its levers earn their place.
+
+**Capacity retained is not capacity used.** The two retired arms hold the healthiest geometries on record
+(effective-rank 0.45 and 0.53 against the retained set's 0.24–0.25) and the worst retrieval. The existing warning
+that a *low* effective rank can mean invariance bought by destroying capacity now has its converse measured.
+
+**The decoder gets a matched second arm rather than a swap.** `experiments/decoder/decode_frozen_aligned.yaml` is
+`decode_frozen_e5raw.yaml` with one knob moved — `exp12_zte_raw_aligned` underneath instead of `exp8_clip_e5_raw` —
+so a tie the encoder board cannot break is broken on decoder rescoring instead of by assertion. Three dataset/model
+levers travel with that encoder (`raw_align: euclidean`, `subject_signature`, `model.subject_adapter`), and they are
+named in the config header because a frozen encoder handed features built under the other recipe silently sees a
+scale it never trained on. The notebook now resolves both source checkpoints and pairs each arm with its own.
+
+## Fix: the frozen decoder LM inherited its precision from the checkpoint
+
+`AutoModelForCausalLM.from_pretrained` defaults to `dtype='auto'`, which loads a checkpoint at whatever precision it was exported in. `Qwen/Qwen2.5-0.5B` ships bf16, so on `transformers` 5 the frozen LM came up in bf16 while the bridge emitted float32 prefixes, and the first decoder forward pass died with `mat1 and mat2 must have the same dtype, but got Float and BFloat16`. Under an older `transformers`, whose default was float32, the same code ran — so this was a library upgrade silently changing the numerics of a frozen component, and the crash was the lucky outcome.
+
+**`decoder.lm_dtype` now follows the encoder.** It defaults to `auto`, which reads the precision off the encoder the bridge is fed by, so the two halves of the pipeline cannot end up at different precisions by configuration or by library default; `float32`, `float16` and `bfloat16` pin it instead, and a pinned value that disagrees with the encoder is honoured with a warning naming both. The *resolved* value travels in `FrozenLM.provenance()` alongside `lm_revision` and the tokenizer fingerprint, because a token log-probability produced at one precision is not comparable with one produced at another. `FrozenLM.assemble` casts the soft prompt to the frozen embedding's dtype — the one point at which the float32 bridge and the LM have to meet — and log-probabilities are still read back in float32, so a half-precision LM halves its memory without putting a half-precision dynamic range into the optimiser. The `meaning` dependency group requires `transformers>=4.56.0`, where `from_pretrained(dtype=...)` replaced the since-removed `torch_dtype`.
+
+Every encoder on Drive is float32, so `auto` resolves to float32 and the decoder now matches it by construction rather than by coincidence.
+
+`lm_dtype` pins the weights, not the arithmetic. `Trainer` autocasts, so a CUDA training step still runs the frozen LM's matmuls in bf16 under `train.precision: auto`, while evaluation does not autocast and runs at `lm_dtype`. `manifest.json` already records `precision` and `autocast_dtype`; [`docs/DECODER.md`](docs/DECODER.md) now states the consequence, which is that a run's teacher-forced training loss is not bit-identical to the one `zte-decode` reports for the same checkpoint.
+
+**Nothing already on Drive is affected**, verified rather than argued. `experiments/decoder/decode_encoder_only.yaml` run synthetically before and after this changeset gives a byte-identical `metrics.json` and byte-identical weights across all 99 tensors of both `best.pt` and `last.pt`; the extraction and prepared-bundle cache keys of all six flagship and decoder configs are unchanged, because that key is derived from `DatasetConfig` alone and every change here is in `DecoderConfig` or below. The token-cache schema bump reaches only decoder runs — `build_target_tokens` is called solely from `_wire_decoder` and `ZTEDecoder`, both guarded on the decode objective. `WordResampler`'s new parameter and `ZTEDecoder.from_checkpoint`'s new refusal apply only to decoder checkpoints, of which Drive holds none.
+
+## Fix: the decoder was never taught to stop
+
+`_encode` appended no end-of-sequence token on the HuggingFace path, and Qwen2's tokeniser adds none of its own — so on `Qwen/Qwen2.5-0.5B`, the LM in every real decoder config, the last supervised token of `"He was a good man."` was `.`. Every EOS-valued cell in the matrix was padding, padding is masked out of the cross-entropy, and the bridge therefore received **exactly zero gradient toward emitting EOS**. Free-running decode ran the full `max_new_tokens: 96` on every row against a 19.6-word reference: WER exceeds 1 by construction, BLEU's brevity penalty never fires, and every precision-based metric collapses — while the decode itself costs about four times the tokens it should.
+
+The offline suite could not see it. `TinyByteTokenizer.encode` *does* append EOS, and every decoder test runs `lm_source: tiny`, so the whole suite exercised a stop token production did not have — the §15 trap exactly. `_encode` now pads both tokenisers through one loop that terminates every row that fits, and a stub-tokeniser test covers the HuggingFace branch offline. **The token cache key gains a schema version**, because it is keyed by corpus and tokeniser and neither moves when the encoding rule does; without the bump the EOS-less `tokens_*.npz` already published to Drive would be reused under the new semantics.
+
+## Fix: the `pooled_plus_words` ablation could not train at all
+
+`compute` builds a `prefix_slots + word_slots` prefix and handed it to `dropout_null`, whose null spans `prefix_slots`. `experiments/decoder/decode_words_ablation.yaml` pairs `conditioning: pooled_plus_words` with `null_prefix_prob: 0.1` at batch 16, so the arm died inside the first step or two with a broadcast error. No test reached it: the suite constructed that bridge but never ran a step through it.
+
+The shape was only half of it. Replacing the pooled slots alone would have left the word slots — and with them the brain, and the word count that carries 5.14 bits — inside the branch that is supposed to be independent of both, quietly falsifying the "$p = 1.0$ makes the loss independent of $z$" property the `null_prefix` control rests on. `WordResampler` now carries its own learned null (769,664 parameters, up from 762,496), `dropout_null` raises on a null narrower than its prefix rather than broadcasting, and the independence test is parametrised over both conditioning arms.
+
+## Fix: three ways a refused generation verdict could still read as a win
+
+None of these could move `verdict['generation_above_controls']` itself — mutation testing confirmed the gate's five-clause AND is closed. They are the places a reader meets the number *before* the gate.
+
+- **The interactive generation page** — which `docs/DECODER.md` calls the most persuasive artifact a run produces — led with "Beats every brain-independent control" off `beats_all_controls` alone. It checked three clauses of five, and could not check the prefix-influence floor at all because `min_prefix_kl` was never in its payload. A block with permutation *p* = 0.42 and KL = 0.0001 rendered with the warning band off. The page now calls `generation_verdict` directly, leads with the full AND, and names a failing permutation or KL clause in the warning band.
+- **`zte-decode`'s console summary** printed the raw `beats_all_controls`, which counts only controls that produced a delta — so a skipped control read as a win. It now reports the same composition the gate uses, warns when a control could not run, and says so at the point the control is dropped rather than staying silent.
+- **The rescoring line quoted an unstratified Top-1** with no mention of stratification, against §5's standing rule. It now labels that number `UNSTRATIFIED`, prints the length-stratified cell beside it, and warns when no stratified cell was computed.
+
+Alongside those: `generation_permutation_test` hard-coded the upper tail, so a lower-is-better `primary_metric` scored *p* = 1.0 on a perfect decode while `paired_delta` called the same evidence a win — the direction now follows the metric. `paired_delta` drops non-finite rows and could reach `beats: True` on a single surviving sentence, since a one-element bootstrap returns the point estimate as its own bound; it now needs the same `n >= 4` floor its block does. `ZTEDecoder.from_checkpoint` refuses a checkpoint whose `gap_correction` is not `none` but carries no fitted statistics, instead of silently installing a pass-through corrector while provenance claimed a correction had been applied. And `zte-decode`'s provenance now records `gap_fitted`, `gap_n_fit`, `postprocess_fit` and which train-fitted transforms were restored.
+
+## Fix: decoder scoring, device and doc corrections
+
+- **Rescoring materialised ~7 GiB of transient per chunk.** `target_token_logprobs` built a float32 `log_softmax` over the full 151,936-token vocabulary for 64 rows × 96 target positions; a fused `cross_entropy` computes the identical quantity (max abs difference 5e-7) without either large temporary. `next_token_logits` also projected all twelve prompt positions to keep one, four times per training step — it now asks for one.
+- **`GapCorrector` whitening could not run on MPS**, which has neither float64 nor `_linalg_eigh`. The eigendecomposition moves to CPU and back; it is a once-per-run fit, so the round trip is free. Latent until now because every shipped config uses `mean_scale`.
+- **The per-step `prefix_kl` was not the quantity it shares a name with.** It compared each row against its batch *neighbour*, and hard-negative batching seeds a batch from one sentence and fills it with that sentence's own readings — where a healthy bridge should score near zero. It now partners each row with a row of a different stimulus, which is what verdict clause 5 measures.
+- **Stage 0's leak guard passed vacuously** on a split that shares stimuli between cells (`by_subject_loso`, `by_task`): the holdout set is empty, nothing intersects it, and the bridge memorises all 700 references. It now says so, loudly, naming it as the outcome most likely to be mistaken for success.
+- `assemble` moves the scaffold buffer to the prefix's device rather than assuming co-location; `_build_causal_lm` catches the `TypeError` an older `transformers` raises on the `dtype` keyword; and the `ImportError` message named a `decoder` dependency group that does not exist (`transformers` lives in `meaning`).
+- **Three doc claims contradicted the code.** `docs/DECODER.md` stated verdict clause 5 as the KL against $P_\text{null}$ — the version whose own docstring says a collapsed bridge can clear it while ignoring the brain entirely; the code has always used another reading's prefix. `docs/DECODER.md` and `docs/TRAINING.md` both said `run_training` "branches away before the objective is built" for `mode: encoder`; it does not, and the decoder wiring keys off the objective rather than the mode.
+
 ## Fix: `missing.method: iterative` silently imputed column means
 
 `IterativeImputer` is experimental in scikit-learn and raises `ImportError` unless `sklearn.experimental.enable_iterative_imputer` is imported first. That import was present in [`data/features/missing.py`](src/zte/data/features/missing.py) but **commented out**, so `_fill_sklearn` took its `except ImportError` branch, logged *"scikit-learn unavailable; falling back to column mean"* on a machine where scikit-learn was installed and working, and imputed column means instead of running the model-based imputer.

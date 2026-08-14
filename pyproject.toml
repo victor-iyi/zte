@@ -43,7 +43,9 @@ spatial = [
 # Opt-in — `transformers` is heavy and the static GloVe/fastText path needs nothing extra;
 # enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
 meaning = [
-  'transformers>=4.44.0',
+  # >=4.56 for `from_pretrained(dtype=...)`: earlier releases only accept the since-removed `torch_dtype`,
+  # and the frozen decoder LM must be loaded at a pinned precision rather than the checkpoint's.
+  'transformers>=4.56.0',
   'sentence-transformers>=5.6.1',
 ]
 dev = [

@@ -1711,7 +1711,7 @@ drive = [{ name = "gdown", specifier = ">=6.1.0" }]
 logging = [{ name = "tensorboard", specifier = ">=2.21.0" }]
 meaning = [
     { name = "sentence-transformers", specifier = ">=5.6.1" },
-    { name = "transformers", specifier = ">=4.44.0" },
+    { name = "transformers", specifier = ">=4.56.0" },
 ]
 spatial = [{ name = "mne", specifier = ">=1.12.1" }]
 viz = [

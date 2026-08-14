@@ -87,7 +87,7 @@ FiLM is initialised from a truncated normal, not zeroed: zero-initialising both 
 
 Against roughly 120k supervised target tokens this is already generous. Anything larger memorises the corpus, and the size is the argument: with 700 sentences and no LM weights to move, there is no mechanism by which the corpus can be stored in the weights that produce text.
 
-`conditioning: pooled_plus_words` (the registered ablation, `experiments/decoder/decode_words_ablation.yaml`) adds `WordResampler`: 8 learned latents at 256 cross-attending `h_ctx` under `valid`, 2 blocks, then `Linear(256, 896)` — 762,496 parameters — concatenated to give a 16-slot prefix. It is an ablation for two measured reasons. Cross-subject word-level content is absent on ZuCo (`word_len` R² −0.0649, `log_freq` −0.0584, negative in 13/13 runs). And a length-L memory hands the decoder the word count directly, which is 5.14 bits of the answer.
+`conditioning: pooled_plus_words` (the registered ablation, `experiments/decoder/decode_words_ablation.yaml`) adds `WordResampler`: 8 learned latents at 256 cross-attending `h_ctx` under `valid`, 2 blocks, then `Linear(256, 896)` and its own 8×896 learned null — 769,664 parameters — concatenated to give a 16-slot prefix. It is an ablation for two measured reasons. Cross-subject word-level content is absent on ZuCo (`word_len` R² −0.0649, `log_freq` −0.0584, negative in 13/13 runs). And a length-L memory hands the decoder the word count directly, which is 5.14 bits of the answer.
 
 ### 4. The language model — frozen in all three modes, always
 
@@ -107,6 +107,12 @@ attention_mask = ones, zeroed at target padding
 
 `lm_source: 'tiny'` builds a 2-layer, 32-wide `LlamaForCausalLM` (22,688 parameters) locally with a 64-token byte tokeniser and no network at all. Every decoder test and the MPS smoke config use it, so the suite needs no downloads.
 
+**The precision follows the encoder.** `decoder.lm_dtype` defaults to `auto`, which reads the dtype off the encoder the bridge is fed by, so the two halves of the pipeline are never at different precisions — an encoder at float32 gives a frozen LM at float32. Naming `float32`, `float16` or `bfloat16` pins it instead; that is a legitimate trade, since the LM is three orders of magnitude larger than the bridge, but it puts the halves out of step and is logged as a warning naming both.
+
+What it is never taken from is the HuggingFace checkpoint. `transformers` defaults to loading at whatever dtype the weights were exported in — bf16 for Qwen2.5 — which would make every token log-probability a property of the uploader's export choice and of the installed library version, and would change the numbers silently under an upgrade. The bridge trains in float32 regardless; the soft prompt is cast to the frozen embedding's dtype at the one point the two meet, and log-probabilities are read back in float32, so a half-precision LM halves its memory without putting a half-precision dynamic range into the optimiser. Scores produced under different `lm_dtype` values are not comparable with each other, and the *resolved* value travels in `provenance()`.
+
+`lm_dtype` pins the **weights**, not the arithmetic. `Trainer` wraps `objective.compute` in `torch.autocast`, and `train.precision: auto` selects bf16 on capable CUDA, so a training step runs the frozen LM's matmuls in bf16 whatever `lm_dtype` says; `manifest.json` records both `precision` and `autocast_dtype`. Evaluation does not autocast — `ZTEDecoder`, and therefore every reported generation and rescoring number, runs at `lm_dtype`. The consequence to know is narrow: the teacher-forced loss a run minimises is not bit-identical to the one `zte-decode` reports for the same checkpoint. Set `train.precision: fp32` if a run needs the two to be the same number.
+
 ## The three training modes
 
 `train.mode` selects the stage. The LM is frozen in all three; `joint` refers to the encoder and the bridge.
@@ -119,7 +125,7 @@ attention_mask = ones, zeroed at target padding
 
 `train.freeze_encoder` is the hard freeze — with it the encoder receives no gradient in any epoch — so `joint` mode requires `freeze_encoder: false` and raises if it is `true`. There is no combination in which one of the two settings silently overrides the other: in `joint` mode `stage_a_epochs` alone decides when the encoder starts training, and `stage_a_epochs: 0` unfreezes it at epoch 1.
 
-`mode: encoder` is the pre-decoder pipeline unchanged — `run_training` branches away before the objective is built, and `stages.parameter_groups` returns the single `AdamW(model.params + objective.params)` group it always returned.
+`mode: encoder` is the pre-decoder pipeline unchanged — `stages.parameter_groups` returns the single `AdamW(model.params + objective.params)` group it always returned. The decoder wiring keys off the *objective*, not the mode: `run_training` builds the objective either way and attaches the LM, the targets, the gap fit and Stage 0 only when that objective is `PrefixDecodeObjective`. Every `mode: encoder` config therefore ships `objective.name: clip`, and pairing `mode: encoder` with `objective.name: decode` would load the frozen LM and run Stage 0 as usual.
 `experiments/decoder/decode_encoder_only.yaml` exists to keep it that way: its history must reproduce `exp8_clip_e5_raw`'s under the same seed.
 
 In `decoder` and `joint` mode the source checkpoint's **normaliser and aligner states are restored, not refitted**.
@@ -143,7 +149,7 @@ $$
 
 **$\mathcal{L}_\text{CE}$** is teacher-forced cross-entropy over the target span. Teacher forcing is legitimate for *training*; the trap it is famous for is an evaluation trap, and the only teacher-forced number computed at evaluation time is quarantined as a diagnostic that the verdict provably cannot read.
 
-**Null-prefix dropout.** With probability `null_prefix_prob` (0.1) the whole prefix is replaced by the learned $P_\text{null}$, which trains the unconditional branch that the `null_prefix` control decodes and that the prefix-influence KL compares against. At $p = 1.0$ the loss is exactly independent of $z$ — `tests/test_decode_modes.py::test_null_prefix_dropout_makes_the_loss_independent_of_the_brain` holds it to 1e-9, which is what makes the control meaningful rather than approximate.
+**Null-prefix dropout.** With probability `null_prefix_prob` (0.1) the whole prefix is replaced by the learned $P_\text{null}$, which trains the unconditional branch the `null_prefix` control decodes. At $p = 1.0$ the loss is exactly independent of $z$ — `tests/test_decode_modes.py::test_null_prefix_dropout_covers_every_slot_the_prefix_occupies` holds it to 1e-9 on both conditioning arms, which is what makes the control meaningful rather than approximate. *Whole* prefix is the operative word: under `pooled_plus_words` the resampler carries its own learned null for its slots, because a null spanning only the pooled half would leave the brain — and the word count — inside the branch that is supposed to be independent of both.
 
 **$\mathcal{L}_\text{ground}$** is the term that punishes a bridge for ignoring the brain. For each item, its own reference plus $M = 3$ in-batch references from *other* sentences are scored under **its own prefix** by length-normalised log-likelihood, and the softmax cross-entropy over the $M+1$ candidates at temperature 0.1 is added:
 
@@ -157,7 +163,7 @@ Cross-entropy alone is content with a constant prefix, since the corpus prior ex
 
 **$\mathcal{L}_\text{CLIP}$** (stage B) keeps the unfrozen encoder anchored in the text space the bridge was fitted against; without it the decoding gradient can drag the encoder away and orphan the bridge. It is computed inline from the same $z$ the bridge reads, reusing `clip.py`'s direction term, so the encoder is not forward-passed twice per step.
 `regularize(...)` (VICReg, ramped subject adversary, stimulus adversary) is inherited unchanged and, like the CLIP anchor, is switched on by the encoder's own `requires_grad` — so both are absent from every stage-A epoch and from a `decoder` run entirely.
-Every metric the objective emits is a plain float, including `prefix_kl`, which is logged on **every** step — training and validation. Bridge collapse to a constant prefix is the most likely training failure here, and it has to be visible per epoch, not discovered at the end.
+Every metric the objective emits is a plain float, including `prefix_kl`, which is logged on **every** step — training and validation. Bridge collapse to a constant prefix is the most likely training failure here, and it has to be visible per epoch, not discovered at the end. The step metric partners each row with a row of a *different* stimulus rather than with its batch neighbour, so it measures the same quantity as verdict clause 5: hard-negative batching seeds a batch from one sentence and fills it with that sentence's own readings, where a healthy bridge is supposed to score near zero.
 
 ## Stage 0 — text-only bridge pretraining
 
@@ -198,7 +204,7 @@ This is ~9.5 bits of forced choice at 700 queries, against a generation delta at
 
 ### Secondary (expected-null) readout — free-running generation
 
-`ZTEDecoder.generate` only: BOS, feed back the model's own greedy tokens, stop at EOS or `max_new_tokens`, **no reference length, no candidate set**. `cfg_weight` is asserted `== 1.0`, so the headline decode and every control run byte-identical code; guidance was removed from v1 precisely so that the null-prefix branch could not become a second code path. A decode constrained to a candidate set is retrieval and is reported as retrieval, never as generation — `NearestNeighborIndex.decode` is exactly that in disguise, and `n_candidate_sentences` is recorded on every block so the distinction is machine-checkable rather than a matter of wording.
+`ZTEDecoder.generate` only: BOS, feed back the model's own greedy tokens, stop at EOS or `max_new_tokens`, **no reference length, no candidate set**. Stopping is a trained behaviour, not a free one: every reference that fits inside `max_target_tokens` ends in a supervised EOS inside the loss mask, on the HuggingFace path as well as the offline `tiny` one. Without that the bridge has no gradient toward stopping and every hypothesis runs the full 96 tokens against a 19.6-word reference, which makes WER exceed 1 by construction and collapses every precision-based metric. `cfg_weight` is asserted `== 1.0`, so the headline decode and every control run byte-identical code; guidance was removed from v1 precisely so that the null-prefix branch could not become a second code path. A decode constrained to a candidate set is retrieval and is reported as retrieval, never as generation — `NearestNeighborIndex.decode` is exactly that in disguise, and `n_candidate_sentences` is recorded on every block so the distinction is machine-checkable rather than a matter of wording.
 
 Metrics are implemented in pure stdlib + numpy in `zte.evaluation.generation` (BLEU-1..4 with brevity penalty, ROUGE-1/2/L, WER, and content-word F1 over the distinct content words of each sentence). No metric package is a dependency, so nothing about the score depends on which BLEU implementation happened to be installed.
 
@@ -224,7 +230,9 @@ Plus one positive control, `oracle`: the true sentence embedding through the ide
 2. `no_candidate_set` — `n_candidate_sentences is None`, i.e. this was free generation.
 3. `beats_every_control` — the paired per-sentence delta's bootstrap CI lower bound (n_boot 2000, seed 0) is above zero against **every one** of the five controls, not the mean of them. A control that was requested but could not be decoded counts as not beaten, so losing one can never promote the verdict. A block that records no `controls_requested` cannot show which controls it pre-registered, so the absent ledger itself counts as not beaten and the clause fails.
 4. `permutation_significant` — `honesty.generation_permutation_test` with the hypotheses held fixed and only the pairing permuted, $p = (1 + \#\{null \ge obs\})/(n_\text{perm}+1) < 0.05$.
-5. `prefix_influences_output` — mean $\mathrm{KL}\big(p(\cdot \mid P) \,\|\, p(\cdot \mid P_\text{null})\big) \ge$ `decoder.min_prefix_kl` (0.05 nats). Below that the decoder is ignoring the brain and no delta is meaningful.
+5. `prefix_influences_output` — mean $\mathrm{KL}\big(p(\cdot \mid P_i) \,\|\, p(\cdot \mid P_j)\big) \ge$ `decoder.min_prefix_kl` (0.05 nats), where $P_j$ is **another reading's** prefix under a seeded derangement, $j \neq i$. Below that the prompt does not depend on which brain produced it and no delta is meaningful.
+
+   It has to be another reading's prefix and not $P_\text{null}$. A bridge collapsed to one constant prompt for every reading still sits some distance from the *learned unconditional* prompt, which is a free parameter, so it can clear a floor stated against $P_\text{null}$ while ignoring the brain entirely — the exact failure this clause exists to catch. The KL also reads only the first generated token's distribution, which makes it a necessary condition and not a sufficient one; the length-stratified `mismatch` control is what closes the remaining gap.
 
 Named floors, since free generation has no analytic chance level: the five controls, the length-only oracle, and the **retrieval upper bound** — what the frozen encoder already achieves with cosine kNN (Top-1 10/700, `rank_percentile` 0.9617). If generation does not beat the last of those, the report says so.
 
@@ -252,6 +260,7 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 | `train.stage_a_epochs`                                                    | Bridge-only epochs before the encoder unfreezes; read in `joint` mode only.                       |
 | `train.early_stop_patience`                                               | Epochs without improvement before stopping (`0` disables).                                        |
 | `decoder.lm_source` / `lm_revision` / `lm_cache_dir`                      | The frozen LM, its pinned commit and its local snapshot. `'tiny'` is offline.                     |
+| `decoder.lm_dtype`                                                        | `auto` (default, inherits the encoder's) \| `float32` \| `float16` \| `bfloat16`.                 |
 | `decoder.conditioning`                                                    | `pooled` (headline) or `pooled_plus_words` (registered ablation).                                 |
 | `decoder.prefix_slots` / `word_slots` / `bottleneck`                      | Bridge geometry: $k$, the resampler's slots, and $r$.                                             |
 | `decoder.gap_correction`                                                  | `none` \| `mean_scale` \| `whiten`. Fitted on the train split only.                               |

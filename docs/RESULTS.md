@@ -1,6 +1,48 @@
-# Validated results (synthetic smoke-runs)
+# Validated results
 
-The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale.
+## Real ZuCo — the held-out board (2026-08-13, held out on `ZAB`, 700 queries)
+
+Everything in this section is measured on real ZuCo. Everything below it is a synthetic smoke-run and is labelled as
+such; the two are different kinds of evidence and must never be quoted together.
+
+**Read rank percentile, not Top-1.** Two seeds of the same `zte_raw_aligned` config give rank percentile 0.9672 and
+0.9670 — a gap of 0.0002 — while their Top-1 moves from 9 hits to 8. At chance 1/700 a Top-1 comparison between
+these arms is a comparison between one or two lucky queries. Rank percentile uses all 700.
+
+| Config (`run_name`) | Rank percentile (95% CI) | Top-1 / 700 | Top-5 / 700 | Length-stratified rank pct | Eff-rank |
+| --- | --- | --- | --- | --- | --- |
+| `flagship/zte_raw_aligned` (seed 41) | 0.9672 (0.9635–0.9708) | 9 | 39 | 0.9271 | 0.25 |
+| `flagship/zte_raw_aligned` (seed 42) | 0.9670 (0.9632–0.9706) | 8 | 38 | 0.9269 | 0.25 |
+| `ablation/exp12_align_off` | 0.9670 (0.9632–0.9706) | 8 | 39 | 0.9269 | 0.25 |
+| `flagship/clip_e5_meaning_raw` | 0.9667 (0.9629–0.9705) | 7 | 37 | 0.9268 | 0.25 |
+| `flagship/clip_e5_raw` | 0.9635 (0.9599–0.9673) | 9 | 38 | 0.9208 | 0.24 |
+| `archive/zte_raw_aligned_wide` | 0.9523 (0.9479–0.9565) | 5 | 14 | 0.9212 | 0.45 |
+
+Three findings, stated as they were measured.
+
+**The three retained flagships are tied.** Their intervals all overlap. There is no champion, and any claim that one
+of these recipes beats another on this fold is not supported. `clip_e5_raw` is the only arm whose *length-stratified*
+Top-1 clears *p* < 0.05 (0.0443 against a 0.0285 stratified chance rate, *p* 0.012); the other two do not (*p* 0.150
+and 0.206), which matters because length alone carries 5.14 bits of sentence identity here.
+
+**The exp12 alignment stack is a measured no-op.** `exp12_align_off` switches Euclidean alignment off and returns
+rank percentile 0.9670 against the full stack's 0.9672, effective rank 190.31 against 190.25, and a subject probe of
+0.4179 against 0.4180. Agreement to four decimal places on every metric is not a small effect; it is no effect. The
+stack was built to close the cross-subject identity gap, and on this fold it does not.
+
+**Capacity retained is not capacity used.** `zte_raw_aligned_wide` and `clip_e5_meaning_raw_v2` have the two
+healthiest geometries ever measured here (effective-rank ratios 0.45 and 0.53, against 0.24–0.25 for the retained
+set) and the two worst retrieval scores. `wide` is the first arm this board separates with non-overlapping
+intervals, and its length-stratified Top-1 of 0.0200 is *below* stratified chance. Both were retired to
+`experiments/archive/` on 2026-08-14. The long-standing warning that a *low* effective rank can mean invariance
+bought by destroying capacity now has a converse with a number behind it.
+
+Nothing here is a decoding result. It is cross-subject sentence *retrieval* over a 700-sentence gallery, and the
+honest summary of real ZuCo remains: decodable, and not yet subject-invariant.
+
+## Synthetic smoke-runs
+
+The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale. **A synthetic run is never a result.**
 
 > How to regenerate everything on this page is at the [bottom](#reproduce).
 > For methodology see [EVALUATION.md]; for the knobs see [TRAINING.md] and [DATASET.md].
