@@ -361,7 +361,7 @@ def evaluate_representation(
         metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
         metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
         metrics['scoreboard_html'] = _write_scoreboard_html(metrics.get('scoreboard'), out, run_name)
-        metrics['generation_html'] = _write_generation_html(generation, out, run_name)
+        metrics['generation_html'] = _write_generation_html(generation, out, run_name, min_prefix_kl)
 
     # 6b) Per-dimension arrays are large, so metrics.json keeps only the compact summary. `default=str`
     # never raises, where `default=float` would crash on the last write of a multi-hour run.
@@ -684,7 +684,7 @@ def _write_scoreboard_html(board: dict[str, Any] | None, out: Path, run_name: st
         return None
 
 
-def _write_generation_html(block: dict[str, Any] | None, out: Path, run_name: str) -> str | None:
+def _write_generation_html(block: dict[str, Any] | None, out: Path, run_name: str, min_prefix_kl: float) -> str | None:
     """Writes the reference/hypothesis/controls side-by-side page, returning its path relative to `out`.
 
     The page is the artifact that makes an absolute BLEU unreadable in isolation: every hypothesis sits
@@ -697,7 +697,7 @@ def _write_generation_html(block: dict[str, Any] | None, out: Path, run_name: st
     except ImportError:  # pragma: no cover
         return None
     try:
-        path = generation_html(block, out / 'interactive' / 'generation.html', run_name)
+        path = generation_html(block, out / 'interactive' / 'generation.html', run_name, min_prefix_kl)
         return str(path.relative_to(out))
     except (ValueError, OSError, KeyError, TypeError) as exc:  # pragma: no cover
         _LOG.warning('Generation dashboard failed: %r', exc)
@@ -1070,7 +1070,7 @@ def _verdict(
         verdict['retrieval_phase_ci'] = [round(ph_point, 4), round(ph_lo, 4), round(ph_hi, 4)]
         verdict['retrieval_above_chance'] = bool(verdict['retrieval_above_chance'] and verdict['retrieval_above_phase'])
     if generation:
-        verdict.update(_generation_verdict(generation, min_prefix_kl))
+        verdict.update(generation_verdict(generation, min_prefix_kl))
     if analogy:
         st = analogy.get('subject_transfer', {})
         subj_chance = float(np.mean(subj_chances)) if subj_chances else float(st.get('chance_top1', float('nan')))
@@ -1084,16 +1084,13 @@ def _verdict(
     return verdict
 
 
-def _missing_controls(generation: dict[str, Any], metric: str) -> list[str]:
+def missing_controls(generation: dict[str, Any], metric: str) -> list[str]:
     """Names every pre-registered control that did not run, or ran and was not beaten.
 
-    A control the decode recorded in `controls_unavailable` or `controls_skipped` produced no delta, so
-
-    an AND over the deltas alone would silently drop it; here it counts as missing. A block that names no
-
-    `controls_requested` at all cannot show which controls it pre-registered, and a control that vanished
-
-    from such a block leaves no trace anywhere, so the absent ledger is itself reported as missing.
+    A control the decode recorded in `controls_unavailable` or `controls_skipped` produced no delta, so an AND over
+    the deltas alone would silently drop it; here it counts as missing. A block that names no `controls_requested` at
+    all cannot show which controls it pre-registered, and a control that vanished from such a block leaves no trace
+    anywhere, so the absent ledger is itself reported as missing.
 
     Returns:
         list[str]: Sorted control names, or `UNRECORDED_CONTROLS` for an absent ledger; empty only when a
@@ -1110,12 +1107,11 @@ def _missing_controls(generation: dict[str, Any], metric: str) -> list[str]:
     return sorted(missing)
 
 
-def _generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dict[str, Any]:
+def generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dict[str, Any]:
     """The pre-registered generation gate: an AND over split, candidate set, controls, null and prefix KL.
 
-    Every clause is reported with its number even when it fails, and any failing clause demotes the
-
-    whole verdict -- the same demotion pattern the retrieval permutation null uses above.
+    Every clause is reported with its number even when it fails, and any failing clause demotes the whole verdict --
+    the same demotion pattern the retrieval permutation null uses above.
 
     Returns:
         dict[str, Any]: `generation_above_controls`, `generation_ci`, `generation_clauses` and the
@@ -1136,7 +1132,7 @@ def _generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dic
     worst = generation.get('worst_control_ci') or {}
     strategy = generation.get('split_strategy')
     cell = generation.get('split')
-    missing = _missing_controls(generation, metric)
+    missing = missing_controls(generation, metric)
     clauses = {
         'honest_split': (strategy, cell) == HONEST_SPLIT,
         'no_candidate_set': generation.get('n_candidate_sentences') is None,

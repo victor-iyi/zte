@@ -79,7 +79,11 @@ class PrefixBridge(nn.Module):
         return self.null_prefix.unsqueeze(0).expand(batch_size, -1, -1)
 
     def dropout_null(
-        self, prefix: torch.Tensor, prob: float, generator: torch.Generator | None = None
+        self,
+        prefix: torch.Tensor,
+        prob: float,
+        generator: torch.Generator | None = None,
+        null: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Replaces whole rows of `prefix` with the null prefix at probability `prob`.
 
@@ -87,16 +91,30 @@ class PrefixBridge(nn.Module):
             prefix (torch.Tensor): Conditional prefixes `(batch_size, slots, lm_dim)`.
             prob (float): Per-row replacement probability.
             generator (torch.Generator | None, optional): Sampling generator. Defaults to None.
+            null (torch.Tensor | None, optional): The unconditional prefix to substitute, which must be as wide as
+                `prefix`. Defaults to None, meaning this bridge's own `null_prefix`.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: `(prefix, replaced)` where `replaced` is a `(batch_size,)` bool mask.
+
+        Raises:
+            ValueError: If `null` is narrower than `prefix`, which would leave conditioned slots inside the
+                unconditional branch and quietly break the independence the null prefix exists to give.
         """
         batch_size = prefix.shape[0]
         if prob <= 0.0:
             return prefix, prefix.new_zeros(batch_size, dtype=torch.bool)
+
+        unconditional = self.null(batch_size) if null is None else null
+        if unconditional.shape[1:] != prefix.shape[1:]:
+            raise ValueError(
+                f'null prefix is {tuple(unconditional.shape[1:])} against a {tuple(prefix.shape[1:])} prefix; a '
+                'partial null leaves the brain inside the unconditional branch.'
+            )
+
         draw = torch.rand(batch_size, device=prefix.device, generator=generator)
         replaced = draw < prob
-        mixed = torch.where(replaced[:, None, None], self.null(batch_size), prefix)
+        mixed = torch.where(replaced[:, None, None], unconditional, prefix)
         return mixed, replaced
 
 
@@ -110,6 +128,9 @@ class WordResampler(nn.Module):
     Attributes:
         slots (int): Number of prefix positions produced.
         lm_dim (int): Frozen-LM embedding width.
+        null_prefix (nn.Parameter): The `(slots, lm_dim)` unconditional continuation of `PrefixBridge.null_prefix`.
+            Without one, null-prefix dropout would replace the pooled slots and leave the word slots -- and with them
+            the brain and the word count -- inside the branch that is supposed to be independent of both.
     """
 
     def __init__(
@@ -144,6 +165,19 @@ class WordResampler(nn.Module):
         self.norms_kv = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(n_blocks))
         self.to_lm = nn.Linear(hidden_dim, lm_dim)
         self.norm_out = nn.LayerNorm(lm_dim)
+        self.null_prefix = nn.Parameter(torch.empty(slots, lm_dim))
+        nn.init.trunc_normal_(self.null_prefix, std=0.02)
+
+    def null(self, batch_size: int) -> torch.Tensor:
+        """Returns the unconditional word slots broadcast over a batch.
+
+        Args:
+            batch_size (int): Number of rows.
+
+        Returns:
+            torch.Tensor: `(batch_size, slots, lm_dim)` view of `null_prefix`.
+        """
+        return self.null_prefix.unsqueeze(0).expand(batch_size, -1, -1)
 
     def forward(self, hidden: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """Resamples the token sequence into a fixed number of prefix slots.
@@ -326,9 +360,12 @@ def _matrix_power(centred: torch.Tensor, power: float, eps: float) -> torch.Tens
     n = max(centred.shape[0] - 1, 1)
     cov = (centred.t() @ centred) / n
     cov = cov + eps * torch.eye(cov.shape[0], device=cov.device, dtype=cov.dtype)
-    values, vectors = torch.linalg.eigh(cov.double())
+
+    # MPS has neither float64 nor `_linalg_eigh`, and this is a once-per-run fit, so the round trip costs nothing.
+    values, vectors = torch.linalg.eigh(cov.detach().cpu().double())
     values = values.clamp_min(eps)
-    return ((vectors * values.pow(power)) @ vectors.t()).to(centred.dtype)
+
+    return ((vectors * values.pow(power)) @ vectors.t()).to(device=centred.device, dtype=centred.dtype)
 
 
 def build_bridge(

@@ -20,6 +20,7 @@ from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab
 from zte.device import DeviceKind, resolve_device
 from zte.evaluation.generation import generation_report, per_sentence_scores, tokenise
+from zte.evaluation.report import missing_controls
 from zte.inference.decode import ZTEDecoder
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.checkpoint import CheckpointManager
@@ -390,6 +391,7 @@ def decode_evaluation(
             controls,
             oracle,
             prefix_kl,
+            config.decoder.min_prefix_kl,
         )
     return {
         'generation': block,
@@ -431,6 +433,7 @@ def _controls(
             train = _train_conditioning(decoder, dataset, config, opts)
             if train is None:
                 unavailable[name] = 'no training split to average'
+                _LOG.warning('Control %r could not run: %s. It fails its verdict clause.', name, unavailable[name])
                 continue
             out[name] = free(decoder.mean_prefix(train, n))
         elif name == 'mismatch':
@@ -450,6 +453,7 @@ def _controls(
             surrogate = _surrogate_conditioning(decoder, dataset, indices, name, opts)
             if surrogate is None:
                 unavailable[name] = 'the encoder consumes no raw signal to destroy'
+                _LOG.warning('Control %r could not run: %s. It fails its verdict clause.', name, unavailable[name])
                 continue
             out[name] = decoder.generate(
                 surrogate,
@@ -623,6 +627,13 @@ def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: Decode
         'cfg_weight': decoder.decoder_config.cfg_weight,
         'conditioning': decoder.decoder_config.conditioning,
         'gap_correction': decoder.decoder_config.gap_correction,
+        'gap_fitted': bool(decoder.gap.fitted),
+        'gap_n_fit': int(decoder.gap.n_fit),
+        # The decoder whitens nothing, but it inherits three train-fitted transforms, and the field exists so a
+        # number is never read without knowing what was fitted on what.
+        'postprocess_fit': 'none',
+        'normalizer_fit': decoder.normalizer is not None,
+        'aligner_fit': decoder.aligner is not None,
         'text_source': config.objective.text_source,
         'seed': opts.seed,
         'n_perm': opts.n_perm,
@@ -650,6 +661,7 @@ def _write_artifacts(
     controls: dict[str, list[str]],
     oracle: list[str] | None,
     prefix_kl: np.ndarray,
+    min_prefix_kl: float,
 ) -> None:
     """Writes the per-sentence side-by-side, the scored block and the offline HTML page."""
     from zte.evaluation.interactive import generation_html
@@ -665,7 +677,12 @@ def _write_artifacts(
         ''.join(json.dumps(row, default=str) + '\n' for row in lines), encoding='utf-8'
     )
     try:
-        generation_html(block, out_dir / 'interactive' / 'generation.html', run_name=run_name)
+        generation_html(
+            block,
+            out_dir / 'interactive' / 'generation.html',
+            run_name=run_name,
+            min_prefix_kl=min_prefix_kl,
+        )
     except (OSError, ValueError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Interactive generation page skipped: %r', exc)
     _LOG.info('Wrote generation.jsonl, generation.json and interactive/generation.html to %s', out_dir)
@@ -805,17 +822,22 @@ def main() -> None:
     if not block.get('applicable'):
         _LOG.warning('Generation not scoreable: %s', block.get('reason'))
         return
+    # `beats_all_controls` counts only controls that produced a delta, so a control that never ran is not a control
+    # it beat. The summary reports the same composition the verdict gates on.
+    missing = missing_controls(block, str(block.get('primary_metric')))
     worst = block.get('worst_control_ci') or {}
     _LOG.info(
-        'n=%d | %s delta vs the worst control (%s): %.4f [%.4f, %.4f] | beats all controls: %s',
+        'n=%d | %s delta vs the worst surviving control (%s): %.4f [%.4f, %.4f] | beats all controls: %s',
         block.get('n', 0),
         block.get('primary_metric'),
         block.get('worst_control'),
         float(worst.get('point', float('nan'))),
         float(worst.get('lo', float('nan'))),
         float(worst.get('hi', float('nan'))),
-        block.get('beats_all_controls'),
+        not missing,
     )
+    if missing:
+        _LOG.warning('Controls not beaten (a control that did not run fails its clause): %s', ', '.join(missing))
     _LOG.info(
         'permutation p=%s | prefix-influence KL=%s nats (floor %s)',
         (block.get('permutation') or {}).get('p_value'),
@@ -825,12 +847,27 @@ def main() -> None:
     rescoring = result.get('rescoring')
     if rescoring:
         _LOG.info(
-            'Decoder-rescoring RETRIEVAL over %s candidates: Top-1 %.4f (chance %.4f), rank percentile %.4f.',
+            'Decoder-rescoring RETRIEVAL over %s candidates, UNSTRATIFIED: Top-1 %.4f (chance %.4f), '
+            'rank percentile %.4f.',
             rescoring.get('n_candidate_sentences'),
             rescoring.get('top1', float('nan')),
             rescoring.get('chance_top1', float('nan')),
             rescoring.get('rank_percentile', float('nan')),
         )
+        # Sentence length alone carries 5.14 bits of identity on ZuCo and beats the encoder on every top-k, so an
+        # unstratified top-k quoted on its own is not evidence of decoding.
+        stratified = rescoring.get('length_stratified') or {}
+        if stratified:
+            _LOG.info(
+                'Length-stratified (+/-%s words): Top-1 %.4f (chance %.4f), rank percentile %.4f over %s queries.',
+                options.length_tol,
+                stratified.get('top1', float('nan')),
+                stratified.get('chance_top1', float('nan')),
+                stratified.get('rank_percentile', float('nan')),
+                stratified.get('n_queries'),
+            )
+        else:
+            _LOG.warning('No length-stratified cell was computed; the top-k above is not evidence of decoding.')
 
 
 if __name__ == '__main__':

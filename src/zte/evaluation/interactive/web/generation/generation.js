@@ -45,10 +45,15 @@ const state = { query: "", sort: "index", controls: true };
 function renderVerdict() {
   const v = P.verdict || {};
   const bits = [];
+  // The lead phrase is the gate's full five-clause AND. Beating the controls is one clause of five, and a page that
+  // led with it alone could announce a headline the verdict refuses.
   bits.push(
-    (v.beats_all_controls ? "Beats" : "Does not beat") +
-      " every brain-independent control on " +
-      PRIMARY,
+    (v.above_controls ? "PASSES" : "does NOT pass") +
+      " the generation gate on " +
+      PRIMARY +
+      " (" +
+      (v.beats_all_controls ? "beats" : "does not beat") +
+      " every brain-independent control)",
   );
   if (v.worst_control)
     bits.push(
@@ -100,6 +105,21 @@ function renderVerdict() {
       "Pre-registered controls that never ran: " +
         absent +
         ". Every control must run and be beaten before any delta is readable.",
+    );
+  const clauses = v.clauses || {};
+  if (clauses.permutation_significant === false)
+    problems.push(
+      "The permutation null is not significant (p = " +
+        (nv(v.permutation_p) == null ? "not computed" : num(v.permutation_p, 4)) +
+        "). The pairing of hypothesis to reference is not distinguishable from chance.",
+    );
+  if (clauses.prefix_influences_output === false)
+    problems.push(
+      "Prefix-influence KL is " +
+        (nv(v.prefix_kl) == null ? "not computed" : num(v.prefix_kl, 4) + " nats") +
+        ", below the " +
+        num(v.min_prefix_kl, 4) +
+        " nat floor. The prompt does not depend on which brain produced it.",
     );
   if (problems.length) {
     warn.className = "warn on";

@@ -6,9 +6,15 @@ import json
 import math
 import numbers
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
+from zte.config import DecoderConfig
 from zte.evaluation.interactive._assets import load_page
+
+# The page is written from a report dict that does not carry the run's floor, so it falls back to the registered one
+# rather than dropping the clause -- a clause the page cannot evaluate is the clause it would advertise past.
+_DEFAULT_MIN_PREFIX_KL: Final[float] = DecoderConfig().min_prefix_kl
+"""Prefix-influence floor in nats used when the caller names none."""
 
 # Metrics the page tabulates and can sort rows by; the primary one leads.
 _METRICS: tuple[str, ...] = (
@@ -22,7 +28,12 @@ _METRICS: tuple[str, ...] = (
 )
 
 
-def generation_html(block: dict[str, Any], out_path: str | Path, run_name: str = 'ZTE run') -> Path:
+def generation_html(
+    block: dict[str, Any],
+    out_path: str | Path,
+    run_name: str = 'ZTE run',
+    min_prefix_kl: float = _DEFAULT_MIN_PREFIX_KL,
+) -> Path:
     """Writes the generation side-by-side as a single offline HTML file.
 
     Every hypothesis is rendered beside the identical row for each brain-independent control, which is
@@ -35,6 +46,8 @@ def generation_html(block: dict[str, Any], out_path: str | Path, run_name: str =
             rewritten to `.html`).
         run_name (str, optional): Human label for the run, shown in the header and the page title.
             Defaults to 'ZTE run'.
+        min_prefix_kl (float, optional): The run's verdict floor in nats, without which the page cannot
+            evaluate the clause. Defaults to the `DecoderConfig` default.
 
     Returns:
         Path: The written HTML file path.
@@ -44,7 +57,7 @@ def generation_html(block: dict[str, Any], out_path: str | Path, run_name: str =
         out = out.with_suffix('.html')
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = _build_payload(block or {}, run_name)
+    payload = _build_payload(block or {}, run_name, min_prefix_kl)
     data_json = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
     html = _TEMPLATE.replace('__TITLE__', _esc(run_name)).replace('__DATA__', data_json)
     out.write_text(html, encoding='utf-8')
@@ -52,7 +65,9 @@ def generation_html(block: dict[str, Any], out_path: str | Path, run_name: str =
     return out
 
 
-def _build_payload(block: dict[str, Any], run_name: str) -> dict[str, Any]:
+def _build_payload(
+    block: dict[str, Any], run_name: str, min_prefix_kl: float = _DEFAULT_MIN_PREFIX_KL
+) -> dict[str, Any]:
     """Normalises the generation report into the small JSON island the page consumes."""
     if not block.get('applicable'):
         return _clean(
@@ -73,12 +88,15 @@ def _build_payload(block: dict[str, Any], run_name: str) -> dict[str, Any]:
         order.append('oracle')
         scores['oracle'] = absolute['oracle']
 
-    from zte.evaluation.report import HONEST_SPLIT
+    from zte.evaluation.report import HONEST_SPLIT, generation_verdict
 
     perm = block.get('permutation') or {}
     worst = block.get('worst_control_ci') or {}
     rows = block.get('rows') or []
     absent = (block.get('controls_unavailable') or {}) | (block.get('controls_skipped') or {})
+    # The page is the most persuasive artifact the run produces, so its headline is the gate's own five-clause AND
+    # rather than a re-derivation of part of it.
+    gate = generation_verdict(block, min_prefix_kl)
     payload = {
         'run_name': run_name,
         'applicable': True,
@@ -95,12 +113,16 @@ def _build_payload(block: dict[str, Any], run_name: str) -> dict[str, Any]:
         'absolute': scores,
         'deltas': {name: delta.get(metric, {}) for name, delta in (block.get('deltas') or {}).items()},
         'verdict': {
+            'above_controls': bool(gate.get('generation_above_controls')),
+            'clauses': gate.get('generation_clauses') or {},
             'beats_all_controls': bool(block.get('beats_all_controls')) and not absent,
             'controls_absent': sorted(absent),
+            'controls_missing': gate.get('generation_controls_missing') or [],
             'worst_control': block.get('worst_control'),
             'worst_ci': worst,
             'permutation_p': perm.get('p_value') if perm.get('applicable') else None,
             'prefix_kl': block.get('prefix_influence_kl'),
+            'min_prefix_kl': min_prefix_kl,
         },
         'rows': rows,
         'truncated': bool(block.get('n') and len(rows) < int(block['n'])),

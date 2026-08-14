@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -25,6 +25,11 @@ _STOPWORDS: frozenset[str] = frozenset(
     who whom whose when where why how all any both each few more most other some such
     """.split()
 )
+
+# The same floor the surrounding blocks apply to their own sentence counts, restated here because a delta drops
+# non-finite rows and can therefore fall below it after a block has already cleared it.
+_MIN_PAIRED_N: Final[int] = 4
+"""Surviving paired sentences a delta needs before it may beat a control."""
 
 # Which direction is better, so a paired delta is always signed "hypothesis minus control, higher = better".
 _HIGHER_IS_BETTER: dict[str, bool] = {
@@ -456,6 +461,9 @@ def paired_delta(
     keep = np.isfinite(delta)
     delta = delta[keep]
     point, lo, hi = bootstrap_ci(delta, n_boot=n_boot, seed=seed)
+
+    # A bootstrap over one or two surviving sentences returns the point estimate as its own lower bound, so a metric
+    # that goes non-finite on most rows -- WER does, on an empty reference -- could otherwise beat a control on n=1.
     return {
         'metric': metric,
         'point': float(point),
@@ -463,7 +471,7 @@ def paired_delta(
         'hi': float(hi),
         'n': int(delta.size),
         'n_boot': int(n_boot),
-        'beats': bool(np.isfinite(lo) and lo > 0.0),
+        'beats': bool(delta.size >= _MIN_PAIRED_N and np.isfinite(lo) and lo > 0.0),
     }
 
 

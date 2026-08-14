@@ -7,7 +7,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -22,6 +22,11 @@ _TINY_ALPHABET: str = ' abcdefghijklmnopqrstuvwxyz0123456789.,\'"!?;:-()'
 
 # A fixed probe whose ids go into the fingerprint, so a silent tokeniser upgrade cannot pass unnoticed.
 _PROBE: str = 'The quick brown fox jumps over the lazy dog.'
+
+# Bump whenever `_encode` changes what it writes. The cache is keyed by corpus and tokeniser, neither of which moves
+# when the encoding rule does, so without this a bundle already on Drive would be reused under the new semantics.
+_SCHEMA: Final[int] = 2
+"""Encoding-rule version folded into the token cache key."""
 
 
 class TinyByteTokenizer:
@@ -146,7 +151,7 @@ class TextTargets:
 def _cache_path(texts: Sequence[str], source: str, revision: str | None, max_length: int, cache_dir: str) -> Path:
     """Deterministic cache file for a (corpus, tokeniser, revision, width) target-token matrix."""
     h = hashlib.sha1()
-    h.update(f'{source}|{revision or "main"}|{max_length}|{len(texts)}'.encode())
+    h.update(f'{source}|{revision or "main"}|{max_length}|{len(texts)}|v{_SCHEMA}'.encode())
     for t in texts:
         h.update(t.encode('utf-8', 'ignore'))
         h.update(b'\x00')
@@ -203,35 +208,40 @@ def fingerprint_tokenizer(tokenizer: Any, source: str, revision: str | None) -> 
     return h.hexdigest()[:16]
 
 
-def _encode(tokenizer: Any, texts: Sequence[str], max_length: int) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Encodes `texts` into padded `(ids, mask)` plus the pad id and the count of truncated rows."""
-    n = len(texts)
+def _rows(tokenizer: Any, texts: Sequence[str]) -> tuple[list[list[int]], int, int | None]:
+    """Encodes `texts` to unpadded id rows, returning them with the pad id and the end-of-sequence id."""
     if isinstance(tokenizer, TinyByteTokenizer):
-        pad_id = tokenizer.pad_id
-        ids = np.full((n, max_length), pad_id, dtype=np.int64)
-        mask = np.zeros((n, max_length), dtype=bool)
-        n_trunc = 0
-        for i, text in enumerate(texts):
-            row = tokenizer.encode(text)
-            n_trunc += int(len(row) > max_length)
-            row = row[:max_length]
-            ids[i, : len(row)] = row
-            mask[i, : len(row)] = True
-        return ids, mask, pad_id, n_trunc
+        return [tokenizer.encode(t, add_eos=False) for t in texts], tokenizer.pad_id, tokenizer.eos_id
 
     pad_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0)
-    enc = tokenizer(
-        list(texts),
-        padding='max_length',
-        truncation=True,
-        max_length=max_length,
-        return_tensors='np',
-    )
-    ids = np.asarray(enc['input_ids'], dtype=np.int64)
-    mask = np.asarray(enc['attention_mask'], dtype=bool)
+    eos_id = None if tokenizer.eos_token_id is None else int(tokenizer.eos_token_id)
+    encoded = tokenizer(list(texts))['input_ids']
 
-    # A row that fills the width was clipped, since every reference otherwise ends before it.
-    n_trunc = int((mask.sum(axis=1) >= max_length).sum())
+    return [[int(t) for t in row] for row in encoded], pad_id, eos_id
+
+
+def _encode(tokenizer: Any, texts: Sequence[str], max_length: int) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Encodes `texts` into padded `(ids, mask)` plus the pad id and the count of truncated rows.
+
+    Note:
+        Every row that fits ends in the end-of-sequence id, and that id is inside the mask. Without it the bridge is
+        never supervised to stop, and free-running decode then runs to `max_new_tokens` on every row -- which is not
+        a scoring detail but an unbounded hypothesis measured against a 19.6-word reference. Several tokenisers,
+        Qwen2's among them, add no special tokens of their own, so it is appended here rather than left to the
+        library. A row long enough to be truncated loses it, because at that point the reference does not fit either.
+    """
+    rows, pad_id, eos_id = _rows(tokenizer, texts)
+    ids = np.full((len(rows), max_length), pad_id, dtype=np.int64)
+    mask = np.zeros((len(rows), max_length), dtype=bool)
+
+    n_trunc = 0
+    for i, encoded in enumerate(rows):
+        terminated = encoded if eos_id is None or (encoded and encoded[-1] == eos_id) else [*encoded, eos_id]
+        n_trunc += int(len(terminated) > max_length)
+        kept = terminated[:max_length]
+        ids[i, : len(kept)] = kept
+        mask[i, : len(kept)] = True
+
     return ids, mask, pad_id, n_trunc
 
 

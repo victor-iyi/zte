@@ -86,7 +86,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         """
         super().__init__(config, model)
         self.decoder_config = decoder_config
-        self.lm = build_lm(decoder_config)
+        self.lm = build_lm(decoder_config, encoder=model)
         self._embed_dim: int = int(model.embed_dim)
         self._token_dim: int = cast('int', model.hidden_dim)
         self.stage = 'a'
@@ -300,11 +300,21 @@ class PrefixDecodeObjective(_ObjectiveBase):
             ValueError: If a held-out id is present, or if the text embeddings or target tokens are not attached.
         """
         ids = np.asarray(list(text_ids), dtype=np.int64)
-        leaked = sorted(set(ids.tolist()) & {int(i) for i in holdout_text_ids})
+        holdout = {int(i) for i in holdout_text_ids}
+        leaked = sorted(set(ids.tolist()) & holdout)
         if leaked:
             raise ValueError(
                 f'Text-only pretraining was given {len(leaked)} held-out stimulus id(s), first {leaked[0]}. '
                 'Only train-split stimuli may reach the bridge before evaluation.'
+            )
+        # An empty holdout means the split shares every stimulus between its cells, so the check above proved nothing
+        # and Stage 0 is about to memorise the references the run will later be scored on.
+        if not holdout and ids.size:
+            _LOG.warning(
+                'Text-only pretraining has no held-out stimulus to exclude: this split shares all %d references '
+                'between its cells, so the bridge sees every sentence it will be evaluated on. No generation number '
+                'from this run is a headline.',
+                int(ids.size),
             )
         if self.text_matrix is None or self.target_ids is None or self.target_mask is None:
             raise ValueError('Text-only pretraining needs both attach_text and attach_tokens first.')
@@ -383,7 +393,9 @@ class PrefixDecodeObjective(_ObjectiveBase):
         mask = target_mask[text_id.clamp(min=0)] & has_target[:, None]
 
         dropped, replaced = self.bridge.dropout_null(
-            prefix, self.decoder_config.null_prefix_prob if self.training else 0.0
+            prefix,
+            self.decoder_config.null_prefix_prob if self.training else 0.0,
+            null=self._null(prefix.shape[0]),
         )
         ce = self.lm.forward_with_prefix(dropped, ids, mask) if bool(has_target.any()) else prefix.sum() * 0.0
         ground = self._grounding(prefix, ids, mask, text_id, has_target, has_target & ~replaced)
@@ -392,7 +404,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         metrics: dict[str, float] = {
             'ce': float(ce.detach()),
             'ground': float(ground.detach()),
-            'prefix_kl': self._prefix_kl(prefix),
+            'prefix_kl': self._prefix_kl(prefix, text_id),
             'null_kl': self._null_kl(prefix),
             'null_frac': float(replaced.float().mean()),
             'cache_hits': float(encoded.cache_hits),
@@ -525,19 +537,40 @@ class PrefixDecodeObjective(_ObjectiveBase):
         target = torch.zeros(rows.numel(), dtype=torch.long, device=scores.device)
         return F.cross_entropy(scores / _GROUND_TEMPERATURE, target)
 
-    def _prefix_kl(self, prefix: torch.Tensor) -> float:
-        """Returns the mean KL in nats between each row's own prefix and the next row's, which collapse drives to 0."""
+    def _prefix_kl(self, prefix: torch.Tensor, text_id: torch.Tensor) -> float:
+        """Returns the mean KL in nats between each row's prefix and a different sentence's, which collapse drives to 0.
+
+        Note:
+            The partner has to be a different *stimulus*, not merely the next row. Hard-negative batching seeds a batch
+            from one sentence and fills it with that sentence's own readings and its surface-similar neighbours, so the
+            batch neighbour is frequently the same text read by another subject -- where a healthy bridge should score
+            near zero. Rolling by one therefore reads systematically below the derangement the verdict gates on, and
+            the two numbers share a name.
+        """
         if prefix.shape[0] < 2:
             return 0.0
-        other = torch.roll(prefix.detach(), 1, dims=0)
-        return float(self.lm.next_token_kl(prefix.detach(), other).mean())
+
+        differs = text_id[:, None] != text_id[None, :]
+        rows = differs.any(dim=1)
+        if not bool(rows.any()):
+            return 0.0
+
+        partner = differs.float().argmax(dim=1)
+        detached = prefix.detach()
+
+        return float(self.lm.next_token_kl(detached[rows], detached[partner[rows]]).mean())
+
+    def _null(self, batch_size: int) -> torch.Tensor:
+        """Returns the unconditional prefix spanning every slot the conditional prefix occupies."""
+        null = self.bridge.null(batch_size)
+        if self.resampler is None:
+            return null
+
+        return torch.cat([null, self.resampler.null(batch_size)], dim=1)
 
     def _null_kl(self, prefix: torch.Tensor) -> float:
         """Returns the mean KL in nats between the conditional and null-prefix next-token distributions."""
-        null = self.bridge.null(prefix.shape[0])
-        if self.resampler is not None:
-            null = torch.cat([null, prefix[:, self.bridge.slots :].detach()], dim=1)
-        return float(self.lm.next_token_kl(prefix.detach(), null).mean())
+        return float(self.lm.next_token_kl(prefix.detach(), self._null(prefix.shape[0])).mean())
 
     def _joint_auxiliaries(
         self,

@@ -55,6 +55,10 @@ type Conditioning = Literal['pooled', 'pooled_plus_words']
 type GapCorrection = Literal['none', 'mean_scale', 'whiten']
 """Train-fitted affine correction of the EEG-to-text modality gap before the bridge."""
 
+type LMDtype = Literal['auto', 'float32', 'float16', 'bfloat16']
+"""Precision the frozen LM's weights are loaded at. `auto` inherits the encoder's, so the two halves always agree;
+naming one of the others pins it, and either way the checkpoint's own stored dtype never decides."""
+
 type FrontendName = Literal['band_power_mlp', 'raw_conformer']
 """Per-token encoder: an MLP over band-power vectors or a conformer over raw time-series windows."""
 

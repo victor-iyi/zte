@@ -444,13 +444,13 @@ def test_verdict_ignores_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     assert quarantined_keys(strip_quarantined(dirty)) == []
 
     seen: list[dict[str, Any]] = []
-    real = R._generation_verdict  # noqa: SLF001
+    real = R.generation_verdict
 
     def spy(generation: dict[str, Any], min_prefix_kl: float) -> dict[str, Any]:
         seen.append(generation)
         return real(generation, min_prefix_kl)
 
-    monkeypatch.setattr(R, '_generation_verdict', spy)
+    monkeypatch.setattr(R, 'generation_verdict', spy)
     verdict = _verdict([], {}, {}, generation=dirty)
 
     assert len(seen) == 1
@@ -466,6 +466,7 @@ def test_the_generation_page_refuses_what_the_verdict_refuses() -> None:
     payload = _build_payload(_working_block(), 'run')
     assert payload['honest_split'] is True
     assert payload['verdict']['beats_all_controls'] is True
+    assert payload['verdict']['above_controls'] is True
 
     crippled = _build_payload(
         _working_block(split='val', controls_unavailable={'phase': 'no raw signal to destroy'}),
@@ -473,7 +474,23 @@ def test_the_generation_page_refuses_what_the_verdict_refuses() -> None:
     )
     assert crippled['honest_split'] is False
     assert crippled['verdict']['beats_all_controls'] is False
+    assert crippled['verdict']['above_controls'] is False
     assert crippled['verdict']['controls_absent'] == ['phase']
+
+
+def test_the_generation_page_refuses_a_null_the_controls_alone_cannot_catch() -> None:
+    """Beating every control is one clause of five; the page's headline is the whole gate, not that clause."""
+    from zte.evaluation.interactive.generation import _build_payload
+
+    # Beats every control and runs on the honest split, but the pairing is chance and the prompt ignores the brain.
+    block = _working_block(permutation={'applicable': True, 'p_value': 0.42}, prefix_influence_kl=0.0001)
+    payload = _build_payload(block, 'run', min_prefix_kl=0.05)
+
+    assert payload['verdict']['beats_all_controls'] is True, 'the control clause alone still passes'
+    assert payload['verdict']['above_controls'] is False
+    assert payload['verdict']['clauses']['permutation_significant'] is False
+    assert payload['verdict']['clauses']['prefix_influences_output'] is False
+    assert payload['verdict']['min_prefix_kl'] == 0.05
 
 
 def test_the_scoreboard_row_reports_what_it_stripped() -> None:

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.modules.module import _IncompatibleKeys
 
-from zte.config import DecoderConfig
+from zte.config import DecoderConfig, LMDtype
 from zte.data.targets.tokens import (
     TINY_SOURCE,
     TinyByteTokenizer,
@@ -35,6 +35,14 @@ _TINY_KWARGS: dict[str, Any] = {
     'pad_token_id': 0,
 }
 
+_DTYPES: dict[str, torch.dtype] = {
+    'float32': torch.float32,
+    'float16': torch.float16,
+    'bfloat16': torch.bfloat16,
+}
+
+_DTYPE_NAMES: dict[torch.dtype, str] = {v: k for k, v in _DTYPES.items()}
+
 
 class FrozenLM(nn.Module):
     """A causal language model held frozen, driven only by a soft prompt.
@@ -48,6 +56,7 @@ class FrozenLM(nn.Module):
     Attributes:
         lm (nn.Module): The wrapped causal LM.
         tokenizer (Any): The matching tokeniser, or `TinyByteTokenizer` for `'tiny'`.
+        dtype_name (LMDtype): Precision the weights were loaded at, carried into `provenance`.
         hidden_dim (int): Token-embedding width, which is the prefix width the bridge must produce.
         vocab_size (int): Token count.
         bos_id (int): Beginning-of-sequence id opening every prompt.
@@ -65,6 +74,7 @@ class FrozenLM(nn.Module):
         cache_dir: str | None = None,
         prompt_template: str = '\nSentence: ',
         tokenizer_source: str | None = None,
+        dtype: LMDtype = 'float32',
     ) -> None:
         """Loads and freezes the LM.
 
@@ -77,16 +87,27 @@ class FrozenLM(nn.Module):
                 '\\nSentence: '.
             tokenizer_source (str | None, optional): Tokeniser id. Defaults to None, which uses `source`; anything
                 else must share the model's vocabulary or the ids address the wrong embeddings.
+            dtype (LMDtype, optional): Precision the weights are loaded at. Defaults to 'float32'.
 
         Raises:
             RuntimeError: If the model cannot be loaded.
+            ValueError: If `dtype` is not one of the supported precisions.
+
+        Note:
+            The dtype is pinned rather than read from the checkpoint. `transformers` defaults to the precision the
+            weights were saved in, so leaving it to the library makes every token log-probability a property of the
+            uploader's export choice and of the installed library version.
         """
         super().__init__()
+        if dtype not in _DTYPES:
+            raise ValueError(f"decoder.lm_dtype must be 'auto' or one of {sorted(_DTYPES)}, got {dtype!r}.")
+
         self.source = source
         self.revision = revision
         self.prompt_template = prompt_template
         self.tokenizer_name = tokenizer_source or source
-        self.lm = _build_causal_lm(source, revision, cache_dir)
+        self.dtype_name = dtype
+        self.lm = _build_causal_lm(source, revision, cache_dir, _DTYPES[dtype])
         self.tokenizer = load_tokenizer(self.tokenizer_name, revision, cache_dir)
 
         config = self.lm.config
@@ -111,11 +132,12 @@ class FrozenLM(nn.Module):
                 source,
             )
         _LOG.info(
-            'Frozen LM %s: hidden %d, vocab %d, %d parameters (all frozen).',
+            'Frozen LM %s: hidden %d, vocab %d, %d parameters (all frozen, %s).',
             source,
             self.hidden_dim,
             self.vocab_size,
             sum(p.numel() for p in self.lm.parameters()),
+            dtype,
         )
 
     # ---- Frozen-module contract ---- #
@@ -162,6 +184,7 @@ class FrozenLM(nn.Module):
         return {
             'source': self.source,
             'revision': self.revision,
+            'dtype': self.dtype_name,
             'vocab_size': self.vocab_size,
             'hidden_size': self.hidden_dim,
             'n_parameters': int(sum(p.numel() for p in self.lm.parameters())),
@@ -171,6 +194,11 @@ class FrozenLM(nn.Module):
         }
 
     # ---- Prompt assembly ---- #
+
+    @property
+    def embedding_dtype(self) -> torch.dtype:
+        """The frozen input embedding's precision, which every soft prompt has to match to enter the LM."""
+        return self.lm.get_input_embeddings().weight.dtype
 
     def embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         """Embeds token ids with the frozen input embedding.
@@ -204,14 +232,18 @@ class FrozenLM(nn.Module):
         Returns:
             tuple[torch.Tensor, torch.Tensor, int]: `(inputs_embeds, attention_mask, target_start)` where
                 `target_start` is the position of the first target token.
+
+        Note:
+            The prefix is cast to the frozen embedding's precision here. The bridge trains in float32 whatever the LM
+            runs in, and the cast is differentiable, so this is the one place the two precisions have to meet.
         """
         batch_size = prefix.shape[0]
         device = prefix.device
-        scaffold = self.scaffold if scaffold_ids is None else scaffold_ids.to(device)
+        scaffold = (self.scaffold if scaffold_ids is None else scaffold_ids).to(device)
         bos = torch.full((batch_size, 1), self.bos_id, dtype=torch.long, device=device)
         parts = [
             self.embed_tokens(bos),
-            prefix,
+            prefix.to(self.embedding_dtype),
             self.embed_tokens(scaffold.unsqueeze(0).expand(batch_size, -1)),
         ]
         start = int(1 + prefix.shape[1] + scaffold.shape[0])
@@ -243,13 +275,18 @@ class FrozenLM(nn.Module):
 
         Returns:
             torch.Tensor: `(batch_size, n_target)` log-probabilities, zeroed at padded positions.
+
+        Note:
+            The picked log-probability comes from a fused `cross_entropy` rather than a materialised `log_softmax`.
+            Rescoring the 700-sentence gallery runs 64 rows of 108 positions against a 151,936-token vocabulary, where
+            a float32 `log_softmax` and the tensor it reads cost roughly 7 GiB of transient on top of the logits
+            themselves -- enough to lose the run on the accelerators this trains on.
         """
         embeds, mask, start = self.assemble(prefix, target_ids, target_mask, scaffold_ids)
         logits = self.lm(inputs_embeds=embeds, attention_mask=mask).logits
         n_target = target_ids.shape[1]
         pred = logits[:, start - 1 : start - 1 + n_target].float()
-        logprob = F.log_softmax(pred, dim=-1)
-        picked = logprob.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
+        picked = -F.cross_entropy(pred.transpose(1, 2), target_ids, reduction='none')
         return picked * target_mask.to(picked.dtype)
 
     def forward_with_prefix(
@@ -354,7 +391,10 @@ class FrozenLM(nn.Module):
             torch.Tensor: `(batch_size, vocab_size)` logits.
         """
         embeds, mask, _ = self.assemble(prefix, scaffold_ids=scaffold_ids)
-        return self.lm(inputs_embeds=embeds, attention_mask=mask).logits[:, -1].float()
+        # Only the last position is read, and the vocabulary is wide enough that projecting the other eleven costs
+        # more than the rest of the forward pass; this runs four times a step through the two KL diagnostics.
+        out = self.lm(inputs_embeds=embeds, attention_mask=mask, logits_to_keep=1)
+        return out.logits[:, -1].float()
 
     @torch.no_grad()
     def next_token_kl(
@@ -446,13 +486,14 @@ def _first_id(value: Any, fallback: int) -> int:
     return fallback if value is None else int(value)
 
 
-def _build_causal_lm(source: str, revision: str | None, cache_dir: str | None) -> nn.Module:
-    """Builds the causal LM, constructing the offline test model locally for `'tiny'`.
+def _build_causal_lm(source: str, revision: str | None, cache_dir: str | None, dtype: torch.dtype) -> nn.Module:
+    """Builds the causal LM at a pinned precision, constructing the offline test model locally for `'tiny'`.
 
     Args:
         source (str): HuggingFace model id, or `'tiny'`.
         revision (str | None): Pinned commit SHA.
         cache_dir (str | None): Local snapshot directory.
+        dtype (torch.dtype): Precision the weights are loaded at, never inferred from the checkpoint.
 
     Raises:
         RuntimeError: If `transformers` is missing or the weights cannot be resolved.
@@ -462,26 +503,30 @@ def _build_causal_lm(source: str, revision: str | None, cache_dir: str | None) -
             from transformers import LlamaConfig, LlamaForCausalLM
         except ImportError as exc:
             raise RuntimeError(
-                'The prefix decoder needs `transformers`; install the `decoder` dependency group.'
+                'The prefix decoder needs `transformers`; install the `meaning` dependency group.'
             ) from exc
-        return LlamaForCausalLM(LlamaConfig(**_TINY_KWARGS))
+        tiny: nn.Module = LlamaForCausalLM(LlamaConfig(**_TINY_KWARGS))
+        return tiny.to(dtype)
     try:
         from transformers import AutoModelForCausalLM
 
-        return AutoModelForCausalLM.from_pretrained(source, revision=revision, cache_dir=cache_dir)
-    except (ImportError, OSError, ValueError) as exc:
+        return AutoModelForCausalLM.from_pretrained(source, revision=revision, cache_dir=cache_dir, dtype=dtype)
+    # TypeError covers a `transformers` older than the pinned floor, which knows `torch_dtype` but not `dtype`.
+    except (ImportError, OSError, TypeError, ValueError) as exc:
         raise RuntimeError(
             f'Could not load the frozen decoder LM {source!r} (revision={revision!r}): {exc!r}. '
             "Install `transformers` and pre-download the weights, or use lm_source='tiny' for offline runs."
         ) from exc
 
 
-def build_lm(config: DecoderConfig) -> FrozenLM:
+def build_lm(config: DecoderConfig, encoder: nn.Module | None = None) -> FrozenLM:
     """Constructs the frozen LM named by a decoder configuration.
 
     Args:
-        config (DecoderConfig): Decoder configuration (uses `lm_source`, `lm_revision`, `lm_cache_dir`,
+        config (DecoderConfig): Decoder configuration (uses `lm_source`, `lm_revision`, `lm_cache_dir`, `lm_dtype`,
             `prompt_template`).
+        encoder (nn.Module | None, optional): The encoder whose precision `lm_dtype='auto'` inherits. Defaults to
+            None, which resolves to float32.
 
     Returns:
         FrozenLM: The frozen LM.
@@ -492,4 +537,56 @@ def build_lm(config: DecoderConfig) -> FrozenLM:
         cache_dir=config.lm_cache_dir,
         prompt_template=config.prompt_template,
         tokenizer_source=config.tokenizer_source,
+        dtype=resolve_lm_dtype(config.lm_dtype, encoder),
     )
+
+
+def encoder_dtype(encoder: nn.Module | None) -> LMDtype:
+    """Returns the precision an encoder's weights are held at, defaulting to float32 when it has none to read.
+
+    Args:
+        encoder (nn.Module | None): The encoder whose sentence vectors condition the bridge.
+
+    Returns:
+        LMDtype: The encoder's floating-point parameter dtype.
+    """
+    if encoder is None:
+        return 'float32'
+
+    for param in encoder.parameters():
+        if param.is_floating_point():
+            return cast('LMDtype', _DTYPE_NAMES.get(param.dtype, 'float32'))
+
+    return 'float32'
+
+
+def resolve_lm_dtype(requested: LMDtype, encoder: nn.Module | None) -> LMDtype:
+    """Resolves `decoder.lm_dtype`, inheriting the encoder's precision for `'auto'`.
+
+    Args:
+        requested (LMDtype): The configured value.
+        encoder (nn.Module | None): The encoder the bridge is fed by.
+
+    Returns:
+        LMDtype: A concrete precision.
+
+    Note:
+        A pinned value that disagrees with the encoder is honoured and warned about rather than overridden. It is a
+        legitimate memory trade -- the frozen LM is far larger than the encoder -- but it puts the two halves of the
+        pipeline at different precisions, which is a property of the run that has to be visible in its log.
+    """
+    inherited = encoder_dtype(encoder)
+    if requested == 'auto':
+        _LOG.info('decoder.lm_dtype=auto resolved to %s from the encoder.', inherited)
+        return inherited
+
+    if encoder is not None and requested != inherited:
+        _LOG.warning(
+            'decoder.lm_dtype=%s is pinned against a %s encoder; the two halves of the pipeline run at different '
+            'precisions and their scores are not comparable with an %s run.',
+            requested,
+            inherited,
+            inherited,
+        )
+
+    return requested

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -259,12 +260,68 @@ def test_free_running_decode_returns_only_what_it_wrote(tiny_lm: FrozenLM) -> No
 
 
 def test_the_language_model_records_what_pins_it(tiny_lm: FrozenLM) -> None:
-    """A decode is only reproducible if the weights and the tokeniser are both named in the manifest."""
+    """A decode is only reproducible if the weights, the precision and the tokeniser are all named in the manifest."""
     record = tiny_lm.provenance()
     assert record['source'] == 'tiny'
     assert record['n_parameters'] == 22_688
+    assert record['dtype'] == 'float32'
     assert record['tokenizer'] == 'tiny' and record['tokenizer_fingerprint']
     assert record['prompt_template'] == DecoderConfig().prompt_template
+
+
+def test_a_half_precision_language_model_still_scores_a_float32_prefix() -> None:
+    """The bridge trains in float32 whatever the LM was loaded at, so the two precisions have to meet at the prompt."""
+    half = build_lm(DecoderConfig(lm_source='tiny', tokenizer_source='tiny', lm_dtype='bfloat16')).eval()
+    assert half.embedding_dtype == torch.bfloat16
+
+    prefix = torch.randn(2, 4, half.hidden_dim, requires_grad=True)
+    ids = torch.randint(4, 60, (2, 6))
+    mask = torch.ones(2, 6, dtype=torch.bool)
+
+    loss = half.forward_with_prefix(prefix, ids, mask)
+    loss.backward()
+    assert prefix.dtype == torch.float32 and prefix.grad is not None
+    assert float(prefix.grad.abs().sum()) > 0.0
+    assert half.provenance()['dtype'] == 'bfloat16'
+
+    # Log-probabilities are read back in float32 whatever the LM ran in, so the loss never carries a half-precision
+    # dynamic range into the optimiser.
+    logprobs = half.target_token_logprobs(prefix, ids, mask)
+    assert logprobs.dtype == torch.float32
+    assert len(half.generate_from_prefix(prefix, max_new_tokens=4)) == 2
+
+
+def test_the_language_model_inherits_the_encoders_precision() -> None:
+    """The bridge sits between the two, so a decoder at a precision the encoder is not is a seam waiting to break."""
+    encoder = build_model(ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40)
+    config = DecoderConfig(lm_source='tiny', tokenizer_source='tiny')
+    assert config.lm_dtype == 'auto'
+
+    assert build_lm(config, encoder=encoder).provenance()['dtype'] == 'float32'
+    assert build_lm(config, encoder=encoder.to(torch.bfloat16)).provenance()['dtype'] == 'bfloat16'
+
+    # With no encoder to read there is nothing to inherit, so it falls back rather than guessing.
+    assert build_lm(config).provenance()['dtype'] == 'float32'
+
+
+def test_a_pinned_precision_that_disagrees_with_the_encoder_is_honoured_and_announced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Trading the frozen LM's memory against the encoder's precision is allowed, but never silently."""
+    encoder = build_model(ModelConfig(embed_dim=16, hidden_dim=16, n_layers=1, n_heads=2), in_dim=40)
+    config = DecoderConfig(lm_source='tiny', tokenizer_source='tiny', lm_dtype='bfloat16')
+
+    with caplog.at_level(logging.WARNING, logger='zte.models.decoder.lm'):
+        lm = build_lm(config, encoder=encoder)
+
+    assert lm.provenance()['dtype'] == 'bfloat16'
+    assert any('different precisions' in record.message for record in caplog.records)
+
+
+def test_an_unsupported_language_model_precision_is_refused_up_front() -> None:
+    """A typo in `lm_dtype` must fail at construction, not after the weights have been downloaded and moved."""
+    with pytest.raises(ValueError, match='lm_dtype'):
+        build_lm(DecoderConfig(lm_source='tiny', tokenizer_source='tiny', lm_dtype='float64'))  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- #

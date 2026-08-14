@@ -31,7 +31,7 @@ from zte.config import (
     ZTEConfig,
 )
 from zte.data.dataset import ZuCoDataset
-from zte.data.targets.tokens import build_target_tokens
+from zte.data.targets.tokens import TinyByteTokenizer, _cache_path, _encode, build_target_tokens
 from zte.data.torch_dataset import build_subject_vocab, make_dataloader
 from zte.evaluation.report import _verdict
 from zte.inference.decode import ZTEDecoder
@@ -265,6 +265,52 @@ def _standalone_objective(dataset: ZuCoDataset, *, inherit_head: bool = True, **
     return model, objective, torch_ds
 
 
+class _StubHFTokenizer:
+    """A minimal stand-in for a HuggingFace tokeniser that, like Qwen2's, adds no special tokens of its own."""
+
+    pad_token_id = 99
+    eos_token_id = 99
+
+    def __call__(self, texts: list[str]) -> dict[str, list[list[int]]]:
+        """Encodes one id per character, with nothing appended."""
+        return {'input_ids': [[ord(c) % 90 + 1 for c in t] for t in texts]}
+
+
+def test_a_reference_the_bridge_must_learn_to_stop_ends_in_a_supervised_eos() -> None:
+    """Without a masked-in EOS the bridge is never taught to stop and free decode runs to `max_new_tokens` every row."""
+    ids, mask, pad_id, n_trunc = _encode(_StubHFTokenizer(), ['abc', 'de'], 8)
+    assert pad_id == 99 and n_trunc == 0
+
+    for row, valid, length in ((ids[0], mask[0], 3), (ids[1], mask[1], 2)):
+        assert int(valid.sum()) == length + 1, 'the EOS must occupy a position of its own'
+        assert int(row[valid][-1]) == _StubHFTokenizer.eos_token_id
+        assert bool(valid[length]), 'an EOS outside the mask is an EOS the loss never sees'
+
+    # The tiny path already appended one; both tokenisers must agree, or the offline suite tests a stop token
+    # that production does not have.
+    tiny = build_target_tokens(['abc'], 'tiny', max_length=8)
+    assert int(tiny.ids[0][tiny.mask[0]][-1]) == TinyByteTokenizer.eos_id
+
+
+def test_a_reference_too_long_for_the_width_is_counted_as_truncated() -> None:
+    """A clipped reference cannot be produced in full, so it loses its EOS and is reported rather than padded over."""
+    ids, mask, _, n_trunc = _encode(_StubHFTokenizer(), ['abcdefgh'], 4)
+    assert n_trunc == 1
+    assert int(mask[0].sum()) == 4
+    assert int(ids[0][-1]) != _StubHFTokenizer.eos_token_id
+
+
+def test_the_token_cache_key_moves_when_the_encoding_rule_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache is keyed by corpus and tokeniser, neither of which moves when `_encode` changes what it writes."""
+    import zte.data.targets.tokens as tokens_mod
+
+    texts = ['one', 'two']
+    key = _cache_path(texts, 'stub', None, 8, 'res/cache/tokens')
+
+    monkeypatch.setattr(tokens_mod, '_SCHEMA', tokens_mod._SCHEMA + 1)
+    assert _cache_path(texts, 'stub', None, 8, 'res/cache/tokens') != key
+
+
 def test_compute_returns_finite_float_metrics(small_dataset: ZuCoDataset) -> None:
     """Every metric the trainer logs is a plain float, `prefix_kl` included."""
     model, objective, torch_ds = _standalone_objective(small_dataset)
@@ -350,11 +396,60 @@ def test_null_prefix_dropout_makes_the_loss_independent_of_the_brain(
     assert float(first.detach()) == pytest.approx(float(second.detach()), abs=1e-9)
 
 
+@pytest.mark.parametrize('conditioning', ['pooled', 'pooled_plus_words'])
+def test_null_prefix_dropout_covers_every_slot_the_prefix_occupies(
+    small_dataset: ZuCoDataset, conditioning: str
+) -> None:
+    """The word slots carry both the brain and the word count, so a null that spans only the pooled half is no null."""
+    model, objective, torch_ds = _standalone_objective(
+        small_dataset, conditioning=conditioning, word_slots=3, null_prefix_prob=1.0
+    )
+    objective.train()
+    loader = make_dataloader(torch_ds, batch_size=4, shuffle=False, drop_last=True)
+    batch = next(iter(loader))
+    other = dict(batch)
+    other['features'] = torch.ones_like(batch['features'])
+
+    torch.manual_seed(0)
+    first, _ = objective.compute(model, batch)
+    torch.manual_seed(0)
+    second, _ = objective.compute(model, other)
+    assert float(first.detach()) == pytest.approx(float(second.detach()), abs=1e-9)
+
+
+def test_the_step_collapse_monitor_partners_rows_with_a_different_sentence(small_dataset: ZuCoDataset) -> None:
+    """Hard-negative batching puts the same sentence next door, where a healthy bridge is supposed to score near 0."""
+    _, objective, _ = _standalone_objective(small_dataset)
+    prefix = torch.randn(4, objective.bridge.slots, objective.lm.hidden_dim)
+
+    # Rows 0 and 1 are the same stimulus read by two subjects; the monitor must not pair either with the other.
+    same = torch.tensor([7, 7, 3, 5])
+    assert objective._prefix_kl(prefix, same) > 0.0
+
+    # Identical prefixes across distinct sentences is the collapse the monitor exists to name.
+    collapsed = prefix[:1].expand(4, -1, -1).contiguous()
+    assert objective._prefix_kl(collapsed, same) == pytest.approx(0.0, abs=1e-6)
+
+    # A batch of one stimulus has no valid partner at all, so it reports nothing rather than a near-zero reading.
+    assert objective._prefix_kl(prefix, torch.full((4,), 7)) == 0.0
+
+
 def test_stage0_refuses_a_held_out_stimulus(small_dataset: ZuCoDataset) -> None:
     """Text-only pretraining rejects held-out references instead of quietly filtering them."""
     _, objective, _ = _standalone_objective(small_dataset)
     with pytest.raises(ValueError, match='held-out'):
         objective.pretrain_text([0, 1, 2], holdout_text_ids=[2], epochs=1)
+
+
+def test_stage0_says_so_when_it_has_nothing_to_hold_out(
+    small_dataset: ZuCoDataset, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A split sharing every stimulus makes the leak check vacuous, which is the failure most like success."""
+    _, objective, _ = _standalone_objective(small_dataset)
+    with caplog.at_level(logging.WARNING, logger='zte.models.objectives.decode'):
+        objective.pretrain_text([0, 1, 2], holdout_text_ids=[], epochs=1)
+
+    assert any('no held-out stimulus' in record.message for record in caplog.records)
 
 
 def test_embedding_cache_refuses_joint_mode(small_dataset: ZuCoDataset) -> None:

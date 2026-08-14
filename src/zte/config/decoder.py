@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from zte.config._paths import PathFields
-from zte.config.types import Conditioning, GapCorrection
+from zte.config.types import Conditioning, GapCorrection, LMDtype
 
 
 @dataclass
@@ -24,6 +24,13 @@ class DecoderConfig(PathFields):
 
     lm_cache_dir: str | None = None
     """Local snapshot directory for the LM, so a Colab session is offline-reproducible."""
+
+    lm_dtype: LMDtype = 'auto'
+    """Precision the frozen LM runs in. `auto` reads it off the encoder the bridge is fed by, so the two halves of the
+    pipeline are never at different precisions; naming one of the others pins it instead. Either way it is never taken
+    from the HuggingFace checkpoint, whose stored dtype would otherwise make every token log-probability a property of
+    the uploader's export choice. The half precisions halve the LM's memory and cost the last digits of every score, so
+    a number produced under one is not comparable with a number produced under another."""
 
     conditioning: Conditioning = 'pooled'
     """What the bridge reads. `pooled_plus_words` is the ablation arm: it also hands the decoder the word count, which

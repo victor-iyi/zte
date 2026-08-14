@@ -132,12 +132,18 @@ class ZTEDecoder:
                 'word slots. Decoding it through the pooled-only path here would silently drop them and produce a '
                 'number for a prompt the run never used, so that arm is reported from its training metrics only.'
             )
-        lm = build_lm(decoder_config)
+        lm = build_lm(decoder_config, encoder=model)
         z_dim = int(state['bridge.to_bottleneck.weight'].shape[1])
         bridge, _ = build_bridge(decoder_config, z_dim, cast('int', model.hidden_dim), lm.hidden_dim)
         bridge.load_state_dict(_sub_state(state, 'bridge.'), strict=True)
 
         gap_state = extra.get('gap_correction')
+        if not gap_state and decoder_config.gap_correction != 'none':
+            raise ValueError(
+                f'{ckpt_path} was trained with gap_correction={decoder_config.gap_correction!r} but carries no fitted '
+                "statistics in extra['gap_correction']. An unfitted corrector passes vectors through, so every number "
+                'decoded from it would be produced off the text manifold while provenance claimed a correction.'
+            )
         gap = (
             GapCorrector.from_state(gap_state) if gap_state else GapCorrector(z_dim, mode=decoder_config.gap_correction)
         )

@@ -113,7 +113,7 @@ def generation_permutation_test(
         dict: `{'applicable', 'metric', 'observed', 'null_mean', 'null_std', 'p_value', 'n_perm',
         'n_queries', 'above_chance'}`. `p_value` is `(1 + #{null >= observed}) / (n_perm + 1)`.
     """
-    from zte.evaluation.generation import pairwise_metric
+    from zte.evaluation.generation import _HIGHER_IS_BETTER, pairwise_metric
 
     if len(hypotheses) != len(references):
         return {'applicable': False, 'reason': 'hypotheses and references differ in length'}
@@ -138,7 +138,12 @@ def generation_permutation_test(
     null = np.empty(n_perm, dtype=np.float64)
     for i in range(n_perm):
         null[i] = float(np.mean(scores[rows, rng.permutation(n)]))
-    p = (1.0 + int(np.sum(null >= observed))) / (n_perm + 1.0)
+
+    # The tail has to follow the metric: on WER a true pairing beats the null by scoring LOWER, and counting the
+    # upper tail there returns p = 1.0 for a perfect decode while the paired delta calls the same evidence a win.
+    higher_is_better = _HIGHER_IS_BETTER.get(metric, True)
+    beaten = null >= observed if higher_is_better else null <= observed
+    p = (1.0 + int(np.sum(beaten))) / (n_perm + 1.0)
 
     return {
         'applicable': True,
