@@ -63,7 +63,7 @@ export PYTHONUNBUFFERED=1
 # Configuration
 # --------------------------------------------------------------------------- #
 ROOT="${1:-res/data/zuco_extracted}"      # data root (positional arg 1)
-SEEDS="${SEEDS:-42}"                       # fixed seed(s); override e.g. SEEDS="42 43"
+SEEDS="${SEEDS:-42 2 10 95}"                       # fixed seed(s); override e.g. SEEDS="42 43"
 PY="${PY:-.venv/bin/python}"              # project venv interpreter
 [ -x "${PY}" ] || PY="python"             # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments}"   # where zte-run catalogues each run (a Drive path persists everything)
@@ -82,7 +82,6 @@ HOLDOUT="${HOLDOUT:-ZAB}"                 # held-out subject for the single-fold
 # The exp12 alignment stack first, then the two raw arms it has to beat.
 FLAGSHIP_CONFIGS="${FLAGSHIP_CONFIGS:-\
 experiments/flagship/zte_raw_aligned.yaml \
-experiments/flagship/zte_raw_aligned_wide.yaml \
 experiments/flagship/clip_e5_meaning_raw.yaml \
 experiments/flagship/clip_e5_raw.yaml}"
 # One knob of the exp12 stack each, so a win is attributable rather than asserted.
@@ -171,12 +170,14 @@ study_audit() {
 
 # =========================================================================== #
 # FLAGSHIP -- the CLIP arms, held out on one subject.
-#   zte_raw_aligned        : exp12 -- the champion candidate. exp10's encoder byte-for-byte, plus Euclidean
-#                            alignment, the signature-driven subject adapter and the identity-orthogonality penalty.
-#   zte_raw_aligned_wide   : exp12 -- the same stack on the v2 encoder (64 filters, multiscale bank, attentive pool),
-#                            testing whether capacity pays once identity stops competing for the same parameters.
-#   clip_e5_meaning_raw    : exp10 -- the measured baseline to beat (32 hits @ Top-5 of 700, p ~ 7e-16).
-#   clip_e5_raw            : exp8  -- the same, without meaning distillation. Equal on retrieval, worse subject probe.
+#   All three are tied on the held-out board (2026-08-13, ZAB, 700 queries). Rank percentile with a bootstrap CI is
+#   what separates arms here; Top-1 does not, since two seeds of one config move it 9 hits to 8.
+#   zte_raw_aligned        : exp12 -- rank percentile 0.9672 (0.9635-0.9708). exp10's encoder byte-for-byte, plus
+#                            Euclidean alignment, the subject adapter and the identity-orthogonality penalty --
+#                            none of which moves a number: see ablation/exp12_align_off.
+#   clip_e5_meaning_raw    : exp10 -- 0.9667 (0.9629-0.9705), and the best Top-5 on the board at 37 hits of 700.
+#   clip_e5_raw            : exp8  -- 0.9635 (0.9599-0.9673), the only arm whose length-stratified Top-1 clears
+#                            p < 0.05 (0.0443, p 0.012). Worse subject probe, no meaning distillation.
 # =========================================================================== #
 study_flagship() {
   echo "=== FLAGSHIP: exp12 alignment stack vs the two measured raw arms ==="

@@ -3,6 +3,32 @@
 Nothing here is deleted, because a negative result is still a result: these are the arms that were run on real
 ZuCo and did not earn a place in the suite. Each row gives the number that retired it.
 
+## Retired 2026-08-14 — capacity that did not buy retrieval
+
+The 2026-08-13 Drive session re-ran the flagship set on one fold (held out on `ZAB`, 700 queries) and scored it on
+**rank percentile**, which uses every query rather than only the ones that land. That metric turns out to be
+seed-stable where Top-1 is not — the same `zte_raw_aligned` config at two seeds gives 0.9672 and 0.9670 while its
+Top-1 moves 9 hits to 8 — so it is what these two demotions rest on.
+
+| config | rank percentile (95% CI) | Top-1 / 700 | Top-5 / 700 | eff-rank | verdict |
+| --- | --- | --- | --- | --- | --- |
+| `zte_raw_aligned_wide` | **0.9523** (0.9479–0.9565) | 5 | 14 | 0.45 | Significantly below the retained set. |
+| `clip_e5_meaning_raw_v2` | never scored on this board | 2 | — | 0.53 | Its one honest number is chance. |
+
+**`zte_raw_aligned_wide` is the first arm this board separates.** Its interval (0.9479–0.9565) does not overlap the
+retained three (~0.963–0.971), so this is a real difference and not the run-to-run noise that has swallowed every
+previous comparison here. Its length-stratified Top-1 of 0.0200 is *below* the 0.0285 stratified chance rate.
+
+**`clip_e5_meaning_raw_v2` was never re-run**, so its report predates the rank-percentile scoreboard entirely. The
+only held-out number it has is 2 hits in 700 where chance expects 1, and it is the sole arm on the board whose
+same-category cross-subject cosine gap is **negative** (−0.003): related meanings sit no closer than random ones.
+
+Both carry the lesson worth keeping. They have the two healthiest geometries ever measured here — effective-rank
+ratios of 0.45 and 0.53 against the retained set's 0.24–0.25 — and the two worst retrieval scores. A high effective
+rank is not evidence of a better representation; read alongside retrieval, it says the extra directions are not
+carrying sentence identity. The existing warning in this file is that a *low* effective rank can mean invariance
+bought by destroying capacity. The converse now also has a measurement: capacity retained is not capacity used.
+
 ## Retired 2026-07-25 — the honest-board re-scoring
 
 Every run on Drive (`Sharables/ZTE/2026-07-24`, `2026-07-25`) was re-scored on the **held-out** subject rather than

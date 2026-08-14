@@ -36,7 +36,7 @@ chance 1/700, exact binomial tail):
 | -------------------------------------------------------- | ------------- | ---------------- | ------ | --------- | ---------------------------- |
 | `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)              | raw_conformer | **32**           | 7e-16  | 0.264     | 0.45 (0.81)                  |
 | `flagship/clip_e5_meaning_raw` (`exp10_..._raw`)         | raw_conformer | **32**           | 7e-16  | 0.264     | 0.41 (0.81)                  |
-| `flagship/clip_e5_meaning_raw_v2` (`exp10_..._raw_v2`)   | raw_conformer | 19               | 1e-06  | **0.535** | 0.36 (0.81)                  |
+| `archive/clip_e5_meaning_raw_v2` (`exp10_..._raw_v2`)    | raw_conformer | 19               | 1e-06  | **0.535** | 0.36 (0.81)                  |
 | `archive/clip_e5_meaning` (`exp9_clip_e5_meaning`)       | band_power    | 10               | 3e-02  | 0.160     | 0.23 (0.16)                  |
 | `archive/clip_bge_meaning`                               | band_power    | 9                | 7e-02  | 0.160     | 0.23 (0.16)                  |
 | `archive/clip_qwen_bandpower` (`exp8_clip_qwen`)         | band_power    | 5                | 5.6e-01| 0.170     | 0.22 (0.16)                  |
@@ -84,13 +84,35 @@ State these next to any result from this directory; they are in every `evaluatio
 | ------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                           | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline. |
 | `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation    | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                    |
-| `clip_e5_meaning_raw_v2` (`exp10_…_raw_v2`) | sentence-level CLIP + meaning distillation    | raw-conformer, 64 filters, multiscale 15/31/63/125 bank, attentive temporal pool | Fewer hits (19, *p* 1e-06) but the healthiest geometry on the board — eff-rank **0.535**, subject probe 0.36.                                          |
-| `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | The subject-alignment stack that closes the identity gap every row above leaves open. **Built; no real-ZuCo number yet.**                              |
-| `zte_raw_aligned_wide` (`exp12_…_wide`)     | + identity orthogonality, over CLIP + meaning | the v2 encoder under the same alignment stack                                    | exp12 on the richer encoder. Run *after* the narrow arm. **Built; no real-ZuCo number yet.**                                                           |
+| `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | Rank percentile **0.9672** (0.9635–0.9708), and stable to 0.0002 across seeds. The alignment stack itself is a measured no-op — see below.             |
 
-All five are EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
+All three are EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
 
-Two things to keep straight when reading this table. **`dataset.normalize` only ever applied to band power**, so `normalize: riemannian` is a silent no-op on every raw arm: the first three rows train on unaligned voltages, which is exactly what `raw_align: euclidean` in the exp12 rows fixes. And **the exp12 arms are the current best *candidate*, not the current best *result*** — they were built after the 2026-07-25 re-scoring and have no real-data number yet. Until they earn one, the measured champions are `clip_e5_raw` and `clip_e5_meaning_raw` at 32 hits in 700. Run the narrow exp12 arm before the wide one so the alignment effect and the encoder effect stay separable.
+### What the 2026-08-13 session settled
+
+That session re-ran the flagship set on one fold (held out on `ZAB`, 700 queries) and scored it on **rank percentile**
+with a bootstrap CI. Three things came out of it, and the third is the one to carry forward.
+
+**Rank percentile is the metric that can rank these arms; Top-1 is not.** Two seeds of the same `zte_raw_aligned`
+config give rank percentile 0.9672 and 0.9670 — a difference of 0.0002 — while their Top-1 moves 9 hits to 8. Every
+comparison on this board that was ever made on Top-1 was made on noise.
+
+**The three retained arms are statistically tied.** `zte_raw_aligned` 0.9672 (0.9635–0.9708), `clip_e5_meaning_raw`
+0.9667 (0.9629–0.9705), `clip_e5_raw` 0.9635 (0.9599–0.9673). Overlapping intervals, no champion. `clip_e5_raw` is
+the only one whose *length-stratified* Top-1 clears *p* < 0.05 (0.0443, *p* 0.012), which is why it keeps its place
+despite the lowest point estimate.
+
+**The exp12 alignment stack does not do anything measurable.** `ablation/exp12_align_off` — the same config with
+Euclidean alignment switched off — returns rank percentile 0.9670 against the full stack's 0.9672, effective rank
+190.31 against 190.25, and a subject probe of 0.4179 against 0.4180. Agreement to four decimals on every metric is
+not a small effect; it is no effect. The stack was built to close the identity gap and, on this fold, it does not.
+`zte_raw_aligned` stays in `flagship/` because it is tied for best measured, **not** because its levers are earning
+their place — and until an ablation shows one of them moving a number, the honest description of exp12 is
+`clip_e5_meaning_raw` with extra machinery attached.
+
+One older caveat still stands: **`dataset.normalize` only ever applied to band power**, so `normalize: riemannian` is
+a silent no-op on the two non-exp12 rows, which train on unaligned voltages. That is what `raw_align: euclidean` was
+introduced to fix — and what the ablation above shows it does not, in fact, fix anything measurable.
 
 ### What the CLIP objective does
 
