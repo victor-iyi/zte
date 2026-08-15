@@ -287,3 +287,120 @@ uv run python examples/embed_new_signals.py --ckpt res/checkpoints/best.pt
 [DATASET.md]: ./DATASET.md
 [EVALUATION.md]: ./EVALUATION.md
 [RESULTS.md]: ./RESULTS.md
+
+## Running the whole study — `scripts/run_zte_study.sh`
+
+One resumable command for everything a claim has to survive. Each stage answers one question, and each one is
+skippable:
+
+| Stage        | Question                                                                            |
+| ------------ | ----------------------------------------------------------------------------------- |
+| `audit`      | Is the dataset confounded, before any model is trained?                             |
+| `encoder`    | Does the encoder reach a stranger's brain, at more than one seed?                   |
+| `loso`       | ...for every one of the 12 subjects? (multi-hour, times `SEEDS`)                    |
+| `decoder`    | Does the decoder read the brain, or recite the corpus?                              |
+| `ablation`   | Which lever did it: raw vs band power, harmonics vs indexing, invariance on vs off? |
+| `rebaseline` | How much of the number is sentence length?                                          |
+| `analysis`   | All of it, as one offline page plus CSV tables.                                     |
+
+```sh
+# Real data, three seeds, everything except the 12-fold sweep.
+SEEDS='42 43 44' bash scripts/run_zte_study.sh res/data/zuco_extracted
+
+# Add the sweep; this is the expensive one.
+STAGES='audit encoder loso decoder ablation rebaseline analysis' bash scripts/run_zte_study.sh
+
+# Re-draw the analysis from what is already on disk, training nothing.
+STAGES=analysis bash scripts/run_zte_study.sh
+
+# Offline wiring check in minutes. Every config is rewritten offline-safe first; nothing here is a result.
+SMOKE=1 bash scripts/run_zte_study.sh
+```
+
+**Pause and resume.** Every training command carries `--resume`, so Ctrl-C or a reclaimed Colab VM costs at most
+the epoch in flight; re-running the identical command skips finished work instantly. With `DRIVE_BACKUP` set the
+whole run directory is mirrored after every stage, and the study-level artifacts (`LOSO_SUMMARY.md`,
+`confound_audit.md`, `analysis/`) are copied at the end, so nothing lives only on a VM disk.
+
+**A decoder arm never takes `--loso-holdout`.** That flag forces `split=by_subject_loso`, which shares all 700
+stimuli between train and val — the one configuration in which a decoder recites the corpus and scores well. The
+script writes the held-out subject into a temporary config instead, so the honest four-cell split survives.
+
+### The cost of the word-synchronous evidence path
+
+With `decoder.evidence_schedule` on, the per-word hiddens are needed at every step, so the frozen-encoder cache is
+unavailable and the encoder runs every epoch. Budget roughly an encoder run's cost plus the frozen LM.
+`experiments/decoder/decode_v2_pooled.yaml` and `decode_v2_ladder_only.yaml` keep the cache and are several times
+cheaper, which is also why the arms run at one seed while the headline gets the spread.
+
+## Surviving a reclaimed machine
+
+ZTE runs in two places and the durability rules differ. On Colab the VM can vanish without warning and only the
+mounted Drive survives; on a workstation nothing is ephemeral and `res/` is the durable root. The contract below
+holds in both: **nothing expensive is ever more than one epoch, or one stage, away from durable storage.**
+
+| written | when | why then |
+| --- | --- | --- |
+| `best.pt` | the moment it improves | it is the result; losing it loses the run's whole point |
+| `last.pt` | every epoch | `--resume` reads it, so a reclaimed VM costs one epoch |
+| `ckpt_epoch*.pt` | never mirrored | rotation history -- `keep_last` extra copies of a large file that a fresh VM cannot use |
+| the run directory | each stage | config, `history.json`, evaluation, figures, TensorBoard |
+| evaluation · generation · analysis · studio | straight to the durable root | expensive, and none of it resumes |
+| the prepared feature bundle | once, ever | content-addressed and not date-stamped, so every future session reuses it |
+
+`CheckpointManager._backup_to_drive` runs on every `save()` and mirrors exactly two files. That is both safer and
+cheaper than mirroring the whole checkpoint directory: `best.pt` and `last.pt` are on Drive within one epoch, and the
+per-epoch traffic drops from `keep_last + 2` large files to at most two. `mirror_file` skips a file whose bytes
+already match, so a `best.pt` that did not improve costs a `stat` rather than a copy.
+
+### A failed mirror is a warning, a silently failed mirror is a lost run
+
+Mirroring never raises -- a full Drive must not kill a multi-hour run. But `mirror_file` returning `False` looks
+identical whether the file was unchanged or the mount stopped accepting writes, so `_note_mirror` checks that
+`last.pt` actually landed and counts *consecutive* failures. At 1, 3, 10 and 30 it escalates to an error naming the
+missing path and saying plainly that the run is not currently recoverable from Drive. The count resets the moment a
+mirror succeeds, so one early hiccup does not shout for the rest of the run.
+
+### Resuming from a restored directory
+
+A run directory restored from Drive carries `best.pt` and `last.pt` and no rotation history. `load_latest` handles
+that: it tries `last.pt`, then the epoch files newest-first, then `best.pt`. The last of those is what makes the
+thin mirror safe -- `best.pt` is a full-state checkpoint like any other, so even a `last.pt` torn by the write that
+was in flight when the machine went away costs the epochs since the last improvement rather than the run.
+
+On Colab the notebook's `resolve_ckpt()` searches this session's Drive folder, then every earlier session
+newest-first, then the local disk. A fresh runtime can therefore evaluate, decode or open the studio on a run
+trained in a previous session with no manual restore step.
+
+## The exp16 encoder mechanisms in the loop
+
+Four mechanisms join the training step, and each enters at a different point. `docs/METHODS.md` §9-12 has the maths;
+this is where they sit in the loop.
+
+| mechanism | where it runs | who owns the loss |
+| --- | --- | --- |
+| predictive residual | inside `ZTEModel.token_hidden`, after subject conditioning | the `Trainer`, which drains it |
+| cross-reader consensus (sentence) | `SentenceClipObjective.compute`, on the pooled vector | the objective |
+| cross-reader consensus (word) | `_ObjectiveBase.regularize`, on the usable token embeddings | the objective |
+| gallery contrast | `SentenceClipObjective.compute`, after the in-batch InfoNCE | the objective |
+
+**Why the residual head's loss belongs to the trainer.** It belongs to no objective: it de-trends the encoder's
+tokens for whatever loss comes next, and every objective gets the same treatment. `ZTEModel` stashes it,
+`Trainer._residual_loss` drains it once per step, scales it by `model.residual_predict_weight` and merges its
+metrics. The drain also runs in `evaluate()`, where the stash would otherwise pin one autograd graph per validation
+batch for the length of the loop.
+
+**The consensus bank is training-only state.** It is written under `self.training` and read before it is written, so
+a validation pass leaves it exactly as training left it and a held-out subject never enters it. It lives on the
+objective, not on the model, so nothing in the inference path can reach it.
+
+**Per-epoch metrics travel in `history.json`.** Every numeric key an objective returns is averaged over the epoch's
+steps and appended to `Trainer.history`, then written next to the manifest. `zte-analyze` plots them as the
+**mechanism curves** panel. This is not decoration: the final `metrics.json` cannot tell "the consensus term did
+nothing" from "the consensus bank never reached `consensus_min_readers` and contributed exactly zero", and those are
+very different findings.
+
+**Inheriting an encoder replaces the run's `model` config.** A decoder run started with `--encoder-ckpt` uses the
+source encoder as its model, so the run's own `model` section is overwritten with the source's before anything is
+saved. Without that, the checkpoint would store a description of an encoder that was never built and would fail to
+reload — which is exactly how a decoder over a residual-coded encoder broke before this rule existed.

@@ -166,3 +166,259 @@ The **retrieval-and-honesty layer** is the implemented fix, layered on top of th
   controls; rank-percentile / median-rank reporting).
 
 The stack is carried by the flagship CLIP configs, `experiments/flagship/zte_raw_aligned.yaml` (geometry-fixed spherical-harmonic recipe) and `experiments/flagship/clip_e5_raw.yaml` (the raw-conformer arm); `experiments/benchmark/baseline_skipgram_loso.yaml` runs the same levers under skip-gram as the control. The spatial-attention + FiLM + shrunk-`content_dim` A/B (`experiments/archive/exp7_sota_geom_invariance.yaml`) is archived — it scored 0.0 with permutation *p*=1.0 on held-out ZAB, so it is a recorded failed arm rather than an active comparison. The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).
+
+## Lever: token-level lexical alignment
+
+**The measurement that forced it.** On real ZuCo, cross-subject *word* retrieval sits at Top-1 0.0040 against a
+query-weighted chance of 0.0031, and the held-out `word_len` probe is negative in 13 of 13 runs. Sentence-level
+transfer is real — rank percentile 0.9670, 8 hits in 700 where chance expects 1 — but it is carried by
+whole-sentence gestalt, and 5.14 of the 9.45 bits of sentence identity on this corpus are sentence length.
+
+**Why it was never going to emerge on its own.** The CLIP objective pulls at the *pooled* sentence vector. No term
+anywhere in the loss asks a single word's EEG to mean that word, so there is no gradient pushing lexical structure
+into the token representations. Hoping for it was the mistake; the fix is to demand it.
+
+Two directions, weighted separately because they are different claims. With $v_i$ the L2-normalised projection of
+usable EEG token $i$, $t_i$ its word's frozen text embedding, $c_i$ its `(stimulus, word index)` and $s_i$ its
+subject:
+
+$$
+\mathcal{L}_\text{type} = -\frac{1}{|A|}\sum_{i \in A} \log
+  \frac{\exp(v_i \cdot t_i / \tau)}{\sum_{c \in T} \exp(v_i \cdot t_c / \tau)}
+$$
+
+over the distinct word types $T$ present in the batch — absolute lexical identity, learnable from one reader and
+not required to transfer. And:
+
+$$
+\mathcal{L}_\text{reader} = -\frac{1}{|A|}\sum_{i \in A} \log
+  \frac{\sum_{j:\, c_j = c_i,\ s_j \neq s_i} \exp(v_i \cdot v_j / \tau)}
+       {\sum_{j \in \mathcal{C}(i)} \exp(v_i \cdot v_j / \tau)}
+$$
+
+— the same word position of the same sentence read by **someone else**. This is the property a cross-subject
+decoder needs. Two constraints make it mean what it says: a different reading of the same word is never a negative
+(it is a positive, whoever produced it), and with `lexical_same_subject_negatives` the denominator holds only the
+anchor's own subject, so telling anchor from negative cannot be done on subject identity — the shortcut that makes
+an easy contrastive loss worthless here.
+
+**Where the target comes from.** `data.targets.lexical.build_lexical_matrix` embeds each word type with the *same*
+frozen encoder that supplies the sentence-level CLIP target, so a word and the sentence containing it land in one
+space. That is not a convenience: it is what lets the decoder's word-synchronous evidence path read per-word
+vectors through the map it already learned for the pooled vector. Edge punctuation is stripped (ZuCo keeps the
+punctuation the reader saw, so `colonel.` and `colonel` would otherwise be two words) and case is kept, because
+the encoders are case-sensitive and a sentence-initial capital is something the reader saw.
+
+Both weights default to 0. `experiments/flagship/zte_lexical_raw.yaml` turns them on;
+`experiments/ablation/exp14_lexical_off.yaml` is the matched pair and
+`experiments/ablation/exp14_lexical_reader_off.yaml` isolates the cross-reader half. If word retrieval does not
+move between them, the honest reading is that ZuCo's per-word EEG carries no cross-reader lexical content — a
+result, and one worth reporting plainly.
+
+---
+
+# The exp16 encoder — four mechanisms, four measured failures
+
+Everything above is a lever on one architecture. The four mechanisms here are a change to the architecture, and each
+exists because a specific number said the old one could not get there. The evidence, from real ZuCo with `ZAB` held
+out (2026-08-13) and the thirteen-arm sweep of 2026-07-25:
+
+| measurement | value |
+| --- | --- |
+| Held-out rank percentile | 0.9636 [0.9599, 0.9674] |
+| Length-stratified rank percentile | 0.9211 [0.9154, 0.9270] |
+| Variance budget | 8.4% subject · 0.0% content · 91.6% neither |
+| Same word, different subject | cosine gap +0.005 — *not clustered* |
+| Held-out `word_len` probe | $R^2 = -0.060$ |
+| Decoder rescoring, length-stratified rank percentile | 0.4349 — *below chance* |
+| Spread across 13 arms flipping alignment / adapter / orthogonality | 2 to 9 hits in 700 |
+
+The last row is the one that matters for design: run-to-run noise was the size of every effect, so the exposed levers
+are exhausted. Every mechanism below defaults to off and has a matched ablation that flips exactly one field.
+
+## 9. Predictive Residual Coding
+
+**Idea.** Do not read word $w$ from $\mathrm{EEG}(w)$. Read it from what the preceding words failed to predict.
+
+**Why.** Reading is predictive, and the largest language-related EEG deflection is a *surprisal* response — the N400
+scales with how unexpected a word was given its context. Everything unsurprising about a moment of reading is
+predictable from the last few seconds: the reader's tonic state, cap impedance, the 1/f background, slow drift.
+Those are exactly the terms $s_{\text{subject}}$, $s_{\text{state}}$ and $\varepsilon$ of §0, and they cancel in a
+context residual while the word-specific response does not. This is a different attack on the same problem the
+adversary of §1 attacks, and it does not require deleting anything.
+
+**Math.** With token hiddens $h_1, \dots, h_L$ and a causal head $f$ reading only the left context (position 1 sees a
+learned BOS):
+
+$$
+\hat{h}_t \;=\; f\big(h_1, \dots, h_{t-1}\big), \qquad
+\tilde{h}_t \;=\; h_t - \gamma \cdot \mathrm{sg}\big[\hat{h}_t\big]
+$$
+
+with $\gamma$ a learnable scalar and $\mathrm{sg}[\cdot]$ the stop-gradient. The head is trained by its own
+regression against a detached target,
+
+$$
+\mathcal{L}_{\text{predict}} \;=\; \frac{1}{|V|\,d}\sum_{t \in V} \big\| f(\mathrm{sg}[h_{<t}]) - \mathrm{sg}[h_t] \big\|^2 ,
+$$
+
+so no gradient from $\mathcal{L}_{\text{predict}}$ reaches the encoder. **That detachment is the whole guarantee.**
+Attached, the encoder could cut this loss by making itself predictable, and a constant representation drives it to
+zero — collapse wearing the disguise of a well-fit de-trender.
+
+**What it predicts, and how to falsify it.** `residual_context_explained` reports the fraction of a token that the
+context accounted for. If the mechanism works, the subject probe on the residual falls *below* the subject probe on
+the token while the content probe rises. If both fall, the residual is noise and the mechanism failed. That is a
+clean, pre-registered prediction with a matched pair to test it against.
+
+**Config:** `model.residual_coding`, `residual_layers`, `residual_gate`, `residual_predict_weight`.
+**Code:** `models/encoder/residual.py`; applied inside `ZTEModel.token_hidden`, its loss drained by the `Trainer`.
+**Ablation:** `experiments/ablation/exp16_residual_off.yaml`.
+
+## 10. Cross-Reader Consensus Distillation
+
+**Idea.** ZuCo gives all twelve subjects the same 700 sentences, so every stimulus has twelve noisy measurements of
+one latent content vector. Train each single reading against the *consensus* of the others rather than against the
+text alone.
+
+**Why.** §0 says a reading is content plus reader plus trial noise. The variance budget says the third term dominates:
+91.6% of the space's variance has no measurable attribute at all. Averaging $n$ readings suppresses the reader and
+trial terms as $1/\sqrt{n}$ and leaves the content term untouched, so the cross-reader mean is a strictly better
+content estimate than any row the encoder can see. This is not augmentation-based self-distillation — the teacher
+averages over *different brains reading the same text*, which is precisely the invariance we need and which no
+augmentation of a single reading can produce.
+
+**Math.** An EMA prototype bank holds one vector per stimulus key $k$, updated only while training and read before it
+is written:
+
+$$
+p_k \;\leftarrow\; \rho\, p_k + (1 - \rho)\,\overline{z}_k^{\,\text{batch}}, \qquad
+\mathcal{L}_{\text{pull}} \;=\; 1 - \cos\!\big(z_i,\; p_{k(i)}\big)
+$$
+
+served only once at least `consensus_min_readers` **distinct subjects** have contributed to $p_k$. Beside it, the
+term that matters most:
+
+$$
+\mathcal{L}_{\text{gallery}} \;=\; -\log
+  \frac{\exp\big(z_i \cdot p_{k(i)} / \tau\big)}{\sum_{k \in \mathcal{K}} \exp\big(z_i \cdot p_k / \tau\big)}
+$$
+
+over every prototype the bank serves. **That is the evaluation, moved into the loss.** The evaluation asks a
+held-out reading to pick its sentence out of 700; this asks a training reading to pick its stimulus out of every
+stimulus — and it scores EEG against EEG, so the modality gap cannot be what separates the answer from the
+distractors.
+
+**Honesty.** The bank is written only in `training` mode and never consulted at inference, so a held-out subject
+neither enters it nor reads from it, and the exported embedding is unchanged by its existence. Read-then-write
+ordering means this step's teacher was built from earlier steps only. One approximation, flagged: the anchor's own
+earlier passes sit in its prototype with weight bounded by $1 - \rho$. That can weaken the teacher; it cannot
+manufacture a held-out result.
+
+**Config:** `objective.consensus_weight`, `consensus_gallery_weight`, `consensus_word_weight`, `consensus_decay`,
+`consensus_min_readers`, `consensus_temperature`, `consensus_gallery_size`.
+**Code:** `models/encoder/consensus.py`; wired through `_ObjectiveBase.attach_consensus` / `sentence_consensus`.
+**Ablation:** `experiments/ablation/exp16_consensus_off.yaml`.
+
+## 11. Length-Matched Gallery Contrast
+
+**Idea.** Put all 700 texts in the InfoNCE denominator instead of the batch's fifteen, and restrict that denominator
+to texts of the anchor's own word count.
+
+**Why, part one.** Training asks the model to beat fifteen distractors; evaluation asks it to beat 699. The hardest
+distractors — same length, same passage, same register — are almost never in a batch of sixteen. The frozen text
+matrix is already resident, so widening the denominator costs one matrix product.
+
+**Why, part two, and this is the real reason.** Word count carries 5.1422 of the 9.4512 bits of sentence identity,
+and eye-tracking segmentation hands the model that count for free on every reading. A denominator of same-length
+texts makes counting words worth **exactly nothing**, because every candidate has the same count. Whatever the loss
+learns to separate them with is therefore not length. This is the training-time counterpart of the length-stratified
+evaluation that has, until now, only been able to *measure* the confound after the fact.
+
+**Math.** With $\mathcal{B}(i) = \{ c : |n_c - n_i| \le b \}$ the anchor's length band,
+
+$$
+\mathcal{L}_{\text{gallery}} \;=\; -\log
+  \frac{\exp\big(z_i \cdot t_{c(i)} / \tau\big)}{\sum_{c \in \mathcal{B}(i)} \exp\big(z_i \cdot t_c / \tau\big)} .
+$$
+
+Two guards make it a loss rather than a formality. An anchor whose band holds fewer than `gallery_min_candidates`
+texts falls back to the full gallery — a band that strands an outlier-length sentence with two distractors makes its
+loss *small*, not hard, which is the opposite of the point. And the anchor's own text is always in its own
+denominator, because a cross-entropy whose target column is masked saturates at the float floor and stops reading
+the model. `gallery_chance` reports the chance level the denominator actually implies, so the number is never quoted
+against $1/700$ when the band made it $1/40$.
+
+**Config:** `objective.gallery_weight`, `gallery_length_band`, `gallery_min_candidates`.
+**Code:** `models/encoder/gallery.py`; used by `SentenceClipObjective.compute`.
+**Ablations:** `experiments/ablation/exp16_gallery_off.yaml` (the term entirely) and
+`exp16_gallery_band_off.yaml` (the full gallery without length matching, isolating the two halves).
+
+## 12. Length Projection
+
+**Idea.** Remove the sentence-length subspace from the exported embeddings, fitted on the training split, and then
+measure what is left.
+
+**Why.** Length-stratified retrieval answers "would this hit survive if length were held constant". It is a good
+question and it has been the project's main defence. This asks the stronger one: make the representation itself
+carry no length, and report retrieval on that. A length-only oracle at $\pm 2$ words currently beats the best
+encoder on every top-k, so the difference between the two numbers is the entire claim.
+
+**Math.** With $\phi(n) = [1,\; n,\; \log n,\; n^{-1},\; n^2]$ and $W$ the ridge solution of
+$\min_W \| Z_{\text{train}} - \Phi_{\text{train}} W \|^2 + \lambda \|W\|^2$ fitted on training rows only:
+
+$$
+\tilde{z}_i \;=\; z_i - \big(\phi(n_i) - \overline{\phi}\big)\,W .
+$$
+
+The basis is small enough to fit on a few hundred sentences and rich enough to catch the saturating part — length
+enters retrieval through more than one route (more tokens to pool, a longer eye-tracking trace, a wider pad mask), so
+a straight line in $n$ does not span it.
+
+**Provenance is the whole point.** Fitting on the rows about to be scored is transductive and drives the residual
+leakage to essentially zero — a number that says nothing about the encoder and that a decoder scoring one sentence at
+a time cannot reproduce. Fitted on train, `length_leakage_after` is *not* zero, and the residual is what the basis
+failed to transfer. Both numbers travel with the metric, and the projection is refused with a stated reason rather
+than silently skipped when the word counts needed to fit it are absent.
+
+**Config:** `objective.length_projection` (an evaluation post-processing knob, alongside `whiten` and `all_but_top`).
+**Code:** `models/encoder/nuisance.py`; applied in `evaluation/report.py` before any retrieval is computed.
+**Ablation:** `experiments/ablation/exp16_length_projection_off.yaml` — it changes no gradient, only what the
+evaluation reads, so the pair measures how much of the headline was word count.
+
+## 13. What §10 and §11 do to the retrieval task itself
+
+Both mechanisms range over the *stimulus set*, and the retrieval gallery **is** the stimulus set. That interaction
+has to be stated before either number is quoted.
+
+**There is no transductive leak.** The consensus bank is written only under `self.training`, so no held-out
+reading enters it, and it is never consulted at inference. The gallery denominator is the frozen *text* matrix; no
+held-out EEG touches it. Nothing fitted on a scored row reaches the score.
+
+**But a subject-only split holds out people, not sentences.** Under `by_subject_loso` every one of the 700 gallery
+sentences was in training. That was already true of the sentence-level CLIP target, and of every arm on the board.
+What §10 and §11 change is the *sharpness*: an in-batch InfoNCE separated fifteen texts at a time and the model
+never saw the 700-way problem, whereas a full-gallery denominator and a per-stimulus prototype bank make separating
+these exact 700 items **the training objective**. The task quietly becomes closed-set identification over a known
+sentence set for an unseen reader, rather than open-set retrieval of an unseen sentence.
+
+Neither reading is wrong; they are different claims, and the narrower one is still clinically meaningful — a
+communication board is a fixed phrase set. What is not acceptable is quoting the closed-set number beside an
+open-set one. So `metrics['gallery_exposure']` records the split, which gallery terms were active and whether the
+combination is closed-set, and `report.md` prints a **closed-set caveat** whenever it is. An arm carrying that
+caveat is comparable only with other arms carrying it.
+
+**The open-set claim needs `by_subject_and_stimulus`,** whose `test` cell is unseen subject × unseen text. There the
+restriction below makes both mechanisms clean by construction.
+
+**One consequence was a real bug.** `text_vocab` is deliberately whole-dataset, so an id means the same sentence in
+every split — which meant the full-gallery denominator contained rows for sentences the split had held out. Training
+against a held-out text as a *negative* still teaches the encoder where not to map, and that shapes the evaluation
+geometry. `GalleryContrast.restrict_to` now masks the denominator down to the text ids the training split actually
+reads, and the band and the sparse-anchor widening both stay inside that admissible set. Measured on a
+stimulus-holding-out split, the denominator drops from every text to only the training texts and the held-out
+stimuli appear as neither positive nor negative.
+
+The consensus bank needs no such restriction and never did: it is sized whole-dataset but written only from training
+rows, so a held-out stimulus has zero readers, sits below `consensus_min_readers`, and never enters `ready_keys`.
+That is asserted directly rather than assumed.

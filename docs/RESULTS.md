@@ -40,6 +40,54 @@ bought by destroying capacity now has a converse with a number behind it.
 Nothing here is a decoding result. It is cross-subject sentence *retrieval* over a 700-sentence gallery, and the
 honest summary of real ZuCo remains: decodable, and not yet subject-invariant.
 
+## The thirteen-arm sweep (2026-07-25, held out on `ZAB`)
+
+The full lever sweep, quoted as **held-out Top-1 hit counts out of 700** because that is what the numbers are. Chance
+expects one hit.
+
+| arm | hits / 700 | eff-rank ratio |
+| --- | --- | --- |
+| `exp12_align_off` | 9 | 0.29 |
+| `exp8_clip_e5_raw` · `exp12_zte_raw_aligned` (s42) · `exp12_orthogonality_off` | 8 | 0.26 · 0.25 · 0.28 |
+| `exp10_clip_e5_meaning_raw` · `exp12_zte_raw_aligned_wide` | 7 | 0.26 · 0.52 |
+| `exp12_adapter_off` · `exp12_align_fit_train` | 6 | 0.26 · 0.24 |
+| `exp12_zte_raw_aligned` | 5 | 0.23 |
+| `exp10_clip_bge_meaning` | 4 | 0.16 |
+| `exp10_clip_mpnet_meaning` | 3 | 0.16 |
+| `exp9_clip_e5_meaning` · `exp10_clip_e5_meaning_raw_v2` · `exp8_clip_qwen` | 2 | 0.17 · 0.53 · 0.17 |
+
+**The finding is the spread, not the ordering.** Thirteen arms flipping Euclidean alignment, the subject adapter,
+identity orthogonality, the text encoder and the meaning target land between 2 and 9 hits. Turning alignment *off*
+scores highest. Two seeds of one unchanged configuration have already produced 4 hits and then 2. Run-to-run noise is
+the size of every effect in this table, so **no arm here is measurably better than another**, and the honest reading
+is that the levers exposed at that point were exhausted. That is what motivated the exp16 architectural work rather
+than a fourteenth lever.
+
+## The decoder on real ZuCo (`exp13_decode_frozen_e5raw`, 2026-08-13)
+
+| measurement | value |
+| --- | --- |
+| Held-out retrieval rank percentile | 0.9636 (0.9599–0.9674), 9 hits / 700 |
+| Length-stratified rank percentile | 0.9211 (0.9154–0.9270) |
+| Decoder-rescoring rank percentile | 0.7244 (0.6835–0.7654), 105 queries |
+| Decoder-rescoring, **length-stratified** | **0.4349** (0.3743–0.4998) |
+| Free-running generation vs its worst control | −0.0117 (−0.0239, −0.0001), permutation *p* = 0.96 |
+| Prefix-influence KL | 0.4166 nats (floor 0.05) |
+| Variance budget | 8.4% subject · 0.0% content · 91.6% neither |
+| Same word across subjects | cosine 0.005 vs random −0.000 — *not clustered* |
+
+Two things to state plainly. **Generation is an honest null**: it beats none of the five controls and its permutation
+*p* is 0.96, which is exactly what the bit budget predicts — 1.5 encoder bits against the ~190 a 19.6-word sentence
+needs. And **the decoder's rescoring contribution is entirely length**: rank percentile 0.7244 unstratified falls to
+0.4349 once sentence length is held constant, which is *below* the 0.5 chance line. The prefix does influence the
+output (KL 0.4166 clears the floor), so the mechanism is wired; what it carries is word count.
+
+## Not yet measured
+
+`flagship/zte_encoder_v3` (exp16) and its five matched ablations exist as configs and pass the synthetic smoke path.
+**No number from them appears anywhere in this document**, because none has been produced on real ZuCo. They sit in
+`flagship/` as the best-designed recipe, not the best-measured one; `zte_raw_aligned` still holds that title.
+
 ## Synthetic smoke-runs
 
 The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale. **A synthetic run is never a result.**

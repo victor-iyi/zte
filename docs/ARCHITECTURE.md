@@ -224,3 +224,33 @@ $$\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\t
 [EVALUATION]: ./EVALUATION.md
 [RESULTS]: ./RESULTS.md
 [TRAINING]: ./TRAINING.md
+
+## What the rebuild added
+
+| Module                             | Owns                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `models/decoder/quantiser.py`      | `SemanticRateLadder` — the text-anchored residual quantiser and its measured bit report |
+| `models/decoder/evidence.py`       | `MonotonicPointer`, `WordEvidence` — the word-synchronous path                          |
+| `models/decoder/gap.py`            | `GapCorrector`, moved out of `bridge.py` now that the bridge has company                |
+| `models/objectives/lexical.py`     | `LexicalAligner` — the token-level loss, shared by the encoder and read by the decoder  |
+| `data/targets/lexical.py`          | The frozen per-word-type embedding target                                               |
+| `evaluation/analysis/`             | `collect` · `aggregate` · `figures` · `dashboard` — the study-level analysis            |
+| `cli/analyze.py`                   | `zte-analyze`                                                                           |
+| `evaluation/interactive/studio.py` | The decode studio: per-step trace, scalp cube and the page it writes                    |
+| `cli/studio.py`                    | `zte-studio`                                                                            |
+| `models/encoder/residual.py`       | `PredictiveResidual` — de-trends a token against what its left context predicted        |
+| `models/encoder/consensus.py`      | `ConsensusBank`, `ConsensusDistiller` — the cross-reader prototype teacher              |
+| `models/encoder/gallery.py`        | `GalleryContrast` — the full-gallery, length-matched InfoNCE denominator                |
+| `models/encoder/nuisance.py`       | `LengthProjector` — train-fitted removal of the sentence-length subspace                |
+
+The lexical projection is the seam between the two halves: the **encoder** trains it contrastively
+(`objective.lexical_weight`), the checkpoint carries it under `lexical.head.*`, and the **decoder** restores it
+frozen and reads per-word vectors through it. A decoder built over an encoder that never trained one degrades to
+the pooled decoder and says so at startup.
+
+`models/encoder/` is the mirror of `models/decoder/`: mechanisms that layer onto `ZTEModel` rather than replacing it.
+Three of the four are training-time only and leave the exported embedding's *shape* and inference path untouched --
+the residual coder runs inside `ZTEModel.token_hidden` and so travels in the checkpoint, the consensus bank lives on
+the objective and is never consulted at inference, and the gallery denominator exists only inside the loss. The
+fourth, `LengthProjector`, is evaluation post-processing and sits beside `whiten` and `all_but_top` in
+`evaluation/report.py`, carrying the same `postprocess_fit` provenance discipline.

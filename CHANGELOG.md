@@ -1,5 +1,253 @@
 # Changelog
 
+## The encoder, rebuilt: four mechanisms after the levers ran out
+
+Thirteen arms on 2026-07-25 flipped Euclidean alignment, the subject adapter, identity orthogonality, the text
+encoder and the meaning target. They landed between **2 and 9 hits in 700**, with alignment *off* scoring highest,
+and two seeds of one unchanged configuration had already produced 4 hits and then 2. Run-to-run noise was the size
+of every effect. The exposed levers were exhausted, so this change is architectural.
+
+Four mechanisms, each aimed at one number the 2026-08-13 board actually reported, each defaulting to off, and each
+with a matched ablation that flips exactly one field. The maths is in `docs/METHODS.md` §9-12.
+
+**Predictive residual coding (`model.residual_coding`) subtracts what the left context already predicted.** The
+variance budget said 8.4% subject, 0.0% content and 91.6% *neither* -- nine tenths of the space spent on
+single-trial variability. Reading is predictive and the large language-related EEG deflections are surprisal
+responses, so everything unsurprising about a moment of reading -- tonic state, cap impedance, the 1/f background,
+the drift of the last few seconds -- is predictable from the preceding words and cancels in a context residual,
+while the word-specific response does not. A one-layer causal head predicts each token from its left context and
+the token keeps the remainder. **The head regresses a detached target from a detached input**, so no gradient from
+its loss reaches the encoder: attached, the encoder could cut that loss by making itself predictable, and a constant
+representation drives it to zero. `residual_context_explained` reports how much of a token the context accounted
+for, and the falsifiable prediction is that the subject probe falls while the content probe rises -- both falling is
+collapse, and `exp16_residual_off` is the pair that decides it.
+
+**Cross-reader consensus (`objective.consensus_*`) trains a reading against what the other eleven readers agreed
+on.** ZuCo gives all twelve subjects the same 700 sentences, so every stimulus has twelve noisy measurements of one
+latent content vector, and the cross-reader mean suppresses the reader and trial terms as `1/sqrt(n)` while leaving
+content untouched. This is not augmentation-based self-distillation: the teacher averages over *different brains
+reading the same text*, which is the invariance the project needs and which no augmentation of one reading can
+produce. An EMA bank holds one prototype per stimulus, served only once `consensus_min_readers` **distinct
+subjects** have contributed. Beside the pull term sits the one that matters more -- a cross-entropy over every
+prototype the bank knows, which is **the evaluation moved into the loss**, scored EEG-to-EEG so the modality gap
+cannot be what separates the answer from the distractors. The word-level bank is aimed straight at the measured
+null: same word, different subject, cosine gap +0.005. The bank is written only in training mode and read before it
+is written, so a held-out subject never enters it and never consults it; the one approximation, flagged, is that the
+anchor's own earlier passes sit in its prototype with weight bounded by `1 - decay`.
+
+**Length-matched gallery contrast (`objective.gallery_*`) makes counting words worth nothing.** A batch of sixteen
+asks the model to beat fifteen distractors; the evaluation asks it to beat 699, and the hardest of those are almost
+never in a batch. The frozen text matrix is already resident, so the full denominator costs one matrix product. The
+band is the real change: word count carries 5.1422 of the 9.4512 bits of sentence identity and eye-tracking
+segmentation hands it over free, so a denominator of same-length texts leaves nothing for it to buy. It is the
+training-time counterpart of length-stratified evaluation, which until now could only measure the confound after the
+fact. Two guards keep it a loss rather than a formality: an anchor whose band strands it below `gallery_min_candidates`
+falls back to the full gallery, because a two-distractor softmax is *small*, not hard; and the anchor's own text is
+always in its own denominator, because a cross-entropy with its target column masked saturates at the float floor and
+stops reading the model. `gallery_chance` travels with `gallery_top1`, so a band of forty candidates is never quoted
+against 1/700.
+
+**Length projection (`objective.length_projection`) removes the length subspace and then measures.** A length-only
+oracle at +/-2 words beats every encoder measured here on every top-k, and the decoder's rescoring rank percentile
+falls from 0.7244 to **0.4349 -- below chance -- once length is held constant**. Fitted on the training split only,
+over the basis `[1, n, log n, 1/n, n^2]`, and reported as `length_leakage_before` / `length_leakage_after` so the
+projection has to show it removed length rather than shrinking the vectors. The residual is *not* expected to be
+zero: zero would mean the fit saw the scored rows. A projection that cannot be fitted is refused with a reason that
+reaches `report.md`, never silently skipped, because a report showing length-free numbers that are not length-free
+is worse than no de-confounding at all.
+
+### Two leaks, one closed and one labelled
+
+Both new mechanisms range over the stimulus set, and the retrieval gallery *is* the stimulus set.
+
+**Closed:** `text_vocab` is deliberately whole-dataset so an id means the same sentence in every split, which meant
+the full-gallery denominator contained rows for sentences the split had held out. Training against a held-out text
+as a *negative* still teaches the encoder where not to map. `GalleryContrast.restrict_to` masks the denominator to
+the text ids the training split actually reads, and both the length band and the sparse-anchor widening stay inside
+it. The consensus bank never had this problem -- written only from training rows, a held-out stimulus has zero
+readers and never clears `consensus_min_readers` -- and that is now asserted rather than assumed.
+
+**Labelled:** a subject-only split holds out people, not sentences, so under `by_subject_loso` every gallery
+sentence was in training. That was already true of every arm on the board; what the new terms change is that
+separating those exact 700 items becomes *the training objective*, turning the headline into closed-set
+identification for an unseen reader rather than open-set retrieval of an unseen sentence. It is a narrower claim,
+not a wrong one, and it is now recorded in `metrics['gallery_exposure']` and printed as a **closed-set caveat** in
+`report.md`. The open-set claim needs `by_subject_and_stimulus` and its `test` cell.
+
+### One real bug, found by the smoke path
+
+A decoder run inheriting an encoder through `--encoder-ckpt` saved its *own* `model` config while running the
+*source* encoder, so the checkpoint described an encoder that was never built and failed to reload. It surfaced the
+moment an inherited encoder carried a residual coder the decoder config did not know about, and it would equally
+have bitten any architectural field. The run's `model` section is now overwritten from the source before anything is
+written.
+
+### Persistence: nothing expensive is more than one epoch from durable storage
+
+`CheckpointManager` stops mirroring the whole checkpoint directory every epoch and mirrors exactly two files
+instead: `last.pt`, because `--resume` reads it, and `best.pt`, because it is the result. That is both safer and
+cheaper -- the result is on Drive the moment it improves, and per-epoch traffic drops from `keep_last + 2` large
+files to at most two, since `mirror_file` skips a file whose bytes already match. The rotation files ride the run
+directory's stage mirror; they are history, and a fresh VM cannot use them.
+
+Dropping them from the per-epoch mirror would have thinned the resume fallback, so `load_latest` gained `best.pt` as
+its final candidate: `last.pt`, then the epoch files newest-first, then `best.pt`. On a directory restored from
+Drive -- which carries no rotation history -- that is the whole safety net, and it turns a `last.pt` torn by the
+write that was in flight when the machine went away from a lost run into a lost few epochs.
+
+**A silently failing mirror is worse than a loud one.** `mirror_file` never raises, by design, so a mount that
+stopped accepting writes at epoch 3 looked exactly like one that was working right up until the VM was reclaimed at
+epoch 40. `_note_mirror` now checks that `last.pt` actually landed and counts *consecutive* failures, escalating at
+1, 3, 10 and 30 to an error that names the missing path and says the run is not currently recoverable. Success
+resets the count, so one hiccup does not shout for the rest of the run.
+
+The notebook gained `resolve_ckpt()`, which searches this session's Drive folder, then every earlier session
+newest-first, then the local disk. A fresh Colab runtime can evaluate, decode or open the studio on a run trained in
+a previous session with no manual restore. `durable()` returns the right root for wherever the notebook is running
+-- the Drive session folder on Colab, `res/` locally -- so expensive non-resumable outputs are written there rather
+than written locally and copied afterwards.
+
+### The decode studio
+
+`zte-studio` writes one self-contained interactive page that answers a question `zte-decode` cannot: not *did it
+beat its controls* but *what did it actually do*. A reading picker, a transport bar, and every panel backed by a
+real array rather than an illustration -- the scalp field is per-word band power interpolated over the montage at
+the word the pointer is on (2-D cap or draggable 3-D head, eight bands), the target sentence carries the pointer's
+Gaussian window as it walks, the decoded text reveals token by token shaded by probability with the top-8
+alternatives at each step, and the firing panel plots the evidence KL: the same hidden state with and without the
+word-synchronous nudge, which is how hard the brain pushed on *that* token.
+
+`FrozenLM.generate_from_prefix` grew an optional `trace` sink to make this possible. Passing one costs a second head
+application per step; passing `None` -- which every headline, control and oracle decode does -- leaves the loop
+byte-identical. **A visualisation must never be able to change the number it visualises**, and that is
+mutation-tested rather than asserted: break the loop so the trace perturbs the emitted token and the paired test
+goes red.
+
+The page carries its own warning, and the suite asserts the warning is on it: a handful of readings chosen to look
+at is an anecdote, absolute scores mean nothing beside a frozen LM's function-word floor, and the scalp scale is
+relative within one reading. Notebook sections 8d and 8e drive it -- a target-beside-hypothesis-beside-controls
+table with the paired deltas, then the studio embedded inline.
+
+### Analysis and the notebook
+
+`Trainer` now averages every objective metric over each epoch into `history.json`, and `zte-analyze` plots them as a
+**mechanism curves** panel behind a dropdown. That panel is not decoration: `metrics.json` cannot distinguish "the
+consensus term did nothing" from "its bank never reached `consensus_min_readers` and contributed exactly zero", and
+those are very different findings. Seven panels join the dashboard -- a metric selector over every headline, the
+mechanism curves, length leakage before and after, identity against content sized by effective rank, a lever matrix
+that catches an "ablation" whose config never differed from its baseline, the bit budget as a pie, and a histogram
+of every run against chance.
+
+**`notebooks/zte_colab_v2.ipynb` is new and written from scratch.** Drive-first: evaluation, generation, the analysis
+dashboard and the archives are written straight to Drive, while checkpoints go to the VM's fast disk and mirror after
+every stage, because a Drive FUSE stall mid-`torch.save` is a torn checkpoint. `RESUME_DATE` points every cell at an
+existing session; `WRITE_MODE = 'drive'` puts checkpoints there too. `ipywidgets` pickers choose the arm, the
+held-out subject and the seed, and a run explorer walks every collected run's headline block and figures. The
+original notebook stays for the benchmark suite, `zte-ablate` and the housekeeping cells.
+
+`scripts/run_zte_study.sh` now defaults its encoder to `zte_encoder_v3` and its ablation set to the five exp16 arms
+plus the existing seven.
+
+## The decoder, rebuilt: a metered channel and a pointer that walks the words
+
+The decoder is replaced rather than patched. Two mechanisms, both aimed at the arithmetic that has governed this
+project from the start -- sentence identity over 700 ZuCo stimuli needs 9.4512 bits, word count gives away 5.1422
+of them free through eye-tracking segmentation, and the encoder has been measured at 1.4965.
+
+**The semantic rate ladder (`decoder.rate_ladder: rvq`) makes the bit budget a constraint instead of an argument.**
+The conditioning vector passes through `rate_stages` residual codebooks of `rate_codes` entries, seeded by k-means
+on the frozen *text* cloud so a code names a region the LM already writes fluent English from. The channel then
+carries at most `stages x log2(codes)` bits by construction, and `bit_budget` in `generation.json` reports the
+entropy and the mutual information it actually delivered against the 9.45 it would need. Dead codes are re-seeded
+rather than left to silently shrink the real rate below the quoted ceiling. With `rate_length_stage: true`, stage 0
+is trained to absorb the word count and the remaining stages are penalised for correlating with it, so
+`residual_mutual_information_bits` is the part of the answer the brain supplied rather than the part eye tracking
+gave away. `experiments/decoder/decode_v2_no_length_stage.yaml` is the required companion: if the headline's
+advantage disappears without the reserved stage, the reserved stage was doing the work.
+
+**Word-synchronous lexical evidence (`decoder.evidence_schedule`) re-injects the brain at every decoding step.** A
+pooled prefix spends its influence in the first few generated tokens. A soft monotonic pointer now walks the
+reading's word tokens as the LM decodes -- ZuCo tells us which stretch of EEG belongs to which word, for free, on
+every reading including a held-out one -- and nudges the LM's final hidden state. Because the frozen output head is
+linear, that is exactly a rank-limited additive bias on the token logits: no new vocabulary parameters, and one
+decode path. The gate is zero-initialised, so a run begins as the pooled decoder and the evidence earns its way in.
+The pointer's walking rate is measured from the tokenised training corpus rather than configured, and rides in the
+checkpoint. **Every knob defaults to off**, so `decode_v2_pooled.yaml` reproduces the previous decoder and the pair
+attributes the difference to the mechanisms rather than to the rebuild.
+
+**The pointer schedule is content-free, and that is what makes the new control fair.** It depends only on the step
+count and the word count, so every brain-independent control inherits it. `length_only` is the control that
+follows: it keeps the schedule and the length-conditional mean prefix, and destroys everything else, so a headline
+that beats it beat it on lexical content and nothing else. `shuffled_z` joins the ladder too -- an unstratified
+derangement of the conditioning vectors after the encoder, which is the "feed it shuffled EEG embeddings" control
+stated directly. The five original controls are unchanged.
+
+**One decode path, and it is greedy.** The decode loop is written in `FrozenLM.generate_from_prefix` rather than
+delegated to `transformers.generate`, for two reasons: the evidence nudge has to reach the output state at every
+step, which no generation hook exposes, and every control must run byte-identical code. Beam search is now refused
+outright with the reason, exactly as `cfg_weight != 1.0` already was -- it would be a second decode path, and at
+this signal level it raises the language prior rather than the brain signal. `tests/test_decoder_v2_mutation.py`
+breaks each of these guarantees on purpose and watches the paired assertion go red.
+
+**Rescoring is memory-bounded.** `target_token_logprobs` now materialises the 151,936-wide vocabulary a block of
+positions at a time and reduces immediately, instead of holding a full `(rows, n_target, vocab)` tensor.
+
+## The encoder attacks the word-level content gap directly
+
+Cross-subject word retrieval on real ZuCo sits at Top-1 0.0040 against a chance of 0.0031, and the held-out
+`word_len` probe is negative in 13 of 13 runs. Sentence-level transfer is real; word-level content is absent. The
+reason is mechanistic -- a sentence-level InfoNCE never asks a single word's EEG to mean that word -- so
+`objective.lexical_weight` and `objective.lexical_reader_weight` now demand it. The first scores each word's EEG
+token against that word's frozen text embedding; the second scores it against **the same word position read by
+another person**, with the negatives restricted to the anchor's own subject so subject identity separates nothing.
+The projection they train is the one the decoder's evidence path reads, which is what ties the two halves together:
+`experiments/flagship/zte_lexical_raw.yaml` is the encoder for `experiments/flagship/decode_zte_v2.yaml`. Both
+weights default to 0, and `experiments/ablation/exp14_lexical_off.yaml` is the matched pair.
+
+## Fix: the content probe reported "no signal" for a target it could not have fitted
+
+The scoreboard's positive control read `R2 = -0.005` for word length from raw band power and concluded the probe
+could not detect content. It could not -- but not for the reason recorded. `linear_probe` used a fixed
+`Ridge(alpha=1.0)`, which on a standardised design of `p` features and `n` rows is barely regularised at all, so a
+target the representation genuinely does not carry returns an out-of-sample `R2` of about `-p/n`. At 525 band-power
+features over 108k words that is -0.005: the number was the estimator's overfitting penalty, not a measurement.
+
+`linear_probe` now searches the ridge penalty over a log grid, which puts the no-signal floor back at 0 -- verified
+directly: on pure noise the old estimator returned -0.131 and the new one returns -0.002. It also accepts `groups`
+for grouped cross-validation, and `residualise` removes a nuisance factor's per-group mean so lexical content can be
+probed *within* subject, which matters here because subject identity is linearly readable from raw band power at
+0.81 while word length is not, so a pooled ridge spends its capacity on who is reading.
+
+The positive control now asks two questions instead of conflating them. **`machinery`** probes word length from the
+eye-tracking features that carry it by construction, so a failure there is a fault in the probe; **`pooled`** and
+**`within_subject`** probe band power, and a failure there with the machinery passing is a result about the signal.
+A shuffled-target column gives the empirical zero. A raw-signal run has no band power to probe, and that is now
+reported as such rather than falling through to an unreliable proxy.
+
+## Within-task pools, and every headline as mean +/- sd
+
+**Within-task retrieval** (`scoreboard.within_task_retrieval`, `decoder.within_task_pools`) re-ranks each query
+inside its own reading task. No ZuCo stimulus appears under more than one task -- the confound audit puts Cramer's
+V(task, stimulus) at 0.998 -- so the full gallery lets a model score by telling SR sentences from NR ones, which is
+a passage-set property. Inside one task the passage set is fixed. The pool is smaller, so its own chance level and
+interval are reported beside every number.
+
+**`zte-analyze`** is a new CLI that walks one or more experiment trees and writes the study analysis: a
+self-contained interactive HTML page with plotly inlined so it opens from a Drive mirror with no network, the tidy
+CSV tables behind every panel, and a Markdown summary. It aggregates over seeds (mean, sd and a bootstrap interval),
+over LOSO folds, and over single levers -- including the feature-ablation table of raw conformer vs band-power MLP,
+spherical harmonics vs standard channel indexing, and the invariance recipe on vs off. Panels cover the headline,
+the fold spread, the length-oracle confound, the within-task pools, the control ladder, where each decode landed
+sentence by sentence, the words the decoder emits against the words it was asked for, the measured bit budget, the
+probe heatmap, the who-versus-what split, the learning curves and a 3-D electrode map. A synthetic run is named as
+synthetic on the page, in the summary and in the terminal.
+
+**`scripts/run_zte_study.sh`** runs the whole thing in one resumable command: the confound audit, the flagship
+encoder at several seeds, the decoder and its one-knob arms over that encoder, the feature-ablation table, the
+length-confound audit against every checkpoint, and the analysis. `SMOKE=1` rewrites every config into an
+offline-safe copy first, so the wiring check needs no download. Section 6d of the notebook drives it, and Section 9c
+is the analysis.
+
 ## The 2026-08-13 board: two demotions, one no-op, and a metric that can actually rank arms
 
 Re-scoring the flagship set against Drive (held out on `ZAB`, 700 queries) settled three things and unsettled one.

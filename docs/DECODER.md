@@ -1,10 +1,12 @@
-# The decoder — a frozen LM driven by a 227k-parameter prefix bridge
+# The decoder — a frozen LM on a metered leash, steered word by word
 
-How ZTE turns a sentence-level EEG embedding into English, and — more importantly — how it keeps itself honest while doing it. The short version: **the language model is frozen, the encoder is frozen, and the only thing that learns is a 226,560-parameter bridge.** Everything else in this document exists to stop that bridge, or its reader, from claiming more than the signal supports.
+How ZTE turns EEG into English, and — more importantly — how it keeps itself honest while doing it. The short version: **the language model is frozen, the encoder is frozen, the conditioning channel has an architectural bit ceiling, and the only things that learn are a small bridge, a codebook and a rank-64 map.** Everything else in this document exists to stop those, or their reader, from claiming more than the signal supports.
 
-Configs: [`experiments/decoder/`](../experiments/decoder/). Code: `zte.models.decoder` (`PrefixBridge`, `WordResampler`, `GapCorrector`, `FrozenLM`), `zte.models.objectives.decode.PrefixDecodeObjective`, `zte.inference.decode.ZTEDecoder`, `zte.evaluation.generation`, `zte.evaluation.audit.rebaseline`.
+Configs: [`experiments/flagship/decode_zte_v2.yaml`](../experiments/flagship/decode_zte_v2.yaml) and [`experiments/decoder/`](../experiments/decoder/). Code: `zte.models.decoder` (`PrefixBridge`, `SemanticRateLadder`, `WordEvidence`, `MonotonicPointer`, `GapCorrector`, `FrozenLM`), `zte.models.objectives.decode.PrefixDecodeObjective`, `zte.models.objectives.lexical.LexicalAligner`, `zte.inference.decode.ZTEDecoder`, `zte.evaluation.generation`, `zte.evaluation.audit.rebaseline`.
 
-CLIs: `zte-run --mode decoder`, `zte-decode`, `zte-rebaseline`.
+CLIs: `zte-run --mode decoder`, `zte-decode`, `zte-rebaseline`, `zte-analyze`.
+
+**Every mechanism added in v2 defaults to off.** `experiments/decoder/decode_v2_pooled.yaml` reproduces the pooled-prefix decoder exactly, so the difference between it and the flagship is attributable to the mechanisms rather than to the rebuild.
 
 ## Read this first: sentence length is worth more bits than the encoder
 
@@ -69,7 +71,7 @@ $$
 
 `gap_correction: whiten` replaces the per-dimension scaling with a full ZCA: whiten by $\Sigma_\text{eeg}^{-1/2}$, then colour by $\Sigma_\text{txt}^{+1/2}$, both computed in float64 with eps-clipped eigenvalues. `none` is the identity.  The fitted state (including `n_fit`, the number of readings it saw) rides in the checkpoint under `extra['gap_correction']`, so a transductive fit would be visible in the artifact rather than merely forbidden by a docstring.
 
-### 3. The bridge — the entire trainable surface
+### 3. The bridge — the pooled trainable surface
 
 With $d_z = 768$, $d_\text{lm} = 896$ (Qwen2.5-0.5B), $k = 8$ slots and bottleneck $r = 128$:
 
@@ -89,7 +91,39 @@ Against roughly 120k supervised target tokens this is already generous. Anything
 
 `conditioning: pooled_plus_words` (the registered ablation, `experiments/decoder/decode_words_ablation.yaml`) adds `WordResampler`: 8 learned latents at 256 cross-attending `h_ctx` under `valid`, 2 blocks, then `Linear(256, 896)` and its own 8×896 learned null — 769,664 parameters — concatenated to give a 16-slot prefix. It is an ablation for two measured reasons. Cross-subject word-level content is absent on ZuCo (`word_len` R² −0.0649, `log_freq` −0.0584, negative in 13/13 runs). And a length-L memory hands the decoder the word count directly, which is 5.14 bits of the answer.
 
-### 4. The language model — frozen in all three modes, always
+### 4. The semantic rate ladder — the bit budget as a constraint, not an argument
+
+`decoder.rate_ladder: rvq`. The problem this solves is that a continuous 768-d conditioning vector can in principle carry any number of bits, so "how much did the brain contribute" has to be argued after the fact from retrieval ranks. A residual vector quantiser replaces the argument with a constraint. With $S$ stages of $K$ codes:
+
+$$
+r_0 = z, \qquad c_s = \arg\min_k \| r_s - e_{s,k} \|^2, \qquad r_{s+1} = r_s - e_{s,c_s}, \qquad \hat{z} = \sum_{s<S} e_{s,c_s}
+$$
+
+so the channel carries at most $S\log_2 K$ bits — 32 at the default $4 \times 256$, against the 9.4512 that sentence identity over 700 stimuli actually needs. The ladder is deliberately **not** the binding constraint; it is the instrument. `bit_report` measures what arrived: per-stage entropy, the joint code entropy, and the plug-in mutual information with sentence identity (an upper bound, biased upward at 700 queries, and labelled as one).
+
+The gradient reaches the encoder straight through ($\hat{z} \leftarrow z + \mathrm{sg}[\hat{z} - z]$) and the codebooks are updated by EMA rather than by the decoding loss, so a stage cannot be dragged off the text manifold by the thing it is supposed to constrain. Codes are seeded by k-means on the **frozen text cloud**, fitted stage by stage to the residual the stages above left, so the ladder is coarse-to-fine and a code names a region the LM already writes fluent English from. A code unused for `rate_revive_after` steps is re-seeded onto the batch's worst-fitting vector: a dead code silently lowers the real rate below the ceiling the report quotes, which would make the measured budget a lie.
+
+**The reserved length stage.** With `rate_length_stage: true`, stage 0 carries a linear head trained to predict the word count, and the remaining stages pay a penalty proportional to the normalised cross-covariance between their code vectors and length. `residual_mutual_information_bits` is then the code's information about sentence identity *with the reserved stage removed* — the part of the answer the brain supplied rather than the part eye-tracking word segmentation gave away. `experiments/decoder/decode_v2_no_length_stage.yaml` is the required companion arm: if the headline's advantage vanishes without the reserved stage, the reserved stage was doing the work, and that is a finding about the confound rather than about the brain.
+
+### 5. Word-synchronous lexical evidence — the brain at every step, not only the first
+
+`decoder.evidence_schedule: linear`. A soft prompt spends its influence in the first few generated tokens; by the tenth the LM is mostly reading its own output. ZuCo hands over, free and for every reading including a held-out one, which stretch of EEG belongs to which word — eye tracking is what defines the word boundaries. The evidence path walks it.
+
+At generated token $t$ a Gaussian pointer sits over word $t / \bar{c}$, where $\bar{c}$ is the mean LM tokens per word **measured from the tokenised training corpus** rather than configured (a hand-set rate desynchronises the pointer whenever the tokeniser or the corpus changes; the measured value rides in the checkpoint). The pointed-at words are pooled, mapped into the LM's hidden space through a rank-$r$ map, gated, norm-capped, and **added to the LM's final hidden state**:
+
+$$
+\pi_t(j) \propto \exp\left(-\frac{(j - t/\bar{c})^2}{2\sigma^2}\right), \qquad
+m_t = g \sum_j \pi_t(j)\, \mathrm{LN}(W_\text{up} W_\text{down} v_j), \qquad
+\ell_t = \mathrm{head}(h_t + m_t)
+$$
+
+Because the frozen output head is linear, $\ell_t = \mathrm{head}(h_t) + \mathrm{head}(m_t)$: this is exactly a rank-limited additive bias on the token logits, with no new vocabulary parameters and no second decode path. The gate $g$ is zero-initialised, so a run begins as the pooled decoder and the evidence path only enters the output to the extent the loss pays for it; `evidence_gate` is logged per epoch. The norm cap exists because an uncapped bias wins the loss by saturating the distribution on a handful of tokens, which reads as decoding and is not.
+
+**The schedule is content-free, and that is the load-bearing property.** $\pi_t$ depends on the step count and the word mask alone — never on what the words were — so *every* brain-independent control inherits the identical walk. Word count is worth 5.14 bits here, and a schedule the controls did not get would hand the headline those bits for free. `MonotonicPointer.forward` takes no content argument at all, which makes this structural rather than a convention.
+
+`v_j` is the per-word vector from the **encoder's** lexical projection (`objective.lexical_weight`, see `docs/METHODS.md`), restored frozen from the source checkpoint exactly as `clip_head` is. Over an encoder that never trained one, the path degrades to the pooled decoder and says so at startup. The cost is that the per-word hiddens are needed at every step, so the frozen-encoder cache is unavailable and a decoder run costs roughly what an encoder run costs plus the frozen LM.
+
+### 6. The language model — frozen in all three modes, always
 
 `Qwen/Qwen2.5-0.5B` (Apache-2.0, hidden 896, 24 layers, vocab 151,936), pinned by `decoder.lm_revision`. **There is no LoRA and no fine-tuning of the LM in any mode.** That single constraint is what makes "the output is corpus recall" unarguable rather than a matter of trust.
 
@@ -204,21 +238,23 @@ This is ~9.5 bits of forced choice at 700 queries, against a generation delta at
 
 ### Secondary (expected-null) readout — free-running generation
 
-`ZTEDecoder.generate` only: BOS, feed back the model's own greedy tokens, stop at EOS or `max_new_tokens`, **no reference length, no candidate set**. Stopping is a trained behaviour, not a free one: every reference that fits inside `max_target_tokens` ends in a supervised EOS inside the loss mask, on the HuggingFace path as well as the offline `tiny` one. Without that the bridge has no gradient toward stopping and every hypothesis runs the full 96 tokens against a 19.6-word reference, which makes WER exceed 1 by construction and collapses every precision-based metric. `cfg_weight` is asserted `== 1.0`, so the headline decode and every control run byte-identical code; guidance was removed from v1 precisely so that the null-prefix branch could not become a second code path. A decode constrained to a candidate set is retrieval and is reported as retrieval, never as generation — `NearestNeighborIndex.decode` is exactly that in disguise, and `n_candidate_sentences` is recorded on every block so the distinction is machine-checkable rather than a matter of wording.
+`ZTEDecoder.generate` only: BOS, feed back the model's own greedy tokens, stop at EOS or `max_new_tokens`, **no reference length, no candidate set**. Stopping is a trained behaviour, not a free one: every reference that fits inside `max_target_tokens` ends in a supervised EOS inside the loss mask, on the HuggingFace path as well as the offline `tiny` one. Without that the bridge has no gradient toward stopping and every hypothesis runs the full 96 tokens against a 19.6-word reference, which makes WER exceed 1 by construction and collapses every precision-based metric. `cfg_weight` is asserted `== 1.0` and `beams` is asserted `== 1`, so the headline decode and every control run byte-identical code; guidance and beam search are both refused precisely so that no control branch can become a second code path, and at this signal level beam search raises the language prior rather than the brain signal. The loop lives in `FrozenLM.generate_from_prefix` rather than in `transformers.generate`, because the evidence nudge has to reach the output state at every step and no generation hook exposes it. `generation.json` records `teacher_forced: false` and `decode_strategy: greedy` so the contract travels in the artifact. A decode constrained to a candidate set is retrieval and is reported as retrieval, never as generation — `NearestNeighborIndex.decode` is exactly that in disguise, and `n_candidate_sentences` is recorded on every block so the distinction is machine-checkable rather than a matter of wording.
 
 Metrics are implemented in pure stdlib + numpy in `zte.evaluation.generation` (BLEU-1..4 with brevity penalty, ROUGE-1/2/L, WER, and content-word F1 over the distinct content words of each sentence). No metric package is a dependency, so nothing about the score depends on which BLEU implementation happened to be installed.
 
-### The five controls, and why each exists
+### The seven controls, and why each exists
 
-All five decode through the **identical** path — same weights, same greedy loop, same detokenisation, same `max_new_tokens`. Only $z$ changes.
+All seven decode through the **identical** path — same weights, same greedy loop, same detokenisation, same `max_new_tokens`. Only $z$ changes.
 
-| Control       | What it substitutes                                                  | What it rules out                                                                                                        |
-| ------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `mean_prefix` | the train-split mean $z$                                             | **the decisive one.** It absorbs the Stage-0 text prior; a decoder reciting ZuCo regardless of input scores exactly here |
-| `null_prefix` | $P = P_\text{null}$                                                  | the pure LM prior with no bridge at all                                                                                  |
-| `phase`       | phase-scrambled raw windows through the same frozen encoder          | spectral-envelope artefacts that survive scrambling                                                                      |
-| `noise`       | mean/variance-matched Gaussian through `embed_signals`               | anything explainable by the signal's first two moments                                                                   |
-| `mismatch`    | another held-out reading's $z$, by **length-stratified derangement** | dependence on *which* brain — and it neutralises the 5.14-bit length confound                                            |
+| Control       | What it substitutes                                                                                 | What it rules out                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `mean_prefix` | the train-split mean $z$                                                                            | **the decisive one.** It absorbs the Stage-0 text prior; a decoder reciting ZuCo regardless of input scores exactly here                |
+| `null_prefix` | $P = P_\text{null}$                                                                                 | the pure LM prior with no bridge at all                                                                                                 |
+| `phase`       | phase-scrambled raw windows through the same frozen encoder                                         | spectral-envelope artefacts that survive scrambling                                                                                     |
+| `noise`       | mean/variance-matched Gaussian through the identical frozen encoder                                 | anything explainable by the signal's first two moments                                                                                  |
+| `shuffled_z`  | another reading's whole conditioning bundle, by **unstratified** derangement                        | the bridge and the LM working without the encoder — the "feed it shuffled EEG embeddings" control, stated directly                      |
+| `length_only` | the **length-conditional** mean $z$, with the pointer schedule kept and the per-word content zeroed | **the one the ZuCo arithmetic demands.** It has the word count and nothing else, so a headline that beats it beat it on lexical content |
+| `mismatch`    | another held-out reading's bundle, by **length-stratified derangement**                             | dependence on *which* brain — and it neutralises the 5.14-bit length confound                                                           |
 
 Plus one positive control, `oracle`: the true sentence embedding through the identical bridge and LM. It bounds the achievable score. It will look good (expect BLEU-4 15–45) and it says **nothing** about EEG.
 
@@ -228,13 +264,21 @@ Plus one positive control, `oracle`: the true sentence embedding through the ide
 
 1. `honest_split` — the readings come from the `test` cell of `by_subject_and_stimulus` (`report.HONEST_SPLIT`), the only cell that generalises over the subject and the stimulus at once. A `val` or `test_seen_stim` block fails it.
 2. `no_candidate_set` — `n_candidate_sentences is None`, i.e. this was free generation.
-3. `beats_every_control` — the paired per-sentence delta's bootstrap CI lower bound (n_boot 2000, seed 0) is above zero against **every one** of the five controls, not the mean of them. A control that was requested but could not be decoded counts as not beaten, so losing one can never promote the verdict. A block that records no `controls_requested` cannot show which controls it pre-registered, so the absent ledger itself counts as not beaten and the clause fails.
+3. `beats_every_control` — the paired per-sentence delta's bootstrap CI lower bound (n_boot 2000, seed 0) is above zero against **every one** of the seven controls, not the mean of them. A control that was requested but could not be decoded counts as not beaten, so losing one can never promote the verdict. A block that records no `controls_requested` cannot show which controls it pre-registered, so the absent ledger itself counts as not beaten and the clause fails.
 4. `permutation_significant` — `honesty.generation_permutation_test` with the hypotheses held fixed and only the pairing permuted, $p = (1 + \#\{null \ge obs\})/(n_\text{perm}+1) < 0.05$.
 5. `prefix_influences_output` — mean $\mathrm{KL}\big(p(\cdot \mid P_i) \,\|\, p(\cdot \mid P_j)\big) \ge$ `decoder.min_prefix_kl` (0.05 nats), where $P_j$ is **another reading's** prefix under a seeded derangement, $j \neq i$. Below that the prompt does not depend on which brain produced it and no delta is meaningful.
 
    It has to be another reading's prefix and not $P_\text{null}$. A bridge collapsed to one constant prompt for every reading still sits some distance from the *learned unconditional* prompt, which is a free parameter, so it can clear a floor stated against $P_\text{null}$ while ignoring the brain entirely — the exact failure this clause exists to catch. The KL also reads only the first generated token's distribution, which makes it a necessary condition and not a sufficient one; the length-stratified `mismatch` control is what closes the remaining gap.
 
-Named floors, since free generation has no analytic chance level: the five controls, the length-only oracle, and the **retrieval upper bound** — what the frozen encoder already achieves with cosine kNN (Top-1 10/700, `rank_percentile` 0.9617). If generation does not beat the last of those, the report says so.
+Named floors, since free generation has no analytic chance level: the seven controls, the length-only oracle, and the **retrieval upper bound** — what the frozen encoder already achieves with cosine kNN (Top-1 10/700, `rank_percentile` 0.9617). If generation does not beat the last of those, the report says so.
+
+### Within-task pools
+
+No ZuCo stimulus appears under more than one task — the confound audit measures Cramér's V(task, stimulus) at 0.998 — so a model can score on the full 700-sentence gallery by telling SR sentences from NR ones, which is a property of the passage set and not a reading of the brain. `decoder.within_task_pools` re-ranks every query inside its own task, where the passage set is fixed. The pool is smaller, so its own chance level, hit counts and bootstrap interval are reported beside every number, and a lift that survives here is a lift on sentence content. `scoreboard.within_task_retrieval` computes it and `rescoring['within_task']` carries it.
+
+### Seeds, and why a single number is not a result
+
+Run-to-run drift on this project has been the size of the effect: an arm that scored 4 hits in 700 scored 2 on an identical re-run, and two seeds of `zte_raw_aligned` give rank percentiles of 0.9672 and 0.9670 while their Top-1 moves 9 hits to 8. Every headline is therefore reported as **mean ± sd over seeds**, and the two intervals answer different questions — the per-query bootstrap inside a run, and the across-seed interval `zte-analyze` computes. `scripts/run_zte_study.sh` sweeps `SEEDS` and `decoder.eval_seeds` re-runs the control layer at extra decode seeds, which puts an error bar on the comparison the verdict reads.
 
 ### Quarantined diagnostics
 
@@ -262,6 +306,19 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 | `decoder.lm_source` / `lm_revision` / `lm_cache_dir`                      | The frozen LM, its pinned commit and its local snapshot. `'tiny'` is offline.                     |
 | `decoder.lm_dtype`                                                        | `auto` (default, inherits the encoder's) \| `float32` \| `float16` \| `bfloat16`.                 |
 | `decoder.conditioning`                                                    | `pooled` (headline) or `pooled_plus_words` (registered ablation).                                 |
+| `decoder.rate_ladder`                                                     | `none` (default, continuous) \| `rvq` (the metered channel).                                      |
+| `decoder.rate_stages` / `rate_codes`                                      | The ceiling: `stages x log2(codes)` bits. Defaults 4 x 256 = 32.                                  |
+| `decoder.rate_commit_weight` / `rate_decay` / `rate_revive_after`         | Commitment loss, EMA decay, and how long a dead code survives before re-seeding.                  |
+| `decoder.rate_length_stage` / `rate_length_weight`                        | Reserve stage 0 for word count and penalise the others for carrying it.                           |
+| `decoder.evidence_schedule`                                               | `none` (default) \| `linear` \| `fixation`. The word-synchronous path.                            |
+| `decoder.evidence_rank` / `evidence_width` / `evidence_max_bias`          | Rank of the text-to-LM map, pointer window in words, and the logit-bias cap.                      |
+| `decoder.evidence_tokens_per_word`                                        | `0` measures the walking rate from the training corpus, which is the honest default.              |
+| `decoder.evidence_gate_init`                                              | Initial gate; `0` starts the run as the pooled decoder.                                           |
+| `decoder.bridge_depth`                                                    | Residual blocks in the bottleneck; `1` is the plain linear map.                                   |
+| `decoder.ground_hard_length`                                              | Draw the grounding negatives from references of a similar word count.                             |
+| `decoder.within_task_pools`                                               | Tasks whose candidate pool is also reported alone (`SR`, `NR`).                                   |
+| `decoder.rescore_chunk`                                                   | Candidate rows per frozen-LM forward pass; bounds memory, not work.                               |
+| `decoder.eval_seeds`                                                      | Extra decode seeds for a mean ± sd headline on the control comparison.                            |
 | `decoder.prefix_slots` / `word_slots` / `bottleneck`                      | Bridge geometry: $k$, the resampler's slots, and $r$.                                             |
 | `decoder.gap_correction`                                                  | `none` \| `mean_scale` \| `whiten`. Fitted on the train split only.                               |
 | `decoder.null_prefix_prob`                                                | Probability of substituting the learned null prefix during training.                              |
@@ -278,15 +335,21 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 
 ## The arms
 
-| Config                          | What it is                                                                                      |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `decode_frozen_e5raw.yaml`      | **The headline.** Frozen encoder, frozen LM, bridge only, honest four-cell split.               |
-| `decode_joint_e5raw.yaml`       | The same with the encoder unfrozen after 3 stage-A epochs, CLIP kept on as an anchor.           |
-| `decode_encoder_only.yaml`      | The control proving `mode: encoder` is unchanged; its history must reproduce exp8's.            |
-| `decode_nostage0_ablation.yaml` | Required reported ablation: `stage0_epochs: 0`.                                                 |
-| `decode_words_ablation.yaml`    | Registered ablation: `conditioning: pooled_plus_words` (16-slot prefix).                        |
-| `rebaseline_e5raw.yaml`         | The length-confound audit arm: the encoder recipe on the decoder's own split.                   |
-| `smoke/decode_tiny_mps.yaml`    | Wiring only. `lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`, always `--synthetic`. |
+| Config                                   | What it is                                                                                      |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `flagship/decode_zte_v2.yaml`            | **The headline.** Rate ladder + reserved length stage + word-synchronous evidence.              |
+| `decoder/decode_v2_pooled.yaml`          | Every new knob off: the pooled-prefix decoder, and the baseline the other two must beat.        |
+| `decoder/decode_v2_ladder_only.yaml`     | The rate ladder alone. How little it costs measures how few bits the continuous vector used.    |
+| `decoder/decode_v2_evidence_only.yaml`   | Word-synchronous evidence alone, against the continuous conditioning vector.                    |
+| `decoder/decode_v2_no_length_stage.yaml` | Required companion: the ladder with no stage reserved for word count.                           |
+| `decoder/decode_v2_bandpower.yaml`       | The frontend row of the feature-ablation table: the decoder over a band-power encoder.          |
+| `decode_frozen_e5raw.yaml`               | The v1 headline, kept for continuity with the runs already on Drive.                            |
+| `decode_joint_e5raw.yaml`                | The same with the encoder unfrozen after 3 stage-A epochs, CLIP kept on as an anchor.           |
+| `decode_encoder_only.yaml`               | The control proving `mode: encoder` is unchanged; its history must reproduce exp8's.            |
+| `decode_nostage0_ablation.yaml`          | Required reported ablation: `stage0_epochs: 0`.                                                 |
+| `decode_words_ablation.yaml`             | Registered ablation: `conditioning: pooled_plus_words` (16-slot prefix).                        |
+| `rebaseline_e5raw.yaml`                  | The length-confound audit arm: the encoder recipe on the decoder's own split.                   |
+| `smoke/decode_tiny_mps.yaml`             | Wiring only. `lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`, always `--synthetic`. |
 
 ## How to run
 
@@ -295,13 +358,20 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 uv run zte-rebaseline --ckpt res/experiments/exp8_clip_e5_raw_loZAB/checkpoints/best.pt \
     --root res/data/zuco_extracted --holdout ZAB --length-tol 1 --oracle-tol 0,1,2,4
 
-# 1) Train the bridge over the frozen encoder.
-uv run zte-run --config experiments/decoder/decode_frozen_e5raw.yaml --root res/data/zuco_extracted \
-    --encoder-ckpt res/experiments/exp8_clip_e5_raw_loZAB/checkpoints/best.pt --resume
+# 1) Train the encoder the evidence path reads. Its per-word projection is what the decoder inherits.
+uv run zte-run --config experiments/flagship/zte_lexical_raw.yaml --root res/data/zuco_extracted \
+    --loso-holdout ZAB --resume
 
-# 2) Decode the held-out cell with all five controls, the oracle and the permutation null.
-uv run zte-decode --ckpt res/experiments/exp13_decode_frozen_e5raw/checkpoints/best.pt \
+# 2) Train the decoder over that frozen encoder.
+uv run zte-run --config experiments/flagship/decode_zte_v2.yaml --root res/data/zuco_extracted \
+    --encoder-ckpt res/experiments/exp14_zte_lexical_raw_loZAB/checkpoints/best.pt --resume
+
+# 3) Decode the held-out cell with all seven controls, the oracle, the permutation null and the bit report.
+uv run zte-decode --ckpt res/experiments/exp15_decode_zte_v2/checkpoints/best.pt \
     --root res/data/zuco_extracted --split test --rescore
+
+# Or all of it, resumably, at three seeds, with the analysis at the end:
+SEEDS='42 43 44' bash scripts/run_zte_study.sh res/data/zuco_extracted
 
 # Wiring check on synthetic data with no LM download. Nothing from it is a result.
 uv run zte-run --config experiments/decoder/smoke/decode_tiny_mps.yaml --synthetic --mode encoder \
@@ -321,7 +391,7 @@ Written before the runs, so the result cannot be graded on a moving target.
 - **Pooled over 12 folds ($n = 1{,}260$):** content-word F1 clearing all five controls with permutation $p < 0.05$ at roughly **35%**; BLEU-4 under **15%**. Verbatim reproduction of any unseen held-out sentence: **under 3%**.
 - **The oracle** will reach BLEU-4 15–45 and ROUGE-1 0.45–0.70. That is a positive control for the head, not evidence about EEG, and it is stored apart from the hypothesis under `generation['absolute']['oracle']` for exactly that reason.
 
-**The most likely honest headline:** on unseen subjects reading unseen sentences, a frozen 0.5B LM driven by a 227k prefix bridge produces free-running text statistically indistinguishable from phase-scrambled, noise, mismatched, mean-prefix and null-prefix controls on BLEU-4, with at most a small content-word-F1 margin when pooled over 12 folds; the same bridge fed the true sentence embedding reaches BLEU-4 ~30, so the bottleneck is the EEG representation rather than the decoder. Separately, the field's headline ZuCo retrieval metric is substantially reproducible from eye-tracking-derived sentence length.
+**The most likely honest headline:** on unseen subjects reading unseen sentences, a frozen 0.5B LM driven by a 227k prefix bridge produces free-running text statistically indistinguishable from its phase-scrambled, noise, shuffled, length-only, mismatched, mean-prefix and null-prefix controls on BLEU-4, with at most a small content-word-F1 margin when pooled over 12 folds; the same bridge fed the true sentence embedding reaches BLEU-4 ~30, so the bottleneck is the EEG representation rather than the decoder. Separately, the field's headline ZuCo retrieval metric is substantially reproducible from eye-tracking-derived sentence length.
 
 **The outcome most likely to be mistaken for success:** train this under `by_subject_loso` — which shares all 700 texts between train and val — with an unfrozen LM, and it emits fluent ZuCo sentences at BLEU-4 in the 10–30 range. Every point is corpus memorisation, and the gate is built to say so: `mean_prefix` scores just as high, the paired delta is zero to numerical precision, and the permutation null gives $p \approx 1.0$. A decoder that ignores its conditioning entirely and emits the corpus's most frequent sentence for every query reaches a respectable absolute BLEU-1 and is
 still rejected.
@@ -356,3 +426,62 @@ It **cannot** claim sentence reconstruction from EEG. At ~4.7 bits of measured s
 - Papineni, K. et al. (2002). BLEU. *ACL*; Lin, C.-Y. (2004). ROUGE. *Text Summarization Branches Out*.
 - Ho, J. & Salimans, T. (2022). Classifier-free diffusion guidance. — the mechanism `cfg_weight` would enable, kept at
   1.0 in v1 so the headline and the null-prefix control share one code path.
+
+---
+
+## The decode studio (`zte-studio`)
+
+`zte-decode` answers *did it beat its controls*. The studio answers *what did it actually do*, for one reading at a
+time, and it exists because a paired delta with a confidence interval tells you nothing about whether the machinery
+is wired up the way you think it is.
+
+```sh
+uv run zte-studio --ckpt <decoder best.pt> --root <data> --split test --rows 8 \
+    --montage res/montage_gsn105.csv --out res/analysis/STUDIO.html
+```
+
+One self-contained HTML file, no server and no network. What it draws, and the real quantity behind each panel:
+
+| panel | the quantity |
+| --- | --- |
+| Scalp field, 2-D cap and draggable 3-D head | per-word band power interpolated over the montage, at the word the pointer is on |
+| Target sentence | the pointer's Gaussian window over the reading's words at the current step |
+| Decoded text | tokens as emitted, shaded by probability; clicking one seeks to that step |
+| Alternatives | the top-8 next-token distribution at that step |
+| Evidence KL | the same hidden state with and without the nudge -- how hard the brain pushed on *this* token |
+| Pointer walk | the whole `(step, word)` attention matrix |
+| Rate-ladder codes | the codebook entry each stage selected for this reading |
+
+### The trace cannot change the decode
+
+`FrozenLM.generate_from_prefix` takes an optional `trace` sink. Passing one adds a second head application per step
+-- the un-nudged logits, needed for the evidence KL -- and appends a per-step record. Passing `None`, which every
+headline, control and oracle decode does, leaves the loop byte-identical.
+
+That is the load-bearing property and it is mutation-tested: break the loop so the trace perturbs the emitted token
+and `test_tracing_a_decode_does_not_change_the_decode` goes red. A page built to inspect a decode showing a
+*different* decode from the one the evaluation scored is the failure this guards against, and nothing downstream
+would have caught it.
+
+### What the evidence KL is, and what it is not
+
+It is $\mathrm{KL}(p_{\text{nudged}} \parallel p_{\text{bare}})$ at one step, with the same cache and the same token
+history -- the nudge is the only difference, so the comparison is matched by construction. It is **not** the
+prefix-influence KL in the verdict, which compares whole prefixes; and it is not a comparison against a separately
+decoded null prefix, which would diverge in what it emits after the first step and stop being matched at all.
+
+### Reading it honestly
+
+The page carries its own banner saying so, and the banner is asserted in the test suite:
+
+- **A handful of readings is an anecdote.** The verdict needs the paired delta over every held-out reading, its
+  bootstrap interval and the permutation null. Those live in `zte-decode` and the evaluation report.
+- **Absolute scores mean nothing alone.** A frozen LM reaches ROUGE-1 of 0.10-0.18 against any English reference
+  from function words. The controls beside each decode are the readable part.
+- **The scalp colour scale is relative within one reading** -- log-scaled and quantised per reading -- so two maps
+  that look alike are not alike in microvolts.
+- **The pointer indexes EEG word slots**, and `target_words` is a text tokenisation. They usually agree; when the
+  counts differ the page shows the slot index and declines to name the word.
+
+The studio decodes `null_prefix`, `length_only` and `mismatch` for itself so one reading is readable on its own.
+That is a subset of the pre-registered seven, chosen to fit a page, and it is not the gate.

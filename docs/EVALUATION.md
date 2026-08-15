@@ -306,3 +306,139 @@ The self-supervised objective sweep (`skipgram,cbow,masked,cpc`) is now a **cont
 [ARCHITECTURE.md]: ./ARCHITECTURE.md
 [RESULTS.md]: ./RESULTS.md
 [TRAINING.md]: ./TRAINING.md
+
+## The content probe, and what "no signal" actually meant
+
+The scoreboard's positive control read `R2 = -0.005` for word length from raw band power and concluded the probe
+could not read content. It could not — but not for the reason recorded, and the difference matters because the
+same number was being used to discount every content metric in the report.
+
+`linear_probe` used a fixed `Ridge(alpha=1.0)`. On a standardised design of $p$ features and $n$ rows that is
+barely regularised, so a target the representation genuinely does not carry returns an out-of-sample $R^2$ of
+about $-p/n$. At 525 band-power features over 108k words, $-525/108000 = -0.0049$. The reported number *was* the
+estimator's overfitting penalty; it contained no information about band power at all.
+
+**The repair.** The ridge penalty is now searched over `np.logspace(-2, 6, 17)` inside each fold, which puts the
+no-signal floor back at 0. Verified directly rather than argued: on pure Gaussian noise with 525 features and 4,000
+rows, the fixed-alpha estimator returns $-0.131$ and the searched one returns $-0.002$. `linear_probe` also accepts
+`groups` for grouped cross-validation, and `training.metrics.residualise` removes a nuisance factor's per-group
+mean, which matters here because subject identity is linearly readable from raw band power at 0.81 while word
+length is not — a pooled ridge spends its capacity on who is reading.
+
+**Two questions, not one.** `raw_content_positive_control` now reports:
+
+| Block                | What it asks                                                             | What a failure means                                   |
+| -------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `machinery`          | word length from the eye-tracking features that carry it by construction | **the probe is broken**; no content number is readable |
+| `per_target_r2`      | word length / log-frequency from band power, pooled over subjects        | band power carries no *pooled* lexical content         |
+| `within_subject_r2`  | the same, with each subject's mean removed                               | it carries none *within* a reader either               |
+| `shuffled_target_r2` | the identical estimator on a permuted target                             | the empirical zero this run's numbers sit against      |
+
+`passes` is decided by the machinery check whenever there is one, because that is the question "may a content
+number in this report be believed". A raw-signal run has no band power to probe and now says so, rather than
+falling through to a proxy fitted on normalised features that a whitening normaliser has already stripped.
+
+## Within-task candidate pools
+
+No ZuCo stimulus appears under more than one task — the confound audit measures Cramér's V(task, stimulus) at
+0.998 — so a model can score on the full 700-sentence gallery by telling SR sentences from NR ones. That is a
+property of the passage set, not a reading of the brain. `scoreboard.within_task_retrieval` re-ranks every query
+inside its own task, where the passage set is fixed. The pool is smaller, so its own chance level is higher and is
+printed beside every number; `decoder.within_task_pools` selects which tasks are reported. A lift that survives
+here is a lift on sentence content, and it is the pool a sceptical reader asks for.
+
+## Every headline as mean ± sd
+
+Run-to-run drift here has been the size of the effect. Two seeds of `zte_raw_aligned` give rank percentiles of
+0.9672 and 0.9670 while their Top-1 moves 9 hits to 8; an arm that scored 4 hits in 700 scored 2 on an identical
+re-run. A single-seed number is a measurement, not a result.
+
+`zte-analyze` aggregates every collected run over seeds and reports mean, standard deviation and a percentile
+bootstrap interval, and it draws each seed as a point on its arm's bar — because two runs averaging to a good
+number is a different finding from four runs clustered on it, and this project has already hit a bimodal sweep
+where some seeds trained a healthy code and others collapsed. An arm backed by one run reports `sd` as `nan`
+rather than `0.0000`, which would read as perfect stability.
+
+## `zte-analyze` — the study, as one page
+
+```sh
+uv run zte-analyze --experiments res/experiments "/gdrive/My Drive/Sharables/ZTE/2026-08-14/experiments" \
+    --out res/experiments/analysis --montage res/montage_gsn105.csv
+```
+
+Walks one or more experiment trees and writes `ANALYSIS.html` (self-contained: plotly is inlined, so it opens from
+a Drive mirror with no network), `tables/*.csv` (every tidy frame behind it, so the analysis is redoable in any
+other tool) and `ANALYSIS.md`. The panels are ordered the way the argument runs: the honest headline, every fold
+and seed, what each lever is worth, the confounds, what the decoder wrote, the space itself, and training. A
+synthetic run is named as synthetic on the page, in the summary and in the terminal, because synthetic and real are
+not the same kind of evidence.
+
+The **feature-ablation table** is the one the decoder chapter is built on: raw conformer vs band-power MLP,
+spherical harmonics vs standard channel indexing, and the invariance recipe on vs off, each with its run count
+carried so a level backed by a single run cannot pass as an ablation.
+
+## Length projection — measuring on a space that carries no length
+
+`zte-rebaseline` above answers *how much of this number is word count* after the fact. `objective.length_projection`
+answers the stronger version: remove the length subspace from the exported embeddings and report retrieval on what
+is left.
+
+The projection regresses each sentence embedding on the basis $\phi(n) = [1,\, n,\, \log n,\, n^{-1},\, n^2]$ of its
+word count and subtracts the fitted component. Five terms rather than a straight line, because length reaches
+retrieval by more than one route — more tokens to pool, a longer eye-tracking trace, a wider `pad_mask` — and the
+relationship saturates.
+
+**It is fitted on the training split only**, exactly like the modality-gap correction and for the same reason:
+fitting on the rows about to be scored is transductive and cannot be reproduced by a decoder that sees one sentence
+at a time. The numbers travel with the metric in `metrics['length_projection']`:
+
+| field | meaning |
+| --- | --- |
+| `length_leakage_before` | fraction of embedding variance word count explains, unprojected |
+| `length_leakage_after` | the same after projection — the part the train-fitted basis failed to transfer |
+| `n_fit` | training sentences the basis was fitted on |
+| `status` | `applied`, or a stated reason it was skipped |
+
+`length_leakage_after` is **not** expected to be zero, and a zero would be the alarm rather than the result: it means
+the fit saw the scored rows. Read it beside the length-stratified gallery, which bounds the same confound a different
+way — they should agree, and if they do not, one of them is wrong.
+
+A projection that cannot be fitted is refused with a reason that reaches `report.md`, never silently skipped. A
+report showing length-free retrieval numbers that are not length-free would be worse than no de-confounding at all.
+
+## The exp16 encoder metrics
+
+Four mechanisms, and each one is only worth having if a number moves. What to read, and against which matched pair:
+
+| mechanism | metric | matched pair | what a win looks like |
+| --- | --- | --- | --- |
+| predictive residual | `train_residual_context_explained`, subject probe, `word_len` probe | `exp16_residual_off` | subject probe down *and* content probe up; both down is collapse |
+| cross-reader consensus | `train_consensus_sentence_gallery_top1`, `same_word_gap` | `exp16_consensus_off` | word-level cross-subject cosine gap moves off +0.005 |
+| gallery contrast | `train_gallery_top1` against `train_gallery_chance` | `exp16_gallery_off` | held-out rank percentile up at equal `stratified_rank_percentile` |
+| length band | `stratified_rank_percentile` | `exp16_gallery_band_off` | the *stratified* number rises, which is the only one it can honestly move |
+| length projection | `length_leakage_before` / `after` | `exp16_length_projection_off` | the pair's gap *is* the measurement |
+
+The training-side metrics are per-epoch means in `history.json` and are plotted by `zte-analyze`'s **mechanism
+curves** panel. That panel exists because the final metrics cannot distinguish "the mechanism did nothing" from "the
+mechanism was configured but never engaged" — a consensus term whose bank never reached `consensus_min_readers`
+contributes exactly zero and looks, in `metrics.json`, identical to one that ran and failed.
+
+`gallery_chance` is reported alongside `gallery_top1` for the same reason: with a length band the denominator is
+tens of candidates, not 700, so quoting the accuracy against $1/700$ would flatter it by an order of magnitude.
+
+## Gallery exposure — which retrieval question the split and the loss define together
+
+`metrics['gallery_exposure']` records whether the training loss was trained to separate the very stimuli the
+retrieval gallery is made of.
+
+A subject-only split (`by_subject_loso`) holds out *people, not sentences*, so under it every gallery sentence was in
+training. That was already true of the sentence-level CLIP target and of every arm on the board. What
+`objective.gallery_weight` and the consensus gallery term change is the sharpness: separating those exact items
+becomes the training objective, and the headline becomes **closed-set identification over a known sentence set for
+an unseen reader** rather than open-set retrieval of an unseen sentence.
+
+Both are real claims and the narrower one is clinically meaningful — a communication board is a fixed phrase set.
+Quoting one beside the other is not. So `report.md` prints a **closed-set caveat** whenever the combination applies,
+and an arm carrying it is comparable only with other arms carrying it. For the open-set claim, run
+`by_subject_and_stimulus` and read its `test` cell, where the denominator is restricted to training stimuli and the
+scored sentences were never negatives either.

@@ -140,3 +140,44 @@ uv run zte-pack clean experiments cache --yes          # wipe res/ subtrees to f
 ## Colab environment bootstrap
 
 Colab leaves some env vars unset and starts in the wrong directory. `zte.utils.bootstrap()` sets the missing vars (headless matplotlib, a writable config/cache dir, quiet tokenizers), resolves the project root, and creates the `res/` output directories — so the CLIs never error on a fresh runtime. The notebook calls it in Section 2; it is idempotent and a no-op on a laptop.
+
+## Analysing a study
+
+```sh
+# Everything under one or more trees -> one offline page, its CSV tables and a Markdown summary.
+uv run zte-analyze --experiments res/experiments --out res/experiments/analysis \
+    --montage res/montage_gsn105.csv
+
+# A Drive mirror and the local tree together; a run present in both is read once.
+uv run zte-analyze --experiments "/gdrive/My Drive/Sharables/ZTE/2026-08-14/experiments" res/experiments
+```
+
+`ANALYSIS.html` inlines plotly, so it opens on a machine with no network — which is the point, since it is meant
+to be read from a Drive mirror. `tables/*.csv` carries every frame behind it. Section 9c of
+`notebooks/zte_colab.ipynb` runs the same thing and renders the panels inline.
+
+## The Colab notebooks
+
+Two notebooks, and they are not versions of each other.
+
+**[`notebooks/zte_colab_v2.ipynb`](../notebooks/zte_colab_v2.ipynb)**
+([open in Colab](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/zte_colab_v2.ipynb))
+is the current front door: written around the exp16 encoder and the v2 decoder, Drive-first, with `ipywidgets`
+pickers for the arm, the held-out subject and the seed. Everything durable is written to Drive — evaluation,
+generation, the analysis dashboard, the studio page and the archives go straight there, while training checkpoints
+go to the VM's fast disk and are mirrored after every stage, because a Drive FUSE stall mid-`torch.save` is a torn
+checkpoint. Set `WRITE_MODE = 'drive'` to put checkpoints on Drive too. Set `RESUME_DATE` to an existing session
+folder and every cell resumes that session instead of starting a new one.
+
+Its `resolve_ckpt()` searches this session's Drive folder, then every earlier session newest-first, then the local
+disk, so a fresh runtime can evaluate, decode or open the studio on a run trained in a previous session with no
+manual restore. `durable()` returns the right root for wherever it is running — the Drive session folder on Colab,
+`res/` locally.
+
+**[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)**
+([open in Colab](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/zte_colab.ipynb))
+is the original, kept for the sections v2 does not carry: the benchmark suite, `zte-ablate` grid generation, the
+per-run explorer views and the housekeeping cells.
+
+Both need a GPU runtime (`Runtime → Change runtime type → GPU`) and both provision Python 3.14 through `uv` in their
+first cell, because Colab's system interpreter is older than ZTE requires.
