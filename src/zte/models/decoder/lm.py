@@ -1,8 +1,8 @@
-"""The frozen causal LM: prompt assembly, teacher-forced scoring, rescoring and free-running decode."""
+"""The frozen causal LM: prompt assembly, teacher-forced scoring, gallery rescoring and free-running decode."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 import torch
@@ -21,6 +21,9 @@ from zte.logging_utils import get_logger
 
 _LOG = get_logger('models.decoder.lm')
 
+type EvidenceFn = Callable[[torch.Tensor], torch.Tensor]
+"""Maps zero-based generated-token indices `(n_steps,)` to an LM-space nudge `(batch_size, n_steps, hidden_dim)`."""
+
 # The offline test LM: 22,688 parameters, trains and generates with no network access.
 _TINY_KWARGS: dict[str, Any] = {
     'vocab_size': 64,
@@ -29,7 +32,7 @@ _TINY_KWARGS: dict[str, Any] = {
     'num_hidden_layers': 2,
     'num_attention_heads': 4,
     'num_key_value_heads': 2,
-    'max_position_embeddings': 128,
+    'max_position_embeddings': 512,
     'bos_token_id': 1,
     'eos_token_id': 2,
     'pad_token_id': 0,
@@ -43,9 +46,17 @@ _DTYPES: dict[str, torch.dtype] = {
 
 _DTYPE_NAMES: dict[torch.dtype, str] = {v: k for k, v in _DTYPES.items()}
 
+# Target positions whose vocabulary logits are materialised at once. The head is 151,936 wide, so a 64-row chunk of
+# 96 positions is 3.7 GiB in float32 -- enough to lose the run on the accelerators this trains on.
+_LOGIT_BLOCK: int = 16
+
+# Alternatives kept per traced step. Enough to show what the decoder nearly said, small enough that a 96-step trace
+# over a hundred readings stays a few megabytes of JSON.
+_TRACE_TOP_K: int = 8
+
 
 class FrozenLM(nn.Module):
-    """A causal language model held frozen, driven only by a soft prompt.
+    """A causal language model held frozen, driven only by a soft prompt and a word-synchronous nudge.
 
     Nothing inside is trainable and nothing inside is checkpointed: `state_dict` is empty, every parameter has
     `requires_grad=False`, and `train()` leaves the module in eval. The empty state dict is a hard requirement -- the
@@ -254,6 +265,53 @@ class FrozenLM(nn.Module):
             mask = torch.cat([mask, real], dim=1)
         return torch.cat(parts, dim=1), mask, start
 
+    # ---- The frozen backbone, split so the evidence path can reach the output state ---- #
+
+    def hidden_states(
+        self,
+        inputs_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values: Any = None,
+        use_cache: bool = False,
+    ) -> tuple[torch.Tensor, Any]:
+        """Runs the frozen decoder stack and returns its final hidden state, before the output head.
+
+        Args:
+            inputs_embeds (torch.Tensor): `(batch_size, seq_len, hidden_dim)` input embeddings.
+            attention_mask (torch.Tensor): `(batch_size, total_len)` attention mask covering the cache too.
+            past_key_values (Any, optional): A key/value cache from a previous call. Defaults to None.
+            use_cache (bool, optional): Return a cache for the next step. Defaults to False.
+
+        Returns:
+            tuple[torch.Tensor, Any]: `(hidden_states, past_key_values)`.
+
+        Note:
+            Splitting the stack from its output head is what lets the word-synchronous evidence enter as an additive
+            nudge on the state the head reads. Because the head is linear and frozen, that is exactly a rank-limited
+            bias on the token logits -- one code path, no second decoder, and no new vocabulary parameters.
+        """
+        cached = 0 if past_key_values is None else int(attention_mask.shape[1] - inputs_embeds.shape[1])
+        position = torch.arange(cached, cached + inputs_embeds.shape[1], device=inputs_embeds.device)
+        out = self.lm.get_decoder()(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=position,
+        )
+        return out.last_hidden_state, getattr(out, 'past_key_values', None)
+
+    def logits_from_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Applies the frozen output head to a hidden state.
+
+        Args:
+            hidden (torch.Tensor): `(..., hidden_dim)` states.
+
+        Returns:
+            torch.Tensor: `(..., vocab_size)` logits in float32.
+        """
+        return self.lm.get_output_embeddings()(hidden).float()
+
     # ---- Scoring ---- #
 
     def target_token_logprobs(
@@ -262,31 +320,49 @@ class FrozenLM(nn.Module):
         target_ids: torch.Tensor,
         target_mask: torch.Tensor,
         scaffold_ids: torch.Tensor | None = None,
+        evidence: EvidenceFn | None = None,
     ) -> torch.Tensor:
         """Returns the per-token log-probability of each target token under its own prefix.
 
-        Differentiable: this is the primitive under both the cross-entropy loss and the in-batch grounding loss.
+        Differentiable: this is the primitive under the cross-entropy loss, the in-batch grounding loss and the
+        gallery rescoring.
 
         Args:
             prefix (torch.Tensor): Soft prompt `(batch_size, slots, hidden_dim)`.
             target_ids (torch.Tensor): Target ids `(batch_size, n_target)`.
             target_mask (torch.Tensor): Boolean `(batch_size, n_target)`; `True` at real target tokens.
             scaffold_ids (torch.Tensor | None, optional): Scaffold ids. Defaults to None.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge on the output state, indexed by the
+                generated-token position it predicts. Defaults to None.
 
         Returns:
             torch.Tensor: `(batch_size, n_target)` log-probabilities, zeroed at padded positions.
 
         Note:
-            The picked log-probability comes from a fused `cross_entropy` rather than a materialised `log_softmax`.
-            Rescoring the 700-sentence gallery runs 64 rows of 108 positions against a 151,936-token vocabulary, where
-            a float32 `log_softmax` and the tensor it reads cost roughly 7 GiB of transient on top of the logits
-            themselves -- enough to lose the run on the accelerators this trains on.
+            The vocabulary logits are materialised a block of positions at a time and reduced immediately. A frozen
+            0.5B LM's head is 151,936 wide, so a full `(rows, n_target, vocab)` tensor costs gigabytes of transient
+            that the accelerators this trains on do not have.
         """
         embeds, mask, start = self.assemble(prefix, target_ids, target_mask, scaffold_ids)
-        logits = self.lm(inputs_embeds=embeds, attention_mask=mask).logits
+        hidden, _ = self.hidden_states(embeds, mask)
         n_target = target_ids.shape[1]
-        pred = logits[:, start - 1 : start - 1 + n_target].float()
-        picked = -F.cross_entropy(pred.transpose(1, 2), target_ids, reduction='none')
+        states = hidden[:, start - 1 : start - 1 + n_target]
+
+        if evidence is not None:
+            steps = torch.arange(n_target, device=states.device)
+            states = states + evidence(steps).to(states.dtype)
+
+        picked = torch.cat(
+            [
+                -F.cross_entropy(
+                    self.logits_from_hidden(states[:, lo : lo + _LOGIT_BLOCK]).transpose(1, 2),
+                    target_ids[:, lo : lo + _LOGIT_BLOCK],
+                    reduction='none',
+                )
+                for lo in range(0, n_target, _LOGIT_BLOCK)
+            ],
+            dim=1,
+        )
         return picked * target_mask.to(picked.dtype)
 
     def forward_with_prefix(
@@ -295,6 +371,7 @@ class FrozenLM(nn.Module):
         target_ids: torch.Tensor,
         target_mask: torch.Tensor,
         scaffold_ids: torch.Tensor | None = None,
+        evidence: EvidenceFn | None = None,
     ) -> torch.Tensor:
         """Returns the token-mean teacher-forced cross-entropy of the targets under their prefixes.
 
@@ -303,11 +380,12 @@ class FrozenLM(nn.Module):
             target_ids (torch.Tensor): Target ids `(batch_size, n_target)`.
             target_mask (torch.Tensor): Boolean `(batch_size, n_target)`; `True` at real target tokens.
             scaffold_ids (torch.Tensor | None, optional): Scaffold ids. Defaults to None.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge. Defaults to None.
 
         Returns:
             torch.Tensor: Scalar cross-entropy, 0 when no target token is real.
         """
-        logprob = self.target_token_logprobs(prefix, target_ids, target_mask, scaffold_ids)
+        logprob = self.target_token_logprobs(prefix, target_ids, target_mask, scaffold_ids, evidence)
         n_tokens = target_mask.sum().clamp_min(1).to(logprob.dtype)
         return -logprob.sum() / n_tokens
 
@@ -318,6 +396,7 @@ class FrozenLM(nn.Module):
         cand_mask: torch.Tensor,
         length_normalise: bool = True,
         chunk: int = 64,
+        evidence: EvidenceFn | None = None,
     ) -> torch.Tensor:
         """Scores several candidate sentences against each prefix.
 
@@ -332,6 +411,8 @@ class FrozenLM(nn.Module):
             length_normalise (bool, optional): Divide by the candidate's token count, which stops the score being a
                 sentence-length ranking. Defaults to True.
             chunk (int, optional): Rows per forward pass, bounding peak memory. Defaults to 64.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge for the query rows, broadcast across that
+                query's candidates. Defaults to None.
 
         Returns:
             torch.Tensor: `(batch_size, n_cand)` sequence log-probabilities.
@@ -345,11 +426,17 @@ class FrozenLM(nn.Module):
         flat_prefix = prefix.unsqueeze(1).expand(-1, n_cand, -1, -1).reshape(-1, slots, hidden)
         flat_ids = cand_ids.reshape(-1, n_target)
         flat_mask = cand_mask.reshape(-1, n_target)
+        # Row `i * n_cand + c` is query `i` scoring candidate `c`, so a query's nudge repeats across its candidates.
+        row_query = torch.arange(batch_size, device=prefix.device).repeat_interleave(n_cand)
 
         scores: list[torch.Tensor] = []
         for lo in range(0, flat_ids.shape[0], max(chunk, 1)):
             hi = lo + max(chunk, 1)
-            part = self.target_token_logprobs(flat_prefix[lo:hi], flat_ids[lo:hi], flat_mask[lo:hi])
+            block: EvidenceFn | None = None
+            if evidence is not None:
+                rows = row_query[lo:hi]
+                block = lambda steps, rows=rows: evidence(steps)[rows]  # noqa: E731 -- one-line row selector
+            part = self.target_token_logprobs(flat_prefix[lo:hi], flat_ids[lo:hi], flat_mask[lo:hi], evidence=block)
             total = part.sum(dim=1)
             if length_normalise:
                 total = total / flat_mask[lo:hi].sum(dim=1).clamp_min(1).to(total.dtype)
@@ -364,6 +451,7 @@ class FrozenLM(nn.Module):
         cand_mask: torch.Tensor,
         length_normalise: bool = True,
         chunk: int = 64,
+        evidence: EvidenceFn | None = None,
     ) -> torch.Tensor:
         """No-grad `candidate_logprobs`, the scoring path behind decoder-rescoring retrieval.
 
@@ -373,28 +461,36 @@ class FrozenLM(nn.Module):
             cand_mask (torch.Tensor): Boolean mask with the same shape as `cand_ids`.
             length_normalise (bool, optional): Divide by the candidate's token count. Defaults to True.
             chunk (int, optional): Rows per forward pass. Defaults to 64.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge. Defaults to None.
 
         Returns:
             torch.Tensor: `(batch_size, n_cand)` sequence log-probabilities.
         """
-        return self.candidate_logprobs(prefix, cand_ids, cand_mask, length_normalise, chunk)
+        return self.candidate_logprobs(prefix, cand_ids, cand_mask, length_normalise, chunk, evidence)
 
     @torch.no_grad()
-    def next_token_logits(self, prefix: torch.Tensor, scaffold_ids: torch.Tensor | None = None) -> torch.Tensor:
+    def next_token_logits(
+        self,
+        prefix: torch.Tensor,
+        scaffold_ids: torch.Tensor | None = None,
+        evidence: EvidenceFn | None = None,
+    ) -> torch.Tensor:
         """Returns the logits for the first generated token.
 
         Args:
             prefix (torch.Tensor): Soft prompts `(batch_size, slots, hidden_dim)`.
             scaffold_ids (torch.Tensor | None, optional): Scaffold ids. Defaults to None.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge. Defaults to None.
 
         Returns:
             torch.Tensor: `(batch_size, vocab_size)` logits.
         """
         embeds, mask, _ = self.assemble(prefix, scaffold_ids=scaffold_ids)
-        # Only the last position is read, and the vocabulary is wide enough that projecting the other eleven costs
-        # more than the rest of the forward pass; this runs four times a step through the two KL diagnostics.
-        out = self.lm(inputs_embeds=embeds, attention_mask=mask, logits_to_keep=1)
-        return out.logits[:, -1].float()
+        hidden, _ = self.hidden_states(embeds, mask)
+        state = hidden[:, -1:]
+        if evidence is not None:
+            state = state + evidence(torch.zeros(1, dtype=torch.long, device=state.device)).to(state.dtype)
+        return self.logits_from_hidden(state)[:, 0]
 
     @torch.no_grad()
     def next_token_kl(
@@ -432,31 +528,123 @@ class FrozenLM(nn.Module):
         scaffold_ids: torch.Tensor | None = None,
         max_new_tokens: int = 96,
         beams: int = 1,
+        evidence: EvidenceFn | None = None,
+        trace: list[list[dict[str, Any]]] | None = None,
     ) -> list[str]:
-        """Decodes free-running text from a soft prompt, with no reference and no candidate set.
+        """Decodes strictly autoregressive text from a soft prompt, with no reference and no candidate set.
+
+        Note:
+            The loop is written here rather than delegated to `transformers.generate` for two reasons. The evidence
+            nudge has to reach the output state at every step, which no generation hook exposes; and every control,
+            the oracle and the headline must run byte-identical code, which a library path with its own fallbacks
+            cannot guarantee. Nothing but the model's own previous token is ever fed back -- there is no reference
+            token, no reference length and no candidate set anywhere in this function.
 
         Args:
             prefix (torch.Tensor): Soft prompts `(batch_size, slots, hidden_dim)`.
             scaffold_ids (torch.Tensor | None, optional): Scaffold ids. Defaults to None.
             max_new_tokens (int, optional): Decode cap; the reference length is never supplied. Defaults to 96.
-            beams (int, optional): Beam width; 1 is greedy and deterministic. Defaults to 1.
+            beams (int, optional): Beam width. Only 1 is accepted. Defaults to 1.
+            evidence (EvidenceFn | None, optional): Word-synchronous nudge. Defaults to None.
+            trace (list[list[dict[str, Any]]] | None, optional): Sink for a per-row, per-step record of what the
+                decoder did. Passing one adds an extra head application per step to measure the evidence path's
+                effect; passing `None` -- which every headline, control and oracle decode does -- leaves the loop
+                byte-identical, because a visualisation must never be able to change the number it visualises.
 
         Returns:
             list[str]: One detokenised hypothesis per row.
+
+        Raises:
+            ValueError: If `beams` is not 1.
         """
+        if beams != 1:
+            raise ValueError(
+                f'decoder.beams={beams} is not supported: beam search would make the headline decode and the '
+                'controls different code paths, and it raises the language prior rather than the brain signal. '
+                'Set it to 1 (greedy, deterministic).'
+            )
+
         embeds, mask, _ = self.assemble(prefix, scaffold_ids=scaffold_ids)
-        out = self.lm.generate(
-            inputs_embeds=embeds,
-            attention_mask=mask,
-            max_new_tokens=max_new_tokens,
-            num_beams=max(beams, 1),
-            do_sample=False,
-            bos_token_id=self.bos_id,
-            eos_token_id=self.eos_id,
-            pad_token_id=self.pad_id,
-        )
-        # Generating from `inputs_embeds` returns only the new ids, so there is no prompt to strip.
-        return [self.decode(row) for row in out]
+        batch_size = embeds.shape[0]
+        device = embeds.device
+        hidden, past = self.hidden_states(embeds, mask, use_cache=True)
+
+        emitted = torch.zeros(batch_size, 0, dtype=torch.long, device=device)
+        alive = torch.ones(batch_size, dtype=torch.bool, device=device)
+        state = hidden[:, -1:]
+
+        rows: list[list[dict[str, Any]]] = [[] for _ in range(batch_size)]
+        for step in range(max(int(max_new_tokens), 0)):
+            bare = state if trace is None else state.clone()
+            if evidence is not None:
+                index = torch.full((1,), step, dtype=torch.long, device=device)
+                state = state + evidence(index).to(state.dtype)
+            logits = self.logits_from_hidden(state)[:, 0]
+            nxt = logits.argmax(dim=-1)
+
+            if trace is not None:
+                self._record_step(rows, step, logits, bare, state, alive)
+
+            # A finished row keeps emitting padding so the batch stays rectangular and its text stops growing.
+            nxt = torch.where(alive, nxt, torch.full_like(nxt, self.pad_id))
+            emitted = torch.cat([emitted, nxt[:, None]], dim=1)
+            alive = alive & (nxt != self.eos_id)
+            if not bool(alive.any()):
+                break
+
+            mask = torch.cat([mask, alive.to(mask.dtype)[:, None]], dim=1)
+            state, past = self.hidden_states(
+                self.embed_tokens(nxt[:, None]), mask, past_key_values=past, use_cache=True
+            )
+
+        if trace is not None:
+            trace.extend(rows)
+
+        return [self.decode(row) for row in emitted]
+
+    def _record_step(
+        self,
+        rows: list[list[dict[str, Any]]],
+        step: int,
+        logits: torch.Tensor,
+        bare: torch.Tensor,
+        nudged: torch.Tensor,
+        alive: torch.Tensor,
+    ) -> None:
+        """Appends one decoding step's distribution and the evidence path's effect on it to every live row."""
+        probs = F.softmax(logits.float(), dim=-1)
+        entropy = -(probs * probs.clamp_min(1e-12).log()).sum(dim=-1)
+        top_prob, top_id = probs.topk(min(_TRACE_TOP_K, probs.shape[-1]), dim=-1)
+
+        # The honest per-step influence: same state, same cache, the nudge as the only difference. Comparing against
+        # a separately-decoded null prefix would compare two different token histories after the first step.
+        if torch.equal(bare, nudged):
+            shift = torch.zeros_like(entropy)
+            magnitude = torch.zeros_like(entropy)
+        else:
+            log_p = F.log_softmax(logits.float(), dim=-1)
+            log_q = F.log_softmax(self.logits_from_hidden(bare)[:, 0].float(), dim=-1)
+            shift = (log_p.exp() * (log_p - log_q)).sum(dim=-1)
+            magnitude = (nudged - bare)[:, 0].float().norm(dim=-1)
+
+        for row in range(len(rows)):
+            if not bool(alive[row]):
+                continue
+            rows[row].append(
+                {
+                    'step': step,
+                    'token_id': int(top_id[row, 0]),
+                    'piece': self.decode(top_id[row, :1]),
+                    'probability': float(top_prob[row, 0]),
+                    'entropy': float(entropy[row]),
+                    'evidence_kl': float(shift[row]),
+                    'evidence_norm': float(magnitude[row]),
+                    'alternatives': [
+                        {'piece': self.decode(top_id[row, k : k + 1]), 'probability': float(top_prob[row, k])}
+                        for k in range(top_id.shape[1])
+                    ],
+                }
+            )
 
     def decode(self, ids: torch.Tensor | Sequence[int]) -> str:
         """Detokenises generated ids, dropping the specials.
@@ -468,15 +656,27 @@ class FrozenLM(nn.Module):
             str: The decoded string.
         """
         row = ids.tolist() if isinstance(ids, torch.Tensor) else list(ids)
+        stop = {self.eos_id, self.pad_id}
+        kept = list(_takewhile_not(row, stop))
         if isinstance(self.tokenizer, TinyByteTokenizer):
-            return self.tokenizer.decode(row)
-        return str(self.tokenizer.decode(row, skip_special_tokens=True))
+            return self.tokenizer.decode(kept)
+        return str(self.tokenizer.decode(kept, skip_special_tokens=True))
 
     def _encode(self, text: str) -> list[int]:
         """Encodes `text` without special tokens, for the fixed scaffold."""
         if isinstance(self.tokenizer, TinyByteTokenizer):
             return self.tokenizer.encode(text, add_eos=False)
         return [int(i) for i in self.tokenizer(text, add_special_tokens=False)['input_ids']]
+
+
+def _takewhile_not(row: Sequence[int], stop: set[int]) -> list[int]:
+    """Returns the ids before the first stop token, so a finished row's padding never reaches the detokeniser."""
+    out: list[int] = []
+    for token in row:
+        if int(token) in stop:
+            break
+        out.append(int(token))
+    return out
 
 
 def _first_id(value: Any, fallback: int) -> int:
@@ -563,17 +763,17 @@ def encoder_dtype(encoder: nn.Module | None) -> LMDtype:
 def resolve_lm_dtype(requested: LMDtype, encoder: nn.Module | None) -> LMDtype:
     """Resolves `decoder.lm_dtype`, inheriting the encoder's precision for `'auto'`.
 
+    Note:
+        A pinned value that disagrees with the encoder is honoured and warned about rather than overridden. It is a
+        legitimate memory trade -- the frozen LM is far larger than the encoder -- but it puts the two halves of the
+        pipeline at different precisions, which is a property of the run that has to be visible in its log.
+
     Args:
         requested (LMDtype): The configured value.
         encoder (nn.Module | None): The encoder the bridge is fed by.
 
     Returns:
         LMDtype: A concrete precision.
-
-    Note:
-        A pinned value that disagrees with the encoder is honoured and warned about rather than overridden. It is a
-        legitimate memory trade -- the frozen LM is far larger than the encoder -- but it puts the two halves of the
-        pipeline at different precisions, which is a property of the run that has to be visible in its log.
     """
     inherited = encoder_dtype(encoder)
     if requested == 'auto':

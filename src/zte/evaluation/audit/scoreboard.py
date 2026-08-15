@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from zte.evaluation import metrics as M
 from zte.evaluation.neurons import neuron_report
+from zte.training.metrics import residualise
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -85,48 +87,115 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
     return lifts
 
 
+# Eye-tracking columns that are a lexical-difficulty proxy by construction: the confound audit puts their
+# correlation ratio with word length at 0.24-0.39, so a probe that cannot read word length from these is broken.
+_MACHINERY_FEATURES: tuple[str, ...] = ('TRT', 'GD', 'FFD', 'GPT', 'n_fixations', 'regression_time')
+
+
 def raw_content_positive_control(
     word_band_power: np.ndarray | None, word_meta: 'pd.DataFrame'
 ) -> dict[str, Any] | None:
-    """Probes genuinely-raw band power for lexical content -- the honest positive control (docs/EVALUATION.md).
+    """Probes genuinely-raw band power for lexical content -- the honest positive control.
+
+    Note:
+        Two questions are asked, and confusing them is what made "the probe is broken" and "band power carries no
+        lexical content" indistinguishable. `machinery` probes word length from eye-tracking features that are known
+        to carry it, so a failure there is a fault in the probe. `pooled` and `within_subject` probe band power, and
+        a failure there -- with the machinery passing -- is a result about the signal. The within-subject column is
+        the one to read: subject identity is linearly readable from raw band power at 0.81 while word length is not,
+        so a probe fitted across subjects spends its capacity on who is reading.
 
     Args:
         word_band_power (np.ndarray | None): Raw band power `(n, bands, channels)`, or `None` for a
             raw-signal frontend (the control is then not applicable).
-        word_meta (pd.DataFrame): Per-word metadata carrying `word_len` and `log_freq`.
+        word_meta (pd.DataFrame): Per-word metadata carrying `word_len`, `log_freq`, `subject` and, when eye
+            tracking is present, the fixation columns the machinery check reads.
 
     Returns:
-        dict | None: The positive-control block (best R2, per-target R2, floor, verdict), or `None`.
+        dict | None: The positive-control block, or `None` when there is nothing to probe.
     """
-    if word_band_power is None:
-        return None
-    flat = np.asarray(word_band_power, dtype=np.float32).reshape(len(word_band_power), -1)
-    # Omitted words carry NaN band power; impute to the column mean so the probe sees every row.
-    col_mean = np.nanmean(np.where(np.isfinite(flat), flat, np.nan), axis=0)
-    col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
-    flat = np.where(np.isfinite(flat), flat, col_mean)
+    machinery = _probe_machinery_control(word_meta)
+    pooled: dict[str, float] = {}
+    within: dict[str, float] = {}
+    shuffled: dict[str, float] = {}
 
-    scores: dict[str, float] = {}
-    for target in ('word_len', 'log_freq'):
-        if target not in word_meta.columns:
-            continue
-        y = np.asarray(word_meta[target].to_numpy(), dtype=np.float64)
-        keep = np.isfinite(y)
-        if keep.sum() < 32:
-            continue
-        result = M.linear_probe(flat[keep], y[keep], task='regression')
-        scores[target] = round(float(result.get('score', float('nan'))), 4)
+    if word_band_power is not None:
+        flat = np.asarray(word_band_power, dtype=np.float32).reshape(len(word_band_power), -1)
+        # Omitted words carry NaN band power; impute to the column mean so the probe sees every row.
+        col_mean = np.nanmean(np.where(np.isfinite(flat), flat, np.nan), axis=0)
+        col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+        flat = np.where(np.isfinite(flat), flat, col_mean)
+        subjects = word_meta['subject'].to_numpy() if 'subject' in word_meta.columns else None
 
-    if not scores:
+        for target in ('word_len', 'log_freq'):
+            if target not in word_meta.columns:
+                continue
+            y = np.asarray(word_meta[target].to_numpy(), dtype=np.float64)
+            keep = np.isfinite(y)
+            if keep.sum() < 32:
+                continue
+            x, y_keep = flat[keep], y[keep]
+            pooled[target] = _r2(M.linear_probe(x, y_keep, task='regression'))
+            if subjects is not None:
+                group = np.asarray(subjects)[keep]
+                within[target] = _r2(
+                    M.linear_probe(residualise(x, group), residualise(y_keep, group), task='regression')
+                )
+            # The empirical zero: the identical estimator on a target that carries no information at all.
+            shuffled[target] = _r2(M.linear_probe(x, np.random.default_rng(0).permutation(y_keep), task='regression'))
+
+    if not pooled and machinery is None:
         return None
-    best = max(scores.values())
+
+    band_power_best = max([*pooled.values(), *within.values()]) if (pooled or within) else float('nan')
+    # `passes` answers "may a content number in this report be believed", so the machinery check decides it
+    # whenever there is one. A raw-signal run has no band power to probe, and that is not a broken probe.
+    trustworthy = machinery['passes'] if machinery else bool(band_power_best >= _CONTENT_PROBE_FLOOR)
     return {
-        'raw_content_r2_best': best,
-        'per_target_r2': scores,
+        'raw_content_r2_best': round(band_power_best, 4) if np.isfinite(band_power_best) else None,
+        'per_target_r2': {k: round(v, 4) for k, v in pooled.items()},
+        'within_subject_r2': {k: round(v, 4) for k, v in within.items()},
+        'shuffled_target_r2': {k: round(v, 4) for k, v in shuffled.items()},
+        'machinery': machinery,
+        'band_power_applicable': word_band_power is not None,
         'floor': _CONTENT_PROBE_FLOOR,
-        'passes': bool(np.isfinite(best) and best >= _CONTENT_PROBE_FLOOR),
-        'source': 'raw band-power',
+        'passes': bool(trustworthy),
+        'decided_by': 'eye-tracking machinery check' if machinery else 'raw band-power',
+        'source': 'raw band-power' if word_band_power is not None else 'raw signal (no band power to probe)',
     }
+
+
+def _probe_machinery_control(word_meta: 'pd.DataFrame') -> dict[str, Any] | None:
+    """Probes word length from eye-tracking features, which is the check that the probe itself works.
+
+    Note:
+        Reading time tracks word length by construction, so this must clear the floor. If it does and band power does
+        not, the honest reading is "the probe works and band power carries no linear lexical content" -- a result.
+        If this fails too, no content number from the run means anything and the scoreboard says so.
+    """
+    columns = [c for c in _MACHINERY_FEATURES if c in word_meta.columns]
+    if not columns or 'word_len' not in word_meta.columns:
+        return None
+
+    x = np.asarray(word_meta[columns].to_numpy(), dtype=np.float64)
+    y = np.asarray(word_meta['word_len'].to_numpy(), dtype=np.float64)
+    keep = np.isfinite(y) & np.isfinite(x).all(axis=1)
+    if int(keep.sum()) < 32:
+        return None
+
+    score = _r2(M.linear_probe(x[keep], y[keep], task='regression'))
+    return {
+        'features': columns,
+        'word_len_r2': round(score, 4),
+        'floor': _CONTENT_PROBE_FLOOR,
+        'passes': bool(np.isfinite(score) and score >= _CONTENT_PROBE_FLOOR),
+        'n': int(keep.sum()),
+    }
+
+
+def _r2(result: dict[str, Any]) -> float:
+    """Pulls the score out of a probe result, as a plain float."""
+    return float(result.get('score', float('nan')))
 
 
 def _sub(a: float | None, b: float | None) -> float | None:
@@ -375,6 +444,75 @@ def _rescore_cell(
     return out
 
 
+def within_task_retrieval(
+    scores: np.ndarray,
+    query_meta: 'pd.DataFrame',
+    *,
+    gallery_tasks: np.ndarray,
+    gallery_n_words: np.ndarray | None = None,
+    pools: Sequence[str] = ('SR', 'NR'),
+    length_tol: int = 1,
+    ks: tuple[int, ...] = (1, 5, 10),
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Re-ranks each query inside its own reading task, so passage identity cannot be doing the work.
+
+    On ZuCo no stimulus appears under more than one task -- the confound audit puts Cramer's V(task, stimulus) at
+    0.998 -- so the full 700-sentence gallery lets a model score by telling SR sentences from NR ones, which is a
+    passage-set property and not a reading of the brain. Inside a single task the passage set is fixed, so a lift that
+    survives here is a lift on sentence content. It is the pool a sceptical reader asks for, and it is smaller, so
+    both its chance level and its confidence interval are reported alongside.
+
+    Args:
+        scores (np.ndarray): Query-by-gallery scores `(n_queries, n_gallery)`, higher is better.
+        query_meta (pd.DataFrame): Per-query metadata carrying `task`, `text_id` and optionally `n_words`.
+        gallery_tasks (np.ndarray): Task of each gallery sentence `(n_gallery,)`.
+        gallery_n_words (np.ndarray | None, optional): Word count per gallery sentence, for the stratified cell.
+        pools (Sequence[str], optional): Tasks to report. Defaults to ('SR', 'NR').
+        length_tol (int, optional): Word-count tolerance inside a pool. Defaults to 1.
+        ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
+        seed (int, optional): Bootstrap seed. Defaults to 0.
+
+    Returns:
+        dict[str, Any]: One block per task that had at least two queries and two candidates.
+    """
+    mat = np.asarray(scores, dtype=np.float64)
+    tasks = np.asarray(gallery_tasks).astype(str)
+    if mat.ndim != 2 or 'task' not in query_meta or 'text_id' not in query_meta:
+        return {}
+
+    q_tasks = query_meta['task'].astype(str).to_numpy()
+    q_ids = query_meta['text_id'].to_numpy()
+    q_words = query_meta['n_words'].to_numpy() if 'n_words' in query_meta else None
+
+    out: dict[str, Any] = {}
+    for task in pools:
+        rows = np.flatnonzero(q_tasks == str(task))
+        cols = np.flatnonzero(tasks == str(task))
+        if rows.size < 2 or cols.size < 2:
+            continue
+        # Gallery column `j` is the sentence whose `text_id` is `j`, so the selected column indices *are* the ids.
+        cell = _rescore_cell(mat[np.ix_(rows, cols)], q_ids[rows], cols, None, None, length_tol, ks, seed)
+        if cell is None:
+            continue
+        cell['task'] = str(task)
+        cell['n_candidates'] = int(cols.size)
+        cell['pool'] = 'within_task'
+        if q_words is not None and gallery_n_words is not None:
+            cell['length_stratified'] = _rescore_cell(
+                mat[np.ix_(rows, cols)],
+                q_ids[rows],
+                cols,
+                np.asarray(q_words, dtype=np.float64)[rows],
+                np.asarray(gallery_n_words, dtype=np.float64)[cols],
+                length_tol,
+                ks,
+                seed,
+            )
+        out[str(task)] = cell
+    return out
+
+
 def held_out_generation(block: dict[str, Any] | None) -> dict[str, Any] | None:
     """Condenses a `generation.generation_report` into the scoreboard's held-out generation row.
 
@@ -563,16 +701,39 @@ def render_markdown(board: dict[str, Any]) -> str:
     lines = ['## Scoreboard — the honest headline', '']
     cp = board['lift_over_raw'].get('content_probe', {})
     ok = '✅ PASS' if cp.get('passes') else '❌ FAIL'
-    lines.append(
-        f'**Content-probe positive control:** {ok} '
-        f'(raw band-power reads lexical content at R²={cp.get("raw_content_r2_best", float("nan")):.3f}, '
-        f'floor {cp.get("floor")}). '
-        + (
-            'The probe can detect content, so a 0% content budget is a real absence.'
-            if cp.get('passes')
-            else 'The probe cannot read content even from raw features — fix the probe before trusting "content 0%".'
+    best = cp.get('raw_content_r2_best')
+    reading = f'raw band-power reads lexical content at R²={best:.3f}' if best is not None else str(cp.get('source'))
+    lines.append(f'**Content-probe positive control:** {ok} ({reading}, floor {cp.get("floor")}).')
+    machinery = cp.get('machinery') or {}
+    if machinery:
+        works = '✅ works' if machinery.get('passes') else '❌ BROKEN'
+        lines.append('')
+        lines.append(
+            f'**Probe machinery check:** {works} — word length off {len(machinery.get("features", []))} '
+            f'eye-tracking features at R²={machinery.get("word_len_r2", float("nan")):.3f} '
+            f'(n={machinery.get("n")}). '
+            + (
+                'The estimator can read lexical content when it is there, so a band-power failure above is a '
+                'result about the signal, not a broken probe.'
+                if machinery.get('passes')
+                else 'The estimator cannot read word length even from reading times, so no content number in this '
+                'report means anything until it is fixed.'
+            )
         )
-    )
+    within = cp.get('within_subject_r2') or {}
+    shuffled = cp.get('shuffled_target_r2') or {}
+    if within or shuffled:
+        lines.append('')
+        lines.append('| band-power probe | word_len | log_freq |')
+        lines.append('| --- | --- | --- |')
+        for label, cell in (
+            ('pooled over subjects', cp.get('per_target_r2') or {}),
+            ('within subject', within),
+            ('shuffled target (empirical zero)', shuffled),
+        ):
+            lines.append(
+                f'| {label} | {cell.get("word_len", float("nan")):.4f} | {cell.get("log_freq", float("nan")):.4f} |'
+            )
     lines.append('')
 
     if board['is_loso']:

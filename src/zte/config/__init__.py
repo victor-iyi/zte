@@ -19,6 +19,7 @@ from zte.config.objective import ObjectiveConfig
 from zte.config.train import TrainConfig
 from zte.config.types import (
     Conditioning,
+    EvidenceSchedule,
     FrontendName,
     GapCorrection,
     Granularity,
@@ -28,6 +29,7 @@ from zte.config.types import (
     ObjectiveName,
     PoolName,
     PosEncoding,
+    RateLadder,
     Representation,
     SchedulerName,
     SpatialEncoding,
@@ -39,6 +41,7 @@ __all__: list[str] = [
     'Conditioning',
     'DatasetConfig',
     'DecoderConfig',
+    'EvidenceSchedule',
     'FrontendName',
     'GapCorrection',
     'Granularity',
@@ -51,6 +54,7 @@ __all__: list[str] = [
     'ObjectiveName',
     'PoolName',
     'PosEncoding',
+    'RateLadder',
     'Representation',
     'SchedulerName',
     'SpatialEncoding',

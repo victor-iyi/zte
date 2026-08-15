@@ -15,6 +15,7 @@ from zte.evaluation.analogy import analogy_report
 from zte.evaluation.breakdown import stratified_report, stratified_retrieval
 from zte.inference.retrieval import NearestNeighborIndex
 from zte.logging_utils import get_logger
+from zte.models.encoder.nuisance import LengthProjector, length_leakage
 from zte.training.metrics import noise_matched
 
 _LOG = get_logger('evaluation.report')
@@ -85,6 +86,7 @@ def evaluate_representation(
     *,
     phase_sent_emb: np.ndarray | None = None,
     train_sent_emb: np.ndarray | None = None,
+    train_sent_n_words: np.ndarray | None = None,
     sent_n_words: np.ndarray | None = None,
     generation: dict[str, Any] | None = None,
     rescoring: dict[str, Any] | None = None,
@@ -117,11 +119,15 @@ def evaluate_representation(
         interactive (bool): Whether to write the interactive HTML explorer.
         phase_word_emb (np.ndarray | None): Embeddings of phase-scrambled EEG, added as a control representation.
         train_vocab (set[str] | None): Word types seen in training, enabling the seen-vs-novel retrieval split.
+
+    Keyword Args:
         phase_sent_emb (np.ndarray | None): Sentence embeddings of phase-scrambled EEG through the identical
             encoder, routed into retrieval, the scoreboard and the verdict rather than the probe table alone.
         train_sent_emb (np.ndarray | None): Training-split sentence embeddings. When given, whitening and
             all-but-the-top are fitted on these rows and both the train-fitted and the transductive
             retrieval numbers are reported, since only the former is reproducible one sentence at a time.
+        train_sent_n_words (np.ndarray | None): Word count of each training-split sentence, which is what the
+            `objective.length_projection` regression is fitted against.
         sent_n_words (np.ndarray | None): Word count per sentence, enabling the length-stratified gallery.
         generation (dict[str, Any] | None): A `generation.generation_report` block from a decoder run.
         rescoring (dict[str, Any] | None): A `scoreboard.decoder_rescoring_retrieval` block.
@@ -156,6 +162,23 @@ def evaluate_representation(
             n_top,
             'transductive' if train_sent_emb is None else 'train split',
         )
+    # Length is 5.14 of the 9.45 bits needed to name a ZuCo sentence, so removing it says what is left underneath.
+    length_projection: dict[str, Any] | None = None
+    if obj_cfg is not None and bool(getattr(obj_cfg, 'length_projection', False)):
+        projector, length_projection = _fit_length_projector(sent_n_words, train_sent_emb, train_sent_n_words)
+        if projector is not None and sent_n_words is not None:
+            n_words = np.asarray(sent_n_words)
+            length_projection['length_leakage_before'] = length_leakage(sent_emb, n_words)
+            sent_emb = projector.transform(sent_emb, n_words)
+            length_projection['length_leakage_after'] = length_leakage(sent_emb, n_words)
+            if sent_emb_transductive is not None:
+                sent_emb_transductive = projector.transform(sent_emb_transductive, n_words)
+            _LOG.info(
+                'Length projection: word count explained %.4f of sentence-embedding variance before, %.4f after.',
+                length_projection['length_leakage_before'],
+                length_projection['length_leakage_after'],
+            )
+
     csls_k = int(getattr(obj_cfg, 'csls_neighbors', 0) or 0) if obj_cfg is not None else 0
     use_csls = csls_k > 0
     if use_csls:
@@ -273,6 +296,8 @@ def evaluate_representation(
         'sentence_retrieval_phase_control': phase_ret,
         'sentence_retrieval_transductive': sent_ret_transductive,
         'postprocess_fit': _postprocess_fit(do_whiten or n_top > 0, train_sent_emb is not None),
+        'length_projection': length_projection,
+        'gallery_exposure': _gallery_exposure(config),
         'word_retrieval': word_ret,
         'word_retrieval_by_novelty': word_ret_by_novelty,
         'word_retrieval_freq_matched': word_ret_freq_matched,
@@ -392,6 +417,73 @@ def evaluate_representation(
     return metrics
 
 
+def _gallery_exposure(config: Any | None) -> dict[str, Any] | None:
+    """Records whether the training loss discriminated the very stimuli the retrieval gallery is made of.
+
+    A subject-only split holds out people, not sentences, so under it every gallery item was a training item. That
+    was already true of the sentence-level CLIP target; a full-gallery or consensus-gallery term sharpens it from
+    "the text was seen" into "separating these exact items *was* the training objective", which turns the headline
+    from open-set retrieval into closed-set identification. The number is not wrong -- it answers a narrower
+    question -- so it is labelled rather than adjusted.
+    """
+    objective = getattr(config, 'objective', None)
+    train = getattr(config, 'train', None)
+    if objective is None or train is None:
+        return None
+
+    terms = {
+        'gallery_weight': float(getattr(objective, 'gallery_weight', 0.0)),
+        'consensus_gallery_weight': float(getattr(objective, 'consensus_gallery_weight', 0.0)),
+        'consensus_word_weight': float(getattr(objective, 'consensus_word_weight', 0.0)),
+    }
+    split = str(getattr(train, 'split', ''))
+    active = sorted(name for name, weight in terms.items() if weight > 0.0)
+
+    return {
+        'split': split,
+        'stimuli_held_out': split in {'by_stimulus', 'by_subject_and_stimulus'},
+        'gallery_terms_active': active,
+        'closed_set': bool(active) and split not in {'by_stimulus', 'by_subject_and_stimulus'},
+    }
+
+
+def _closed_set_lines(block: dict[str, Any] | None) -> list[str]:
+    """Markdown naming the retrieval task the split and the loss together define."""
+    if not block or not block.get('gallery_terms_active'):
+        return []
+    if not block.get('closed_set'):
+        return [
+            f'- Gallery exposure: `{block["split"]}` holds out stimuli, so the '
+            f'{", ".join(f"`{t}`" for t in block["gallery_terms_active"])} denominator was restricted to training '
+            'sentences and the scored stimuli were never negatives. This is open-set retrieval.'
+        ]
+
+    return [
+        f'- **Closed-set caveat:** `{block["split"]}` holds out subjects, not sentences, so every sentence in the '
+        f'gallery was in training, and {", ".join(f"`{t}`" for t in block["gallery_terms_active"])} trained the '
+        'model to separate these exact items. The number below is therefore **identification over a known sentence '
+        'set for an unseen reader**, not retrieval of an unseen sentence. It is comparable only with other arms '
+        'carrying this same caveat -- for the open-set claim, run `by_subject_and_stimulus` and read its `test` cell.'
+    ]
+
+
+def _length_projection_lines(block: dict[str, Any] | None) -> list[str]:
+    """Markdown for the length projection, saying plainly when it was skipped and why."""
+    if not block:
+        return []
+    if block.get('status') != 'applied':
+        return [f'- Length projection: **not applied** ({block.get("status")})']
+
+    before, after = block.get('length_leakage_before', float('nan')), block.get('length_leakage_after', float('nan'))
+    return [
+        f'- Length projection (fitted on {block.get("n_fit")} train sentences): word count explained '
+        f'**{before:.4f}** of sentence-embedding variance before and **{after:.4f}** after, so every retrieval '
+        'number below is measured on the projected space. The residual is what the train-fitted basis failed to '
+        'transfer, not length the encoder is free to use -- read it beside the length-stratified gallery, which '
+        'bounds the confound a different way.'
+    ]
+
+
 def _postprocess_fit(applied: bool, on_train: bool) -> str:
     """Names what the retrieval geometry was fitted on: `none`, `train split` or `transductive`."""
     if not applied:
@@ -419,6 +511,35 @@ def _postprocess(emb: np.ndarray, fit_on: np.ndarray | None, whiten: bool, n_top
     if n_top > 0:
         out = M.all_but_the_top(out, n_top)
     return out
+
+
+def _fit_length_projector(
+    sent_n_words: np.ndarray | None,
+    train_sent_emb: np.ndarray | None,
+    train_sent_n_words: np.ndarray | None,
+) -> tuple[LengthProjector | None, dict[str, Any]]:
+    """Fits the length projection on the training split, saying plainly when it cannot be fitted and why.
+
+    A silently skipped de-confounding is worse than none at all: the report would show retrieval numbers that look
+    length-free and are not, so every refusal returns a `status` string that reaches `report.md`.
+    """
+    if sent_n_words is None:
+        return None, {'status': 'skipped: no word counts for the scored sentences'}
+    if train_sent_emb is None or train_sent_n_words is None:
+        return None, {'status': 'skipped: no training split to fit on (fitting here would be transductive)'}
+
+    projector = LengthProjector(int(np.asarray(train_sent_emb).shape[1]))
+    try:
+        projector.fit(np.asarray(train_sent_emb), np.asarray(train_sent_n_words))
+    except ValueError as exc:
+        return None, {'status': f'skipped: {exc}'}
+
+    return projector, {
+        'status': 'applied',
+        'fit': 'train split',
+        'n_fit': projector.n_fit,
+        'basis': projector.state['basis'],
+    }
 
 
 def _honesty_block(
@@ -1254,6 +1375,8 @@ def _render_report(
         f'- Anisotropy: {health["anisotropy"]:.3f} (lower = better)',
         f'- Alignment (adjacent words): {health.get("alignment", float("nan")):.3f}',
         f'- Dead dimensions: {health["dead_dim_fraction"]:.1%} | mean norm {health["mean_norm"]:.2f}',
+        *_length_projection_lines(metrics.get('length_projection')),
+        *_closed_set_lines(metrics.get('gallery_exposure')),
         '',
         '## Retrieval',
         '',

@@ -55,6 +55,14 @@ type Conditioning = Literal['pooled', 'pooled_plus_words']
 type GapCorrection = Literal['none', 'mean_scale', 'whiten']
 """Train-fitted affine correction of the EEG-to-text modality gap before the bridge."""
 
+type RateLadder = Literal['none', 'rvq']
+"""Bottleneck between the conditioning vector and the prefix. `rvq` sends it through a residual vector quantiser
+whose `stages * log2(codes)` product is a hard ceiling on how many bits of sentence identity can reach the LM."""
+
+type EvidenceSchedule = Literal['none', 'linear', 'fixation']
+"""How the word-synchronous pointer walks the EEG word tokens while decoding. `linear` advances at a constant
+tokens-per-word rate; `fixation` weights the walk by each word's read duration. `none` disables the evidence path."""
+
 type LMDtype = Literal['auto', 'float32', 'float16', 'bfloat16']
 """Precision the frozen LM's weights are loaded at. `auto` inherits the encoder's, so the two halves always agree;
 naming one of the others pins it, and either way the checkpoint's own stored dtype never decides."""

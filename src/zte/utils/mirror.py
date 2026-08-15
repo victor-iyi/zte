@@ -27,7 +27,7 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _needs_copy(src: Path, dst: Path) -> bool:
+def needs_copy(src: Path, dst: Path) -> bool:
     """Whether `src` differs from `dst`.
 
     Small files are compared by content: a metrics.json rewritten in the same second with the same
@@ -64,7 +64,7 @@ def mirror_file(src: str | Path, dst_dir: str | Path) -> bool:
     if not source.is_file():
         return False
     target = target_dir / source.name
-    if not _needs_copy(source, target):
+    if not needs_copy(source, target):
         return False
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +119,7 @@ def mirror_tree(
             continue
         for name in files:
             src_file, dst_file = Path(root) / name, out_dir / name
-            if not _needs_copy(src_file, dst_file):
+            if not needs_copy(src_file, dst_file):
                 continue
             try:
                 # Copy via a temp name so a killed VM cannot leave a truncated file on Drive.

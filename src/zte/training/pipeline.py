@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import torch
 
-from zte.config import ZTEConfig
+from zte.config import ObjectiveConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, make_dataloader
 from zte.device import DeviceSpec, auto_num_workers, resolve_device, seed_everything
 from zte.logging_utils import get_logger
 from zte.models.embedding import ZTEModel, build_model
+from zte.models.encoder.gallery import text_word_counts
 from zte.models.objectives import PrefixDecodeObjective, build_objective
 from zte.models.objectives.base import _ObjectiveBase  # noqa: PLC2701
 from zte.training.init import EncoderSource, load_encoder
@@ -107,7 +109,10 @@ def run_training(
     if source is None:
         model = build_model(config.model, **shapes)
     else:
+        # The inherited encoder *is* the model, so the run's own `model` section must describe it rather than
+        # whatever the decoder config happened to say -- that section is what rebuilds the encoder at inference.
         model, shapes = source.model, _source_shapes(source, shapes)
+        config.model = source.config.model
     objective = build_objective(config.objective, model, feature_dim=feature_dim, decoder_config=config.decoder)
     if source is not None:
         _attach_source_head(objective, source)
@@ -150,12 +155,21 @@ def run_training(
         beh_binary = torch.from_numpy(train_td.behaviour_binary) if beh_targets else None
         objective.attach_auxiliary(meaning_matrix=meaning_mat, behaviour_binary=beh_binary, feature_dim=in_dim)
 
+    # One word type -> one frozen embedding, so the token-level loss has something true to pull each word toward.
+    if obj.lexical_weight > 0.0 or obj.lexical_reader_weight > 0.0:
+        _attach_lexical(config, objective, train_td, device)
+
+    # Twelve subjects read the same stimuli, so every stimulus has a cross-reader consensus worth distilling toward.
+    if _consensus_requested(obj):
+        objective.attach_consensus(len(train_td.text_vocab), train_td.n_content)
+
     # Embed every unique sentence once with the frozen text encoder, then attach it as the alignment target.
     ordered_texts = train_td.ordered_texts()
     attach_text = getattr(objective, 'attach_text', None)
     if obj.name in {'clip', 'decode'} and callable(attach_text):
-        text_matrix = _text_matrix(config, ordered_texts, device)
-        attach_text(torch.from_numpy(text_matrix))
+        head = getattr(objective, 'clip_head', None)
+        text_matrix = _text_matrix(config, ordered_texts, device, fallback_dim=_head_width(head))
+        _attach_text_target(attach_text, text_matrix, ordered_texts, train_td.split_text_ids)
         if obj.semantic_hard_negatives:
             from zte.data.targets.text import mine_hard_negatives
 
@@ -225,6 +239,25 @@ def run_training(
     return TrainingArtifacts(trainer=trainer, history=history, device=device, test_indices=splits.get('test'))
 
 
+def _consensus_requested(obj: ObjectiveConfig) -> bool:
+    """Returns whether any cross-reader consensus term carries weight in this objective configuration."""
+    return max(obj.consensus_weight, obj.consensus_gallery_weight, obj.consensus_word_weight) > 0.0
+
+
+def _attach_text_target(attach: Any, text_matrix: np.ndarray, texts: list[str], split_text_ids: list[int]) -> None:
+    """Attaches the frozen gallery, handing the extras to the objectives whose signature accepts them.
+
+    Only the CLIP objective scores against a length-matched, split-restricted denominator; the decoder's
+    `attach_text` takes the matrix alone, so the extras are offered rather than forced.
+    """
+    matrix = torch.from_numpy(text_matrix)
+    if 'text_lengths' in inspect.signature(attach).parameters:
+        attach(matrix, text_word_counts(texts), split_text_ids)
+        return
+
+    attach(matrix)
+
+
 def _load_source(config: ZTEConfig, device: DeviceSpec) -> EncoderSource | None:
     """Loads the encoder a decoder or joint run starts from, or `None` for an encoder run.
 
@@ -285,11 +318,12 @@ def _source_shapes(source: EncoderSource, current: dict[str, Any]) -> dict[str, 
 
 
 def _attach_source_head(objective: _ObjectiveBase, source: EncoderSource) -> None:
-    """Restores the source run's projection into the frozen text space, which is what the bridge reads.
+    """Restores the source run's projections into the frozen text space, which is what the bridge reads.
 
-    It is attached frozen in every mode: the gap correction is fitted once against the vectors this projection
-    produces, and stage A is bridge-only, so a projection that moved would invalidate both.
+    They are attached frozen in every mode: the gap correction is fitted once against the vectors these projections
+    produce, and stage A is bridge-only, so a projection that moved would invalidate both.
     """
+    _restore_lexical_head(objective, source)
     attach = getattr(objective, 'attach_clip_head', None)
     if not callable(attach):
         return
@@ -304,8 +338,85 @@ def _attach_source_head(objective: _ObjectiveBase, source: EncoderSource) -> Non
     attach(weight, source.objective_state.get('clip_head.bias'))
 
 
-def _text_matrix(config: ZTEConfig, texts: list[str], device: DeviceSpec) -> np.ndarray:
-    """Builds the frozen `(n_texts, dim)` sentence-embedding target, falling back to a semantics-free hash target."""
+def _restore_lexical_head(objective: _ObjectiveBase, source: EncoderSource) -> None:
+    """Reinstates the encoder run's per-word text projection, which the evidence path reads word by word.
+
+    A decoder run cannot learn this from scratch and stay honest: the projection is what makes a word's EEG mean that
+    word, and it was trained contrastively across readers on the encoder's own split. Rebuilt here it would be fitted
+    on the decoder's split instead, so the run is told loudly when the source carries none.
+    """
+    weight = source.objective_state.get('lexical.head.weight')
+    if weight is None:
+        return
+    from zte.models.objectives.lexical import LexicalAligner
+
+    aligner = LexicalAligner(int(weight.shape[1]), int(weight.shape[0]))
+    inherited = {k.removeprefix('lexical.'): v for k, v in source.objective_state.items() if k.startswith('lexical.')}
+    aligner.load_state_dict(inherited, strict=False)
+    aligner.requires_grad_(False)
+    objective.lexical = aligner
+    _LOG.info('Restored the source run lexical projection %d -> %d (frozen).', weight.shape[1], weight.shape[0])
+
+
+def _attach_lexical(
+    config: ZTEConfig, objective: _ObjectiveBase, train_td: ZuCoTorchDataset, device: DeviceSpec
+) -> None:
+    """Builds and attaches the frozen per-word-type embedding target for token-level lexical alignment.
+
+    Note:
+        With no frozen encoder available the target falls back to a deterministic hash, exactly as the sentence-level
+        CLIP target does, so the mechanism stays testable offline. A hash carries no semantics, so the alignment then
+        trains the encoder to predict an arbitrary code per word type and nothing about the run's lexical numbers is
+        meaningful -- which is why the fallback is a warning and not a note.
+    """
+    from zte.data.targets.lexical import build_lexical_matrix
+
+    inherited = objective.lexical
+    if inherited is not None and not any(p.requires_grad for p in inherited.parameters()):
+        # A decoder run reads the encoder's frozen projection to place each word in the text space; it never
+        # trains it, so it needs no target -- and building one here could only disagree with the space the
+        # projection was fitted to.
+        _LOG.info('Lexical projection inherited frozen from the source encoder; no target is built for it here.')
+        return
+
+    obj = config.objective
+    matrix, dim = build_lexical_matrix(
+        train_td.word_vocab,
+        obj.lexical_source or obj.text_source,
+        backend=obj.text_backend,
+        prefix=obj.text_query_prefix,
+        device=str(device.device),
+    )
+    if matrix is None:
+        # Match the head when one already exists, so the fallback cannot introduce a width mismatch of its own.
+        dim = int(inherited.head.out_features) if inherited is not None else (obj.meaning_dim or 384)
+        rng = np.random.default_rng(config.train.seed)
+        matrix = rng.standard_normal((max(len(train_td.word_vocab), 1), dim)).astype(np.float32)
+        matrix /= np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-8, None)
+        _LOG.warning(
+            'Lexical target unavailable; using a hash target (dim %d, NO semantics). Every lexical number from '
+            'this run is a wiring check, not a result.',
+            dim,
+        )
+    objective.attach_lexical(torch.from_numpy(matrix))
+    _LOG.info('Lexical alignment target attached: %d word types x %d dims.', len(matrix), dim)
+
+
+def _head_width(head: Any) -> int | None:
+    """Returns an attached projection's output width, or `None` when there is none to match."""
+    return int(head.out_features) if head is not None and hasattr(head, 'out_features') else None
+
+
+def _text_matrix(
+    config: ZTEConfig, texts: list[str], device: DeviceSpec, fallback_dim: int | None = None
+) -> np.ndarray:
+    """Builds the frozen `(n_texts, dim)` sentence-embedding target, falling back to a semantics-free hash target.
+
+    Note:
+        `fallback_dim` is the width of an already-attached projection. A decoder run inherits its `clip_head` from
+        the encoder, so a hash fallback sized from `meaning_dim` instead would be rejected outright -- which is the
+        right failure, but only after the run has already loaded the dataset and the LM.
+    """
     from zte.data.targets.text import build_sentence_text_matrix
 
     mat, dim = build_sentence_text_matrix(
@@ -316,7 +427,7 @@ def _text_matrix(config: ZTEConfig, texts: list[str], device: DeviceSpec) -> np.
         device=str(device.device),
     )
     if mat is None:  # dependency / model unavailable -> hash target (mechanism only)
-        dim = config.objective.meaning_dim or 384
+        dim = fallback_dim or config.objective.meaning_dim or 384
         rng = np.random.default_rng(config.train.seed)
         mat = rng.standard_normal((max(len(texts), 1), dim)).astype(np.float32)
         mat /= np.clip(np.linalg.norm(mat, axis=1, keepdims=True), 1e-8, None)
@@ -366,7 +477,10 @@ def _wire_decoder(
         max_length=decoder.max_target_tokens,
         model_cache_dir=decoder.lm_cache_dir,
     )
-    objective.attach_tokens(torch.from_numpy(targets.ids), torch.from_numpy(targets.mask))
+    # Word counts per gallery sentence: they set the evidence pointer's walking rate and length-match the grounding
+    # negatives, and they come from the reference text rather than from the reading, so no split sees the other's.
+    n_words = torch.tensor([max(len(text.split()), 1) for text in texts], dtype=torch.long)
+    objective.attach_tokens(torch.from_numpy(targets.ids), torch.from_numpy(targets.mask), n_words)
     objective.attach_cache(train_td.n_readings, mode=config.train.mode)
     model.to(device.device)
     objective.to(device.device)

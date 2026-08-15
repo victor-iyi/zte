@@ -352,6 +352,9 @@ def _run(args: argparse.Namespace) -> None:
     # Code state, hardware, schedule and library versions: without them a number cannot be placed.
     manifest['provenance'] = artifacts.trainer.provenance()
     _save_curves(artifacts.history, run_dir / 'checkpoints' / 'training_curves.png')
+    # The per-epoch curves in machine-readable form: `zte-analyze` plots the mechanism metrics from this file, and a
+    # PNG cannot be re-read.
+    (run_dir / 'history.json').write_text(json.dumps(artifacts.history, indent=2), encoding='utf-8')
     _mirror_to_drive(run_dir, args, 'train')
 
     # 3) Evaluate, unless the metrics on disk are at least as new as the checkpoint.
@@ -545,7 +548,7 @@ def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argp
     phase_sent = phase_shuffled_sent_emb(embedder, dataset) if phase_shuffle else None
 
     # Post-processing fitted on these rows is reproducible one sentence at a time; the scored rows are not.
-    train_sent = train_split_sent_emb(embedder, dataset, config)
+    train_sent, train_sent_n_words = train_split_sent_emb(embedder, dataset, config)
 
     train_vocab = training_vocab(dataset, config) if getattr(config.objective, 'eval_seen_novel', False) else None
 
@@ -575,6 +578,7 @@ def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argp
         train_vocab=train_vocab,
         phase_sent_emb=phase_sent,
         train_sent_emb=train_sent,
+        train_sent_n_words=train_sent_n_words,
         sent_n_words=_sent_n_words(config, sent_meta),
         generation=generation,
         rescoring=rescoring,

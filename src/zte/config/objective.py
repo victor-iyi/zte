@@ -115,6 +115,13 @@ class ObjectiveConfig:
     label-free all-but-the-top post-processing strips the shared frequency/hub axis behind below-chance retrieval.
     Applied after `whiten` in `evaluation/report.py`: whiten equalises variance, ABTT strips residual shared axes."""
 
+    length_projection: bool = False
+    """Remove the sentence-length subspace from the exported embeddings, fitted on the training split only (label-free
+    but *not* transductive -- it sees no held-out row). Length-stratified evaluation asks whether a hit would survive
+    if length were held constant; this asks the stronger question, by making the representation carry no length and
+    then measuring what is left. Reported alongside `length_leakage_before` / `length_leakage_after` so the projection
+    has to show it removed length rather than merely shrinking the vectors."""
+
     csls_neighbors: int = 0
     """Neighbourhood size `k` for CSLS retrieval correction (0 = plain cosine). Each similarity becomes
     `2 * cos - r_query - r_bank` for `r` the mean cosine to a point's `k` nearest neighbours, penalising hub-dense
@@ -193,3 +200,78 @@ class ObjectiveConfig:
 
     hard_negative_pool: int = 8
     """Number of semantic-hard negatives mined per sentence (used only when `semantic_hard_negatives`)."""
+
+    # -- Token-level lexical alignment (the word-content gap) ------------------------------- #
+    lexical_weight: float = 0.0
+    """Weight of the token-level loss aligning each word's EEG against that word's frozen text embedding (0 disables).
+    A sentence-level InfoNCE never asks a single word's EEG to mean anything, and on ZuCo nothing does: cross-subject
+    word retrieval sits at Top-1 0.004 against chance 0.003. Lexical structure has to be demanded in the loss."""
+
+    lexical_reader_weight: float = 0.0
+    """Weight of the same-word-different-reader direction (0 disables). The type direction above is learnable from one
+    person; this one is the property a cross-subject decoder actually needs, so the two are weighted separately."""
+
+    lexical_temperature: float = 0.07
+    """Initial softmax temperature for both lexical directions; the log-scale is learnable and clamped."""
+
+    lexical_source: str | None = None
+    """Frozen encoder for the per-word-type target. `None` reuses `text_source`, which puts a word and the sentence
+    containing it in one space -- the property the decoder's evidence path depends on."""
+
+    lexical_max_tokens: int = 4096
+    """Cap on word tokens scored per step. The cross-reader direction is quadratic in them, and the cap is applied by
+    an even stride across the batch so it never silently narrows the loss to a few sentences."""
+
+    lexical_same_subject_negatives: bool = True
+    """Restrict the cross-reader direction's negatives to the anchor's own subject, so separating anchor from negative
+    cannot be done on subject identity -- the shortcut that makes an easy contrastive loss meaningless here."""
+
+    # -- Cross-reader consensus distillation ------------------------------------------------ #
+    consensus_weight: float = 0.0
+    """Weight of the sentence-level denoising term (0 disables): pull each reading toward the running average of every
+    other reading of that stimulus. ZuCo gives all twelve subjects the same 700 sentences, so each stimulus has twelve
+    noisy measurements of one latent content vector and the cross-reader mean is a strictly better content estimate
+    than any single row. The prototype bank is written only while training and never read at inference, so a held-out
+    subject neither enters it nor consults it."""
+
+    consensus_gallery_weight: float = 0.0
+    """Weight of the sentence-level pick-your-own-stimulus term (0 disables): cross-entropy over the consensus
+    prototypes of every stimulus the bank knows. This is the evaluation moved into the loss, scored EEG-to-EEG rather
+    than EEG-to-text, so the modality gap cannot be the thing that separates the answer from the distractors."""
+
+    consensus_word_weight: float = 0.0
+    """Weight of the same two terms applied per word slot instead of per sentence (0 disables). This is the one aimed
+    directly at the measured word-level null: same word, different subject currently sits at a cosine gap of +0.005,
+    which is not clustering."""
+
+    consensus_decay: float = 0.99
+    """EMA decay of a prototype on each write. The anchor's own earlier passes therefore sit in its teacher with
+    weight bounded by `1 - decay`; that self-inclusion can weaken the term but cannot manufacture a held-out result."""
+
+    consensus_min_readers: int = 2
+    """Distinct subjects a stimulus needs before its prototype is served. Below two there is no consensus, only a
+    copy of one reading."""
+
+    consensus_temperature: float = 0.07
+    """Initial softmax temperature for the consensus gallery term; the log-scale is learnable and clamped."""
+
+    consensus_gallery_size: int = 1024
+    """Cap on prototypes in the consensus denominator per step. Every anchor's own prototype is kept regardless, so
+    the cap thins the distractors and never removes the answer."""
+
+    # -- Full-gallery contrastive scoring with length-matched negatives --------------------- #
+    gallery_weight: float = 0.0
+    """Weight of a cross-entropy over the *whole* frozen text gallery rather than the in-batch texts (0 disables). A
+    batch of sixteen asks the model to beat fifteen distractors; the evaluation asks it to beat 699, and the hardest
+    of those are almost never in a batch. The frozen text matrix is already resident, so widening the denominator
+    costs one matrix product."""
+
+    gallery_length_band: int = 0
+    """Half-width in words of the length-matched denominator (0 = the whole gallery). Word count carries 5.14 of the
+    9.45 bits needed to name a ZuCo sentence and eye-tracking segmentation hands it to the model for free; a
+    denominator of same-length texts makes counting words worth nothing, so whatever the loss learns instead is not
+    that. This is the training-time counterpart of length-stratified evaluation."""
+
+    gallery_min_candidates: int = 32
+    """Widen an anchor's length band rather than score it against fewer texts than this. A band that strands an anchor
+    with three distractors makes its loss small, not hard."""

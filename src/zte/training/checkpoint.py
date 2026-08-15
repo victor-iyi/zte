@@ -17,6 +17,10 @@ from zte.logging_utils import get_logger
 
 _LOG = get_logger('training.checkpoint')
 
+# Consecutive failed Drive mirrors that raise the log level. The first says "the mount hiccuped"; the tenth says
+# "this run has been unrecoverable for ten epochs and nobody noticed".
+_MIRROR_ALARMS: frozenset[int] = frozenset({1, 3, 10, 30})
+
 # What a half-written checkpoint raises when torch tries to read it back.
 _LOAD_ERRORS: tuple[type[BaseException], ...] = (
     RuntimeError,
@@ -87,6 +91,7 @@ class CheckpointManager:
         self.higher_is_better = higher_is_better
         self.best_metric = float('-inf') if higher_is_better else float('inf')
         self._last_paths: list[Path] = []
+        self.mirror_failures = 0
 
     def is_improvement(self, metric: float) -> bool:
         """Returns whether `metric` improves on the best seen so far.
@@ -149,24 +154,92 @@ class CheckpointManager:
                 _LOG.debug('Could not rotate %s: %r', old, exc)
 
     def _backup_to_drive(self) -> None:
-        """Mirrors the checkpoint directory to Drive when configured.
+        """Mirrors the two checkpoints a reclaimed VM actually needs, the moment they are written.
 
-        Mounted paths take the incremental mirror (only changed files move, so the per-epoch cost stays
-        flat as checkpoints grow); a Drive id/URL falls back to the zip-and-upload path.
+        Note:
+            Only `last.pt` and `best.pt` go every epoch -- `last.pt` because `--resume` reads it, `best.pt`
+            because it is the result. The rotation files are history: they cost `keep_last` extra copies of a
+            multi-hundred-megabyte file per epoch and buy nothing a fresh VM can use, so they ride the run
+            directory's stage mirror instead. `mirror_file` skips a file whose bytes already match, so a `best.pt`
+            that did not improve is a stat call rather than a copy.
         """
         if not self.drive_backup_dir:
             return
         try:
             from zte.data.io.remote import is_mounted_path, upload_directory
 
-            if is_mounted_path(self.drive_backup_dir):
-                from zte.utils.mirror import mirror_tree
-
-                mirror_tree(self.ckpt_dir, Path(self.drive_backup_dir) / self.ckpt_dir.name)
-            else:
+            if not is_mounted_path(self.drive_backup_dir):
                 upload_directory(self.ckpt_dir, self.drive_backup_dir)
+                return
+
+            from zte.utils.mirror import mirror_file
+
+            destination = Path(self.drive_backup_dir) / self.ckpt_dir.name
+            for name in ('best.pt', 'last.pt'):
+                mirror_file(self.ckpt_dir / name, destination)
+            self._note_mirror(self.ckpt_dir / 'last.pt', destination / 'last.pt')
         except (RuntimeError, OSError) as exc:  # pragma: no cover - network/cred dependent
+            self.mirror_failures += 1
             _LOG.warning('Drive backup failed: %r', exc)
+
+    def _note_mirror(self, local: Path, remote: Path) -> None:
+        """Tracks consecutive mirror failures and escalates, because a silent one is the dangerous kind.
+
+        Note:
+            The check is whether the remote copy still *differs* from the local one, not whether it exists. A
+            `last.pt` that landed at epoch 1 and then stopped updating -- a mount gone read-only, a full quota --
+            exists at every later epoch, so an existence check would report success forever while the run quietly
+            became unrecoverable. `mirror_file` never raises, by design, so this is the only signal there is.
+        """
+        from zte.utils.mirror import needs_copy
+
+        if not needs_copy(local, remote):
+            self.mirror_failures = 0
+            return
+
+        self.mirror_failures += 1
+        if self.mirror_failures in _MIRROR_ALARMS:
+            _LOG.error(
+                'Drive backup has not landed for %d consecutive epochs: %s is missing or stale. This run is NOT '
+                'recoverable from Drive right now -- check the mount and the quota.',
+                self.mirror_failures,
+                remote,
+            )
+
+    def stage_from_drive(self) -> bool:
+        """Pulls `best.pt` and `last.pt` down from Drive when the local directory has nothing to resume from.
+
+        Note:
+            Without this the per-epoch mirror is write-only insurance nobody can cash, and worse than useless: a
+            fresh VM resuming into an empty directory restores no `best_metric`, so `save()` seeds a *new* best at
+            epoch 1 and the next mirror overwrites the good `best.pt` on Drive with it. The staging has to happen
+            before the first save, not after.
+
+        Returns:
+            bool: Whether anything was staged.
+        """
+        if not self.drive_backup_dir:
+            return False
+        if any((self.ckpt_dir / name).is_file() for name in ('last.pt', 'best.pt')):
+            return False
+
+        try:
+            from zte.data.io.remote import is_mounted_path
+
+            if not is_mounted_path(self.drive_backup_dir):
+                return False
+
+            from zte.utils.mirror import mirror_file
+
+            source = Path(self.drive_backup_dir) / self.ckpt_dir.name
+            staged = [name for name in ('best.pt', 'last.pt') if mirror_file(source / name, self.ckpt_dir)]
+        except (RuntimeError, OSError) as exc:  # pragma: no cover - network/cred dependent
+            _LOG.warning('Could not stage checkpoints from Drive: %r', exc)
+            return False
+
+        if staged:
+            _LOG.info('Staged %s from %s -- resuming a run this machine has never seen.', ', '.join(staged), source)
+        return bool(staged)
 
     @staticmethod
     def build_state(
@@ -217,9 +290,12 @@ class CheckpointManager:
         """Loads the newest *readable* checkpoint, falling back past corrupt ones.
 
         Note:
-            Tries `last.pt` first, then the epoch checkpoints newest-first. A VM killed during a write can
-            leave the newest file truncated; the previous epoch is then still a perfectly good resume point,
-            so a torn write costs one epoch instead of the whole run.
+            Tries `last.pt` first, then the epoch checkpoints newest-first, then `best.pt`. A VM killed during a
+            write can leave the newest file truncated; the previous epoch is then still a perfectly good resume
+            point, so a torn write costs one epoch instead of the whole run. `best.pt` is the last line of that
+            defence and matters most on a directory restored from Drive, which carries `last.pt` and `best.pt` but
+            no rotation history -- it is a full-state checkpoint like any other, so resuming from it costs the
+            epochs since the last improvement rather than the run.
 
         Args:
             ckpt_dir (str | Path): Directory holding the checkpoints.
@@ -231,7 +307,7 @@ class CheckpointManager:
         """
         directory = Path(ckpt_dir)
         epochs = sorted(directory.glob('ckpt_epoch*.pt'), reverse=True)
-        for candidate in [directory / 'last.pt', *epochs]:
+        for candidate in [directory / 'last.pt', *epochs, directory / 'best.pt']:
             if not candidate.is_file():
                 continue
             try:

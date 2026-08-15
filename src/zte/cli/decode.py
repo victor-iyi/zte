@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -21,14 +21,14 @@ from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab
 from zte.device import DeviceKind, resolve_device
 from zte.evaluation.generation import generation_report, per_sentence_scores, tokenise
 from zte.evaluation.report import missing_controls
-from zte.inference.decode import ZTEDecoder
+from zte.inference.decode import ReadingBatch, ZTEDecoder, paired_shuffle
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.checkpoint import CheckpointManager
 
 _LOG = get_logger('cli.decode')
 
 # Every control decodes through the identical path; only the conditioning vector or the prefix changes.
-CONTROLS: tuple[str, ...] = ('mean_prefix', 'null_prefix', 'phase', 'noise', 'mismatch')
+CONTROLS: tuple[str, ...] = ('mean_prefix', 'null_prefix', 'phase', 'noise', 'shuffled_z', 'length_only', 'mismatch')
 SPLITS: tuple[str, ...] = ('test', 'test_seen_stim', 'val', 'train')
 
 
@@ -47,6 +47,8 @@ class DecodeOptions:
         rescore (bool): Also rank the sentence gallery by decoder likelihood, reported as retrieval.
         length_tol (int): Word-count tolerance for the stratified gallery and the mismatch derangement.
         mean_prefix_readings (int): Training readings averaged into the `mean_prefix` control.
+        within_task_pools (tuple[str, ...]): Tasks whose candidate pool is also reported on its own.
+        seeds (tuple[int, ...]): Extra decode seeds re-run for a mean +/- sd headline.
         seed (int): Seed for the surrogates, the derangement, the bootstrap and the permutation null.
     """
 
@@ -60,6 +62,8 @@ class DecodeOptions:
     rescore: bool = True
     length_tol: int = 1
     mean_prefix_readings: int = 512
+    within_task_pools: tuple[str, ...] = ('SR', 'NR')
+    seeds: tuple[int, ...] = field(default_factory=tuple)
     seed: int = 0
 
 
@@ -70,8 +74,8 @@ def parse_arguments() -> argparse.Namespace:
         argparse.Namespace: The parsed argument namespace.
     """
     parser = argparse.ArgumentParser(
-        description='Decode text from a trained prefix bridge on a held-out split, against five '
-        'brain-independent controls and a text oracle, and rank the sentence gallery by decoder likelihood.',
+        description='Decode text from a trained prefix bridge on a held-out split, against every '
+        'brain-independent control and a text oracle, and rank the sentence gallery by decoder likelihood.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--ckpt', type=str, required=True, help='Decoder checkpoint (best.pt/last.pt).')
@@ -127,6 +131,19 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--length-tol', type=int, default=None, dest='length_tol')
     parser.add_argument(
+        '--within-task',
+        type=str,
+        default=None,
+        dest='within_task',
+        help="Comma-separated tasks whose candidate pool is also reported alone (e.g. 'SR,NR'), or '' to skip.",
+    )
+    parser.add_argument(
+        '--seeds',
+        type=str,
+        default=None,
+        help='Comma-separated extra decode seeds; every headline is then reported as mean +/- sd across them.',
+    )
+    parser.add_argument(
         '--mean-prefix-readings',
         type=int,
         default=512,
@@ -149,6 +166,9 @@ def options_from_args(args: argparse.Namespace, config: ZTEConfig) -> DecodeOpti
 
     Returns:
         DecodeOptions: The resolved options.
+
+    Raises:
+        ValueError: If a named control is not one this evaluation knows how to decode.
     """
     decoder = config.decoder
     controls = (
@@ -159,6 +179,13 @@ def options_from_args(args: argparse.Namespace, config: ZTEConfig) -> DecodeOpti
     unknown = [c for c in controls if c not in CONTROLS]
     if unknown:
         raise ValueError(f'unknown control(s) {unknown}; expected a subset of {list(CONTROLS)}')
+    within = getattr(args, 'within_task', None)
+    pools = (
+        tuple(t.strip() for t in within.split(',') if t.strip())
+        if within is not None
+        else tuple(decoder.within_task_pools)
+    )
+    seeds = getattr(args, 'seeds', None)
     return DecodeOptions(
         controls=controls,
         oracle=bool(args.oracle),
@@ -170,6 +197,8 @@ def options_from_args(args: argparse.Namespace, config: ZTEConfig) -> DecodeOpti
         rescore=bool(decoder.rescore_gallery if args.rescore is None else args.rescore),
         length_tol=int(args.length_tol if args.length_tol is not None else decoder.length_tol),
         mean_prefix_readings=int(args.mean_prefix_readings),
+        within_task_pools=pools,
+        seeds=tuple(int(s) for s in seeds.split(',') if s.strip()) if seeds else tuple(decoder.eval_seeds),
         seed=int(args.seed),
     )
 
@@ -340,22 +369,25 @@ def decode_evaluation(
         run_name (str, optional): Label for the interactive page. Defaults to 'zte-decode'.
 
     Returns:
-        dict[str, Any]: `{'generation', 'rescoring', 'split', 'n', 'controls_unavailable', 'provenance'}`.
+        dict[str, Any]: `{'generation', 'rescoring', 'bit_budget', 'split', 'n', 'controls_unavailable',
+            'provenance'}`.
     """
     opts = options or DecodeOptions()
-    z, meta = decoder.conditioning(dataset, indices, opts.batch_size)
-    n = int(len(meta))
+    readings = decoder.conditioning(dataset, indices, opts.batch_size)
+    n = len(readings)
     if n == 0:
         return {'generation': {'applicable': False, 'reason': f'split {split!r} is empty'}, 'n': 0}
 
-    references = [str(t) for t in meta['text']]
-    _LOG.info('Decoding %d held-out readings from split %r ...', n, split)
-    hypotheses = decoder.generate(z, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size)
+    references = [str(t) for t in readings.meta['text']]
+    _LOG.info('Decoding %d held-out readings from split %r (strictly autoregressive, no reference) ...', n, split)
+    hypotheses = decoder.generate(
+        readings, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size
+    )
 
-    controls, unavailable = _controls(decoder, dataset, indices, z, meta, opts, config)
+    controls, unavailable = _controls(decoder, dataset, indices, readings, opts, config)
     gallery = _gallery_dataset(decoder, dataset)
-    oracle = _oracle(decoder, gallery, meta, config, opts) if opts.oracle else None
-    prefix_kl = decoder.prefix_influence_kl(z, batch_size=opts.batch_size)
+    oracle = _oracle(decoder, gallery, readings, config, opts) if opts.oracle else None
+    prefix_kl = decoder.prefix_influence_kl(readings.z, batch_size=opts.batch_size)
 
     block = generation_report(
         hypotheses,
@@ -374,18 +406,30 @@ def decode_evaluation(
     block['controls_requested'] = list(opts.controls)
     block['controls_unavailable'] = unavailable
     block['prefix_influence_kl_median'] = float(np.median(prefix_kl)) if prefix_kl.size else float('nan')
-    block['teacher_forced_ppl_DIAGNOSTIC'] = _teacher_forced_ppl(decoder, z, references, opts)
+    block['teacher_forced_ppl_DIAGNOSTIC'] = _teacher_forced_ppl(decoder, readings, references, opts)
+    # Stated in the artifact rather than in a reader's assumption: no reference token entered the decode loop.
+    block['teacher_forced'] = False
+    block['decode_strategy'] = 'greedy'
+    if opts.seeds:
+        block['seed_spread'] = _seed_spread(decoder, dataset, indices, readings, references, hypotheses, opts, config)
 
-    rescoring = _rescoring(decoder, gallery, z, meta, opts) if opts.rescore and n >= 2 else None
+    rescoring = _rescoring(decoder, dataset, gallery, readings, opts) if opts.rescore and n >= 2 else None
     provenance = _provenance(decoder, config, split, opts, n)
+    result = {
+        'generation': block,
+        'rescoring': rescoring,
+        'bit_budget': decoder.bit_report(readings),
+        'split': split,
+        'n': n,
+        'controls_unavailable': unavailable,
+        'provenance': provenance,
+    }
     if out_dir is not None:
         _write_artifacts(
             out_dir,
             run_name,
-            block,
-            rescoring,
-            provenance,
-            meta,
+            result,
+            readings.meta,
             references,
             hypotheses,
             controls,
@@ -393,74 +437,73 @@ def decode_evaluation(
             prefix_kl,
             config.decoder.min_prefix_kl,
         )
-    return {
-        'generation': block,
-        'rescoring': rescoring,
-        'split': split,
-        'n': n,
-        'controls_unavailable': unavailable,
-        'provenance': provenance,
-    }
+    return result
 
 
 def _controls(
     decoder: ZTEDecoder,
     dataset: ZuCoDataset,
     indices: np.ndarray | None,
-    z: np.ndarray,
-    meta: pd.DataFrame,
+    readings: ReadingBatch,
     opts: DecodeOptions,
     config: ZTEConfig,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
     """Decodes each brain-independent control through the same `generate` path the headline uses."""
-    n = len(z)
+    n = len(readings)
     out: dict[str, list[str]] = {}
     unavailable: dict[str, str] = {}
+    train: ReadingBatch | None = None
 
-    def free(prefix: torch.Tensor) -> list[str]:
+    def free_prefix(prefix: torch.Tensor, *, content: bool = True) -> list[str]:
         return decoder.generate_from_prefix(
             prefix,
+            readings=readings,
             max_new_tokens=opts.max_new_tokens,
             beams=opts.beams,
             batch_size=opts.batch_size,
+            evidence_content=content,
         )
+
+    def free(batch: ReadingBatch) -> list[str]:
+        return decoder.generate(batch, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size)
 
     for name in opts.controls:
         _LOG.info('Control %r ...', name)
         if name == 'null_prefix':
-            out[name] = free(decoder.null_prefix(n))
-        elif name == 'mean_prefix':
-            train = _train_conditioning(decoder, dataset, config, opts)
+            out[name] = free_prefix(decoder.null_prefix(n), content=False)
+        elif name in {'mean_prefix', 'length_only'}:
+            train = train if train is not None else _train_conditioning(decoder, dataset, config, opts)
             if train is None:
                 unavailable[name] = 'no training split to average'
                 _LOG.warning('Control %r could not run: %s. It fails its verdict clause.', name, unavailable[name])
                 continue
-            out[name] = free(decoder.mean_prefix(train, n))
+            if name == 'mean_prefix':
+                out[name] = free_prefix(decoder.mean_prefix(train.z, n), content=False)
+            else:
+                matched = decoder.length_matched_z(
+                    train.z,
+                    train.meta['n_words'].to_numpy(),
+                    readings.meta['n_words'].to_numpy(),
+                    tol=opts.length_tol,
+                )
+                out[name] = free_prefix(decoder.prefix_from_z(matched), content=False)
+        elif name == 'shuffled_z':
+            out[name] = free(readings.take(paired_shuffle(n, opts.seed)))
         elif name == 'mismatch':
             partner = mismatch_partners(
-                meta['n_words'].to_numpy(),
-                meta['text_id'].to_numpy(),
+                readings.meta['n_words'].to_numpy(),
+                readings.meta['text_id'].to_numpy(),
                 length_tol=opts.length_tol,
                 seed=opts.seed,
             )
-            out[name] = decoder.generate(
-                z[partner],
-                max_new_tokens=opts.max_new_tokens,
-                beams=opts.beams,
-                batch_size=opts.batch_size,
-            )
+            out[name] = free(readings.take(partner))
         else:
             surrogate = _surrogate_conditioning(decoder, dataset, indices, name, opts)
             if surrogate is None:
                 unavailable[name] = 'the encoder consumes no raw signal to destroy'
                 _LOG.warning('Control %r could not run: %s. It fails its verdict clause.', name, unavailable[name])
                 continue
-            out[name] = decoder.generate(
-                surrogate,
-                max_new_tokens=opts.max_new_tokens,
-                beams=opts.beams,
-                batch_size=opts.batch_size,
-            )
+            out[name] = free(surrogate)
     return out, unavailable
 
 
@@ -470,36 +513,80 @@ def _surrogate_conditioning(
     indices: np.ndarray | None,
     name: str,
     opts: DecodeOptions,
-) -> np.ndarray | None:
+) -> ReadingBatch | None:
     """Runs the phase / noise surrogate signals through the identical frozen encoder."""
     if name == 'phase' and not decoder.model.uses_raw:
         return None
     transform = phase_transform(opts.seed) if name == 'phase' else noise_transform(opts.seed)
-    surrogate, _ = decoder.conditioning(dataset, indices, opts.batch_size, transform=transform)
-    return surrogate
+    return decoder.conditioning(dataset, indices, opts.batch_size, transform=transform)
 
 
 def _train_conditioning(
     decoder: ZTEDecoder, dataset: ZuCoDataset, config: ZTEConfig, opts: DecodeOptions
-) -> np.ndarray | None:
+) -> ReadingBatch | None:
     """Embeds a capped sample of the training split, whose mean vector is the `mean_prefix` control."""
     train = split_indices(dataset, config, 'train')
     if train is None:
         return None
-    z, _ = decoder.conditioning(dataset, train, opts.batch_size)
-    if len(z) == 0:
+    batch = decoder.conditioning(dataset, train, opts.batch_size)
+    if len(batch) == 0:
         return None
     cap = opts.mean_prefix_readings
-    if 0 < cap < len(z):
-        rows = np.random.default_rng(opts.seed).choice(len(z), size=cap, replace=False)
-        z = z[np.sort(rows)]
-    return z
+    if 0 < cap < len(batch):
+        rows = np.sort(np.random.default_rng(opts.seed).choice(len(batch), size=cap, replace=False))
+        return ReadingBatch(z=batch.z[rows], meta=batch.meta.iloc[rows].reset_index(drop=True))
+    return batch
+
+
+def _seed_spread(
+    decoder: ZTEDecoder,
+    dataset: ZuCoDataset,
+    indices: np.ndarray | None,
+    readings: ReadingBatch,
+    references: list[str],
+    hypotheses: list[str],
+    opts: DecodeOptions,
+    config: ZTEConfig,
+) -> dict[str, Any]:
+    """Re-runs the control layer at each extra seed and reports the headline delta as mean +/- sd.
+
+    Note:
+        The headline decode is greedy and therefore identical at every seed; what moves is the *controls* -- the
+        surrogate signals, the derangements, the bootstrap and the permutation null. So this is an error bar on the
+        comparison, which is the number the verdict reads, and not on the hypothesis text.
+    """
+    points: list[float] = []
+    seeds = tuple(dict.fromkeys((opts.seed, *opts.seeds)))
+    for seed in seeds:
+        per_seed = replace(opts, seed=seed, seeds=())
+        controls, _ = _controls(decoder, dataset, indices, readings, per_seed, config)
+        block = generation_report(
+            hypotheses,
+            references,
+            controls,
+            n_boot=opts.n_boot,
+            n_perm=opts.n_perm,
+            seed=seed,
+        )
+        worst = block.get('worst_control_ci') or {}
+        points.append(float(worst.get('point', float('nan'))))
+
+    values = np.asarray(points, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    return {
+        'seeds': list(seeds),
+        'metric': 'worst_control_delta',
+        'values': [float(v) for v in values],
+        'mean': float(finite.mean()) if finite.size else float('nan'),
+        'sd': float(finite.std(ddof=1)) if finite.size > 1 else float('nan'),
+        'n_seeds': int(finite.size),
+    }
 
 
 def _oracle(
     decoder: ZTEDecoder,
     gallery: ZuCoTorchDataset,
-    meta: pd.DataFrame,
+    readings: ReadingBatch,
     config: ZTEConfig,
     opts: DecodeOptions,
 ) -> list[str] | None:
@@ -521,19 +608,29 @@ def _oracle(
             decoder.z_dim,
         )
         return None
-    rows = meta['text_id'].to_numpy()
+    rows = readings.meta['text_id'].to_numpy()
     if int((rows < 0).sum()):
         _LOG.warning('Text oracle skipped: %d readings carry no text id.', int((rows < 0).sum()))
         return None
+
+    # The pooled path only: the oracle bounds what the bridge can write from a perfect sentence vector, and its
+    # word slots are zeroed so it never borrows lexical evidence the EEG path would have had to earn.
     prefix = decoder.prefix_from_z(matrix[rows])
     return decoder.generate_from_prefix(
-        prefix, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size
+        prefix,
+        readings=readings,
+        max_new_tokens=opts.max_new_tokens,
+        beams=opts.beams,
+        batch_size=opts.batch_size,
+        evidence_content=False,
     )
 
 
-def _teacher_forced_ppl(decoder: ZTEDecoder, z: np.ndarray, references: list[str], opts: DecodeOptions) -> float:
+def _teacher_forced_ppl(
+    decoder: ZTEDecoder, readings: ReadingBatch, references: list[str], opts: DecodeOptions
+) -> float:
     """Mean teacher-forced perplexity of the references -- quarantined, and provably unread by any verdict."""
-    nll = decoder.teacher_forced_nll(z, references, batch_size=opts.batch_size)
+    nll = decoder.teacher_forced_nll(readings, references, batch_size=opts.batch_size)
     return float(np.exp(np.mean(nll))) if nll.size else float('nan')
 
 
@@ -568,29 +665,41 @@ def candidate_set_size(hypotheses: list[str], gallery: Sequence[str]) -> int | N
 
 def _rescoring(
     decoder: ZTEDecoder,
+    dataset: ZuCoDataset,
     gallery: ZuCoTorchDataset,
-    z: np.ndarray,
-    meta: pd.DataFrame,
+    readings: ReadingBatch,
     opts: DecodeOptions,
 ) -> dict[str, Any] | None:
     """Ranks the sentence gallery by decoder likelihood. This is RETRIEVAL and is named so everywhere."""
-    from zte.evaluation.audit.scoreboard import decoder_rescoring_retrieval
+    from zte.evaluation.audit.scoreboard import decoder_rescoring_retrieval, within_task_retrieval
 
     texts = gallery.ordered_texts()
     if len(texts) < 2:
         return None
-    scores = decoder.rescore(z, texts, batch_size=opts.batch_size)
+    scores = decoder.rescore(readings, texts, batch_size=opts.batch_size)
+    gallery_words = _gallery_lengths(gallery, len(texts))
     block = decoder_rescoring_retrieval(
         scores,
-        meta['text_id'].to_numpy(),
+        readings.meta['text_id'].to_numpy(),
         np.arange(len(texts)),
-        query_n_words=meta['n_words'].to_numpy(),
-        gallery_n_words=_gallery_lengths(gallery, len(texts)),
+        query_n_words=readings.meta['n_words'].to_numpy(),
+        gallery_n_words=gallery_words,
         length_tol=opts.length_tol,
         seed=opts.seed,
     )
-    if block is not None:
-        block['n_candidate_sentences'] = len(texts)
+    if block is None:
+        return None
+    block['n_candidate_sentences'] = len(texts)
+    if opts.within_task_pools:
+        block['within_task'] = within_task_retrieval(
+            scores,
+            readings.meta,
+            gallery_tasks=_gallery_tasks(dataset, gallery, len(texts)),
+            gallery_n_words=gallery_words,
+            pools=opts.within_task_pools,
+            length_tol=opts.length_tol,
+            seed=opts.seed,
+        )
     return block
 
 
@@ -606,6 +715,25 @@ def _gallery_lengths(torch_ds: ZuCoTorchDataset, n_text: int) -> np.ndarray:
     for text_id, values in per_text.items():
         lengths[text_id] = float(np.median(values))
     return lengths
+
+
+def _gallery_tasks(dataset: ZuCoDataset, torch_ds: ZuCoTorchDataset, n_text: int) -> np.ndarray:
+    """The reading task each gallery sentence belongs to, for the within-task candidate pools.
+
+    Note:
+        On ZuCo no stimulus appears under more than one task -- the confound audit measures Cramer's V(task, stimulus)
+        at 0.998 -- so a task label is a property of the sentence, and a within-task pool is a well-defined partition
+        of the gallery rather than a filter that could drop a query's own reference.
+    """
+    tasks = np.array([''] * n_text, dtype=object)
+    words = dataset.words
+    if 'stimulus_key' not in words.columns or 'task' not in words.columns:
+        return tasks
+    per_key = words.groupby('stimulus_key', observed=True)['task'].first()
+    for key, text_id in torch_ds.text_vocab.items():
+        if 0 <= text_id < n_text and key in per_key.index:
+            tasks[text_id] = str(per_key.loc[key])
+    return tasks
 
 
 def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: DecodeOptions, n: int) -> dict[str, Any]:
@@ -626,6 +754,9 @@ def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: Decode
         'max_new_tokens': opts.max_new_tokens or decoder.decoder_config.max_new_tokens,
         'cfg_weight': decoder.decoder_config.cfg_weight,
         'conditioning': decoder.decoder_config.conditioning,
+        'rate_ladder': decoder.decoder_config.rate_ladder,
+        'evidence_schedule': decoder.decoder_config.evidence_schedule,
+        'evidence_active': decoder.uses_evidence,
         'gap_correction': decoder.decoder_config.gap_correction,
         'gap_fitted': bool(decoder.gap.fitted),
         'gap_n_fit': int(decoder.gap.n_fit),
@@ -635,7 +766,9 @@ def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: Decode
         'normalizer_fit': decoder.normalizer is not None,
         'aligner_fit': decoder.aligner is not None,
         'text_source': config.objective.text_source,
+        'teacher_forced': False,
         'seed': opts.seed,
+        'seeds': list(opts.seeds),
         'n_perm': opts.n_perm,
         'n_boot': opts.n_boot,
         'length_tol': opts.length_tol,
@@ -652,9 +785,7 @@ def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: Decode
 def _write_artifacts(
     out_dir: Path,
     run_name: str,
-    block: dict[str, Any],
-    rescoring: dict[str, Any] | None,
-    provenance: dict[str, Any],
+    result: dict[str, Any],
     meta: pd.DataFrame,
     references: list[str],
     hypotheses: list[str],
@@ -669,7 +800,12 @@ def _write_artifacts(
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(
         out_dir / 'generation.json',
-        {'generation': block, 'rescoring': rescoring, 'provenance': provenance},
+        {
+            'generation': result['generation'],
+            'rescoring': result['rescoring'],
+            'bit_budget': result.get('bit_budget'),
+            'provenance': result['provenance'],
+        },
         default=str,
     )
     lines = _jsonl_rows(meta, references, hypotheses, controls, oracle, prefix_kl)
@@ -678,7 +814,7 @@ def _write_artifacts(
     )
     try:
         generation_html(
-            block,
+            result['generation'],
             out_dir / 'interactive' / 'generation.html',
             run_name=run_name,
             min_prefix_kl=min_prefix_kl,
@@ -770,9 +906,12 @@ def decoder_blocks(
         return None, None
 
     opts = options or DecodeOptions(
+        controls=tuple(config.decoder.generation_controls),
         n_perm=config.decoder.n_permutations,
         rescore=want_rescoring,
         length_tol=config.decoder.length_tol,
+        within_task_pools=tuple(config.decoder.within_task_pools),
+        seeds=tuple(config.decoder.eval_seeds),
     )
     for name in (split, 'test', 'val') if split else ('test', 'val'):
         indices = split_indices(dataset, config, name)
@@ -817,11 +956,16 @@ def main() -> None:
         out_dir=out_dir,
         run_name=args.run_name or config.run_name,
     )
+    _report(result, config, options)
 
+
+def _report(result: dict[str, Any], config: ZTEConfig, options: DecodeOptions) -> None:
+    """Logs the readable numbers: the paired deltas, the permutation p and the retrieval readout."""
     block = result.get('generation') or {}
     if not block.get('applicable'):
         _LOG.warning('Generation not scoreable: %s', block.get('reason'))
         return
+
     # `beats_all_controls` counts only controls that produced a delta, so a control that never ran is not a control
     # it beat. The summary reports the same composition the verdict gates on.
     missing = missing_controls(block, str(block.get('primary_metric')))
@@ -838,12 +982,31 @@ def main() -> None:
     )
     if missing:
         _LOG.warning('Controls not beaten (a control that did not run fails its clause): %s', ', '.join(missing))
+    spread = block.get('seed_spread')
+    if spread:
+        _LOG.info(
+            'Across %d decode seeds: worst-control delta %.4f +/- %.4f.',
+            spread.get('n_seeds', 0),
+            spread.get('mean', float('nan')),
+            spread.get('sd', float('nan')),
+        )
     _LOG.info(
         'permutation p=%s | prefix-influence KL=%s nats (floor %s)',
         (block.get('permutation') or {}).get('p_value'),
         block.get('prefix_influence_kl'),
         config.decoder.min_prefix_kl,
     )
+
+    budget = result.get('bit_budget')
+    if budget:
+        _LOG.info(
+            'Rate ladder: %.1f bit ceiling, %.2f bits of code entropy, %.2f bits of mutual information with '
+            'sentence identity (upper bound).',
+            budget.get('capacity_bits', float('nan')),
+            budget.get('code_entropy_bits', float('nan')),
+            budget.get('mutual_information_bits', float('nan')),
+        )
+
     rescoring = result.get('rescoring')
     if rescoring:
         _LOG.info(
@@ -868,6 +1031,16 @@ def main() -> None:
             )
         else:
             _LOG.warning('No length-stratified cell was computed; the top-k above is not evidence of decoding.')
+        for task, pool in (rescoring.get('within_task') or {}).items():
+            _LOG.info(
+                'Within %s only (%s candidates, chance %.4f): Top-1 %.4f, rank percentile %.4f over %s queries.',
+                task,
+                pool.get('n_candidates'),
+                pool.get('chance_top1', float('nan')),
+                pool.get('top1', float('nan')),
+                pool.get('rank_percentile', float('nan')),
+                pool.get('n_queries'),
+            )
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -10,7 +10,9 @@ from torch import nn
 
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
+from zte.models.encoder.consensus import ConsensusDistiller, build_consensus
 from zte.models.heads import SubjectAdversary
+from zte.models.objectives.lexical import LexicalAligner, build_lexical_aligner
 from zte.models.objectives.losses import identity_orthogonality, vicreg_terms
 
 
@@ -71,6 +73,15 @@ class _ObjectiveBase(nn.Module):
 
         # Nuisance subspace of a factored embedding; the behaviour / data2vec heads are routed here.
         self._nuisance_dim = (model.embed_dim - self._content_dim) if self._factored else 0
+
+        # Token-level lexical alignment, sized in `attach_lexical` once the frozen word target's width is known.
+        self._hidden_dim: int = cast('int', model.hidden_dim)
+        self.lexical: LexicalAligner | None = None
+
+        # Cross-reader consensus, sized in `attach_consensus` once the stimulus and word-slot counts are known.
+        self.consensus_sentence: ConsensusDistiller | None = None
+        self.consensus_word: ConsensusDistiller | None = None
+        self._embed_width: int = cast('int', model.embed_dim)
 
         # Width of a per-occurrence contextual meaning target (0 = the word-type-keyed matrix path).
         self._meaning_contextual_dim = 0
@@ -143,6 +154,71 @@ class _ObjectiveBase(nn.Module):
             proj = nn.Linear(int(feature_dim), target_dim, bias=False)
             proj.requires_grad_(False)  # frozen random target projection (never trained)
             self.data2vec_proj = proj
+
+    def attach_lexical(self, matrix: torch.Tensor) -> None:
+        """Attaches the frozen `(n_word_types, text_dim)` word-embedding target and sizes the aligner to it.
+
+        Args:
+            matrix (torch.Tensor): L2-normalised word embeddings indexed by `batch['word_id']`.
+        """
+        if self.lexical is None:
+            self.lexical = build_lexical_aligner(self.config, self._hidden_dim, int(matrix.shape[1]))
+        aligner = self.lexical
+        if aligner is not None:
+            aligner.attach(matrix)
+
+    def attach_consensus(self, n_sentences: int, n_content: int) -> None:
+        """Builds the cross-reader prototype banks once the stimulus and word-slot counts are known.
+
+        Args:
+            n_sentences (int): Number of distinct stimulus texts in the training split.
+            n_content (int): Number of distinct word slots across those stimuli.
+        """
+        self.consensus_sentence, self.consensus_word = build_consensus(
+            self.config, n_sentences, n_content, self._content_dim, n_subjects=self._n_subjects
+        )
+
+    def sentence_consensus(self, z_sent: torch.Tensor, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
+        """Scores pooled sentence vectors against the cross-reader consensus of the stimulus they read.
+
+        Args:
+            z_sent (torch.Tensor): Pooled sentence embeddings `(batch_size, embed_dim)`.
+            batch (dict[str, Any]): The collated batch (uses `sentence_text_id` and `subject`).
+
+        Returns:
+            tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`; zero and empty when the term is off.
+        """
+        text_id = batch.get('sentence_text_id')
+        if self.consensus_sentence is None or text_id is None:
+            return z_sent.new_zeros(()), {}
+
+        return self.consensus_sentence.compute(
+            self._content_slice(z_sent),
+            text_id,
+            batch['subject'],
+            pull_weight=self.config.consensus_weight,
+            gallery_weight=self.config.consensus_gallery_weight,
+            prefix='consensus_sentence',
+        )
+
+    def _word_consensus(
+        self, emb_u: torch.Tensor, batch: dict[str, Any], usable: torch.Tensor, flat: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Scores each usable word token against the consensus for that word slot across readers."""
+        content_id = batch.get('content_id')
+        if self.consensus_word is None or content_id is None:
+            return emb_u.new_zeros(()), {}
+
+        subject = batch['subject'][:, None].expand(usable.shape).reshape(-1)[flat]
+
+        return self.consensus_word.compute(
+            self._content_slice(emb_u),
+            content_id.reshape(-1)[flat],
+            subject,
+            pull_weight=self.config.consensus_word_weight,
+            gallery_weight=self.config.consensus_word_weight,
+            prefix='consensus_word',
+        )
 
     def _content_slice(self, emb: torch.Tensor) -> torch.Tensor:
         """Returns the content subspace of `emb` (all dims unless the model is factored)."""
@@ -253,6 +329,26 @@ class _ObjectiveBase(nn.Module):
                     b_loss = b_loss + F.binary_cross_entropy_with_logits(pred[bin_m], beh[bin_m])
                 loss = loss + self.config.behaviour_weight * b_loss
                 metrics['behaviour_loss'] = float(b_loss.detach())
+
+        # Token-level lexical alignment: the only term in the whole stack that asks one word's EEG to mean that word.
+        if self.lexical is not None:
+            lex_loss, lex_metrics = self.lexical.compute(
+                adv_hidden,
+                batch,
+                usable,
+                type_weight=self.config.lexical_weight,
+                reader_weight=self.config.lexical_reader_weight,
+                max_tokens=self.config.lexical_max_tokens,
+                same_subject_negatives=self.config.lexical_same_subject_negatives,
+            )
+            loss = loss + lex_loss
+            metrics.update(lex_metrics)
+
+        # Twelve people read this word; the content is what they agreed on, not what any one of them produced.
+        if self.consensus_word is not None:
+            cons_loss, cons_metrics = self._word_consensus(emb_u, batch, usable, flat)
+            loss = loss + cons_loss
+            metrics.update(cons_metrics)
 
         # The nuisance subspace reconstructs the input against a frozen target that cannot co-collapse.
         if self.data2vec_head is not None and self.data2vec_proj is not None and batch.get('features') is not None:

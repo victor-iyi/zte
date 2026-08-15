@@ -24,7 +24,7 @@ from zte.utils.provenance import git_info, package_versions
 
 _LOG = get_logger('training.trainer')
 
-_DECODER_MODULES = ('bridge', 'resampler', 'gap', 'clip_head')
+_DECODER_MODULES = ('bridge', 'resampler', 'gap', 'clip_head', 'ladder', 'evidence', 'lexical')
 """Objective submodules a `ZTEDecoder` rebuilds, in the order `decoder_state` records them."""
 
 
@@ -303,6 +303,9 @@ class Trainer:
                 loss, _ = self.objective.compute(self.model, batch)
             total += float(loss.detach())
             count += 1
+            # Drain the residual head's stash every step: left to accumulate it would pin one autograd graph per
+            # validation batch for the whole loop.
+            self._residual_loss({})
         self._set_train_mode()
         return total / max(count, 1)
 
@@ -322,6 +325,7 @@ class Trainer:
             description=f'epoch {epoch}/{self.config.train.epochs}',
             total=len(self.train_loader),
         )
+        epoch_metrics: dict[str, list[float]] = {}
         for i, raw_batch in enumerate(iterator):
             batch = move_batch(raw_batch, self.device.device)
             # Progress drives the subject-adversary gradient-reversal ramp.
@@ -329,6 +333,7 @@ class Trainer:
                 self.objective.set_progress(self._global_step, self.total_steps)
             with autocast(self.device):
                 loss, metrics = self.objective.compute(self.model, batch)
+                loss = loss + self._residual_loss(metrics)
                 loss = loss / accum
 
             self._backward(loss)
@@ -345,7 +350,41 @@ class Trainer:
                     self._log_step(metrics)
             running += metrics.get('loss', 0.0)
             n_steps += 1
+            for key, value in metrics.items():
+                if key != 'loss' and isinstance(value, (int, float)):
+                    epoch_metrics.setdefault(key, []).append(float(value))
+
+        self._record_epoch_metrics(epoch_metrics)
         return running / max(n_steps, 1)
+
+    def _record_epoch_metrics(self, collected: dict[str, list[float]]) -> None:
+        """Appends the epoch mean of every objective metric to `history`, padding series that started late.
+
+        These are what `zte-analyze` plots as the mechanism curves -- a consensus term that never engaged or a
+        gallery accuracy that never left chance is visible here and nowhere else in the artifacts.
+        """
+        epochs = len(self.history['train_loss']) + 1
+        for key, values in collected.items():
+            series = self.history[f'train_{key}']
+            series.extend([float('nan')] * (epochs - 1 - len(series)))
+            series.append(sum(values) / len(values) if values else float('nan'))
+
+    def _residual_loss(self, metrics: dict[str, float]) -> torch.Tensor:
+        """Drains the predictive-residual head's own regression loss and merges its metrics in place.
+
+        The head trains here rather than inside an objective because it belongs to no objective: it de-trends the
+        encoder's tokens for whatever loss comes next, and every objective gets the same treatment.
+        """
+        drain = getattr(self.model, 'take_residual_loss', None)
+        if drain is None:
+            return torch.zeros((), device=self.device.device)
+
+        loss, extra = drain()
+        metrics.update(extra)
+        if loss is None:
+            return torch.zeros((), device=self.device.device)
+
+        return loss * self.config.model.residual_predict_weight
 
     def _set_train_mode(self) -> None:
         """Puts the model and objective in train mode, then pins every frozen submodule back to eval.
@@ -504,6 +543,11 @@ class Trainer:
         Reads whichever checkpoint is newest *and* readable, so a write torn apart by a reclaimed VM
         costs one epoch rather than the run.
         """
+        # A fresh VM has an empty checkpoint directory even though Drive holds the run. Pull it down before
+        # deciding there is nothing to resume: otherwise this restarts at epoch 1, seeds a *new* best from an
+        # untrained model, and the next mirror writes that over the good `best.pt` on Drive.
+        self.ckpt.stage_from_drive()
+
         ckpt, last = CheckpointManager.load_latest(self.ckpt.ckpt_dir, map_location=self.device.device)
         if ckpt is None:
             _LOG.info(

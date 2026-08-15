@@ -7,12 +7,13 @@ transformer gives the word2vec analogue used by skip-gram/CBOW, where a word's e
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import nn
 
 from zte.config import ModelConfig, ObjectiveName
+from zte.models.encoder.residual import PredictiveResidual, build_predictive_residual
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
 from zte.models.subject import SubjectAdapter
@@ -139,6 +140,12 @@ class ZTEModel(nn.Module):
         self.projection = ProjectionHead(self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout)
         self.pool = AttentionPool(self.hidden_dim) if config.pool == 'attention' else None
 
+        # De-trends each token against what its left context predicted; the loss its head needs is collected here and
+        # read by the objective, because `token_hidden` has nowhere to return a second value to.
+        self.residual: PredictiveResidual | None = build_predictive_residual(config, cast('int', self.hidden_dim))
+        self._residual_loss: torch.Tensor | None = None
+        self._residual_metrics: dict[str, float] = {}
+
     def select_input(self, batch: dict[str, Any]) -> torch.Tensor:
         """Picks the frontend's input tensor from a collated batch.
 
@@ -189,7 +196,23 @@ class ZTEModel(nn.Module):
             # Feature-wise affine broadcast over the token axis; zero-init makes an unseen subject a no-op.
             gamma, beta = self.subject_film(batch['subject']).chunk(2, dim=-1)
             hidden = (1.0 + gamma).unsqueeze(1) * hidden + beta.unsqueeze(1)
+
+        if self.residual is not None:
+            hidden, predict_loss, metrics = self.residual(hidden, batch['pad_mask'])
+            self._residual_loss = predict_loss if self._residual_loss is None else self._residual_loss + predict_loss
+            self._residual_metrics = metrics
         return hidden
+
+    def take_residual_loss(self) -> tuple[torch.Tensor | None, dict[str, float]]:
+        """Returns and clears the expectation head's regression loss accumulated since the last call.
+
+        Returns:
+            tuple[torch.Tensor | None, dict[str, float]]: The loss (`None` when residual coding is off or no forward
+                pass has happened) and the metrics from the most recent pass.
+        """
+        loss, metrics = self._residual_loss, self._residual_metrics
+        self._residual_loss, self._residual_metrics = None, {}
+        return loss, metrics
 
     def contextualize(self, hidden: torch.Tensor, pad_mask: torch.Tensor, causal: bool = False) -> torch.Tensor:
         """Applies the transformer over the token sequence.

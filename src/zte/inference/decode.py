@@ -1,9 +1,10 @@
-"""Inference: drive a frozen LM from a trained prefix bridge -- free-running decode and decoder-rescoring retrieval."""
+"""Inference: drive a frozen LM from a trained bridge -- free-running decode and decoder-rescoring retrieval."""
 
 from __future__ import annotations
 
 import weakref
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,11 +22,81 @@ from zte.data.targets.tokens import build_target_tokens
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, make_dataloader
 from zte.device import DeviceSpec, resolve_device
 from zte.logging_utils import get_logger, progress
-from zte.models.decoder import FrozenLM, GapCorrector, PrefixBridge, build_bridge, build_lm
+from zte.models.decoder import (
+    EvidenceFn,
+    FrozenLM,
+    GapCorrector,
+    PrefixBridge,
+    SemanticRateLadder,
+    WordEvidence,
+    build_bridge,
+    build_evidence,
+    build_lm,
+    build_rate_ladder,
+)
 from zte.models.embedding import ZTEModel, build_model
+from zte.models.objectives.lexical import LexicalAligner
 from zte.training.checkpoint import CheckpointManager
 
 _LOG = get_logger('inference.decode')
+
+
+@dataclass(slots=True)
+class ReadingBatch:
+    """One split's readings, embedded once and reused by every readout and every control.
+
+    Attributes:
+        z (np.ndarray): Bridge-ready conditioning vectors `(n, z_dim)`, gap-corrected and rate-quantised.
+        meta (pd.DataFrame): Per-reading metadata: `subject`, `task`, `n_words`, `reading_id`, `text_id`,
+            `stimulus_key` and the reference `text`.
+        words (np.ndarray | None): Per-word text-space vectors `(n, max_words, text_dim)` for the evidence path.
+        valid (np.ndarray | None): Boolean `(n, max_words)` marking readable word positions.
+        durations (np.ndarray | None): Per-word read time `(n, max_words)` for the `fixation` pointer schedule.
+        codes (np.ndarray | None): Rate-ladder codes `(n, n_stages)`, the measured conditioning channel.
+    """
+
+    z: np.ndarray
+    meta: pd.DataFrame
+    words: np.ndarray | None = None
+    valid: np.ndarray | None = None
+    durations: np.ndarray | None = None
+    codes: np.ndarray | None = None
+
+    def __len__(self) -> int:
+        """Number of readings."""
+        return int(len(self.meta))
+
+    @classmethod
+    def from_vectors(cls, z: np.ndarray | torch.Tensor) -> ReadingBatch:
+        """Wraps bare conditioning vectors for a decode that needs no metadata and no evidence.
+
+        Args:
+            z (np.ndarray | torch.Tensor): `(n, z_dim)` bridge-ready vectors.
+
+        Returns:
+            ReadingBatch: A metadata-free batch; the pooled prefix path is complete without it.
+        """
+        rows = z.detach().cpu().numpy() if torch.is_tensor(z) else np.asarray(z)
+        return cls(z=rows.astype(np.float32), meta=pd.DataFrame(index=range(len(rows))))
+
+    def take(self, rows: np.ndarray) -> ReadingBatch:
+        """Returns the same batch re-ordered or subset by `rows`, keeping every per-word tensor aligned.
+
+        Args:
+            rows (np.ndarray): Row indices into this batch.
+
+        Returns:
+            ReadingBatch: The re-ordered view; the metadata frame keeps the *original* rows so a control decoded from
+                a partner's brain is still scored against its own reference.
+        """
+        return ReadingBatch(
+            z=self.z[rows],
+            meta=self.meta,
+            words=None if self.words is None else self.words[rows],
+            valid=None if self.valid is None else self.valid[rows],
+            durations=None if self.durations is None else self.durations[rows],
+            codes=None if self.codes is None else self.codes[rows],
+        )
 
 
 class ZTEDecoder:
@@ -41,7 +112,10 @@ class ZTEDecoder:
         config (ZTEConfig): The source run's configuration.
         decoder_config (DecoderConfig): The decoder configuration the checkpoint was trained under.
         model (ZTEModel): The eval-mode encoder.
-        bridge (PrefixBridge): The trained soft-prompt bridge, which conditions on the pooled sentence vector.
+        bridge (PrefixBridge): The trained soft-prompt bridge.
+        ladder (SemanticRateLadder | None): The rate ladder, when the run used one.
+        evidence (WordEvidence | None): The word-synchronous path, when the run used one.
+        lexical (LexicalAligner | None): The per-word projection the evidence path reads.
         gap (GapCorrector): The train-fitted EEG-to-text correction.
         lm (FrozenLM): The frozen causal LM.
         clip_head (nn.Linear | None): Projection into the frozen text space the bridge reads.
@@ -61,6 +135,9 @@ class ZTEDecoder:
         lm: FrozenLM,
         gap: GapCorrector,
         clip_head: nn.Linear | None = None,
+        ladder: SemanticRateLadder | None = None,
+        evidence: WordEvidence | None = None,
+        lexical: LexicalAligner | None = None,
         device: DeviceSpec | None = None,
     ) -> None:
         """Wraps already-built parts (prefer `from_checkpoint`).
@@ -73,6 +150,9 @@ class ZTEDecoder:
             lm (FrozenLM): The frozen LM.
             gap (GapCorrector): The fitted gap correction.
             clip_head (nn.Linear | None, optional): The projection into the text space. Defaults to None.
+            ladder (SemanticRateLadder | None, optional): The rate ladder. Defaults to None.
+            evidence (WordEvidence | None, optional): The word-synchronous path. Defaults to None.
+            lexical (LexicalAligner | None, optional): The per-word text projection. Defaults to None.
             device (DeviceSpec | None, optional): Device spec. Defaults to None, which resolves automatically.
         """
         self.config = config
@@ -84,6 +164,9 @@ class ZTEDecoder:
         self.lm = lm.to(target).eval()
         self.gap = gap.to(target).eval()
         self.clip_head = None if clip_head is None else clip_head.to(target).eval()
+        self.ladder = None if ladder is None else ladder.to(target).eval()
+        self.evidence = None if evidence is None else evidence.to(target).eval()
+        self.lexical = None if lexical is None else lexical.to(target).eval()
 
         self.normalizer: FeatureNormalizer | None = None
         self.aligner: RawSubjectAligner | None = None
@@ -97,7 +180,7 @@ class ZTEDecoder:
         dataset: ZuCoDataset | None = None,
         device: DeviceSpec | None = None,
     ) -> ZTEDecoder:
-        """Rebuilds the encoder, bridge, gap correction and frozen LM from a decoder run's checkpoint.
+        """Rebuilds every trained part of a decoder run from its checkpoint.
 
         Args:
             ckpt_path (str | Path): A `best.pt`/`last.pt` written by a `decoder` or `joint` run.
@@ -155,6 +238,9 @@ class ZTEDecoder:
             lm=lm,
             gap=gap,
             clip_head=_rebuild_clip_head(state),
+            ladder=_rebuild_ladder(decoder_config, state, z_dim),
+            evidence=_rebuild_evidence(decoder_config, state, z_dim, lm.hidden_dim),
+            lexical=_rebuild_lexical(state),
             device=device,
         )
         if extra.get('normalizer'):
@@ -163,12 +249,14 @@ class ZTEDecoder:
             decoder.aligner = RawSubjectAligner.from_state(extra['aligner'])
         decoder.subject_vocab = extra.get('subject_vocab')
         _LOG.info(
-            'Loaded decoder checkpoint %s (epoch %s, z_dim %d, %d prefix slots, LM %s).',
+            'Loaded decoder checkpoint %s (epoch %s, z_dim %d, %d prefix slots, LM %s, ladder %s, evidence %s).',
             ckpt_path,
             payload.get('epoch'),
             z_dim,
             bridge.slots,
             decoder_config.lm_source,
+            'on' if decoder.ladder is not None else 'off',
+            'on' if decoder.evidence is not None else 'off',
         )
         return decoder
 
@@ -178,6 +266,11 @@ class ZTEDecoder:
     def z_dim(self) -> int:
         """Width of the conditioning vector the bridge reads."""
         return int(self.bridge.norm_in.normalized_shape[0])
+
+    @property
+    def uses_evidence(self) -> bool:
+        """Whether this checkpoint decodes with the word-synchronous evidence path."""
+        return self.evidence is not None and self.lexical is not None
 
     def prepare_dataset(self, dataset: ZuCoDataset) -> None:
         """Re-scales a dataset onto the fitted statistics the encoder was trained under.
@@ -206,12 +299,12 @@ class ZTEDecoder:
         batch_size: int = 16,
         *,
         transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    ) -> tuple[np.ndarray, pd.DataFrame]:
-        """Embeds every reading in a split into the bridge-ready conditioning vector.
+    ) -> ReadingBatch:
+        """Embeds every reading in a split into everything the frozen LM will be handed.
 
-        The returned vectors are already gap-corrected, so `prefix_from_z` applies the bridge and nothing else. A true
-        text embedding fed to `prefix_from_z` is therefore the text oracle: the identical head, without the correction
-        that exists only to move EEG vectors onto the text cloud.
+        The returned vectors are already gap-corrected and rate-quantised, so `prefix_from_z` applies the bridge and
+        nothing else. A true text embedding fed to `prefix_from_z` is therefore the text oracle: the identical head,
+        without the correction that exists only to move EEG vectors onto the text cloud.
 
         Args:
             dataset (ZuCoDataset): A built dataset, re-scaled in place by `prepare_dataset` before it is embedded.
@@ -222,21 +315,36 @@ class ZTEDecoder:
                 noise-matched) run through this identical path rather than a parallel one. Defaults to None.
 
         Returns:
-            tuple[np.ndarray, pd.DataFrame]: `(n_readings, z_dim)` vectors and a metadata frame of the same length,
-                carrying `subject`, `task`, `sentence_idx`, `n_words`, `reading_id`, `text_id`, `stimulus_key` and the
-                reference `text`.
+            ReadingBatch: The conditioning vectors, per-word evidence tensors and the metadata frame.
         """
         self.prepare_dataset(dataset)
         vocab = self.subject_vocab or build_subject_vocab(dataset)
         torch_ds = ZuCoTorchDataset(dataset, indices=indices, subject_vocab=vocab)
         loader = make_dataloader(torch_ds, batch_size=batch_size, shuffle=False, drop_last=False)
+
         vectors: list[np.ndarray] = []
+        codes: list[np.ndarray] = []
+        words: list[np.ndarray] = []
+        valids: list[np.ndarray] = []
         for batch in progress(loader, description='conditioning'):
             moved = {k: (v.to(self.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()}
             ready = moved if transform is None else transform(moved)
-            vectors.append(self._sentence_z(ready).cpu().numpy())
-        z = np.concatenate(vectors) if vectors else np.empty((0, self.z_dim), np.float32)
-        return z.astype(np.float32), _sentence_meta(dataset, torch_ds)
+            z, code, word, valid = self._sentence_z(ready)
+            vectors.append(z.cpu().numpy())
+            if code is not None:
+                codes.append(code.cpu().numpy())
+            if word is not None and valid is not None:
+                words.append(word.float().cpu().numpy())
+                valids.append(valid.cpu().numpy())
+
+        z_all = np.concatenate(vectors) if vectors else np.empty((0, self.z_dim), np.float32)
+        return ReadingBatch(
+            z=z_all.astype(np.float32),
+            meta=_sentence_meta(dataset, torch_ds),
+            words=_stack_ragged(words) if words else None,
+            valid=_stack_ragged(valids) if valids else None,
+            codes=np.concatenate(codes) if codes else None,
+        )
 
     def prefix_from_z(self, z: np.ndarray | torch.Tensor) -> torch.Tensor:
         """Maps bridge-ready conditioning vectors to soft prompts.
@@ -269,32 +377,65 @@ class ZTEDecoder:
         mean = _as_tensor(z, self.device.device).mean(dim=0, keepdim=True)
         return self.bridge(mean).expand(n, -1, -1)
 
+    def length_matched_z(
+        self,
+        train_z: np.ndarray,
+        train_words: np.ndarray,
+        query_words: np.ndarray,
+        tol: int = 1,
+    ) -> np.ndarray:
+        """Returns, per query, the mean training vector of readings with a matching word count.
+
+        Note:
+            This is the `length_only` control, and it is the one the ZuCo arithmetic demands. Word count alone carries
+            5.14 bits of sentence identity here, free, from eye-tracking segmentation -- so a decoder can look like it
+            is reading the brain while only reading how long the sentence was. A plain mean prefix does not test that;
+            a length-conditional mean prefix has exactly the length information and nothing else.
+        """
+        lengths = np.asarray(train_words, dtype=np.float64).ravel()
+        queries = np.asarray(query_words, dtype=np.float64).ravel()
+        out = np.zeros((queries.size, train_z.shape[1]), dtype=np.float32)
+        overall = train_z.mean(axis=0) if len(train_z) else np.zeros(train_z.shape[1], np.float32)
+        for i, want in enumerate(queries):
+            rows = np.flatnonzero(np.abs(lengths - want) <= max(int(tol), 0))
+            # A word count no training reading shares falls back to the widest available band rather than to a
+            # different length, which would give the control information the headline never had.
+            if rows.size == 0 and lengths.size:
+                rows = np.flatnonzero(np.abs(lengths - want) == np.abs(lengths - want).min())
+            out[i] = train_z[rows].mean(axis=0) if rows.size else overall
+        return out
+
     # ---- Free-running decode ---- #
 
     @torch.no_grad()
     def generate(
         self,
-        z: np.ndarray | torch.Tensor,
+        readings: ReadingBatch,
         *,
         max_new_tokens: int | None = None,
         beams: int | None = None,
         batch_size: int = 8,
+        evidence_content: bool = True,
     ) -> list[str]:
-        """Decodes free-running text from conditioning vectors.
+        """Decodes strictly autoregressive text from a reading batch.
 
         Args:
-            z (np.ndarray | torch.Tensor): `(n, z_dim)` bridge-ready vectors.
+            readings (ReadingBatch): The conditioning bundle.
             max_new_tokens (int | None, optional): Decode cap. Defaults to None, which uses the configured value.
             beams (int | None, optional): Beam width. Defaults to None, which uses the configured value.
             batch_size (int, optional): Rows per decode call. Defaults to 8.
+            evidence_content (bool, optional): Keep the per-word lexical content. `False` keeps the pointer schedule
+                -- and therefore the word count -- and destroys only what each word was, which is the `length_only`
+                control. Defaults to True.
 
         Returns:
             list[str]: One hypothesis per row.
         """
-        tensor = _as_tensor(z, self.device.device)
+        tensor = _as_tensor(readings.z, self.device.device)
         out: list[str] = []
         for lo, hi in _spans(tensor.shape[0], batch_size):
-            out.extend(self._decode(self.bridge(tensor[lo:hi]), max_new_tokens, beams))
+            evidence = self._evidence_fn(readings, lo, hi, content=evidence_content)
+            out.extend(self._decode(self.bridge(tensor[lo:hi]), max_new_tokens, beams, evidence))
         return out
 
     @torch.no_grad()
@@ -302,24 +443,30 @@ class ZTEDecoder:
         self,
         prefix: torch.Tensor,
         *,
+        readings: ReadingBatch | None = None,
         max_new_tokens: int | None = None,
         beams: int | None = None,
         batch_size: int = 8,
+        evidence_content: bool = True,
     ) -> list[str]:
-        """Decodes free-running text from ready-made prefixes, which is how the prefix-side controls run.
+        """Decodes from ready-made prefixes, which is how the prefix-side controls run.
 
         Args:
             prefix (torch.Tensor): `(n, slots, lm_dim)` soft prompts.
+            readings (ReadingBatch | None, optional): Supplies the evidence path's word tensors and its pointer
+                schedule. Defaults to None, which decodes from the prefix alone.
             max_new_tokens (int | None, optional): Decode cap. Defaults to None.
             beams (int | None, optional): Beam width. Defaults to None.
             batch_size (int, optional): Rows per decode call. Defaults to 8.
+            evidence_content (bool, optional): Keep the per-word lexical content. Defaults to True.
 
         Returns:
             list[str]: One hypothesis per row.
         """
         out: list[str] = []
         for lo, hi in _spans(prefix.shape[0], batch_size):
-            out.extend(self._decode(prefix[lo:hi], max_new_tokens, beams))
+            evidence = None if readings is None else self._evidence_fn(readings, lo, hi, content=evidence_content)
+            out.extend(self._decode(prefix[lo:hi], max_new_tokens, beams, evidence))
         return out
 
     # ---- Retrieval and diagnostics ---- #
@@ -327,12 +474,12 @@ class ZTEDecoder:
     @torch.no_grad()
     def rescore(
         self,
-        z: np.ndarray | torch.Tensor,
+        readings: ReadingBatch,
         candidate_texts: Sequence[str],
         *,
         length_normalise: bool = True,
         batch_size: int = 8,
-        chunk: int = 64,
+        chunk: int | None = None,
     ) -> np.ndarray:
         """Scores every gallery sentence under every conditioning vector -- this is RETRIEVAL, not generation.
 
@@ -341,36 +488,39 @@ class ZTEDecoder:
         generation result.
 
         Args:
-            z (np.ndarray | torch.Tensor): `(n_query, z_dim)` bridge-ready vectors.
+            readings (ReadingBatch): The conditioning bundle.
             candidate_texts (Sequence[str]): The gallery, in the order the returned columns follow.
             length_normalise (bool, optional): Divide by token count, so the ranking is not a length ranking.
                 Defaults to True.
             batch_size (int, optional): Queries per pass. Defaults to 8.
-            chunk (int, optional): Candidate rows per LM forward. Defaults to 64.
+            chunk (int | None, optional): Candidate rows per LM forward. Defaults to None, which uses the
+                configured `decoder.rescore_chunk`.
 
         Returns:
             np.ndarray: `(n_query, n_candidates)` length-normalised sequence log-probabilities.
         """
         ids, mask = self._tokenise(candidate_texts)
-        tensor = _as_tensor(z, self.device.device)
+        tensor = _as_tensor(readings.z, self.device.device)
+        rows = chunk or self.decoder_config.rescore_chunk
         scores: list[np.ndarray] = []
         for lo, hi in progress(list(_spans(tensor.shape[0], batch_size)), description='rescoring gallery'):
             prefix = self.bridge(tensor[lo:hi])
-            block = self.lm.sequence_logprob(prefix, ids, mask, length_normalise, chunk)
+            evidence = self._evidence_fn(readings, lo, hi)
+            block = self.lm.sequence_logprob(prefix, ids, mask, length_normalise, rows, evidence)
             scores.append(block.float().cpu().numpy())
         if not scores:
             return np.empty((0, len(candidate_texts)), dtype=np.float32)
         return np.concatenate(scores).astype(np.float32)
 
     @torch.no_grad()
-    def teacher_forced_nll(self, z: np.ndarray | torch.Tensor, texts: Sequence[str], batch_size: int = 8) -> np.ndarray:
+    def teacher_forced_nll(self, readings: ReadingBatch, texts: Sequence[str], batch_size: int = 8) -> np.ndarray:
         """Returns the per-sentence teacher-forced negative log-likelihood -- a DIAGNOSTIC, never a headline.
 
         Teacher forcing hands the model every previous reference token, so this number measures the LM's fluency far
         more than it measures the brain. It is stored under a quarantined key and no verdict reads it.
 
         Args:
-            z (np.ndarray | torch.Tensor): `(n, z_dim)` bridge-ready vectors.
+            readings (ReadingBatch): The conditioning bundle.
             texts (Sequence[str]): One reference per row.
             batch_size (int, optional): Rows per forward pass. Defaults to 8.
 
@@ -378,11 +528,12 @@ class ZTEDecoder:
             np.ndarray: `(n,)` token-mean negative log-likelihoods.
         """
         ids, mask = self._tokenise(texts)
-        tensor = _as_tensor(z, self.device.device)
+        tensor = _as_tensor(readings.z, self.device.device)
         out: list[np.ndarray] = []
         for lo, hi in _spans(tensor.shape[0], batch_size):
             prefix = self.bridge(tensor[lo:hi])
-            logprob = self.lm.target_token_logprobs(prefix, ids[lo:hi], mask[lo:hi])
+            evidence = self._evidence_fn(readings, lo, hi)
+            logprob = self.lm.target_token_logprobs(prefix, ids[lo:hi], mask[lo:hi], evidence=evidence)
             tokens = mask[lo:hi].sum(dim=1).clamp_min(1).to(logprob.dtype)
             out.append((-logprob.sum(dim=1) / tokens).float().cpu().numpy())
         if not out:
@@ -411,7 +562,7 @@ class ZTEDecoder:
         n = int(tensor.shape[0])
         if n < 2:
             return np.zeros(n, dtype=np.float32)
-        partner = torch.from_numpy(_paired_shuffle(n, seed)).to(self.device.device)
+        partner = torch.from_numpy(paired_shuffle(n, seed)).to(self.device.device)
         out: list[np.ndarray] = []
         for lo, hi in _spans(n, batch_size):
             own = self.bridge(tensor[lo:hi])
@@ -444,10 +595,107 @@ class ZTEDecoder:
             return np.empty((0,), dtype=np.float32)
         return np.concatenate(out).astype(np.float32)
 
+    def bit_report(self, readings: ReadingBatch) -> dict[str, Any] | None:
+        """Measures the bits the rate ladder actually delivered on this split, or `None` without a ladder.
+
+        Args:
+            readings (ReadingBatch): The conditioning bundle, whose `codes` were recorded during embedding.
+
+        Returns:
+            dict[str, Any] | None: The ladder's bit report against sentence identity.
+        """
+        if self.ladder is None or readings.codes is None:
+            return None
+        targets = readings.meta['text_id'].to_numpy() if 'text_id' in readings.meta else None
+        return self.ladder.bit_report(readings.codes, targets)
+
     # ---- Internals ---- #
 
-    def _decode(self, prefix: torch.Tensor, max_new_tokens: int | None, beams: int | None) -> list[str]:
-        """The single free-running decode path: the headline, all five controls and the oracle all land here.
+    def _evidence_fn(self, readings: ReadingBatch, lo: int, hi: int, *, content: bool = True) -> EvidenceFn | None:
+        """Builds the per-step nudge closure for one row span, or `None` when the run has no evidence path."""
+        if self.evidence is None or readings.words is None or readings.valid is None:
+            return None
+
+        device = self.device.device
+        words = torch.from_numpy(readings.words[lo:hi]).to(device)
+        valid = torch.from_numpy(readings.valid[lo:hi]).to(device)
+        if not content:
+            words = self.evidence.null(words)
+        durations = None
+        if readings.durations is not None:
+            durations = torch.from_numpy(readings.durations[lo:hi]).to(device)
+        return lambda steps: self.evidence.nudge(words, valid, steps, durations)  # type: ignore[union-attr]
+
+    @torch.no_grad()
+    def decode_trace(
+        self,
+        readings: ReadingBatch,
+        *,
+        max_new_tokens: int | None = None,
+        batch_size: int = 4,
+    ) -> list[dict[str, Any]]:
+        """Decodes every reading and returns what the decoder did at each step, not only what it wrote.
+
+        Note:
+            The text this returns is produced by the same `generate_from_prefix` call the headline uses, with the
+            trace sink as the only difference, so the studio can never show a decode the evaluation did not make.
+            It is still free-running: no reference, no reference length, no candidate set.
+
+        Args:
+            readings (ReadingBatch): The conditioning bundle.
+            max_new_tokens (int | None, optional): Decode cap. Defaults to None, which uses the configured value.
+            batch_size (int, optional): Rows per decode call; the trace is memory-hungry. Defaults to 4.
+
+        Returns:
+            list[dict[str, Any]]: Per reading: the hypothesis, the per-step record, the pointer's walk over the
+                reading's words, and the rate-ladder codes that carried the conditioning.
+        """
+        tensor = _as_tensor(readings.z, self.device.device)
+        steps = max_new_tokens or self.decoder_config.max_new_tokens
+        records: list[dict[str, Any]] = []
+        for lo, hi in _spans(tensor.shape[0], batch_size):
+            sink: list[list[dict[str, Any]]] = []
+            evidence = self._evidence_fn(readings, lo, hi, content=True)
+            texts = self.lm.generate_from_prefix(
+                self.bridge(tensor[lo:hi]),
+                max_new_tokens=steps,
+                beams=self.decoder_config.beams,
+                evidence=evidence,
+                trace=sink,
+            )
+            pointer = self._pointer_walk(readings, lo, hi, steps)
+            for row, text in enumerate(texts):
+                records.append(
+                    {
+                        'row': lo + row,
+                        'hypothesis': text,
+                        'steps': sink[row] if row < len(sink) else [],
+                        'pointer': None if pointer is None else pointer[row].tolist(),
+                        'codes': None if readings.codes is None else readings.codes[lo + row].tolist(),
+                    }
+                )
+        return records
+
+    def _pointer_walk(self, readings: ReadingBatch, lo: int, hi: int, steps: int) -> np.ndarray | None:
+        """Returns the `(rows, steps, words)` pointer weights, which are a function of the schedule alone."""
+        if self.evidence is None or readings.valid is None:
+            return None
+
+        device = self.device.device
+        valid = torch.from_numpy(readings.valid[lo:hi]).to(device)
+        durations = None if readings.durations is None else torch.from_numpy(readings.durations[lo:hi]).to(device)
+        index = torch.arange(steps, device=device)
+
+        return self.evidence.pointer(index, valid, durations).float().cpu().numpy()
+
+    def _decode(
+        self,
+        prefix: torch.Tensor,
+        max_new_tokens: int | None,
+        beams: int | None,
+        evidence: EvidenceFn | None,
+    ) -> list[str]:
+        """The single free-running decode path: the headline, every control and the oracle all land here.
 
         Raises:
             ValueError: If `decoder.cfg_weight` is not 1.0, which would make the headline and the `null_prefix`
@@ -463,13 +711,29 @@ class ZTEDecoder:
             prefix,
             max_new_tokens=max_new_tokens or self.decoder_config.max_new_tokens,
             beams=beams or self.decoder_config.beams,
+            evidence=evidence,
         )
 
-    def _sentence_z(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Runs the training-time conditioning recipe: pool, project, align to the text space, correct the gap."""
-        emb = self.model.project(self.model.sentence_hidden(batch))
-        z = F.normalize(self.clip_head(emb) if self.clip_head is not None else emb, dim=-1)
-        return self.gap(z)
+    def _sentence_z(
+        self, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """Runs the training-time conditioning recipe: pool, project, align, correct the gap, quantise."""
+        valid = self.model.pooling_mask(batch)
+        words = None
+        if self.uses_evidence:
+            hidden = self.model.contextualize(self.model.token_hidden(batch), valid)
+            pooled = self.model._pool_tokens(hidden, valid)  # noqa: SLF001 -- shared pooling
+            words = self.evidence.word_vectors(self.lexical.project(hidden))  # type: ignore[union-attr]
+        else:
+            pooled = self.model.sentence_hidden(batch)
+
+        emb = self.model.project(pooled)
+        z = self.gap(F.normalize(self.clip_head(emb) if self.clip_head is not None else emb, dim=-1))
+        codes = None
+        if self.ladder is not None:
+            out = self.ladder(z, valid.sum(dim=1).long())
+            z, codes = out.z, out.codes
+        return z, codes, words, (valid if words is not None else None)
 
     def _tokenise(self, texts: Sequence[str]) -> tuple[torch.Tensor, torch.Tensor]:
         """Tokenises reference or gallery sentences with the checkpoint's own tokeniser."""
@@ -495,8 +759,28 @@ def _spans(n: int, size: int) -> Iterator[tuple[int, int]]:
         yield start, min(start + step, n)
 
 
-def _paired_shuffle(n: int, seed: int) -> np.ndarray:
-    """Returns a permutation of `range(n)` with no fixed point, so no row is ever paired with itself."""
+def _stack_ragged(blocks: list[np.ndarray]) -> np.ndarray:
+    """Concatenates per-batch tensors that were padded to their own batch's longest sentence."""
+    width = max(block.shape[1] for block in blocks)
+    padded = [
+        block
+        if block.shape[1] == width
+        else np.pad(block, [(0, 0), (0, width - block.shape[1])] + [(0, 0)] * (block.ndim - 2))
+        for block in blocks
+    ]
+    return np.concatenate(padded)
+
+
+def paired_shuffle(n: int, seed: int) -> np.ndarray:
+    """Returns a permutation of `range(n)` with no fixed point, so no row is ever paired with itself.
+
+    Args:
+        n (int): Number of rows.
+        seed (int): Seed, so a reported pairing can be recomputed.
+
+    Returns:
+        np.ndarray: The derangement.
+    """
     perm = np.random.default_rng(seed).permutation(n)
     for i in range(n):
         if perm[i] == i:
@@ -563,6 +847,40 @@ def _rebuild_clip_head(state: dict[str, torch.Tensor]) -> nn.Linear | None:
         if bias is not None:
             head.bias.copy_(bias)
     return head
+
+
+def _rebuild_lexical(state: dict[str, torch.Tensor]) -> LexicalAligner | None:
+    """Rebuilds the per-word text projection the evidence path reads, or `None` when the run had none."""
+    weight = state.get('lexical.head.weight')
+    if weight is None:
+        return None
+    aligner = LexicalAligner(int(weight.shape[1]), int(weight.shape[0]))
+    aligner.load_state_dict(_sub_state(state, 'lexical.'), strict=False)
+    return aligner
+
+
+def _rebuild_ladder(config: DecoderConfig, state: dict[str, torch.Tensor], z_dim: int) -> SemanticRateLadder | None:
+    """Rebuilds the rate ladder from a decoder state dict, or `None` when the run had none."""
+    if 'ladder.codebook' not in state:
+        return None
+    ladder = build_rate_ladder(config, z_dim, max_words=config.max_target_tokens)
+    if ladder is None:
+        return None
+    ladder.load_state_dict(_sub_state(state, 'ladder.'), strict=False)
+    return ladder
+
+
+def _rebuild_evidence(
+    config: DecoderConfig, state: dict[str, torch.Tensor], text_dim: int, lm_dim: int
+) -> WordEvidence | None:
+    """Rebuilds the word-synchronous evidence path from a decoder state dict, or `None` when the run had none."""
+    if 'evidence.down.weight' not in state:
+        return None
+    evidence = build_evidence(config, text_dim, lm_dim)
+    if evidence is None:
+        return None
+    evidence.load_state_dict(_sub_state(state, 'evidence.'), strict=False)
+    return evidence
 
 
 def _sentence_meta(dataset: ZuCoDataset, torch_ds: ZuCoTorchDataset) -> pd.DataFrame:

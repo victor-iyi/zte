@@ -206,11 +206,11 @@ def phase_shuffled_sent_emb(
 
 def train_split_sent_emb(
     embedder: ZTEEmbedder, dataset: ZuCoDataset, config: Any, batch_size: int = 64
-) -> np.ndarray | None:
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Embeds the training split at sentence level: the only rows retrieval post-processing may be fitted on.
 
-    Whitening and all-but-the-top fitted on the scored rows are transductive, and a decoder scoring one
-    sentence at a time cannot reproduce them; fitted here they are reproducible one sentence at a time.
+    Whitening, all-but-the-top and the length projection fitted on the scored rows are transductive, and a decoder
+    scoring one sentence at a time cannot reproduce them; fitted here they are reproducible one sentence at a time.
 
     Args:
         embedder (ZTEEmbedder): The restored embedder.
@@ -219,18 +219,24 @@ def train_split_sent_emb(
         batch_size (int, optional): Sentences per forward pass. Defaults to 64.
 
     Returns:
-        np.ndarray | None: `(n_train_sentences, d)` embeddings, or `None` when the run has no train cell.
+        tuple[np.ndarray | None, np.ndarray | None]: `(n_train_sentences, d)` embeddings and the matching word counts,
+            both `None` when the run has no train cell.
     """
     from zte.cli.decode import split_indices
 
     try:
         train_idx = split_indices(dataset, config, 'train')
     except ValueError, KeyError:  # pragma: no cover - defensive
-        return None
+        return None, None
     if train_idx is None:
-        return None
-    emb, _ = embedder.embed(dataset, level='sentence', indices=train_idx, batch_size=batch_size)
-    return emb if len(emb) else None
+        return None, None
+
+    emb, meta = embedder.embed(dataset, level='sentence', indices=train_idx, batch_size=batch_size)
+    if not len(emb):
+        return None, None
+
+    n_words = meta['n_words'].to_numpy() if 'n_words' in meta else None
+    return emb, n_words
 
 
 def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:
@@ -282,7 +288,7 @@ def main() -> None:
     phase_shuffle = bool(getattr(obj_cfg, 'eval_phase_shuffle', False))
     phase_emb = phase_shuffled_word_emb(embedder, dataset) if phase_shuffle else None
     phase_sent = phase_shuffled_sent_emb(embedder, dataset) if phase_shuffle else None
-    train_sent = train_split_sent_emb(embedder, dataset, embedder.config)
+    train_sent, train_sent_n_words = train_split_sent_emb(embedder, dataset, embedder.config)
     train_vocab = training_vocab(dataset, embedder.config) if getattr(obj_cfg, 'eval_seen_novel', False) else None
 
     # A decoder checkpoint decodes its held-out cell here; an encoder checkpoint returns `(None, None)`.
@@ -319,6 +325,7 @@ def main() -> None:
         train_vocab=train_vocab,
         phase_sent_emb=phase_sent,
         train_sent_emb=train_sent,
+        train_sent_n_words=train_sent_n_words,
         sent_n_words=n_words,
         generation=generation,
         rescoring=rescoring,

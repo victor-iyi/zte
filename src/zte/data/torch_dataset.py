@@ -227,6 +227,21 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         return self._text_vocab
 
     @property
+    def n_content(self) -> int:
+        """Number of distinct `(stimulus, word index)` slots, which is the key space of `batch['content_id']`."""
+        return len(self._content_vocab)
+
+    @property
+    def split_text_ids(self) -> list[int]:
+        """The text ids actually read in *this* split, which is not the same set as `text_vocab`.
+
+        `text_vocab` is deliberately whole-dataset so an id means the same sentence in every split. A loss whose
+        denominator ranges over texts must therefore be told which of those ids it is allowed to see, or a
+        stimulus-holding-out split leaks its held-out sentences in as negatives.
+        """
+        return sorted({int(t) for t in self._sentence_text_id if t >= 0})
+
+    @property
     def reading_ids(self) -> list[int]:
         """Dataset-wide sentence position per sentence of this split, aligned with `sequences`."""
         return self._reading_ids

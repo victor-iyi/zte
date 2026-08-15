@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -11,6 +12,7 @@ from torch import nn
 
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
+from zte.models.encoder.gallery import GalleryContrast, build_gallery_contrast
 from zte.models.objectives.base import _ObjectiveBase, _usable_mask
 
 
@@ -60,15 +62,35 @@ class SentenceClipObjective(_ObjectiveBase):
         self.clip_head: nn.Module | None = None
         self.register_buffer('text_matrix', None, persistent=False)
         self.logit_scale = nn.Parameter(torch.tensor(math.log(1.0 / max(config.clip_temperature, 1e-4))))
+        self.gallery: GalleryContrast | None = None
 
-    def attach_text(self, text_matrix: torch.Tensor) -> None:
+    def attach_text(
+        self,
+        text_matrix: torch.Tensor,
+        text_lengths: torch.Tensor | None = None,
+        split_text_ids: Sequence[int] | None = None,
+    ) -> None:
         """Attaches the frozen `(n_sentences, text_dim)` L2-normalised text-embedding matrix.
 
         Args:
             text_matrix (torch.Tensor): Frozen sentence embeddings indexed by `batch['sentence_text_id']`.
+            text_lengths (torch.Tensor | None): Word count of each gallery text, needed only for the length-matched
+                denominator of the full-gallery term.
+            split_text_ids (Sequence[int] | None): The gallery rows the training split actually reads. The matrix is
+                indexed by a whole-dataset id, so without this a stimulus-holding-out split would train the
+                full-gallery term against its own held-out sentences as negatives.
         """
         self.text_matrix = text_matrix  # buffer: moves with .to(device), never trained
         self.clip_head = nn.Linear(self._embed_dim, int(text_matrix.shape[1]))
+        n_texts = int(text_matrix.shape[0])
+        self.gallery = build_gallery_contrast(self.config, n_texts)
+        if self.gallery is None:
+            return
+
+        if text_lengths is not None:
+            self.gallery.attach_lengths(text_lengths)
+        if split_text_ids is not None:
+            self.gallery.restrict_to(split_text_ids, n_texts)
 
     def _sentence_vectors(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
         """Pools each sentence's word-EEG tokens into one contextual sentence embedding `(B, embed_dim)`.
@@ -97,6 +119,10 @@ class SentenceClipObjective(_ObjectiveBase):
         emb_tok = model.project(hidden)  # token embeddings for VICReg / adversary
         reg_loss, reg_metrics = self.regularize(batch, hidden, emb_tok, usable)
 
+        # Twelve readings of this sentence exist; align against what they agreed on, not only against the text.
+        cons_loss, cons_metrics = self.sentence_consensus(z_sent, batch)
+        reg_loss, reg_metrics = reg_loss + cons_loss, {**reg_metrics, **cons_metrics}
+
         text_id = batch.get('sentence_text_id')
         if self.clip_head is None or self.text_matrix is None or text_id is None:
             zero = z_sent.sum() * 0.0 + reg_loss
@@ -119,6 +145,13 @@ class SentenceClipObjective(_ObjectiveBase):
             + _clip_direction(logits.t(), pos, valid)  # text -> EEG (pos is symmetric)
         )
         loss = clip_loss + reg_loss
+
+        # The batch denominator holds fifteen distractors; the evaluation holds 699, and the hard ones are the
+        # same-length neighbours a batch almost never contains.
+        if self.gallery is not None and bool(valid.any()):
+            gal_loss, gal_metrics = self.gallery.compute(z_eeg[valid], self.text_matrix, text_id[valid], scale)
+            loss = loss + self.config.gallery_weight * gal_loss
+            reg_metrics.update(gal_metrics)
         with torch.no_grad():
             neg_inf = torch.finfo(logits.dtype).min
             pred = logits.masked_fill(~valid[None, :], neg_inf).argmax(dim=1)
