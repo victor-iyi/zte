@@ -196,3 +196,163 @@ def test_best_checkpoint_is_reseeded_if_it_goes_missing(tmp_path: Path) -> None:
 
     manager.save(_state(2), epoch=2, metric=5.0)  # a worse metric, so not an improvement
     assert (tmp_path / 'best.pt').is_file()
+
+
+# --------------------------------------------------------------------------- #
+# The Drive mirror: what a reclaimed VM can actually resume from
+# --------------------------------------------------------------------------- #
+
+
+def test_the_best_checkpoint_reaches_drive_the_moment_it_improves(tmp_path: Path) -> None:
+    """The result must never be more than one epoch away from durable storage."""
+    drive = tmp_path / 'gdrive'
+    local = tmp_path / 'run' / 'checkpoints'
+    manager = CheckpointManager(local, keep_last=3, drive_backup_dir=str(drive))
+    manager.save(_state(1), epoch=1, metric=1.0)
+
+    mirrored = drive / 'checkpoints' / 'best.pt'
+    assert mirrored.is_file()
+    assert mirrored.read_bytes() == (local / 'best.pt').read_bytes()
+
+    manager.save(_state(2), epoch=2, metric=0.1)
+    assert mirrored.read_bytes() == (local / 'best.pt').read_bytes()
+
+
+def test_the_resumable_checkpoint_reaches_drive_every_epoch(tmp_path: Path) -> None:
+    """`--resume` reads `last.pt`, so a mirror carrying only `best.pt` would restart from an older epoch."""
+    drive = tmp_path / 'gdrive'
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    manager.save(_state(1), epoch=1, metric=1.0)
+    manager.save(_state(2), epoch=2, metric=5.0)  # worse, so `best.pt` stays at epoch 1
+
+    state, path = CheckpointManager.load_latest(drive / 'checkpoints')
+    assert path is not None and path.name == 'last.pt'
+    assert state is not None and state['epoch'] == 2
+
+
+def test_rotation_history_is_not_mirrored(tmp_path: Path) -> None:
+    """Epoch files are `keep_last` extra copies of a large file per epoch and buy a fresh VM nothing."""
+    drive = tmp_path / 'gdrive'
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    for epoch in (1, 2, 3):
+        manager.save(_state(epoch), epoch=epoch, metric=float(epoch))
+
+    assert sorted(p.name for p in (drive / 'checkpoints').iterdir()) == ['best.pt', 'last.pt']
+
+
+def test_a_drive_restored_directory_still_resumes_past_a_torn_last(tmp_path: Path) -> None:
+    """It carries no rotation history, so `best.pt` is the whole fallback chain and has to be in it.
+
+    Note:
+        This is the case the mirror exists for: a reclaimed VM, a fresh runtime, and a `last.pt` torn by the write
+        that was in flight when the machine went away. Without `best.pt` in the chain the run restarts from zero.
+    """
+    drive = tmp_path / 'gdrive'
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    manager.save(_state(1), epoch=1, metric=0.5)
+    manager.save(_state(2), epoch=2, metric=9.0)
+
+    restored = drive / 'checkpoints'
+    intact = (restored / 'last.pt').read_bytes()
+    (restored / 'last.pt').write_bytes(intact[: len(intact) // 2])
+
+    state, path = CheckpointManager.load_latest(restored)
+    assert path is not None and path.name == 'best.pt'
+    assert state is not None and state['epoch'] == 1
+
+
+def test_an_unwritable_mount_warns_instead_of_killing_the_run(tmp_path: Path) -> None:
+    """A full or unmounted Drive must cost a warning, never a multi-hour training run."""
+    blocked = tmp_path / 'blocked'
+    blocked.write_text('this is a file, not a directory')
+    local = tmp_path / 'run' / 'checkpoints'
+    manager = CheckpointManager(local, keep_last=2, drive_backup_dir=str(blocked))
+
+    manager.save(_state(1), epoch=1, metric=1.0)
+
+    assert (local / 'best.pt').is_file(), 'training continued regardless'
+    assert manager.mirror_failures == 1
+
+
+def test_repeated_mirror_failures_are_counted_so_they_can_escalate(tmp_path: Path) -> None:
+    """`mirror_file` never raises, so a mount that stopped accepting writes looks exactly like a working one."""
+    blocked = tmp_path / 'blocked'
+    blocked.write_text('not a directory')
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=2, drive_backup_dir=str(blocked))
+    for epoch in (1, 2, 3):
+        manager.save(_state(epoch), epoch=epoch, metric=float(epoch))
+
+    assert manager.mirror_failures == 3
+
+
+def test_a_stale_mirror_is_a_failure_even_though_the_file_exists(tmp_path: Path) -> None:
+    """The dangerous case: `last.pt` landed once and then stopped updating.
+
+    Note:
+        An existence check reports success at every later epoch while the run quietly becomes unrecoverable, which
+        is exactly the "silently failing for forty epochs" case the alarm claims to catch. Liveness has to mean
+        "the remote copy matches the local one", not "a file with that name is there".
+    """
+    drive = tmp_path / 'gdrive'
+    local = tmp_path / 'run' / 'checkpoints'
+    manager = CheckpointManager(local, keep_last=3, drive_backup_dir=str(drive))
+    manager.save(_state(1), epoch=1, metric=1.0)
+    assert manager.mirror_failures == 0
+
+    # The mount goes read-only: the epoch-1 copy stays, and every later write silently does nothing.
+    (drive / 'checkpoints').chmod(0o500)
+    try:
+        manager.save(_state(2), epoch=2, metric=0.5)
+        assert (drive / 'checkpoints' / 'last.pt').is_file(), 'the stale file is still there'
+        assert manager.mirror_failures == 1, 'an existence check would have reported success'
+    finally:
+        (drive / 'checkpoints').chmod(0o700)
+
+
+def test_a_fresh_machine_stages_the_run_down_from_drive(tmp_path: Path) -> None:
+    """The mirror is write-only insurance unless something cashes it, and nothing else does.
+
+    Note:
+        Worse than useless without this: an empty local directory restores no `best_metric`, so `save()` seeds a
+        new best from an untrained epoch 1 and the next mirror writes that over the good `best.pt` on Drive.
+    """
+    drive = tmp_path / 'gdrive'
+    trained = CheckpointManager(tmp_path / 'first' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    trained.save(_state(1), epoch=1, metric=1.0)
+    trained.save(_state(2), epoch=2, metric=0.2)
+
+    fresh = CheckpointManager(tmp_path / 'second' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    assert fresh.stage_from_drive() is True
+
+    state, path = CheckpointManager.load_latest(fresh.ckpt_dir)
+    assert path is not None and path.name == 'last.pt'
+    assert state is not None and state['epoch'] == 2
+
+
+def test_staging_never_overwrites_local_work(tmp_path: Path) -> None:
+    """A local checkpoint is always newer than the mirror it produced, so staging must not touch it."""
+    drive = tmp_path / 'gdrive'
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=3, drive_backup_dir=str(drive))
+    manager.save(_state(5), epoch=5, metric=0.1)
+
+    assert manager.stage_from_drive() is False
+
+
+def test_staging_is_a_no_op_without_a_drive(tmp_path: Path) -> None:
+    """The local-only path must not pay for machinery it does not use."""
+    assert CheckpointManager(tmp_path / 'checkpoints', keep_last=2).stage_from_drive() is False
+
+
+def test_a_recovered_mount_resets_the_failure_count(tmp_path: Path) -> None:
+    """Consecutive, not cumulative -- otherwise one early hiccup shouts for the rest of the run."""
+    drive = tmp_path / 'gdrive'
+    drive.write_text('blocked')
+    manager = CheckpointManager(tmp_path / 'run' / 'checkpoints', keep_last=2, drive_backup_dir=str(drive))
+    manager.save(_state(1), epoch=1, metric=1.0)
+    assert manager.mirror_failures == 1
+
+    drive.unlink()
+    manager.save(_state(2), epoch=2, metric=0.5)
+
+    assert manager.mirror_failures == 0
+    assert (drive / 'checkpoints' / 'best.pt').is_file()

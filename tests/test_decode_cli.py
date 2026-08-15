@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -168,6 +169,8 @@ def _args(**overrides: object) -> argparse.Namespace:
         'rescore': None,
         'length_tol': None,
         'mean_prefix_readings': 512,
+        'within_task': None,
+        'seeds': None,
         'seed': 0,
     }
     return argparse.Namespace(**(defaults | overrides))
@@ -281,3 +284,32 @@ def test_rebaseline_holdout_is_none_for_a_single_subject() -> None:
     config = ZTEConfig()
     config.train.loso_holdout_subject = None
     assert resolve_holdout(config, None, np.array(['ZAB', 'ZAB'])) is None
+
+
+def test_a_per_seed_options_clone_keeps_every_other_setting() -> None:
+    """The seed sweep re-runs the control layer at each seed, so only the seed may differ between passes.
+
+    Note:
+        `DecodeOptions` is a slots dataclass and therefore has no `__dict__`; cloning it by unpacking one would
+        raise at the first extra seed, long after the expensive decode had already run.
+    """
+    base = DecodeOptions(controls=('mean_prefix', 'length_only'), n_perm=17, n_boot=23, length_tol=3, seeds=(1, 2))
+
+    clone = replace(base, seed=7, seeds=())
+
+    assert (clone.seed, clone.seeds) == (7, ())
+    assert clone.controls == base.controls
+    assert (clone.n_perm, clone.n_boot, clone.length_tol) == (17, 23, 3)
+    assert clone.within_task_pools == base.within_task_pools
+
+
+def test_the_new_controls_are_accepted_by_name() -> None:
+    """`shuffled_z` and `length_only` are pre-registered controls, not free-text, so a typo has to fail loudly."""
+    assert {'shuffled_z', 'length_only'} <= set(CONTROLS)
+
+    config = ZTEConfig(decoder=DecoderConfig(generation_controls=('shuffled_z', 'length_only')))
+    options = options_from_args(_args(), config)
+    assert options.controls == ('shuffled_z', 'length_only')
+
+    with pytest.raises(ValueError, match='unknown control'):
+        options_from_args(_args(controls='length_only,not_a_control'), config)

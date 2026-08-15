@@ -369,10 +369,14 @@ def test_the_training_split_embedding_holds_the_training_readings(small_dataset:
     train_idx = split_indices(small_dataset, config, 'train')
     assert train_idx is not None
 
-    train_emb = train_split_sent_emb(embedder, small_dataset, config)
-    expected, _ = embedder.embed(small_dataset, level='sentence', indices=train_idx)
+    train_emb, train_n_words = train_split_sent_emb(embedder, small_dataset, config)
+    expected, expected_meta = embedder.embed(small_dataset, level='sentence', indices=train_idx)
     all_emb, _ = embedder.embed(small_dataset, level='sentence')
     assert train_emb is not None
     assert train_emb.shape == expected.shape
     assert len(train_emb) < len(all_emb)
     assert np.allclose(train_emb, expected)
+
+    # The word counts travel with those rows, because the length projection is fitted against the pair.
+    assert train_n_words is not None
+    assert np.array_equal(train_n_words, expected_meta['n_words'].to_numpy())

@@ -34,7 +34,7 @@ from zte.data.dataset import ZuCoDataset
 from zte.data.targets.tokens import TinyByteTokenizer, _cache_path, _encode, build_target_tokens
 from zte.data.torch_dataset import build_subject_vocab, make_dataloader
 from zte.evaluation.report import _verdict
-from zte.inference.decode import ZTEDecoder
+from zte.inference.decode import ReadingBatch, ZTEDecoder
 from zte.models.embedding import build_model
 from zte.models.objectives import build_objective
 from zte.training import stages
@@ -372,10 +372,10 @@ def test_a_reading_gets_the_same_prompt_alone_as_it_does_beside_seven_others(
     objective.eval()
 
     with torch.no_grad():
-        _, prefix = objective.conditioning(model, batch)
+        prefix = objective.conditioning(model, batch).prefix
         for row in range(int(prefix.shape[0])):
             single = {k: (v[row : row + 1] if torch.is_tensor(v) else v) for k, v in batch.items()}
-            _, alone = objective.conditioning(model, single)
+            alone = objective.conditioning(model, single).prefix
             assert torch.allclose(prefix[row], alone[0], atol=1e-5), row
 
 
@@ -600,8 +600,12 @@ def test_encoder_mode_is_reproducible_under_a_fixed_seed(synthetic_dir: Path, tm
         histories.append(run_training(config, dataset).history)
 
     assert histories[0] == histories[1]
-    assert set(histories[0]) == {'lr', 'train_loss', 'val_loss'}
+    assert {'lr', 'train_loss', 'val_loss'} <= set(histories[0])
     assert len(histories[0]['train_loss']) == 2
+
+    # Every objective metric is carried per epoch alongside the loss, and each series is one point per epoch --
+    # `zte-analyze` plots them, and a ragged series would silently shift a curve against its own epoch axis.
+    assert all(len(series) == 2 for key, series in histories[0].items() if key.startswith('train_'))
 
 
 def test_encoder_mode_builds_one_optimiser_group(small_dataset: ZuCoDataset) -> None:
@@ -802,20 +806,20 @@ def test_conditioning_names_every_reading(decoder: ZTEDecoder, decoder_run: _Run
     """The conditioning frame carries the reference, the subject and the word count each analysis needs."""
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     splits = dataset.split('by_subject_and_stimulus', **_SPLIT)
-    z, meta = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
-    assert len(z) == len(meta) > 0
-    assert set(meta['subject']) == {_HOLDOUT}
+    readings = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
+    assert len(readings.z) == len(readings.meta) > 0
+    assert set(readings.meta['subject']) == {_HOLDOUT}
     for column in ('n_words', 'reading_id', 'text_id', 'stimulus_key', 'text'):
-        assert column in meta.columns
+        assert column in readings.meta.columns
 
 
 def test_generation_rejects_guidance(decoder: ZTEDecoder) -> None:
     """Any guidance weight but 1.0 would make the headline decode and the null-prefix control different paths."""
-    z = np.zeros((2, decoder.z_dim), dtype=np.float32)
+    readings = ReadingBatch.from_vectors(np.zeros((2, decoder.z_dim), dtype=np.float32))
     decoder.decoder_config = replace(decoder.decoder_config, cfg_weight=1.5)
     try:
         with pytest.raises(ValueError, match='cfg_weight'):
-            decoder.generate(z)
+            decoder.generate(readings)
     finally:
         decoder.decoder_config = replace(decoder.decoder_config, cfg_weight=1.0)
 
@@ -840,9 +844,10 @@ def test_controls_share_decode_path(decoder: ZTEDecoder, decoder_run: _Run, monk
         scaffold_ids: torch.Tensor | None = None,
         max_new_tokens: int = 96,
         beams: int = 1,
+        evidence: Any = None,
     ) -> list[str]:
         calls.append((scaffold_ids, max_new_tokens, beams))
-        return real(prefix, scaffold_ids, max_new_tokens, beams)
+        return real(prefix, scaffold_ids, max_new_tokens, beams, evidence)
 
     monkeypatch.setattr(decoder.lm, 'generate_from_prefix', spy)
     result = decode_evaluation(
@@ -870,10 +875,10 @@ def test_rescore_ranks_the_whole_gallery(decoder: ZTEDecoder, decoder_run: _Run)
     """Gallery rescoring is retrieval: one finite score per (query, candidate) pair."""
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     splits = dataset.split('by_subject_and_stimulus', **_SPLIT)
-    z, meta = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
-    gallery = sorted(set(meta['text']))
-    scores = decoder.rescore(z, gallery, batch_size=4)
-    assert scores.shape == (len(z), len(gallery))
+    readings = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
+    gallery = sorted(set(readings.meta['text']))
+    scores = decoder.rescore(readings, gallery, batch_size=4)
+    assert scores.shape == (len(readings.z), len(gallery))
     assert bool(np.isfinite(scores).all())
 
 
@@ -881,11 +886,11 @@ def test_prefix_influence_kl_is_finite_per_reading(decoder: ZTEDecoder, decoder_
     """The bridge-collapse detector reports one non-negative divergence per reading."""
     dataset = ZuCoDataset(decoder_run.dataset_config).build(show_progress=False)
     splits = dataset.split('by_subject_and_stimulus', **_SPLIT)
-    z, _ = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
-    kl = decoder.prefix_influence_kl(z)
-    assert kl.shape == (len(z),)
+    readings = decoder.conditioning(dataset, indices=splits['test'], batch_size=4)
+    kl = decoder.prefix_influence_kl(readings.z)
+    assert kl.shape == (len(readings.z),)
     assert bool(np.isfinite(kl).all()) and float(kl.min()) >= -1e-6
-    assert decoder.prefix_influence_kl(z[:1]).tolist() == [0.0]
+    assert decoder.prefix_influence_kl(readings.z[:1]).tolist() == [0.0]
 
 
 def test_generate_conditions_the_language_model_on_z(decoder: ZTEDecoder, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -906,12 +911,13 @@ def test_generate_conditions_the_language_model_on_z(decoder: ZTEDecoder, monkey
         scaffold_ids: torch.Tensor | None = None,
         max_new_tokens: int = 96,
         beams: int = 1,
+        evidence: Any = None,
     ) -> list[str]:
         seen.append(prefix.detach().clone())
-        return real(prefix, scaffold_ids, max_new_tokens, beams)
+        return real(prefix, scaffold_ids, max_new_tokens, beams, evidence)
 
     monkeypatch.setattr(decoder.lm, 'generate_from_prefix', spy)
-    decoder.generate(z, batch_size=len(z))
+    decoder.generate(ReadingBatch.from_vectors(z), batch_size=len(z))
 
     expected = decoder.prefix_from_z(z)
     assert len(seen) == 1
@@ -1003,8 +1009,8 @@ def test_the_configured_prefix_kl_floor_refuses_a_real_collapsed_forward_pass(
     assert floor == pytest.approx(DecoderConfig().min_prefix_kl)
     assert floor == pytest.approx(0.05)
 
-    z, _ = decoder.conditioning(dataset, indices=indices, batch_size=4)
-    assert float(decoder.prefix_influence_kl(z).mean()) > 0.0
+    readings = decoder.conditioning(dataset, indices=indices, batch_size=4)
+    assert float(decoder.prefix_influence_kl(readings.z).mean()) > 0.0
 
     saved = decoder.bridge.to_bottleneck.weight.detach().clone()
     try:
