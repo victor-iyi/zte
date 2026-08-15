@@ -85,8 +85,16 @@ State these next to any result from this directory; they are in every `evaluatio
 | `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                           | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline. |
 | `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation    | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                    |
 | `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | Rank percentile **0.9672** (0.9635–0.9708), and stable to 0.0002 across seeds. The alignment stack itself is a measured no-op — see below.             |
+| `zte_encoder_v3` (`exp16_zte_encoder_v3`) | + predictive residual, cross-reader consensus, length-matched gallery, length projection | as `zte_lexical_raw`, byte-identical | **Not yet measured on real ZuCo.** Four architectural mechanisms after thirteen lever arms landed within noise of each other (2 to 9 hits in 700). See `docs/METHODS.md` §9-12.  |
+| `zte_lexical_raw` (`exp14_zte_lexical_raw`) | + token-level lexical alignment               | as `zte_raw_aligned`, byte-identical                                             | **Not yet measured on real ZuCo.** It is here because it is the encoder the v2 decoder is built over; promote or retire it on the next sweep.          |
+| `decode_zte_v2` (`exp15_decode_zte_v2`)     | frozen-LM prefix decode, metered and steered  | frozen `exp14_zte_lexical_raw`; frozen `Qwen/Qwen2.5-0.5B`                       | **Not yet measured on real ZuCo.** The rebuilt decoder: a rate-limited conditioning channel and a word-synchronous pointer. See `docs/DECODER.md`.     |
 
-All three are EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
+> **Three rows here have no number yet** — `exp14_zte_lexical_raw`, `exp15_decode_zte_v2` and
+> `exp16_zte_encoder_v3`. They sit in `flagship/` as the current best-*designed* recipe of each kind, not the
+> best-measured one, and this table says so rather than implying a result. The tier rule on this project is measured
+> performance; the next sweep either earns them the row or moves them out.
+
+The encoder arms are all EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
 
 ### What the 2026-08-13 session settled
 
@@ -139,7 +147,12 @@ claim rather than a matter of trust: 700 ZuCo sentences cannot be stored in weig
 
 | Config                          | What it is                                                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `decode_frozen_e5raw`           | **The headline.** Bridge only, over `exp8_clip_e5_raw`, on the honest four-cell `by_subject_and_stimulus` split.   |
+| `decode_v2_pooled`              | **The baseline the rebuild must beat.** Every v2 knob at its no-op default, i.e. the pooled-prefix decoder.        |
+| `decode_v2_ladder_only`         | The semantic rate ladder alone. How little it costs measures how few bits the continuous vector was using.         |
+| `decode_v2_evidence_only`       | Word-synchronous evidence alone, over the continuous conditioning vector.                                          |
+| `decode_v2_no_length_stage`     | Required companion to the headline: the ladder with no stage reserved for the 5.14-bit word count.                 |
+| `decode_v2_bandpower`           | The frontend row of the feature-ablation table — the decoder over a band-power encoder.                            |
+| `decode_frozen_e5raw`           | The v1 headline. Bridge only, over `exp8_clip_e5_raw`, on the honest four-cell `by_subject_and_stimulus` split.    |
 | `decode_joint_e5raw`            | The encoder unfreezes after 3 stage-A epochs at a tenth of the bridge LR; the CLIP loss stays on as an anchor.     |
 | `decode_encoder_only`           | The regression control: `mode: encoder` must still reproduce `exp8_clip_e5_raw`'s history under the same seed.     |
 | `decode_nostage0_ablation`      | Required reported ablation — text-only bridge pretraining off. If the delta needs it, Stage 0 was doing the work.  |
@@ -188,6 +201,20 @@ The text-encoder A/B that used to sit here (E5 vs Qwen vs BGE vs MPNet) is in [`
 | `exp12_orthogonality_off`                                       | `objective.identity_orthogonality_weight` — the decorrelation penalty off | `exp12_zte_raw_aligned` |
 | `study_invariance_baseline_loso` / `study_invariance_full_loso` | The whole invariance stack, off vs on, under LOSO                         | each other              |
 | `study_vicreg_off` / `study_vicreg_on`                          | The VICReg variance+covariance anti-collapse penalty                      | each other              |
+| `exp16_residual_off`                                            | `model.residual_coding` -- no context de-trending                            | `exp16_zte_encoder_v3`  |
+| `exp16_consensus_off`                                           | All three cross-reader consensus weights off                             | `exp16_zte_encoder_v3`  |
+| `exp16_gallery_off`                                             | `objective.gallery_weight` -- in-batch denominator only                     | `exp16_zte_encoder_v3`  |
+| `exp16_gallery_band_off`                                        | `objective.gallery_length_band` -- full gallery, no length matching        | `exp16_zte_encoder_v3`  |
+| `exp16_length_projection_off`                                   | `objective.length_projection` -- changes the measurement, not the model   | `exp16_zte_encoder_v3`  |
+| `exp14_lexical_off`                                             | Both token-level lexical weights off                                      | `exp14_zte_lexical_raw` |
+| `exp14_lexical_reader_off`                                      | The same-word-different-reader half only                                  | `exp14_zte_lexical_raw` |
+| `feature_bandpower_mlp`                                         | `model.frontend` — band power instead of raw waveforms                    | `exp14_zte_lexical_raw` |
+| `feature_spatial_off`                                           | `model.spatial_encoding` — standard channel indexing, no scalp geometry   | `exp14_zte_lexical_raw` |
+| `feature_invariance_off`                                        | All three label-free identity steps at once (the composite row)           | `exp14_zte_lexical_raw` |
+
+The last three are the rows of the **feature-ablation table** `zte-analyze` builds: raw conformer vs band-power
+MLP, spherical harmonics vs standard channel indexing, and the invariance recipe on vs off. `feature_invariance_off`
+is deliberately the composite — the three `exp12_*` arms above already isolate its parts individually.
 
 Each `exp12_*` arm is the flagship `zte_raw_aligned` recipe with exactly one of its three label-free changes
 disabled, so the delta attributable to that change is readable directly. The four `study_invariance_*` /
@@ -201,6 +228,22 @@ drift from the schema. For a *new* lever, prefer `zte-ablate` (below) over hand-
 ---
 
 ## Running them collectively
+
+### The whole study — `scripts/run_zte_study.sh`
+
+The one command that runs everything a claim has to survive, resumably: the confound audit, the flagship encoder at
+several seeds, the decoder and its one-knob arms over that encoder, the feature-ablation table, the length audit
+against every checkpoint, and `zte-analyze` at the end.
+
+```sh
+SEEDS='42 43 44' bash scripts/run_zte_study.sh res/data/zuco_extracted   # everything but the 12-fold sweep
+STAGES='audit encoder loso decoder ablation rebaseline analysis' bash scripts/run_zte_study.sh
+STAGES=analysis bash scripts/run_zte_study.sh                            # re-draw from what is on disk
+SMOKE=1 bash scripts/run_zte_study.sh                                    # offline wiring check, minutes
+```
+
+Every step carries `--resume`, so re-running the identical command after an interruption skips finished work.
+See `docs/TRAINING.md` for the stage table and the Drive-mirroring behaviour.
 
 ### The tiered suite — `scripts/run_suite.sh`
 
