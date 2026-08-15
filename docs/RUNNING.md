@@ -99,7 +99,7 @@ uv run zte-compare --experiments res/experiments/loso # just the LOSO sweep
 
 Beyond bootstrap CIs against analytic chance, every run's `metrics.json` (and `report.md`) now includes a `honesty` block, computed whenever ≥ 2 subjects are present:
 
-- **Permutation null** — cross-subject retrieval Top-1 vs a *label-shuffled* empirical null -> a p-value, not just an analytic chance line. Over $B$ shuffles with scores $s^{\ast}_b$ against the observed $s$, the p-value is $p=\dfrac{1+\lvert\{b : s^{\ast}_b\ge s\}\rvert}{1+B}$.
+- **Permutation null** — cross-subject retrieval Top-1 vs a *label-shuffled* empirical null -> a p-value, not just an analytic chance line. Over $B$ shuffles with scores $s^{\ast}_b$ against the observed $s$, the p-value is $p=\dfrac{1+\lvert \lbrace b : s^{\ast}_b \ge s \rbrace \rvert}{1+B}$.
 
 - **Held-out cross-subject decoding** — train a linear probe on N−1 subjects, score it on the held-out subject (one fold per subject); the honest test of whether content transfers to a new brain.
 - **Anchor calibration lift** — fit an orthogonal Procrustes map from a few shared *anchor* words that aligns a held-out subject into the shared frame, then measure whether same-word cross-subject cohesion improves on held-out words. A metrics-side preview of “can we snap a new brain in without retraining?”.

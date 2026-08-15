@@ -120,11 +120,15 @@ CLI flags override YAML, so you can pin a base config and sweep one knob: `uv ru
 
 The contrastive objectives score pairs by cosine similarity of the unit-normalised embeddings, $s_{ij} = \hat z_i^\top \hat z_j$ with $\hat z_i = z_i / \lVert z_i \rVert$, and divide the logits by the `temperature` $\tau$. Skip-gram treats every context word of an anchor as a positive, so it minimises a multi-positive InfoNCE over anchors $A$, positives $P(i)$ and candidate keys $\mathcal{C}(i)$ (the positives plus `n_negatives` sampled negatives); that is,
 
-$$\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}$$
+$$
+\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}
+$$
 
 CBOW and CPC instead have a single positive $i^{+}$ per anchor (the pooled context, or the true future step), giving the standard single-positive form
 
-$$\mathcal{L} = -\frac{1}{N}\sum_{i} \log \frac{\exp(s_{i,i^{+}}/\tau)}{\sum_{k} \exp(s_{ik}/\tau)}$$
+$$
+\mathcal{L} = -\frac{1}{N}\sum_{i} \log \frac{\exp(s_{i,i^{+}}/\tau)}{\sum_{k} \exp(s_{ik}/\tau)}
+$$
 
 Lowering $\tau$ sharpens the softmax and increasingly penalises hard negatives.
 

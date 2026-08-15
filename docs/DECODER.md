@@ -96,7 +96,7 @@ Against roughly 120k supervised target tokens this is already generous. Anything
 `decoder.rate_ladder: rvq`. The problem this solves is that a continuous 768-d conditioning vector can in principle carry any number of bits, so "how much did the brain contribute" has to be argued after the fact from retrieval ranks. A residual vector quantiser replaces the argument with a constraint. With $S$ stages of $K$ codes:
 
 $$
-r_0 = z, \qquad c_s = \arg\min_k \| r_s - e_{s,k} \|^2, \qquad r_{s+1} = r_s - e_{s,c_s}, \qquad \hat{z} = \sum_{s<S} e_{s,c_s}
+r_0 = z, \qquad c_s = \operatorname{argmin}_k \lVert r_s - e_{s,k} \rVert^2, \qquad r_{s+1} = r_s - e_{s,c_s}, \qquad \hat{z} = \sum_{s<S} e_{s,c_s}
 $$
 
 so the channel carries at most $S\log_2 K$ bits — 32 at the default $4 \times 256$, against the 9.4512 that sentence identity over 700 stimuli actually needs. The ladder is deliberately **not** the binding constraint; it is the instrument. `bit_report` measures what arrived: per-stage entropy, the joint code entropy, and the plug-in mutual information with sentence identity (an upper bound, biased upward at 700 queries, and labelled as one).
@@ -112,7 +112,7 @@ The gradient reaches the encoder straight through ($\hat{z} \leftarrow z + \math
 At generated token $t$ a Gaussian pointer sits over word $t / \bar{c}$, where $\bar{c}$ is the mean LM tokens per word **measured from the tokenised training corpus** rather than configured (a hand-set rate desynchronises the pointer whenever the tokeniser or the corpus changes; the measured value rides in the checkpoint). The pointed-at words are pooled, mapped into the LM's hidden space through a rank-$r$ map, gated, norm-capped, and **added to the LM's final hidden state**:
 
 $$
-\pi_t(j) \propto \exp\left(-\frac{(j - t/\bar{c})^2}{2\sigma^2}\right), \qquad
+\pi_t(j) \propto \exp\Big(-\frac{(j - t/\bar{c})^2}{2\sigma^2}\Big), \qquad
 m_t = g \sum_j \pi_t(j)\, \mathrm{LN}(W_\text{up} W_\text{down} v_j), \qquad
 \ell_t = \mathrm{head}(h_t + m_t)
 $$
@@ -176,10 +176,13 @@ are structural and never change, because `torch.optim.Optimizer.load_state_dict`
 ## The loss
 
 $$
-\mathcal{L} = \mathcal{L}_\text{CE}
-  + \lambda_\text{ground}\,\mathcal{L}_\text{ground}
-  + \underbrace{\lambda_\text{clip}\,\mathcal{L}_\text{CLIP} + \mathcal{L}_\text{reg}}_{\text{stage B only}}
+\mathcal{L} = \mathcal{L}_{\text{CE}}
++ \lambda_{\text{ground}} \mathcal{L}_{\text{ground}}
++ \lambda_{\text{clip}} \mathcal{L}_{\text{CLIP}} + \mathcal{L}_{\text{reg}}
 $$
+
+The last two terms are **stage B only**: both are switched on by the encoder's own `requires_grad`, so they are absent
+from every stage-A epoch and from a `decoder` run entirely.
 
 **$\mathcal{L}_\text{CE}$** is teacher-forced cross-entropy over the target span. Teacher forcing is legitimate for *training*; the trap it is famous for is an evaluation trap, and the only teacher-forced number computed at evaluation time is quarantined as a diagnostic that the verdict provably cannot read.
 
@@ -265,8 +268,8 @@ Plus one positive control, `oracle`: the true sentence embedding through the ide
 1. `honest_split` — the readings come from the `test` cell of `by_subject_and_stimulus` (`report.HONEST_SPLIT`), the only cell that generalises over the subject and the stimulus at once. A `val` or `test_seen_stim` block fails it.
 2. `no_candidate_set` — `n_candidate_sentences is None`, i.e. this was free generation.
 3. `beats_every_control` — the paired per-sentence delta's bootstrap CI lower bound (n_boot 2000, seed 0) is above zero against **every one** of the seven controls, not the mean of them. A control that was requested but could not be decoded counts as not beaten, so losing one can never promote the verdict. A block that records no `controls_requested` cannot show which controls it pre-registered, so the absent ledger itself counts as not beaten and the clause fails.
-4. `permutation_significant` — `honesty.generation_permutation_test` with the hypotheses held fixed and only the pairing permuted, $p = (1 + \#\{null \ge obs\})/(n_\text{perm}+1) < 0.05$.
-5. `prefix_influences_output` — mean $\mathrm{KL}\big(p(\cdot \mid P_i) \,\|\, p(\cdot \mid P_j)\big) \ge$ `decoder.min_prefix_kl` (0.05 nats), where $P_j$ is **another reading's** prefix under a seeded derangement, $j \neq i$. Below that the prompt does not depend on which brain produced it and no delta is meaningful.
+4. `permutation_significant` — `honesty.generation_permutation_test` with the hypotheses held fixed and only the pairing permuted, $p = (1 + N_{\text{null} \ge \text{obs}})/(n_{\text{perm}}+1) < 0.05$.
+5. `prefix_influences_output` — mean $\mathrm{KL}\big(p(\cdot \mid P_i) \parallel p(\cdot \mid P_j)\big) \ge$ `decoder.min_prefix_kl` (0.05 nats), where $P_j$ is **another reading's** prefix under a seeded derangement, $j \neq i$. Below that the prompt does not depend on which brain produced it and no delta is meaningful.
 
    It has to be another reading's prefix and not $P_\text{null}$. A bridge collapsed to one constant prompt for every reading still sits some distance from the *learned unconditional* prompt, which is a free parameter, so it can clear a floor stated against $P_\text{null}$ while ignoring the brain entirely — the exact failure this clause exists to catch. The KL also reads only the first generated token's distribution, which makes it a necessary condition and not a sufficient one; the length-stratified `mismatch` control is what closes the remaining gap.
 

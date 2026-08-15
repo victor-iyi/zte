@@ -259,7 +259,7 @@ with $\gamma$ a learnable scalar and $\mathrm{sg}[\cdot]$ the stop-gradient. The
 regression against a detached target,
 
 $$
-\mathcal{L}_{\text{predict}} \;=\; \frac{1}{|V|\,d}\sum_{t \in V} \big\| f(\mathrm{sg}[h_{<t}]) - \mathrm{sg}[h_t] \big\|^2 ,
+\mathcal{L}_{\text{predict}} = \frac{1}{\lvert V \rvert d}\sum_{t \in V} \big\lVert f(\mathrm{sg}[h_{<t}]) - \mathrm{sg}[h_t] \big\rVert^2
 $$
 
 so no gradient from $\mathcal{L}_{\text{predict}}$ reaches the encoder. **That detachment is the whole guarantee.**
@@ -335,7 +335,7 @@ texts makes counting words worth **exactly nothing**, because every candidate ha
 learns to separate them with is therefore not length. This is the training-time counterpart of the length-stratified
 evaluation that has, until now, only been able to *measure* the confound after the fact.
 
-**Math.** With $\mathcal{B}(i) = \{ c : |n_c - n_i| \le b \}$ the anchor's length band,
+**Math.** With $\mathcal{B}(i) = \lbrace c : \lvert n_c - n_i \rvert \le b \rbrace$ the anchor's length band,
 
 $$
 \mathcal{L}_{\text{gallery}} \;=\; -\log
@@ -365,7 +365,7 @@ carry no length, and report retrieval on that. A length-only oracle at $\pm 2$ w
 encoder on every top-k, so the difference between the two numbers is the entire claim.
 
 **Math.** With $\phi(n) = [1,\; n,\; \log n,\; n^{-1},\; n^2]$ and $W$ the ridge solution of
-$\min_W \| Z_{\text{train}} - \Phi_{\text{train}} W \|^2 + \lambda \|W\|^2$ fitted on training rows only:
+$\min_W \lVert Z_{\text{train}} - \Phi_{\text{train}} W \rVert^2 + \lambda \lVert W \rVert^2$ fitted on training rows only:
 
 $$
 \tilde{z}_i \;=\; z_i - \big(\phi(n_i) - \overline{\phi}\big)\,W .

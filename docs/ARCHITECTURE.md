@@ -154,19 +154,25 @@ The context transformer (`transformer.py`) honours `model.pos_encoding`:
 
 All four schemes modify the same scaled dot-product attention that the context transformer computes over its $L$ tokens, where $Q,K,V$ are the per-head query/key/value projections and $d_h$ is the per-head dimension:
 
-$$\mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V$$
+$$
+\mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V
+$$
 
 They differ in *where* they inject position (token position $p$, or indices $m,n$):
 
 - **`sinusoidal`** adds a fixed absolute code to the inputs before attention, indexing dimension $i$ of the model dim $d$:
 
-$$PE_{p,2i} = \sin\!\Big(\frac{p}{10000^{2i/d}}\Big), \qquad PE_{p,2i+1} = \cos\!\Big(\frac{p}{10000^{2i/d}}\Big)$$
+$$
+PE_{p,2i} = \sin\!\Big(\frac{p}{10000^{2i/d}}\Big), \qquad PE_{p,2i+1} = \cos\!\Big(\frac{p}{10000^{2i/d}}\Big)
+$$
 
 - **`rope`** rotates $Q$ and $K$ *inside* attention. With per-pair frequencies $\theta_i = 10000^{-2i/d_h}$, a token at position $p$ is rotated by a block-diagonal rotation $R(p)$ that turns coordinate pair $i$ through angle $p\theta_i$, so the attention score $\langle R(m)q,\ R(n)k\rangle$ depends only on the relative offset $m-n$ — the source of its length generalisation.
 
 - **`alibi`** leaves the projections untouched and subtracts a linear per-head distance bias with slope $m_h$:
 
-$$\text{score}_{ij} = \frac{q_i^\top k_j}{\sqrt{d_h}} - m_h\,\lvert i - j \rvert$$
+$$
+\text{score}_{ij} = \frac{q_i^\top k_j}{\sqrt{d_h}} - m_h\,\lvert i - j \rvert
+$$
 
 Each run records its scheme in the checkpoint config, so inference rebuilds the matching encoder automatically.
 
@@ -187,7 +193,9 @@ flowchart LR
 
 The symmetric InfoNCE used here is the same family the parent project applies for EEG↔text alignment:
 
-$$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{B}\sum_i \log \frac{\exp(\text{sim}(e_i, t_i)/\tau)}{\sum_j \exp(\text{sim}(e_i, t_j)/\tau)}$$
+$$
+\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{B}\sum_i \log \frac{\exp(\text{sim}(e_i, t_i)/\tau)}{\sum_j \exp(\text{sim}(e_i, t_j)/\tau)}
+$$
 
 In ZTE, `t` is a *neighbouring word's EEG* (skip-gram) or a *future word latent* (CPC) rather than text — pretraining the geometry that alignment later reuses.  The objective is selected with `objective.name`; see [TRAINING.md] for the full hyper-parameter table.
 
@@ -216,7 +224,9 @@ flowchart LR
 
 ZTE outputs `(M, 768)` embeddings + aligned metadata. The downstream aligner adds a frozen LLM text encoder and the composite loss
 
-$$\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}$$
+$$
+\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}
+$$
 
 (Sinkhorn-regularised Wasserstein, optionally Gromov-Wasserstein for distinct metric spaces), evaluated by **noise-anchored zero-shot retrieval** under LOSO.  ZTE ships the building blocks for that evaluation in `training/metrics.py` and `evaluation/`. Because the default `embed_dim` is **768**, ZTE embeddings are plug-compatible with that downstream space.
 

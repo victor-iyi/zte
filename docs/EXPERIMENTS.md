@@ -19,11 +19,15 @@ These are enforced in the config files (`scripts/make_study_configs.py`) and the
 - **Normaliser fit on train only.** `normalizer_fit: train` — the z-score / imputer statistics are estimated on the training split, never on val / test / the held-out subject. No leakage through preprocessing.
 - **Regularisation against collapse & overfit.** VICReg variance + covariance terms (`variance_weight`, `covariance_weight`) stop the InfoNCE objective from collapsing into ~15 of 768 dimensions; plus dropout (`model.dropout`), AdamW weight decay (`train.weight_decay`), and (for the masked objective) an EMA teacher. Every run reports train vs val vs test so you can *see* the gap. The skip-gram objective is a multi-positive InfoNCE over unit-normalised codes $\hat z_i = z_i/\lVert z_i\rVert$, with cosine $s_{ij}=\hat z_i^\top \hat z_j$, temperature $\tau$, positives $P(i)$ and candidates $\mathcal{C}(i)$:
 
-$$\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}$$
+$$
+\mathcal{L}_{\text{SG}} = -\frac{1}{\lvert A \rvert}\sum_{i \in A} \log \frac{\sum_{p \in P(i)} \exp(s_{ip}/\tau)}{\sum_{k \in \mathcal{C}(i)} \exp(s_{ik}/\tau)}
+$$
 
 and the two VICReg terms, with target std $\gamma$ and covariance $C=\frac{1}{n-1}(Z-\bar Z)^\top(Z-\bar Z)$, push each of the $d=768$ dimensions to stay alive and decorrelated:
 
-$$\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\mathrm{Var}(z_{:,j}) + \epsilon}\big), \qquad \mathcal{L}_{\text{cov}} = \frac{1}{d}\sum_{i \ne j} C_{ij}^{2}$$
+$$
+\mathcal{L}_{\text{var}} = \frac{1}{d}\sum_{j=1}^{d} \max\!\big(0,\ \gamma - \sqrt{\mathrm{Var}(z_{:,j}) + \epsilon}\big), \qquad \mathcal{L}_{\text{cov}} = \frac{1}{d}\sum_{i \ne j} C_{ij}^{2}
+$$
 
 - **Multiple seeds -> confidence intervals.** Run each study at seeds **42, 43, 44**. The evaluator already computes bootstrap 95% CIs on the load-bearing quantities (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`); seeds turn a single-run point into a distribution so differences carry error bars, not noise.
 - **The eye-tracking confound is controlled by making EEG-only the honest headline.** Gaze scalars (fixation durations, pupil size) trivially encode word length and frequency. Every invariance / collapse study sets `include_eye_tracking: false` so a "reading-from-EEG" claim can't be a gaze artefact; Study 1 measures the size of that artefact directly.
@@ -266,7 +270,7 @@ CONTROL=1 bash scripts/run_loso.sh <root>        # add the no-recipe control arm
 
 Every run's `metrics.json` and `report.md` gain a `honesty` block whenever the embedding set spans ≥ 2 subjects (so it is populated for `by_stimulus` runs and, for a LOSO run, for the held-out subject specifically):
 
-- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* -> a p-value, not merely an analytic chance line. Over $B$ shuffles with shuffled scores $s^{\ast}_b$ against the observed $s$, $p=\frac{1+\lvert\{b : s^{\ast}_b \ge s\}\rvert}{1+B}$. Feeds `verdict.retrieval_above_chance_perm`.
+- **Permutation null** (`honesty.retrieval_permutation`) — cross-subject retrieval Top-1 against a *label-shuffled empirical null* -> a p-value, not merely an analytic chance line. Over $B$ shuffles with shuffled scores $s^{\ast}_b$ against the observed $s$, $p=\frac{1+\lvert \lbrace b : s^{\ast}_b \ge s \rbrace \rvert}{1+B}$. Feeds `verdict.retrieval_above_chance_perm`.
 - **Held-out cross-subject decoding** (`honesty.cross_subject_decode`) — a linear probe trained on N−1 subjects and scored on the held-out one, one fold per subject, per target (category / length band / word length / log-frequency), with a bootstrap CI vs an honest chance baseline. Content that decodes on an unseen brain is the real generalization signal.
 - **Anchor calibration lift** (`honesty.calibration`) — fits an orthogonal Procrustes alignment from a few shared **anchor** words to snap a held-out subject into the shared frame, then measures whether same-word cross-subject cohesion improves on *held-out* words. A metrics-side preview of "can a stranger be calibrated in without retraining?", mirroring the explorer's **Calibrate** mode.
 
@@ -281,7 +285,9 @@ The LOSO space became a near-degenerate **cone** (anisotropy $\text{aniso}=\math
 - `objective.whiten` — ZCA-whitens the exported embeddings at evaluation, $\tilde z = \Sigma^{-1/2}(z-\mu)$ (centre + decorrelate + equalise variance). Centring removes the shared direction that *is* the cone, so **anisotropy drops from ~0.998 to ~0.00**; because it is label-free, every downstream metric is recomputed on the whitened space, so the evaluation honestly shows whether content survives (on synthetic, un-saturating the cosines lifts the same-word cross-subject gap from ~0 to positive).
 - `objective.anisotropy_weight` — a Wang & Isola **uniformity** term ($t=2$) that spreads the normalised embeddings over the sphere during training:
 
-$$\mathcal{L}_{\text{unif}} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-2\,\lVert \hat z_i - \hat z_j \rVert^{2}\big)$$
+$$
+\mathcal{L}_{\text{unif}} = \log\ \mathbb{E}_{i \ne j}\ \exp\!\big(-2\,\lVert \hat z_i - \hat z_j \rVert^{2}\big)
+$$
 
 (a mean-direction penalty is a saddle at a perfect cone and cannot break it; this pairwise repulsion can).
 

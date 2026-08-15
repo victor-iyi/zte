@@ -196,7 +196,9 @@ per-fold (ZTE − noise) probe-score difference's bootstrap 95% CI lower bound t
 require the bootstrap CI on `(Top-1 − chance)` over the per-query hit vector to exclude zero. These are
 **percentile bootstrap** intervals: resample the statistic $B$ times to get $\theta^{\ast}_1,\dots,\theta^{\ast}_B$, then take the central $(1-\alpha)$ quantile pair,
 
-$$\text{CI}_{1-\alpha} = \big[\theta^{\ast}_{(\alpha/2)},\ \theta^{\ast}_{(1-\alpha/2)}\big].$$
+$$
+\text{CI}_{1-\alpha} = \big[\theta^{\ast}_{(\alpha/2)},\ \theta^{\ast}_{(1-\alpha/2)}\big].
+$$
 
 The CIs are stored in the verdict (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`,
 `effect_size_floor`). Two further honesty fixes: retrieval **chance is query-weighted** (matching how
