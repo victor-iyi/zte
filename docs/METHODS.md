@@ -217,21 +217,21 @@ result, and one worth reporting plainly.
 
 ---
 
-# The exp16 encoder — four mechanisms, four measured failures
+## The exp16 encoder — four mechanisms, four measured failures
 
 Everything above is a lever on one architecture. The four mechanisms here are a change to the architecture, and each
 exists because a specific number said the old one could not get there. The evidence, from real ZuCo with `ZAB` held
 out (2026-08-13) and the thirteen-arm sweep of 2026-07-25:
 
-| measurement | value |
-| --- | --- |
-| Held-out rank percentile | 0.9636 [0.9599, 0.9674] |
-| Length-stratified rank percentile | 0.9211 [0.9154, 0.9270] |
-| Variance budget | 8.4% subject · 0.0% content · 91.6% neither |
-| Same word, different subject | cosine gap +0.005 — *not clustered* |
-| Held-out `word_len` probe | $R^2 = -0.060$ |
-| Decoder rescoring, length-stratified rank percentile | 0.4349 — *below chance* |
-| Spread across 13 arms flipping alignment / adapter / orthogonality | 2 to 9 hits in 700 |
+| measurement                                                        | value                                       |
+| ------------------------------------------------------------------ | ------------------------------------------- |
+| Held-out rank percentile                                           | 0.9636 [0.9599, 0.9674]                     |
+| Length-stratified rank percentile                                  | 0.9211 [0.9154, 0.9270]                     |
+| Variance budget                                                    | 8.4% subject · 0.0% content · 91.6% neither |
+| Same word, different subject                                       | cosine gap +0.005 — *not clustered*         |
+| Held-out `word_len` probe                                          | $R^2 = -0.060$                              |
+| Decoder rescoring, length-stratified rank percentile               | 0.4349 — *below chance*                     |
+| Spread across 13 arms flipping alignment / adapter / orthogonality | 2 to 9 hits in 700                          |
 
 The last row is the one that matters for design: run-to-run noise was the size of every effect, so the exposed levers
 are exhausted. Every mechanism below defaults to off and has a matched ablation that flips exactly one field.

@@ -78,6 +78,8 @@ zte-compare = 'zte.cli.compare:main'
 zte-loso-summary = 'zte.cli.loso_summary:main'
 zte-encodability = 'zte.cli.encodability:main'
 zte-pack = 'zte.cli.pack:main'
+zte-analyze = 'zte.cli.analyze:main'
+zte-studio = 'zte.cli.studio:main'
 
 [build-system]
 requires = ['hatchling']
