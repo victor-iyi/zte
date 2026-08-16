@@ -137,9 +137,35 @@ uv run zte-pack clean experiments cache --yes          # wipe res/ subtrees to f
 
 `--device auto` (the default) selects **CUDA -> Cloud TPU (`torch_xla`) -> Apple MPS -> CPU**. Colab **GPU** is the primary, tested path (bf16/fp16 AMP on CUDA). **TPU** is best-effort: install `torch_xla` on a TPU runtime and `auto` will pick it (the trainer calls `xm.mark_step()` per step); without `torch_xla` a TPU runtime falls back to CPU rather than erroring.
 
-## Colab environment bootstrap
+## `zte-colab` — the notebook's bridge
 
-Colab leaves some env vars unset and starts in the wrong directory. `zte.utils.bootstrap()` sets the missing vars (headless matplotlib, a writable config/cache dir, quiet tokenizers), resolves the project root, and creates the `res/` output directories — so the CLIs never error on a fresh runtime. The notebook calls it in Section 2; it is idempotent and a no-op on a laptop.
+Colab's kernel is an **older interpreter than the `>=3.14` ZTE requires**, so `import zte` in a notebook cell is a `SyntaxError`. It never needs to. `zte-colab` exposes every capability a notebook wants as a subcommand that prints **one JSON object on stdout**, with its logs routed to stderr so the whole stream parses with the standard library:
+
+```sh
+uv run zte-colab env                                        # interpreter, accelerator, device plan, machine limits
+uv run zte-colab session --drive "/gdrive/My Drive/Sharables/ZTE"
+uv run zte-colab runs    --drive <root> --experiments res/experiments --headline
+uv run zte-colab arms    --kind encoder                     # trainable configs, read live off experiments/
+uv run zte-colab readings --from <zte-decode --out dir>     # the scored readings and the verdict that gates them
+uv run zte-colab panels  --experiments <roots> --out <dir>  # the study charts as plotly figure JSON
+uv run zte-colab mirror  --drive <root> --direction up      # move a session between the VM and Drive
+```
+
+| subcommand | answers | the notebook uses it for |
+| --- | --- | --- |
+| `env` | which interpreter, accelerator and machine, and the environment every run wants | §2 wiring the kernel, §3 the hardware report |
+| `session` | where this dated session reads and writes on Drive | §4, and the env vars every later `!uv run` inherits |
+| `runs` | every run on Drive and locally, its checkpoints and its held-out headline | `find_runs()`, `resolve_ckpt()`, §10c |
+| `arms` | which configs are trainable, labelled by their own header comment | the §7a and §8 dropdowns |
+| `readings` | one decode's readings, scored, beside the five-clause verdict | §8d |
+| `panels` | the study's charts, drawn once, as figure JSON | §10b |
+| `mirror` | what moved between the VM and Drive, and what was deliberately left | §11, `mirror_to_drive()` / `restore_from_drive()` |
+
+`env` returns the environment as **data** rather than applying it: a notebook kernel's `!` subprocesses inherit the kernel's environment, so the kernel is where those defaults have to land. Each one fixes a failure that is silent rather than loud — a `module://` matplotlib backend that crashes a headless subprocess, a block-buffered stdout that makes a multi-hour run look hung, a CUDA allocator that fragments on the few very large blocks a raw-EEG batch asks for.
+
+`tests/test_notebook_gateway.py` enforces the boundary: no code cell imports `zte`, no `%%bash` cell runs an interpreter it may not have yet, every `zte-*` command named is a declared entry point, and every `experiments/*.yaml` path named exists on disk.
+
+Outside a notebook, `zte.utils.bootstrap()` remains the in-process equivalent — it applies the same defaults, resolves the project root and creates the `res/` output directories.
 
 ## Analysing a study
 
@@ -173,6 +199,12 @@ Its `resolve_ckpt()` searches this session's Drive folder, then every earlier se
 disk, so a fresh runtime can evaluate, decode or open the studio on a run trained in a previous session with no
 manual restore. `durable()` returns the right root for wherever it is running — the Drive session folder on Colab,
 `res/` locally.
+
+**No cell imports `zte`.** Every capability arrives through the `colab()` helper defined in §2, which runs one
+`zte-colab` subcommand and returns its JSON. A code cell may import only the standard library, `IPython.display`,
+`google.colab`, and Colab's own `pandas` / `plotly` — enough to render a payload and nothing more. That keeps the
+search order, the mirror exclusions and the verdict arithmetic inside the package, where they are tested, rather
+than drifting in a notebook where they are not.
 
 **[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)**
 ([open in Colab](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/zte_colab.ipynb))

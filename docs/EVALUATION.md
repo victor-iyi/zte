@@ -187,7 +187,7 @@ Flags: one of `--bundle` / `--root` / `--drive` / `--synthetic`, `--extract-dir`
 
 - **beats the noise control** on each probe target,
 - **no representation collapse** (effective-rank ratio > 0.1, dead dims < 50%),
-- **cross-subject retrieval above chance**,
+- **cross-subject retrieval above chance** — judged on `scoreboard.held_out_retrieval` whenever the split holds a subject out,
 - **subject arithmetic above chance**.
 
 Each check is now backed by a **statistic, not a sign**. "Beats noise" requires the paired
@@ -199,6 +199,13 @@ require the bootstrap CI on `(Top-1 − chance)` over the per-query hit vector t
 $$
 \text{CI}_{1-\alpha} = \big[\theta^{\ast}_{(\alpha/2)},\ \theta^{\ast}_{(1-\alpha/2)}\big].
 $$
+
+The retrieval clause names its basis. `verdict['retrieval_basis']` records what `retrieval_above_chance` and
+`retrieval_ci` were computed on: `held_out_retrieval` whenever the split holds a subject out — the CI is then the
+bootstrap on the held-out per-query Top-1 hits minus their cross-subject gallery chance — and the pooled
+`sentence_retrieval` only when no subject is held out, in which case the label says so in plain words. A pooled
+number can therefore never turn the clause green on a LOSO run. The permutation-null and phase-control demotions
+apply unchanged on top of whichever basis was used.
 
 The CIs are stored in the verdict (`beats_noise_ci`, `retrieval_ci`, `subject_arithmetic_ci`,
 `effect_size_floor`). Two further honesty fixes: retrieval **chance is query-weighted** (matching how
@@ -222,7 +229,10 @@ A decoder run adds two readouts, and the distinction between them is the whole p
 **Rescoring retrieval is the powered one.** Every gallery sentence is scored by length-normalised
 $\log p(\text{text}_j \mid z_i)$ and reported as `scoreboard.decoder_rescoring_retrieval` — Top-1/5/10,
 `rank_percentile`, exact binomial tail, bootstrap CI, plus a length-stratified sub-block. At 700 queries that is ~9.5
-bits of forced choice. It is **retrieval** and is labelled as such wherever it appears.
+bits of forced choice. It is **retrieval** and is labelled as such wherever it appears. With `decoder.rescore_pmi` on,
+the score is the PMI form — each candidate's null-prefix log-likelihood subtracted, cancelling candidate-side
+familiarity bias — the block is marked `score: 'pmi'`, and `pmi_vs_raw` carries the paired per-query rank-percentile
+delta with a bootstrap CI (see [DECODER.md]).
 
 **Free-running generation is the secondary, expected-null one.** No reference length, no candidate set, greedy, EOS or
 `max_new_tokens`. `generation_report` scores it with BLEU-1..4, ROUGE-1/2/L, WER and content-word F1 (pure stdlib +
@@ -256,9 +266,50 @@ gates nothing; it tells you which column of your own result is length. The trans
 published number and is contaminated by construction (the whitening is fitted over the held-out subject too); the
 train-fitted column is the one a decoder inherits.
 
+## Menu capacity — the largest closed set served at a target accuracy
+
+`rebaseline.md` ends with the constructive twin of the length audit: **K-way closed-set accuracy**. A K-way menu asks
+whether the embedding picks the sentence the held-out subject actually read out of $K$ candidates — the clinical AAC
+setting, where a user selects among a menu of utterances rather than dictating free-form. Each gallery entry is a
+*prototype*: the centroid of the training subjects' readings of that sentence, so a hit means "same thought, other
+brains" and the held-out subject's own readings never enrol their own reference.
+
+The accuracy is exact, not simulated. For a query whose true sentence strictly beats $b$ of the $m$ pool sentences
+(ties lose, so a collapsed embedding scores zero rather than chance), the probability of winning a menu with $K-1$
+uniformly drawn distractors is
+
+$$
+P(\text{win}) \;=\; \frac{\binom{b}{K-1}}{\binom{m}{K-1}}
+$$
+
+so chance is exactly $1/K$ and there is no sampling seed. At $K=2$ this reduces to $b/m$ — the sentence-level rank
+percentile. The certified flavours are **length_task_matched** (the headline: distractors share the query's task and
+its *exact* stimulus-level median word count) and **open** (the full gallery, where using length is legitimate, as it
+is in deployment). Exact matching is load-bearing: at tolerance ±1 the true candidate is systematically the unique
+best length match inside its own stratum, so a pure length code beats chance — which is why widened tolerances appear
+only as labelled `sensitivity` rows that no verdict may read. Post-processing is train-fitted only — the one
+condition a decoder can reproduce.
+
+Three guards ride inside the block. A **permutation p** per $K$ reassigns the true label uniformly within each
+candidate set, so significance is measured against a null that shares every artefact of the data. A built-in
+**length-oracle null** scores candidates by word-count proximity alone and must sit at chance inside each certified
+pool — if it escapes, the block stamps `gamed: true` and disqualifies itself. And queries that cannot field a pool
+are **excluded and counted**, never zero-scored.
+
+The headline is the **certified capacity**: the largest $K$ with CI lower bound above the target (0.80 by default)
+*and* permutation $p < 0.05$. Quote it with its flavour — a length-and-task-matched capacity is evidence of content
+decoding; an open capacity is a deployment estimate. Growing the certified matched capacity — each doubling of $K$
+costs one more honest bit — is the project's tracked path to a decoder that is right 80% of the time.
+
 ## Reading a LOSO sweep honestly (`zte-loso-summary`)
 
 In a leave-one-subject-out sweep, a single fold's `sentence_retrieval.top1` is **pooled** over all subjects — every reading queries against every other, and most positives are the same sentence read by one of the 11 subjects the model *trained on*. That number is dominated by in-sample subjects and reads far higher than the model's generalisation. The honest metric is `scoreboard.held_out_retrieval`: retrieval among the never-seen subject's own readings alone.
+
+Three properties keep that block readable on its own:
+
+- **Unanswerable queries are excluded and counted, never zero-scored.** A held-out reading whose stimulus no other subject read — or, in a length-stratified cell, whose truth cannot appear beside a distractor — is dropped from every statistic and tallied in `excluded_no_positive`. Zero-scoring such queries manufactures a below-chance rank percentile out of pure construction: forced zeros over an at-chance remainder. Every retrieval block in the scoreboard (`held_out_retrieval`, `decoder_rescoring_retrieval`, `within_task_retrieval` and their `length_stratified` cells) follows this convention.
+- **Length strata use one unit on both sides: the stimulus-level median word count.** ZuCo word counts come from eye-tracking segmentation, so two readings of the same stimulus can differ by skipped words. A stratum keyed on a reading's own count can then exclude the very truth a median-keyed gallery retains, which silently converts a stratum-construction mismatch into misses. Queries therefore stratify on their stimulus's median (falling back to the reading's count only for a stimulus the gallery does not carry).
+- **Provenance travels inside the block.** `postprocess_fit` (`none` / `train split` / `transductive`), `alignment_fit` (`config.dataset.raw_align_fit`) and `embedding_checksum` — a short sha256 of the exact sentence-embedding matrix the block measured — are stamped into `held_out_retrieval` itself, so the number can never be quoted apart from what was fitted on what, and two arms that silently re-measured the same embeddings show the same checksum.
 
 `zte-loso-summary --experiments res/experiments/loso` reads every fold and reports the honest trend — held-out retrieval lift over chance (mean ± std), how many folds beat chance, the anchor-calibration lift, and a **converged/collapsed** split (folds whose pooled retrieval never rose above 0.01 never learned a subject-invariant code). `scripts/run_loso.sh` writes this `LOSO_SUMMARY.md` automatically, and its `SEEDS="42 43 44"` option repeats each fold at several seeds so the summary can separate a genuinely hard subject from an unlucky run. Quote the held-out number for LOSO, never the pooled `sentence Top-1` in `INDEX.md`.
 
@@ -306,6 +357,7 @@ The self-supervised objective sweep (`skipgram,cbow,masked,cpc`) is now a **cont
 | `zte.training.metrics.noise_matched`           | the Gaussian control a real encoder must beat        |
 
 [ARCHITECTURE.md]: ./ARCHITECTURE.md
+[DECODER.md]: ./DECODER.md
 [RESULTS.md]: ./RESULTS.md
 [TRAINING.md]: ./TRAINING.md
 

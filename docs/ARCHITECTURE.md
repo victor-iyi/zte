@@ -252,6 +252,8 @@ $$
 | `models/encoder/consensus.py`      | `ConsensusBank`, `ConsensusDistiller` — the cross-reader prototype teacher              |
 | `models/encoder/gallery.py`        | `GalleryContrast` — the full-gallery, length-matched InfoNCE denominator                |
 | `models/encoder/nuisance.py`       | `LengthProjector` — train-fitted removal of the sentence-length subspace                |
+| `utils/session.py`                 | `DriveSession`, `discover_runs`, `find_checkpoint` — the dated Drive layout             |
+| `cli/colab.py`                     | `zte-colab` — every notebook capability as one JSON object on stdout                    |
 
 The lexical projection is the seam between the two halves: the **encoder** trains it contrastively
 (`objective.lexical_weight`), the checkpoint carries it under `lexical.head.*`, and the **decoder** restores it
@@ -264,3 +266,13 @@ the residual coder runs inside `ZTEModel.token_hidden` and so travels in the che
 the objective and is never consulted at inference, and the gallery denominator exists only inside the loss. The
 fourth, `LengthProjector`, is evaluation post-processing and sits beside `whiten` and `all_but_top` in
 `evaluation/report.py`, carrying the same `postprocess_fit` provenance discipline.
+
+`cli/colab.py` is the seam in the other direction. Colab opens a notebook with an interpreter older than the
+`>=3.14` this package requires, so the kernel cannot import `zte` at all. Rather than keep a second, untested copy
+of the search order and the verdict arithmetic inside notebook cells, every capability the notebook needs is a
+`zte-colab` subcommand printing one JSON object on stdout with its logs on stderr, and the kernel only renders it.
+The shared pieces it reaches through are ordinary library functions with their own tests --- `utils/session.py` for
+the Drive layout, `utils/mirror.py` for what a backup deliberately leaves behind, `utils/env.py` for the environment
+a run wants, `device.device_plan` for what the machine will actually do, `analysis/dashboard.panel_builders` for the
+chart list the page and the notebook share, and `interactive/generation.generation_payload` for the five-clause
+generation gate. See [`RUNNING.md`](RUNNING.md).

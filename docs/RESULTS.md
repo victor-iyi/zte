@@ -82,11 +82,55 @@ needs. And **the decoder's rescoring contribution is entirely length**: rank per
 0.4349 once sentence length is held constant, which is *below* the 0.5 chance line. The prefix does influence the
 output (KL 0.4166 clears the floor), so the mechanism is wired; what it carries is word count.
 
+## The v2 decoder on real ZuCo (`decode_zte_v2_loZAB_s42`, 2026-08-15, over the v3 encoder)
+
+| measurement | value |
+| --- | --- |
+| Held-out retrieval rank percentile | 0.9359 (0.9295–0.9419), 5 hits / 700 |
+| Honest cell (train-fitted, length-stratified) | 0.8775 (0.8695–0.8855) vs length-oracle 0.9525 — `clears_floor: False` |
+| Decoder-rescoring rank percentile | 0.6234 (0.5737–0.6736), 105 queries |
+| Decoder-rescoring, **length-stratified** | 0.4325 (0.3767–0.4916) |
+| Free-running generation | verdict **False** — beats 1 of 7 controls; `mean_prefix` beats the model; permutation *p* = 0.19 |
+| Prefix-influence KL | 1.9943 nats (floor 0.05) |
+| Encoder bit budget | 0.639 bits carried, 9.45 needed, 5.14 free from length |
+
+The stratified-rescoring cells in both decoder tables were produced under a convention that hard-scored a query as
+percentile 0.0 whenever its truth fell outside its own ±1-word stratum; that convention has been retired in the
+audit code (unanswerable queries are now excluded and counted), and the cell is expected to move toward chance —
+an honest null, not an anti-signal — when re-scored. Until that re-score lands, read these two rows as "the
+rescoring adds nothing beyond length", not as "the LM anti-ranks the truth".
+
+## The exp16 sweep on real ZuCo (2026-08-15, held out on `ZAB`, 700 queries)
+
+| arm | held-out Top-1 | eff-rank ratio |
+| --- | --- | --- |
+| `zte_encoder_v3` s42 / s43 / s44 | 0.010 / 0.021 / 0.029 | 0.078 / 0.060 / 0.094 |
+| `exp16_residual_off` s42 | **0.0371** | **0.289** |
+| `exp16_gallery_off` s42 | 0.030 | 0.088 |
+| `exp16_gallery_band_off` s42 | 0.027 | 0.098 |
+| `exp16_consensus_off` s42 | 0.0057 | 0.071 |
+| `exp16_length_projection_off` s42 | 0.0086 | 0.077 |
+
+The sweep falsified two of the four v3 mechanisms. **The predictive residual is the collapse**: its expectation head
+learns to subtract every within-sentence-predictable component of the token hiddens — which is exactly the
+per-sentence-constant code retrieval scores — and it runs at inference with training-subject statistics; turning it
+off nearly quadruples held-out Top-1 and more than triples effective rank. **The gallery CE hurts too**: a
+single-positive classification onto frozen train-text anchors rewards any route to the anchor, subject-specific
+features included, and buys pooled Top-1 at the expense of the cross-subject consistency the honest metric measures.
+Consensus is the one mechanism whose removal hurts (0.0057), and the length projection is measurement-neutral.
+The run's own length audit (`decode_zte_v2_loZAB_s42`): the encoder carries **0.639 bits** of sentence identity
+against 9.45 needed; the honest cell (train-fitted, length-stratified) rank percentile is 0.8775 (0.8695–0.8855)
+versus the ±1 length oracle's 0.9525 — `clears_floor: False`. The variance budget of the v3 space reads 41.1%
+subject, 35.7% task, ~0% content — the encoder *amplifies* the task register (probe 0.918 vs 0.685 raw).
+
+The repair family is `ablation/exp17_*` (residual off + gallery off as the base, then sentence-slice VICReg,
+task-pure negatives, and the deployable alignment fit as matched pairs). The best-measured encoder arm today is
+`exp16_residual_off` at one seed; seeds 43/44 are the first item on the run matrix.
+
 ## Not yet measured
 
-`flagship/zte_encoder_v3` (exp16) and its five matched ablations exist as configs and pass the synthetic smoke path.
-**No number from them appears anywhere in this document**, because none has been produced on real ZuCo. They sit in
-`flagship/` as the best-designed recipe, not the best-measured one; `zte_raw_aligned` still holds that title.
+`flagship/zte_lexical_raw` (exp14) remains unmeasured on real ZuCo, and the `exp17_*` repair family exists as
+configs only. **No number from them appears anywhere in this document.**
 
 ## Synthetic smoke-runs
 

@@ -1,5 +1,133 @@
 # Changelog
 
+## The parallax study: three per-task encoders and the cross-task transfer matrix
+
+ZuCo's task is fully confounded with its stimulus set (Cramér V 0.998; no sentence appears under two tasks), and the
+measured encoder amplifies the task probe (0.918 against 0.685 raw) — a cross-task contrastive run can win on register.
+`src/zte/parallax/` (`study`, `transfer`, `report`, `chamber`) removes the confound structurally: three independent
+encoders, one per task, each trained only on its own task's readings with the best-measured recipe
+(`experiments/parallax/parallax_{nr,sr,tsr}.yaml`, byte-identical to `ablation/exp17_base.yaml` except `dataset.tasks`
+and `run_name`). The prize is the 3×3 transfer matrix: an off-diagonal cell scores a never-seen subject (`ZAB` held
+out) reading never-seen stimuli — the strongest generalization cell this project can produce, where a null is a
+finding and is reported plainly. `zte-parallax transfer` writes one cell (`transfer.json` + embeddings — stratified
+rank percentile with bootstrap CI, the menu-capacity audit, exclusion counts, `postprocess_fit: 'non-holdout
+subjects, eval task'`, full provenance); `report` aggregates cells into `PARALLAX.json` / `PARALLAX.md` /
+`CHAMBER_DATA.json`, including linear CKA between model pairs on shared readings; `chamber` renders the chamber page —
+the three models' PCA-and-Procrustes-aligned views of the same sentences — from the report data and computes nothing.
+Free generation is not a parallax deliverable, per-task galleries make chance differ per cell, and no claim enters
+`docs/RESULTS.md` without directional consistency across seeds (42/43/44, optionally 45/46). Driven from
+`notebooks/zte_parallax.ipynb`; design and artifacts: `docs/PARALLAX.md`.
+
+## De-confounded objective knobs
+
+Two new objective levers, both defaulting off so every existing run stays byte-identical. `within_task_negatives`
+makes every sentence-level contrastive denominator task-pure — the CLIP in-batch InfoNCE, the gallery CE (whose
+sparse-row fallback becomes drop-the-anchor rather than widen-to-full-gallery), the consensus prototype gallery and
+the decoder grounding negatives — because task and stimulus are fully confounded on ZuCo (Cramér V 0.998) and a
+cross-task distractor can be rejected on register alone; per-text task labels are joined from ids, never parsed
+from vocabulary keys, and a text under two tasks is a loud error. `sentence_variance_weight` /
+`sentence_covariance_weight` apply the VICReg variance and covariance terms to the content slice of the pooled
+sentence embedding — the tensor retrieval actually scores, which no anti-collapse term previously guarded. The
+`exp17_*` ablation family exercises both. Also: a loud warning when the data2vec auxiliary head is silently
+disabled on a raw frontend.
+
+## Evaluation-integrity repairs: exclusion, length units, provenance, verdict basis
+
+Four repairs make the honest numbers legible on their own. (1) The scoreboard's retrieval blocks
+(`held_out_retrieval`, `decoder_rescoring_retrieval`, `within_task_retrieval` and their `length_stratified` cells)
+now **exclude and count** unanswerable queries in `excluded_no_positive` instead of zero-scoring them — forced zeros
+over an at-chance remainder read as below chance by construction, which is an artifact, not a measurement. (2) Length
+strata use **one unit on both sides**: queries stratify on their stimulus's median word count (the gallery's unit)
+rather than the reading's own eye-tracking count, so a reading that skipped words can no longer lose its own truth to
+the stratum (`stimulus_median_lengths`, `_lengths_in_gallery_units`). (3) **Provenance travels inside
+`held_out_retrieval`**: `postprocess_fit`, `alignment_fit` (`dataset.raw_align_fit`) and `embedding_checksum` — a
+short sha256 of the exact sentence-embedding matrix the block measured — are stamped into the block itself. (4) The
+machine verdict's `retrieval_above_chance` is now judged on `scoreboard.held_out_retrieval` whenever the split holds
+a subject out, with `verdict['retrieval_basis']` naming the basis; the pooled `sentence_retrieval` — which scores
+the training subjects' brains alongside the stranger's — can no longer turn the clause green on a LOSO run. The CI
+and permutation/phase-control demotion structure is unchanged. `tests/test_eval_integrity.py` pins each behaviour,
+mutation-tested.
+
+## Stage-comparable best-checkpoint monitor
+
+In `joint` decoder training the auxiliaries that enter the loss when the encoder unfreezes jump the monitored
+validation scalar at the stage A→B boundary; a lifetime best-value comparison therefore locked `best.pt` into a
+stage-A epoch whose encoder weights were bit-for-bit the loaded checkpoint, and early-stop patience killed the run a
+few epochs into stage B — the joint arm was measuring its own frozen input. The trainer now forgets the best value
+and zeroes patience at every stage transition, checkpoints record the stage that produced them (older payloads load
+unchanged), and a `decoder`-mode run with `freeze_encoder: false` is refused loudly. The auxiliaries are untouched.
+
+## PMI gallery rescoring
+
+`decoder.rescore_pmi` (default off; existing runs byte-identical) turns decoder-rescoring retrieval into a PMI
+score: each candidate's per-token-mean log-likelihood under the query's prefix, minus the same quantity under the
+learned null prefix. Every trainable decoder part — the Stage-0 bridge, the train-fitted gap correction, the RVQ
+codebooks, the grounding loss — is fitted on train-cell reference texts only, so a train-cell gallery candidate
+collects a familiarity bonus the held-out truth cannot receive; the subtraction cancels any candidate-side
+constant. The null pass reuses the unconditional branch `null_prefix_prob` already trains, carries no
+word-synchronous evidence, and being query-independent runs once per gallery under the `rescore_chunk` memory
+bound (`ZTEDecoder.null_rescore` exposes it). With the knob on, the rescoring block records `score: 'pmi'` and a
+`pmi_vs_raw` entry — per-query rank percentiles under both scores and the paired delta (PMI minus raw) with a
+percentile-bootstrap CI — so the correction's effect is itself measured. `tests/test_pmi_rescoring.py` plants a
+per-candidate familiarity bonus in a stub LM and verifies the raw ranking is distorted while PMI recovers it, with
+the subtraction mutation-tested.
+
+## Menu capacity: the honest 80% readout
+
+`zte-rebaseline` now ends with the constructive twin of its length audit: **K-way closed-set accuracy** over
+training-subject sentence prototypes, swept over K ∈ {2, 4, 8, 16, 32, 64}. The headline flavour is
+**length_task_matched**: distractors share the query's task and its *exact* stimulus-level median word count —
+exact matching is load-bearing, because at tolerance ±1 the true candidate is systematically the unique best length
+match in its own stratum and a pure length code beats chance. Widened tolerances appear only as labelled
+`sensitivity` rows no verdict may read; an `open` pool (length legitimately allowed, as in deployment) is reported
+beside it. Each accuracy is an exact hypergeometric expectation with chance exactly 1/K, ties counted as losses,
+bootstrap CIs throughout, post-processing train-fitted only. Three guards ride inside the block: a per-K
+**permutation p** (true label reassigned within the candidate set), a built-in **length-oracle null** that stamps
+`gamed: true` if word count alone escapes chance inside a certified pool, and **exclude-and-count** for queries that
+cannot field a pool (the zero-scoring convention that once manufactured a below-chance stratified rescoring number
+is retired across the audit). The headline is the **certified capacity**: the largest K with CI lower bound ≥ 0.80
+and permutation p < 0.05. This turns "the decoder is right 80% of the time" into a pre-registered, confound-guarded
+number — the clinical menu size the system can currently serve — and the tracked goal becomes growing it.
+`zte.evaluation.audit.menu`, reported in `rebaseline.md`/`rebaseline.json` under `menu`.
+
+## `zte-colab`: the notebook stops importing the package
+
+Colab opens a notebook with its own interpreter, which is older than the `>=3.14` this package requires, so
+`import zte` in a cell has never actually been safe. The notebooks did it anyway --- and each import dragged a second
+copy of real logic into cells nothing tests: their own run-search order, their own checkpoint resolution, their own
+`shutil.ignore_patterns` list deciding what a Drive backup leaves behind, their own re-derivation of a decode's
+scores. A notebook cell is the worst place for any of that, because it is the one place a wrong answer is read as a
+result.
+
+**`zte-colab` is now the only route in.** Seven subcommands, one question each, every one printing a single JSON
+object on stdout with its logs routed to stderr so the stream parses whole: `env` (interpreter, accelerator, device
+plan, machine limits), `session` (the dated Drive layout and the environment it exports), `runs` (every run on Drive
+and locally, with its checkpoints and its held-out headline), `arms` (the trainable configs, read live off
+`experiments/` and labelled by their own header comments), `readings` (one decode's scored readings beside the gate
+that judged them), `panels` (the study's charts as plotly figure JSON), and `mirror` (a session between the VM and
+Drive). The kernel renders payloads and computes nothing.
+
+The pieces they reach through are ordinary library functions, tested like everything else: `utils/session.py` for the
+Drive layout and the run search, `device.device_plan` for what the machine will actually do with a batch,
+`utils/env.env_defaults` for the environment a run wants --- returned as *data*, because a notebook's `!` subprocesses
+inherit the kernel's environment and the kernel is where those defaults have to land --- `utils/mirror.mirror_tree`
+now taking `exclude_files`, so the rotation checkpoints a fresh VM cannot use stay off Drive while `last.pt` always
+travels, and `analysis/dashboard.panel_builders`, which the offline page and the notebook now share so the notebook
+cannot draw a chart the page does not.
+
+**Two changes are about honesty rather than plumbing.** `zte-colab readings` reads what `zte-decode --out` wrote
+instead of decoding a sample of its own: the old cell re-ran `generate()` over twelve readings and tabulated the
+result beside a verdict computed from a different, larger set, which is a number the gate never saw. And
+`interactive/generation.generation_payload` --- the five-clause AND, promoted from a private helper --- now travels
+with every rendering of a generation block, so a control that could not run still **fails** its clause wherever the
+block is read. `zte-decode` records `min_prefix_kl` in its provenance for the same reason: the floor is recoverable
+from nowhere else in the artifacts, and a clause that cannot be evaluated reads exactly like a clause that passed.
+
+`tests/test_notebook_gateway.py` holds the boundary: no code cell imports `zte`, no `%%bash` cell runs an interpreter
+it may not have provisioned yet, every `zte-*` command the notebooks name is a declared entry point, and every
+`experiments/*.yaml` path they name exists on disk --- so a promoted config that moves tier breaks a test rather than
+the front door.
+
 ## The encoder, rebuilt: four mechanisms after the levers ran out
 
 Thirteen arms on 2026-07-25 flipped Euclidean alignment, the subject adapter, identity orthogonality, the text

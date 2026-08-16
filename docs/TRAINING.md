@@ -199,6 +199,15 @@ group against its own `initial_lr`.
 `train.early_stop_patience` (0 disables) stops after that many epochs without an improvement in the monitored metric,
 and the counter survives a resume. Every real run on record bottoms out its validation loss at epoch 5–6 of 40.
 
+**The best-checkpoint monitor is stage-comparable.** In `joint` mode the auxiliaries that enter the loss when the
+encoder unfreezes jump the monitored validation scalar by several units at the A→B boundary, so a lifetime
+best-value comparison would lock `best.pt` into stage A and let patience kill the run before stage B was ever
+measured. The trainer therefore forgets the best value and zeroes the patience counter at every stage transition,
+and each checkpoint payload records the stage that produced it, so a resume re-detects the boundary. Values are
+compared only within a stage; the auxiliaries themselves are never rescaled to flatter the monitor. A `decoder`-mode
+run with `freeze_encoder: false` is refused loudly — that combination trains the encoder from epoch 1 while claiming
+it is frozen; `joint` is the mode that means that.
+
 Full method: [DECODER.md](DECODER.md).
 
 ## What a run produces

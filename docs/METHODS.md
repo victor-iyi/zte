@@ -64,9 +64,21 @@ $$
 M_{ij} \;=\; \big(\text{subject}_i = \text{subject}_j \;\wedge\; \text{task}_i = \text{task}_j\big) \;\vee\; \text{pos}_{ij}.
 $$
 
-**Config:** `objective.hard_negatives`, `hard_negative_keys`.
+**Sentence level.** `objective.within_task_negatives` extends the same discipline to every sentence-level
+contrastive denominator — the CLIP in-batch InfoNCE, the gallery CE (whose sparse-row fallback becomes
+drop-the-anchor rather than widen-to-full-gallery), the consensus prototype gallery and the decoder grounding
+negatives. Under $V \approx 0.99$ a cross-task distractor can be rejected on register alone, which is how an encoder
+comes to *amplify* the task probe (0.918 measured, against 0.685 for raw features); a task-pure denominator leaves
+content as the only discriminative signal. Per-text task labels are joined from `(sentence_text_id, task_id)` pairs,
+never parsed from vocabulary keys, and a text appearing under two tasks is a loud error. Off by default. Expect the
+full-gallery Top-1 to *fall* when this is on — losing the task subsidy is the success mode, and the within-task,
+length-matched delta is the number that judges it.
 
-**Code:** `objectives.py::SkipGramObjective`.
+**Config:** `objective.hard_negatives`, `hard_negative_keys` (skip-gram); `objective.within_task_negatives`
+(sentence level).
+
+**Code:** `objectives.py::SkipGramObjective`; `clip.py`, `encoder/gallery.py`, `encoder/consensus.py`,
+`objectives/decode.py` for the sentence-level masks.
 
 ## 4. Riemannian Subject Alignment
 
@@ -235,6 +247,15 @@ out (2026-08-13) and the thirteen-arm sweep of 2026-07-25:
 
 The last row is the one that matters for design: run-to-run noise was the size of every effect, so the exposed levers
 are exhausted. Every mechanism below defaults to off and has a matched ablation that flips exactly one field.
+
+**Measured on real ZuCo (2026-08-15, `ZAB` held out): two of the four are falsified.** `exp16_residual_off` scores
+held-out Top-1 0.0371 against 0.010 with the residual on (effective-rank ratio 0.289 vs 0.078), and `gallery_off`
+scores 0.030 — both mechanisms *hurt* the honest metric while buying the pooled one. The training telemetry shows
+the failure mechanism directly: the expectation head ends training predicting 99.2% of the token hiddens' variance
+(`residual_context_explained` 0.9918), so the per-sentence-constant code that pooling extracts is subtracted before
+it can be scored, while the token-level VICReg terms sit satisfied (0.984) on a tensor no retrieval reads. Consensus
+is the one mechanism whose removal hurts (0.0057), and the length projection is measurement-neutral. The repair
+levers are §14 and the sentence-level `within_task_negatives` (§3), combined in the `exp17_*` family.
 
 ## 9. Predictive Residual Coding
 

@@ -239,6 +239,14 @@ CI — directly comparable to `scoreboard.cross_subject_holdout_retrieval` (the 
 
 This is ~9.5 bits of forced choice at 700 queries, against a generation delta at $n = 105$. It is the readout most likely to carry a real, honest improvement — and it is **retrieval**, labelled as retrieval everywhere it appears.
 
+`decoder.rescore_pmi` (default off) replaces the score handed downstream with a PMI score, per-token means under the query's prefix and under the learned null prefix:
+
+$$
+s(q, c) \;=\; \tfrac{1}{|c|}\log p(c \mid P_q) \;-\; \tfrac{1}{|c|}\log p(c \mid P_\text{null})
+$$
+
+Every trainable part of the decoder — the Stage-0 bridge, the train-fitted gap correction, the RVQ codebooks, the grounding loss — is fitted on train-cell reference texts only, so a train-cell gallery candidate collects a familiarity bonus the held-out truth cannot receive; the subtraction cancels any candidate-side constant, familiarity and fluency alike, and leaves only what the query's prefix added. The unconditional branch is the one `null_prefix_prob` already trains. Its gallery pass is query-independent — no word-synchronous evidence, one pass per gallery under the same `rescore_chunk` memory bound — and with the knob on, `rescoring['score'] = 'pmi'` marks the block while `rescoring['pmi_vs_raw']` carries the paired per-query comparison: rank percentiles under both scores and the delta (PMI minus raw) with a percentile-bootstrap CI, so the correction's effect is itself a measured number.
+
 ### Secondary (expected-null) readout — free-running generation
 
 `ZTEDecoder.generate` only: BOS, feed back the model's own greedy tokens, stop at EOS or `max_new_tokens`, **no reference length, no candidate set**. Stopping is a trained behaviour, not a free one: every reference that fits inside `max_target_tokens` ends in a supervised EOS inside the loss mask, on the HuggingFace path as well as the offline `tiny` one. Without that the bridge has no gradient toward stopping and every hypothesis runs the full 96 tokens against a 19.6-word reference, which makes WER exceed 1 by construction and collapses every precision-based metric. `cfg_weight` is asserted `== 1.0` and `beams` is asserted `== 1`, so the headline decode and every control run byte-identical code; guidance and beam search are both refused precisely so that no control branch can become a second code path, and at this signal level beam search raises the language prior rather than the brain signal. The loop lives in `FrozenLM.generate_from_prefix` rather than in `transformers.generate`, because the evidence nudge has to reach the output state at every step and no generation hook exposes it. `generation.json` records `teacher_forced: false` and `decode_strategy: greedy` so the contract travels in the artifact. A decode constrained to a candidate set is retrieval and is reported as retrieval, never as generation — `NearestNeighborIndex.decode` is exactly that in disguise, and `n_candidate_sentences` is recorded on every block so the distinction is machine-checkable rather than a matter of wording.
@@ -321,6 +329,7 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 | `decoder.ground_hard_length`                                              | Draw the grounding negatives from references of a similar word count.                             |
 | `decoder.within_task_pools`                                               | Tasks whose candidate pool is also reported alone (`SR`, `NR`).                                   |
 | `decoder.rescore_chunk`                                                   | Candidate rows per frozen-LM forward pass; bounds memory, not work.                               |
+| `decoder.rescore_pmi`                                                     | Subtract each candidate's null-prefix log-likelihood, cancelling candidate-side familiarity bias. |
 | `decoder.eval_seeds`                                                      | Extra decode seeds for a mean ± sd headline on the control comparison.                            |
 | `decoder.prefix_slots` / `word_slots` / `bottleneck`                      | Bridge geometry: $k$, the resampler's slots, and $r$.                                             |
 | `decoder.gap_correction`                                                  | `none` \| `mean_scale` \| `whiten`. Fitted on the train split only.                               |
