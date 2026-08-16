@@ -89,9 +89,13 @@ class CheckpointManager:
         self.keep_last = keep_last
         self.drive_backup_dir = drive_backup_dir
         self.higher_is_better = higher_is_better
-        self.best_metric = float('-inf') if higher_is_better else float('inf')
+        self.reset_best()
         self._last_paths: list[Path] = []
         self.mirror_failures = 0
+
+    def reset_best(self) -> None:
+        """Forgets the best metric, so the next monitored save starts a fresh comparison window."""
+        self.best_metric = float('-inf') if self.higher_is_better else float('inf')
 
     def is_improvement(self, metric: float) -> bool:
         """Returns whether `metric` improves on the best seen so far.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -245,7 +246,8 @@ def cross_subject_holdout_retrieval(
         ks (tuple[int, ...]): Top-K cut-offs.
 
     Returns:
-        dict | None: `top{k}`, `mrr`, `chance_top1`, `n_queries`, `lift_top1` (top1 - chance),
+        dict | None: `top{k}`, `mrr`, `chance_top1`, `n_queries`, `excluded_no_positive`,
+            `lift_top1` (top1 - chance) and a per-query `top1_hits` vector for the verdict's CI,
             or `None` when the run has too few subjects/queries to be meaningful.
     """
     subjects = np.asarray(subjects)
@@ -262,36 +264,37 @@ def cross_subject_holdout_retrieval(
     sims = emb @ emb.T  # cosine, (n, n)
 
     q_idx = np.where(q_mask)[0]
-    out = {f'top{k}': 0.0 for k in ks}
+    out: dict[str, Any] = {f'top{k}': 0.0 for k in ks}
     rr = 0.0
     chances = []
     percentiles: list[float] = []  # rank-percentile per query (1.0 = correct match ranked first)
-    n_scored = 0
+    top1_hits: list[float] = []  # per-query Top-1 hits, feeding the verdict's held-out CI
+    excluded = 0
 
     for i in q_idx:
         cross = subjects != subjects[i]  # gallery: other people only
         if not cross.any():
+            excluded += 1
             continue
 
         cand = np.where(cross)[0]
         order = cand[np.argsort(-sims[i, cand])]
         same = content_ids[order] == content_ids[i]
+        # Truth absent from the cross-subject gallery: excluded and counted, never zero-scored into an artifact.
         if not same.any():
-            # Still counts as a query (a miss); chance uses this query's gallery.
-            chances.append(float((content_ids[cand] == content_ids[i]).mean()))
-            percentiles.append(0.0)
-            n_scored += 1
+            excluded += 1
             continue
 
         for k in ks:
             out[f'top{k}'] += float(same[:k].any())
 
+        top1_hits.append(float(same[:1].any()))
         rr += 1.0 / (np.argmax(same) + 1)
         rank = int(np.argmax(same)) + 1
         percentiles.append(1.0 - (rank - 1) / max(len(order) - 1, 1))
         chances.append(float((content_ids[cand] == content_ids[i]).mean()))
-        n_scored += 1
 
+    n_scored = len(percentiles)
     if n_scored == 0:
         return None
 
@@ -302,6 +305,8 @@ def cross_subject_holdout_retrieval(
     out['chance_top1'] = float(np.mean(chances)) if chances else float('nan')
     out['rank_percentile'] = float(np.mean(percentiles)) if percentiles else float('nan')
     out['n_queries'] = int(n_scored)
+    out['excluded_no_positive'] = int(excluded)
+    out['top1_hits'] = top1_hits
     out['lift_top1'] = _sub(out['top1'], out['chance_top1'])
 
     # Top-1 on ~700 queries at 1/700 chance expects ONE hit, so rates there are unreadable: report an exact tail
@@ -340,16 +345,17 @@ def decoder_rescoring_retrieval(
         gallery_content_ids (np.ndarray): Stimulus id of each gallery sentence `(n_gallery,)`.
         subjects (np.ndarray | None, optional): Subject code per query, for filtering to `holdout`.
         holdout (str | None, optional): Keep only this subject's queries. Requires `subjects`.
-        query_n_words (np.ndarray | None, optional): Word count per query, for the stratified gallery.
-        gallery_n_words (np.ndarray | None, optional): Word count per gallery sentence.
+        query_n_words (np.ndarray | None, optional): Word count per query reading, used only for a query whose
+            stimulus is absent from the gallery; queries otherwise stratify on their stimulus's gallery length.
+        gallery_n_words (np.ndarray | None, optional): Word count per gallery sentence (stimulus-level medians).
         length_tol (int, optional): Word-count tolerance for the stratified gallery. Defaults to 1.
         ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
         seed (int, optional): Bootstrap seed. Defaults to 0.
 
     Returns:
         dict | None: `top{k}`, `top{k}_p`, `mrr`, `rank_percentile`, `rank_percentile_ci`, `mean_rank`,
-            `chance_top1`, `n_queries`, `n_gallery`, `headline_metric`, and a `length_stratified`
-            sub-block when both word-count arrays are given; `None` when nothing is scoreable.
+            `chance_top1`, `n_queries`, `excluded_no_positive`, `n_gallery`, `headline_metric`, and a
+            `length_stratified` sub-block when both word-count arrays are given; `None` when nothing is scoreable.
     """
     mat = np.asarray(scores, dtype=np.float64)
     q_ids = np.asarray(query_content_ids)
@@ -370,17 +376,20 @@ def decoder_rescoring_retrieval(
     if out is None:
         return None
     if query_n_words is not None and gallery_n_words is not None:
-        out['length_stratified'] = _rescore_cell(
-            mat,
-            q_ids,
-            g_ids,
-            np.asarray(query_n_words, dtype=np.float64),
-            np.asarray(gallery_n_words, dtype=np.float64),
-            length_tol,
-            ks,
-            seed,
-        )
+        g_words = np.asarray(gallery_n_words, dtype=np.float64)
+        # One unit on both sides: queries stratify on their stimulus's gallery median, not the reading's own count.
+        q_words = _lengths_in_gallery_units(q_ids, g_ids, g_words, np.asarray(query_n_words, dtype=np.float64))
+        out['length_stratified'] = _rescore_cell(mat, q_ids, g_ids, q_words, g_words, length_tol, ks, seed)
     return out
+
+
+def _lengths_in_gallery_units(
+    q_ids: np.ndarray, g_ids: np.ndarray, g_words: np.ndarray, fallback: np.ndarray
+) -> np.ndarray:
+    """Per-query lengths in the gallery's unit: each query's own stimulus entry, else the reading's count."""
+    lookup = {g: float(w) for g, w in zip(g_ids.tolist(), g_words.tolist())}
+
+    return np.array([lookup.get(q, float(f)) for q, f in zip(q_ids.tolist(), fallback.tolist())], dtype=np.float64)
 
 
 def _rescore_cell(
@@ -400,21 +409,20 @@ def _rescore_cell(
     ranks: list[float] = []
     chances: list[float] = []
     galleries: list[float] = []
+    excluded = 0
 
     for i in range(len(scores)):
         cand = np.arange(len(g_ids))
         if q_words is not None and g_words is not None:
             cand = cand[np.abs(g_words - q_words[i]) <= length_tol]
-        if cand.size < 2:
+        # An unanswerable query (truth absent, or no distractor) is excluded and counted, never zero-scored.
+        if cand.size < 2 or not (g_ids[cand] == q_ids[i]).any():
+            excluded += 1
             continue
         galleries.append(float(cand.size))
         chances.append(float((g_ids[cand] == q_ids[i]).mean()))
         order = cand[np.argsort(-scores[i, cand])]
         same = g_ids[order] == q_ids[i]
-        if not same.any():
-            percentiles.append(0.0)
-            ranks.append(float(cand.size))
-            continue
         for k in ks:
             hits[k] += float(same[:k].any())
         rank = int(np.argmax(same)) + 1
@@ -434,6 +442,7 @@ def _rescore_cell(
     out['median_rank'] = float(np.median(ranks))
     out['mean_gallery'] = float(np.mean(galleries))
     out['n_queries'] = int(n_scored)
+    out['excluded_no_positive'] = int(excluded)
     out['n_gallery'] = int(len(g_ids))
     out['length_tol'] = None if q_words is None else int(length_tol)
     for k in ks:
@@ -499,12 +508,17 @@ def within_task_retrieval(
         cell['n_candidates'] = int(cols.size)
         cell['pool'] = 'within_task'
         if q_words is not None and gallery_n_words is not None:
+            pool_g_words = np.asarray(gallery_n_words, dtype=np.float64)[cols]
+            # One unit on both sides: queries stratify on their stimulus's gallery median, not the reading's count.
+            pool_q_words = _lengths_in_gallery_units(
+                q_ids[rows], cols, pool_g_words, np.asarray(q_words, dtype=np.float64)[rows]
+            )
             cell['length_stratified'] = _rescore_cell(
                 mat[np.ix_(rows, cols)],
                 q_ids[rows],
                 cols,
-                np.asarray(q_words, dtype=np.float64)[rows],
-                np.asarray(gallery_n_words, dtype=np.float64)[cols],
+                pool_q_words,
+                pool_g_words,
                 length_tol,
                 ks,
                 seed,
@@ -568,6 +582,45 @@ def held_out_generation(block: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def stimulus_median_lengths(n_words: np.ndarray, content_ids: np.ndarray) -> np.ndarray:
+    """Replaces each reading's word count with the median over every reading of its stimulus.
+
+    Eye-tracking segmentation lets two readings of one stimulus differ in word count, so a stratum keyed on a
+    reading's own count can drop the truth that a median-keyed gallery retains; one unit on both sides removes that.
+
+    Args:
+        n_words (np.ndarray): Word count per reading `(n,)`.
+        content_ids (np.ndarray): Stimulus id per reading `(n,)`.
+
+    Returns:
+        np.ndarray: Stimulus-level median word count per reading `(n,)`.
+    """
+    lengths = np.asarray(n_words, dtype=np.float64).ravel()
+    ids = np.asarray(content_ids).ravel()
+
+    out = lengths.copy()
+    for value in np.unique(ids):
+        mask = ids == value
+        out[mask] = float(np.median(lengths[mask]))
+    return out
+
+
+def embedding_checksum(emb: np.ndarray) -> str:
+    """Short sha256 of an embedding matrix, so two arms measuring byte-identical embeddings are visibly the same.
+
+    Args:
+        emb (np.ndarray): Embedding matrix `(n, d)`.
+
+    Returns:
+        str: First 16 hex digits of the sha256 over the float32 bytes and the shape.
+    """
+    arr = np.ascontiguousarray(np.asarray(emb, dtype=np.float32))
+    digest = hashlib.sha256(repr(arr.shape).encode())
+    digest.update(arr.tobytes())
+
+    return digest.hexdigest()[:16]
+
+
 def _binom_tail_p(hits: int, n: int, p_chance: float) -> float:
     """Exact probability of `hits` or more successes in `n` Bernoulli trials at rate `p_chance`."""
     if n <= 0 or not np.isfinite(p_chance) or p_chance <= 0.0 or hits <= 0:
@@ -612,6 +665,7 @@ def build_scoreboard(
     generation: dict[str, Any] | None = None,
     rescoring: dict[str, Any] | None = None,
     length_tol: int = 1,
+    postprocess_fit: str | None = None,
 ) -> dict[str, Any]:
     """Assembles the honest scoreboard from already-computed evaluation artefacts.
 
@@ -631,6 +685,8 @@ def build_scoreboard(
         generation (dict[str, Any] | None, optional): A `generation.generation_report` block.
         rescoring (dict[str, Any] | None, optional): A `decoder_rescoring_retrieval` block.
         length_tol (int, optional): Word-count tolerance for the stratified gallery. Defaults to 1.
+        postprocess_fit (str | None, optional): What the retrieval geometry was fitted on (`none` /
+            `train split` / `transductive`), stamped inside `held_out_retrieval` so it travels with the number.
 
     Returns:
         dict[str, Any]: The scoreboard, with a `held_out_*` block per readout that was supplied.
@@ -670,9 +726,18 @@ def build_scoreboard(
             # A hit inside a matched-length gallery cannot be a sentence-length shortcut.
             from zte.evaluation.audit.rebaseline import stratified_retrieval
 
+            # One unit on both sides: every reading stratifies on its stimulus's median word count.
+            n_words = stimulus_median_lengths(n_words, np.asarray(sent_content_ids))
             board['held_out_retrieval']['length_stratified'] = stratified_retrieval(
                 sent_emb, sent_content_ids, subjects, holdout, n_words, length_tol=length_tol
             )
+        if board['held_out_retrieval'] is not None:
+            # Provenance travels inside the block: what was fitted on what, and exactly which matrix was measured.
+            board['held_out_retrieval']['postprocess_fit'] = postprocess_fit
+            board['held_out_retrieval']['alignment_fit'] = getattr(
+                getattr(config, 'dataset', None), 'raw_align_fit', None
+            )
+            board['held_out_retrieval']['embedding_checksum'] = embedding_checksum(sent_emb)
         if phase_sent_emb is not None and subjects is not None:
             # The control travels the identical retrieval path, so the comparison is not rigged.
             board['phase_control_retrieval'] = cross_subject_holdout_retrieval(
@@ -762,6 +827,11 @@ def render_markdown(board: dict[str, Any]) -> str:
                 f'- Top-5: **{hits5} hits / {n_q}** vs {n_q * 5 * (r.get("chance_top1") or 0):.1f} expected '
                 f'by chance (p={r.get("top5_p", float("nan")):.1e})',
             ]
+            if r.get('excluded_no_positive'):
+                lines.append(
+                    f'- Excluded: **{r["excluded_no_positive"]}** queries whose truth is absent from the '
+                    'cross-subject gallery — dropped from every statistic above, never zero-scored.'
+                )
             lines += _length_stratified_lines(r.get('length_stratified'))
             lines += _phase_control_lines(board.get('phase_control_retrieval'), r)
         lines.append('')
@@ -795,12 +865,14 @@ def _length_stratified_lines(block: dict[str, Any] | None) -> list[str]:
     if not block:
         return []
     ci = block.get('rank_percentile_ci') or (float('nan'),) * 3
+    excluded = int(block.get('excluded_no_positive') or 0)
+    suffix = f' ({excluded} unanswerable queries excluded, never zero-scored.)' if excluded else ''
     return [
         f'- Length-stratified (|Δn_words| ≤ {block.get("length_tol")}, mean gallery '
         f'{block.get("mean_gallery", float("nan")):.1f}, chance '
         f'{block.get("chance_top1", float("nan")):.4f}): Top-1 '
         f'**{block.get("top1", float("nan")):.4f}**, rank percentile {ci[0]:.4f} '
-        f'(95% CI {ci[1]:.4f}–{ci[2]:.4f}) — sentence length alone must not explain the hit.'
+        f'(95% CI {ci[1]:.4f}–{ci[2]:.4f}) — sentence length alone must not explain the hit.' + suffix
     ]
 
 

@@ -16,17 +16,20 @@ from zte.evaluation.analysis.aggregate import (
     summary_markdown,
     within_task_table,
 )
-from zte.evaluation.analysis.collect import Study, collect_study
-from zte.evaluation.analysis.dashboard import build_dashboard, write_summary, write_tables
+from zte.evaluation.analysis.collect import HEADLINES, Study, collect_study, dig
+from zte.evaluation.analysis.dashboard import build_dashboard, panel_builders, write_summary, write_tables
 
 __all__ = [
+    'HEADLINES',
     'Study',
     'build_dashboard',
     'collect_study',
     'control_table',
+    'dig',
     'feature_ablation_table',
     'loso_table',
     'multi_seed_table',
+    'panel_builders',
     'summary_markdown',
     'within_task_table',
     'write_summary',

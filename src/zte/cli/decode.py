@@ -676,7 +676,11 @@ def _rescoring(
     texts = gallery.ordered_texts()
     if len(texts) < 2:
         return None
-    scores = decoder.rescore(readings, texts, batch_size=opts.batch_size)
+    scores = decoder.rescore(readings, texts, batch_size=opts.batch_size, pmi=False)
+    raw_scores = scores
+    if decoder.decoder_config.rescore_pmi:
+        # The null scores are query-independent, so the unconditional gallery pass runs once, not per query.
+        scores = raw_scores - decoder.null_rescore(texts)[None, :]
     gallery_words = _gallery_lengths(gallery, len(texts))
     block = decoder_rescoring_retrieval(
         scores,
@@ -690,6 +694,16 @@ def _rescoring(
     if block is None:
         return None
     block['n_candidate_sentences'] = len(texts)
+    if decoder.decoder_config.rescore_pmi:
+        block['score'] = 'pmi'
+        block['pmi_vs_raw'] = _pmi_vs_raw(
+            scores,
+            raw_scores,
+            readings.meta['text_id'].to_numpy(),
+            np.arange(len(texts)),
+            n_boot=opts.n_boot,
+            seed=opts.seed,
+        )
     if opts.within_task_pools:
         block['within_task'] = within_task_retrieval(
             scores,
@@ -703,8 +717,60 @@ def _rescoring(
     return block
 
 
+def _rank_percentiles(scores: np.ndarray, query_ids: np.ndarray, gallery_ids: np.ndarray) -> np.ndarray:
+    """Per-query rank percentile of the true sentence (1.0 = ranked first, 0.0 = absent), scoreboard's convention."""
+    out = np.zeros(len(scores), dtype=np.float64)
+    n_cand = scores.shape[1]
+    for i in range(len(scores)):
+        same = gallery_ids[np.argsort(-scores[i])] == query_ids[i]
+        if same.any():
+            out[i] = 1.0 - int(np.argmax(same)) / max(n_cand - 1, 1)
+
+    return out
+
+
+def _pmi_vs_raw(
+    pmi_scores: np.ndarray,
+    raw_scores: np.ndarray,
+    query_ids: np.ndarray,
+    gallery_ids: np.ndarray,
+    *,
+    n_boot: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Paired per-query comparison of the PMI and raw rankings, so the correction's effect is itself measured.
+
+    Args:
+        pmi_scores (np.ndarray): PMI score matrix `(n_queries, n_gallery)`.
+        raw_scores (np.ndarray): Raw conditional score matrix of the same shape.
+        query_ids (np.ndarray): Stimulus id of each query `(n_queries,)`.
+        gallery_ids (np.ndarray): Stimulus id of each gallery sentence `(n_gallery,)`.
+        n_boot (int): Bootstrap resamples behind the delta interval.
+        seed (int): Bootstrap seed.
+
+    Returns:
+        dict[str, Any]: Per-query rank percentiles under both scores and the paired delta (pmi minus raw) with a
+            percentile-bootstrap CI over queries.
+    """
+    from zte.evaluation.metrics import bootstrap_ci
+
+    per_pmi = _rank_percentiles(pmi_scores, query_ids, gallery_ids)
+    per_raw = _rank_percentiles(raw_scores, query_ids, gallery_ids)
+    point, lo, hi = bootstrap_ci(per_pmi - per_raw, n_boot=n_boot, seed=seed)
+
+    return {
+        'metric': 'rank_percentile',
+        'raw_rank_percentile': float(per_raw.mean()) if per_raw.size else float('nan'),
+        'pmi_rank_percentile': float(per_pmi.mean()) if per_pmi.size else float('nan'),
+        'per_query_rank_percentile_raw': [float(v) for v in per_raw],
+        'per_query_rank_percentile_pmi': [float(v) for v in per_pmi],
+        'rank_percentile_delta': {'point': point, 'lo': lo, 'hi': hi},
+        'n_queries': int(per_raw.size),
+    }
+
+
 def _gallery_lengths(torch_ds: ZuCoTorchDataset, n_text: int) -> np.ndarray:
-    """Median read word count per gallery sentence, in the same units as the queries' `n_words`."""
+    """Median read word count per gallery sentence -- the stimulus-level unit the scoreboard stratifies both sides in."""
     per_text: dict[int, list[int]] = {}
     vocab = torch_ds.text_vocab
     for i, key in enumerate(torch_ds.stimulus_keys):
@@ -760,6 +826,9 @@ def _provenance(decoder: ZTEDecoder, config: ZTEConfig, split: str, opts: Decode
         'gap_correction': decoder.decoder_config.gap_correction,
         'gap_fitted': bool(decoder.gap.fitted),
         'gap_n_fit': int(decoder.gap.n_fit),
+        # Anything that reopens these artifacts re-reads the verdict against this floor, and it is recoverable
+        # from nowhere else in them: a dropped clause reads exactly like a passing one.
+        'min_prefix_kl': config.decoder.min_prefix_kl,
         # The decoder whitens nothing, but it inherits three train-fitted transforms, and the field exists so a
         # number is never read without knowing what was fitted on what.
         'postprocess_fit': 'none',

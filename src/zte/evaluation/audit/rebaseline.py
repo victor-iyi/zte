@@ -215,7 +215,7 @@ def stratified_retrieval(
     Returns:
         dict | None: `top{k}`, `top{k}_p`, `mrr`, `rank_percentile`, `rank_percentile_ci`,
             `mean_rank`, `median_rank`, `chance_top1`, `mean_gallery`, `n_queries`,
-            `headline_metric`; `None` when there are too few subjects or queries.
+            `excluded_no_positive`, `headline_metric`; `None` when there are too few subjects or queries.
     """
     subjects = np.asarray(subjects)
     content_ids = np.asarray(content_ids)
@@ -238,23 +238,28 @@ def stratified_retrieval(
     percentiles: list[float] = []
     ranks: list[float] = []
     galleries: list[float] = []
+    excluded = 0
 
     for row, i in enumerate(q_idx):
         cross = subjects != subjects[i]
         if lengths is not None:
             cross = cross & (np.abs(lengths - lengths[i]) <= length_tol)
+        # A query whose truth cannot appear in its own gallery is unanswerable, not wrong: excluded and counted,
+        # never zero-scored -- zero-scoring once manufactured a below-chance rank percentile out of stratum misses.
         if not cross.any():
+            excluded += 1
             continue
 
         cand = np.where(cross)[0]
+        same_mask = content_ids[cand] == content_ids[i]
+        if not same_mask.any():
+            excluded += 1
+            continue
+
         galleries.append(float(cand.size))
-        chances.append(float((content_ids[cand] == content_ids[i]).mean()))
+        chances.append(float(same_mask.mean()))
         order = cand[np.argsort(-sims[row, cand])]
         same = content_ids[order] == content_ids[i]
-        if not same.any():
-            percentiles.append(0.0)
-            ranks.append(float(cand.size))
-            continue
 
         for k in ks:
             hits[k] += float(same[:k].any())
@@ -276,6 +281,7 @@ def stratified_retrieval(
     out['mean_gallery'] = float(np.mean(galleries)) if galleries else float('nan')
     out['median_gallery'] = float(np.median(galleries)) if galleries else float('nan')
     out['n_queries'] = int(n_scored)
+    out['excluded_no_positive'] = int(excluded)
     out['length_tol'] = None if lengths is None else int(length_tol)
     for k in ks:
         out[f'top{k}_p'] = _binom_tail_p(round(out[f'top{k}'] * n_scored), n_scored, out['chance_top1'] * k)
@@ -296,12 +302,15 @@ def rebaseline_report(
     holdout: str,
     n_words: np.ndarray,
     *,
+    tasks: np.ndarray | None = None,
     train_mask: np.ndarray | None = None,
     length_tol: int = 1,
     oracle_tols: tuple[int, ...] = (0, 1, 2, 4),
     whiten: bool = True,
     n_top: int = 1,
     ks: tuple[int, ...] = (1, 5, 10),
+    menu_ks: tuple[int, ...] | None = None,
+    menu_target: float = 0.8,
     n_boot: int = 2000,
     seed: int = 0,
 ) -> dict[str, Any]:
@@ -316,6 +325,8 @@ def rebaseline_report(
         subjects (np.ndarray): Subject code per reading `(n,)`.
         holdout (str): The held-out subject code.
         n_words (np.ndarray): Word count per reading `(n,)`.
+        tasks (np.ndarray | None, optional): Task label per reading `(n,)`, enabling the menu audit's
+            task-matched headline flavor. Defaults to None.
         train_mask (np.ndarray | None, optional): Boolean `(n,)` marking the rows the post-processing may
             be fitted on. Defaults to every non-holdout row.
         length_tol (int, optional): Word-count tolerance for the stratified gallery. Defaults to 1.
@@ -323,12 +334,15 @@ def rebaseline_report(
         whiten (bool, optional): Whether the fitted conditions whiten. Defaults to True.
         n_top (int, optional): Leading directions removed by all-but-the-top. Defaults to 1.
         ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
+        menu_ks (tuple[int, ...] | None, optional): Menu sizes for the closed-set capacity audit.
+            Defaults to None, which uses `menu.DEFAULT_MENU_KS`.
+        menu_target (float, optional): Accuracy a menu size must clear to be certified. Defaults to 0.8.
         n_boot (int, optional): Bootstrap resamples behind every cell's interval. Defaults to 2000.
         seed (int, optional): Bootstrap seed. Defaults to 0.
 
     Returns:
         dict[str, Any]: `{'holdout', 'n_readings', 'n_stimuli', 'length_tol', 'grid', 'length_oracle',
-            'bit_budget', 'floor_comparison', 'errors'}`.
+            'bit_budget', 'floor_comparison', 'menu', 'errors'}`.
     """
     emb = np.asarray(sent_emb, dtype=np.float32)
     content_ids = np.asarray(content_ids)
@@ -374,6 +388,29 @@ def rebaseline_report(
     honest = (grid.get('train_fitted') or {}).get('full') or {}
     budget = bit_budget(stimulus_lengths, mean_rank=honest.get('mean_rank'), n_gallery=int(uniq_ids.size))
 
+    # Deferred import: `menu` reuses this module's fitted post-processing, so a top-level import would cycle.
+    from zte.evaluation.audit.menu import DEFAULT_MENU_KS, menu_report
+
+    menu: dict[str, Any] | None = None
+    try:
+        menu = menu_report(
+            emb,
+            content_ids,
+            subjects,
+            holdout,
+            lengths,
+            tasks=tasks,
+            train_mask=mask,
+            ks=menu_ks if menu_ks is not None else DEFAULT_MENU_KS,
+            target=menu_target,
+            whiten=whiten,
+            n_top=n_top,
+            n_boot=n_boot,
+            seed=seed,
+        )
+    except (ValueError, np.linalg.LinAlgError, MemoryError) as exc:  # pragma: no cover - defensive
+        errors['menu'] = f'{type(exc).__name__}: {exc}'
+
     return {
         'holdout': str(holdout),
         'n_readings': int(len(emb)),
@@ -384,6 +421,7 @@ def rebaseline_report(
         'length_oracle': oracle,
         'bit_budget': budget,
         'floor_comparison': _floor_comparison(grid, oracle, length_tol),
+        'menu': menu,
         'errors': errors,
     }
 
@@ -484,6 +522,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f'**{floor.get("clears_floor")}**. {floor.get("note", "")}',
         '',
     ]
+    menu = report.get('menu')
+    if menu:
+        from zte.evaluation.audit.menu import menu_markdown_lines
+
+        lines += menu_markdown_lines(menu)
     errors = report.get('errors') or {}
     if errors:
         lines += ['## Cells that could not be computed', '']

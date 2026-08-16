@@ -16,23 +16,24 @@ from zte.models.encoder.gallery import GalleryContrast, build_gallery_contrast
 from zte.models.objectives.base import _ObjectiveBase, _usable_mask
 
 
-def _clip_direction(logits: torch.Tensor, pos: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+def _clip_direction(
+    logits: torch.Tensor, pos: torch.Tensor, valid: torch.Tensor, cand: torch.Tensor | None = None
+) -> torch.Tensor:
     """One direction of a multi-positive InfoNCE over a `(B, B)` similarity matrix.
 
     Rows are anchors, columns candidates. Candidates without a text target are masked out of the denominator; an
-
-    anchor's positives are the columns sharing its sentence text, so the same sentence read by different subjects counts
-
-    as a positive.
+    anchor's positives are the columns sharing its sentence text, so the same sentence read by different subjects
+    counts as a positive. An optional pairwise `cand` mask narrows each anchor's denominator further (within-task
+    negatives); positives share the anchor's text and therefore its task, so they always survive it.
 
     Returns:
         torch.Tensor: Scalar mean loss over valid anchors (0 when none).
     """
     neg_inf = torch.finfo(logits.dtype).min
-    cand = valid[None, :]
-    masked = logits.masked_fill(~cand, neg_inf)
+    cols = valid[None, :] if cand is None else valid[None, :] & cand
+    masked = logits.masked_fill(~cols, neg_inf)
     denom = torch.logsumexp(masked, dim=1)
-    numer = torch.logsumexp(masked.masked_fill(~(pos & cand), neg_inf), dim=1)
+    numer = torch.logsumexp(masked.masked_fill(~(pos & cols), neg_inf), dim=1)
     per = denom - numer
     return per[valid].mean() if bool(valid.any()) else logits.new_zeros(())
 
@@ -69,6 +70,7 @@ class SentenceClipObjective(_ObjectiveBase):
         text_matrix: torch.Tensor,
         text_lengths: torch.Tensor | None = None,
         split_text_ids: Sequence[int] | None = None,
+        text_tasks: torch.Tensor | None = None,
     ) -> None:
         """Attaches the frozen `(n_sentences, text_dim)` L2-normalised text-embedding matrix.
 
@@ -79,6 +81,8 @@ class SentenceClipObjective(_ObjectiveBase):
             split_text_ids (Sequence[int] | None): The gallery rows the training split actually reads. The matrix is
                 indexed by a whole-dataset id, so without this a stimulus-holding-out split would train the
                 full-gallery term against its own held-out sentences as negatives.
+            text_tasks (torch.Tensor | None): Long `(n_sentences,)` task per gallery text, needed only for the
+                same-task denominator of `within_task_negatives`.
         """
         self.text_matrix = text_matrix  # buffer: moves with .to(device), never trained
         self.clip_head = nn.Linear(self._embed_dim, int(text_matrix.shape[1]))
@@ -91,6 +95,8 @@ class SentenceClipObjective(_ObjectiveBase):
             self.gallery.attach_lengths(text_lengths)
         if split_text_ids is not None:
             self.gallery.restrict_to(split_text_ids, n_texts)
+        if text_tasks is not None:
+            self.gallery.attach_tasks(text_tasks)
 
     def _sentence_vectors(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
         """Pools each sentence's word-EEG tokens into one contextual sentence embedding `(B, embed_dim)`.
@@ -103,6 +109,18 @@ class SentenceClipObjective(_ObjectiveBase):
         hidden_ctx = model.contextualize(hidden, valid)  # sentence-contextual (bidirectional)
         pooled = model._pool_tokens(hidden_ctx, valid)  # (B, H)  # noqa: SLF001 -- shared pooling
         return model.project(pooled), hidden  # (B, embed_dim), plus token hiddens for VICReg/adversary
+
+    # Missing task ids are an error rather than a fallback: silently widening back to cross-task candidates would
+    # reintroduce the exact shortcut the knob exists to remove, with nothing in the metrics to show it happened.
+    def _task_candidates(self, batch: dict[str, Any]) -> torch.Tensor | None:
+        """Returns the `(B, B)` same-task candidate mask, or `None` when `within_task_negatives` is off."""
+        if not self.config.within_task_negatives:
+            return None
+        task_id = batch.get('task_id')
+        if task_id is None:
+            raise ValueError('within_task_negatives needs task_id in the batch; collate_sentences provides it.')
+
+        return task_id[:, None] == task_id[None, :]
 
     def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the symmetric CLIP loss (+ VICReg/invariance auxiliaries) for a batch.
@@ -123,6 +141,11 @@ class SentenceClipObjective(_ObjectiveBase):
         cons_loss, cons_metrics = self.sentence_consensus(z_sent, batch)
         reg_loss, reg_metrics = reg_loss + cons_loss, {**reg_metrics, **cons_metrics}
 
+        # Anti-collapse on the tensor retrieval actually scores: the token-level guard never sees the pooled vector.
+        if self.config.sentence_variance_weight > 0.0 or self.config.sentence_covariance_weight > 0.0:
+            sent_loss, sent_metrics = self.sentence_regularize(z_sent)
+            reg_loss, reg_metrics = reg_loss + sent_loss, {**reg_metrics, **sent_metrics}
+
         text_id = batch.get('sentence_text_id')
         if self.clip_head is None or self.text_matrix is None or text_id is None:
             zero = z_sent.sum() * 0.0 + reg_loss
@@ -135,14 +158,15 @@ class SentenceClipObjective(_ObjectiveBase):
         scale = self.logit_scale.exp().clamp(max=100.0)
         logits = (z_eeg @ z_txt.t()) * scale  # (B, B): row=EEG reading, col=text
         pos = (text_id[:, None] == text_id[None, :]) & valid[:, None] & valid[None, :]
+        cand = self._task_candidates(batch)
 
         if not bool(valid.any()):
             zero = logits.sum() * 0.0 + reg_loss
             return zero, {'loss': float(reg_loss.detach()), 'n_valid': 0.0, **reg_metrics}
 
         clip_loss = 0.5 * (
-            _clip_direction(logits, pos, valid)  # EEG -> text
-            + _clip_direction(logits.t(), pos, valid)  # text -> EEG (pos is symmetric)
+            _clip_direction(logits, pos, valid, cand)  # EEG -> text
+            + _clip_direction(logits.t(), pos, valid, None if cand is None else cand.t())  # text -> EEG
         )
         loss = clip_loss + reg_loss
 

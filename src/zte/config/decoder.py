@@ -195,6 +195,12 @@ class DecoderConfig(PathFields):
     """Candidate rows per frozen-LM forward pass during gallery rescoring. The prompt's key/value cache is computed
     once per query and shared across the chunk, so this bounds memory rather than repeated work."""
 
+    rescore_pmi: bool = False
+    """PMI rescoring: subtract each candidate's null-prefix per-token log-likelihood from its conditional score,
+    cancelling candidate-side familiarity bias -- every trainable part is fitted on train-cell reference texts, so a
+    train-cell candidate scores well under *any* prefix and the difference keeps only what the brain added. Off keeps
+    the raw conditional score."""
+
     length_tol: int = 1
     """Word-count tolerance for length-stratified retrieval galleries and the mismatch-control derangement."""
 

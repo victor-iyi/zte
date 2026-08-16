@@ -28,24 +28,30 @@ class GalleryContrast(nn.Module):
 
     Attributes:
         band (int): Half-width in words of the length-matched denominator; 0 uses the whole gallery.
+        within_task (bool): Restrict every anchor's denominator to texts of its own task (needs `attach_tasks`).
     """
 
     lengths: torch.Tensor | None
     admissible: torch.Tensor | None
+    tasks: torch.Tensor | None
 
-    def __init__(self, band: int = 0, min_candidates: int = 32) -> None:
+    def __init__(self, band: int = 0, min_candidates: int = 32, within_task: bool = False) -> None:
         """Builds the scorer.
 
         Args:
             band (int, optional): Half-width in words of the length-matched candidate set. Defaults to 0 (off).
             min_candidates (int, optional): Widen the band rather than score against fewer texts than this.
                 Defaults to 32.
+            within_task (bool, optional): Score each anchor against same-task texts only; task and stimulus are fully
+                confounded on ZuCo, so a cross-task distractor is separable by task alone. Defaults to False.
         """
         super().__init__()
         self.band = int(band)
         self.min_candidates = int(min_candidates)
+        self.within_task = bool(within_task)
         self.register_buffer('lengths', None, persistent=False)
         self.register_buffer('admissible', None, persistent=False)
+        self.register_buffer('tasks', None, persistent=False)
 
     def attach_lengths(self, lengths: torch.Tensor) -> None:
         """Attaches the `(n_texts,)` word count of every gallery text.
@@ -54,6 +60,15 @@ class GalleryContrast(nn.Module):
             lengths (torch.Tensor): Long word counts aligned with the gallery's row order.
         """
         self.lengths = lengths
+
+    def attach_tasks(self, tasks: torch.Tensor) -> None:
+        """Attaches the `(n_texts,)` task id of every gallery text, for the `within_task` denominator.
+
+        Args:
+            tasks (torch.Tensor): Long task ids aligned with the gallery's row order (`-1` = unknown, which matches
+                no anchor and so never enters a denominator).
+        """
+        self.tasks = tasks.long()
 
     def restrict_to(self, text_ids: Sequence[int], n_texts: int) -> None:
         """Limits the denominator to the texts actually read in the training split.
@@ -89,32 +104,59 @@ class GalleryContrast(nn.Module):
 
         Returns:
             torch.Tensor: `True` where a text may appear in that anchor's denominator; the anchor's own text is always
-                included, because a softmax with no numerator is not a loss.
+                included, because a softmax with no numerator is not a loss. Under `within_task` an anchor whose
+                same-task band is too thin is dropped instead of widened, marked by an all-`False` row.
         """
         device = text_id.device
+        own = text_id.clamp(0, n_texts - 1)
         allowed = (
             torch.ones(n_texts, dtype=torch.bool, device=device)
             if self.admissible is None
             else self.admissible.to(device)
         )
+        same_task = self._same_task(own)
+
         if self.band <= 0 or self.lengths is None:
-            return allowed[None, :].expand(text_id.shape[0], n_texts).clone()
+            mask = allowed[None, :].expand(text_id.shape[0], n_texts).clone()
+            if same_task is None:
+                return mask
+            mask &= same_task
+            mask[torch.arange(text_id.shape[0], device=device), own] = True
+            return mask
 
         lengths = self.lengths.to(device)
-        anchor_len = lengths[text_id.clamp(0, n_texts - 1)]
+        anchor_len = lengths[own]
         mask = ((lengths[None, :] - anchor_len[:, None]).abs() <= self.band) & allowed[None, :]
-
-        # A band that strands an anchor with almost no distractors would make its loss trivially small rather than
-        # hard, so those rows fall back to the full gallery and the metric below says how often that happened.
-        # Widening a stranded anchor reaches for the rest of the *admissible* gallery, never past it.
+        if same_task is not None:
+            mask &= same_task
         sparse = mask.sum(dim=1) < self.min_candidates
-        if bool(sparse.any()):
-            mask[sparse] = allowed[None, :]
 
-        # A zero-distance text is inside any band, so this is an invariant guard rather than a correction: a
-        # cross-entropy whose target column is masked saturates at the float floor and stops reading the model.
-        mask[torch.arange(text_id.shape[0], device=device), text_id.clamp(0, n_texts - 1)] = True
+        if same_task is None:
+            # A band that strands an anchor with almost no distractors would make its loss trivially small rather than
+            # hard, so those rows fall back to the full gallery and the metric below says how often that happened.
+            # Widening a stranded anchor reaches for the rest of the *admissible* gallery, never past it.
+            if bool(sparse.any()):
+                mask[sparse] = allowed[None, :]
+
+            # A zero-distance text is inside any band, so this is an invariant guard rather than a correction: a
+            # cross-entropy whose target column is masked saturates at the float floor and stops reading the model.
+            mask[torch.arange(text_id.shape[0], device=device), own] = True
+            return mask
+
+        # Within-task the widening fallback would reach across tasks and hand back the shortcut this mode exists to
+        # remove, so a stranded anchor is dropped -- an all-False row `compute` excludes from the loss.
+        mask[torch.arange(text_id.shape[0], device=device), own] = True
+        mask[sparse] = False
         return mask
+
+    def _same_task(self, own: torch.Tensor) -> torch.Tensor | None:
+        """Returns the `(n_anchors, n_texts)` same-task mask, or `None` when task matching is off or unattached."""
+        if not self.within_task or self.tasks is None:
+            return None
+
+        tasks = self.tasks.to(own.device)
+
+        return tasks[None, :] == tasks[own][:, None]
 
     def compute(
         self, z_eeg: torch.Tensor, gallery: torch.Tensor, text_id: torch.Tensor, scale: torch.Tensor
@@ -136,9 +178,18 @@ class GalleryContrast(nn.Module):
 
         logits = (z_eeg @ gallery.t()) * scale
         mask = self.candidate_mask(text_id, n_texts)
+        target = text_id.clamp(0, n_texts - 1)
+        extra: dict[str, float] = {}
+        if self.within_task and self.tasks is not None:
+            # A dropped anchor is an all-False row: it has no denominator, so it leaves the loss entirely.
+            active = mask.any(dim=1)
+            extra['gallery_dropped'] = float(int((~active).sum()))
+            if not bool(active.any()):
+                return z_eeg.new_zeros(()), extra
+            mask, logits, target = mask[active], logits[active], target[active]
+
         neg_inf = torch.finfo(logits.dtype).min
         masked = logits.masked_fill(~mask, neg_inf)
-        target = text_id.clamp(0, n_texts - 1)
         loss = F.cross_entropy(masked, target)
 
         with torch.no_grad():
@@ -149,6 +200,7 @@ class GalleryContrast(nn.Module):
             'gallery_top1': top1,
             'gallery_candidates': candidates,
             'gallery_chance': 1.0 / max(candidates, 1.0),
+            **extra,
         }
 
 
@@ -179,9 +231,15 @@ def build_gallery_contrast(config: object, n_texts: int) -> GalleryContrast | No
         return None
 
     band = int(getattr(config, 'gallery_length_band', 0))
+    within_task = bool(getattr(config, 'within_task_negatives', False))
     _LOG.info(
-        'Gallery contrast on: %d texts in the denominator, length band %s.',
+        'Gallery contrast on: %d texts in the denominator, length band %s%s.',
         n_texts,
         f'+/-{band} words' if band > 0 else 'off (whole gallery)',
+        ', same-task candidates only' if within_task else '',
     )
-    return GalleryContrast(band=band, min_candidates=int(getattr(config, 'gallery_min_candidates', 32)))
+    return GalleryContrast(
+        band=band,
+        min_candidates=int(getattr(config, 'gallery_min_candidates', 32)),
+        within_task=within_task,
+    )

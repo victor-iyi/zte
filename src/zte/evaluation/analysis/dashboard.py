@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -156,60 +157,214 @@ _FOLD_CAPTION = (
 )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Panel:
+    """One chart of the analysis: where it belongs, what it is called, and how to draw it.
+
+    Attributes:
+        section (str): The page section it sits under, from `_SECTIONS`.
+        name (str): Stable slug, so a caller outside the page can ask for one panel and get the same chart.
+        caption (str): The prose printed beneath it, which says how to read it.
+        build (Callable[[], Figure | None]): Draws it, returning `None` when no run carried the numbers behind it.
+    """
+
+    section: str
+    name: str
+    caption: str
+    build: Callable[[], 'Figure | None']
+
+
+def panel_builders(study: Study, montage_csv: str | None = None) -> tuple[Panel, ...]:
+    """Every chart the analysis draws, unbuilt, in the order a reader should meet them.
+
+    Note:
+        Unbuilt because a caller that wants three panels should not pay for twenty-seven, and because the page
+        and every other reader have to draw the *same* chart from the same caption.
+
+    Args:
+        study (Study): The collected study each panel reads.
+        montage_csv (str | None, optional): Montage CSV for the 3-D electrode map. Defaults to None, which draws
+            an approximate spiral and says so.
+
+    Returns:
+        tuple[Panel, ...]: One entry per chart.
+    """
+    return (
+        Panel(
+            section='headline',
+            name='metric_explorer',
+            caption='Every headline behind one selector — start here, then read the confounds before believing any.',
+            build=lambda: F.metric_explorer(study),
+        ),
+        Panel(
+            section='headline',
+            name='headline_rank_percentile',
+            caption='Rank percentile per arm, mean ± sd over seeds, with each seed drawn on its bar.',
+            build=lambda: F.headline_bars(study, 'held_out_rank_percentile'),
+        ),
+        Panel(
+            section='headline',
+            name='headline_top1',
+            caption='Top-1 per arm. Quoted alone this is not evidence of decoding -- see the confound section.',
+            build=lambda: F.headline_bars(study, 'held_out_top1'),
+        ),
+        Panel(
+            section='headline',
+            name='bit_budget_bars',
+            caption='What the conditioning channel delivered against its ceiling.',
+            build=lambda: F.bit_budget_bars(study),
+        ),
+        Panel(
+            section='headline',
+            name='seed_histogram',
+            caption='Every run as one observation; a bimodal shape is the finding.',
+            build=lambda: F.seed_histogram(study),
+        ),
+        Panel(
+            section='headline',
+            name='bit_budget_pie',
+            caption='The 9.45 bits of sentence identity, and who supplies them.',
+            build=lambda: F.bit_budget_pie(study),
+        ),
+        Panel(
+            section='folds',
+            name='loso_heatmap',
+            caption='Which brains a recipe reaches, and which it never does.',
+            build=lambda: F.loso_heatmap(study),
+        ),
+        Panel(
+            section='folds',
+            name='fold_spread',
+            caption='The fold-to-fold distribution; a bimodal arm is visible here.',
+            build=lambda: F.fold_spread(study),
+        ),
+        Panel(
+            section='folds',
+            name='subject_difficulty',
+            caption='Per-subject difficulty, pooled across runs.',
+            build=lambda: F.subject_difficulty(study),
+        ),
+        Panel(
+            section='ablation',
+            name='ablation_rank_percentile',
+            caption='Each lever on the honest headline.',
+            build=lambda: F.ablation_bars(study, 'held_out_rank_percentile'),
+        ),
+        Panel(
+            section='ablation',
+            name='ablation_stratified_top1',
+            caption='Each lever inside the length-matched gallery.',
+            build=lambda: F.ablation_bars(study, 'stratified_top1'),
+        ),
+        Panel(
+            section='ablation',
+            name='mechanism_matrix',
+            caption='Which levers each run actually had on, read off its config.',
+            build=lambda: F.mechanism_matrix(study),
+        ),
+        Panel(
+            section='confound',
+            name='length_confound_scatter',
+            caption='The encoder against a length-only oracle.',
+            build=lambda: F.length_confound_scatter(study),
+        ),
+        Panel(
+            section='confound',
+            name='length_leakage_bars',
+            caption='Length leakage before and after the projection.',
+            build=lambda: F.length_leakage_bars(study),
+        ),
+        Panel(
+            section='confound',
+            name='within_task_bars',
+            caption='Within-task pools against their own chance level.',
+            build=lambda: F.within_task_bars(study),
+        ),
+        Panel(
+            section='confound',
+            name='length_vs_score',
+            caption='Sentence length against decode quality, per condition.',
+            build=lambda: F.length_vs_score(study),
+        ),
+        Panel(
+            section='decoder',
+            name='control_ladder',
+            caption='The decode against every brain-independent control.',
+            build=lambda: F.control_ladder(study),
+        ),
+        Panel(
+            section='decoder',
+            name='score_distributions',
+            caption='The whole per-sentence distribution, not its mean.',
+            build=lambda: F.score_distributions(study),
+        ),
+        Panel(
+            section='decoder',
+            name='text_overlap_heatmap',
+            caption='Where the decode landed, sentence by sentence.',
+            build=lambda: F.text_overlap_heatmap(study),
+        ),
+        Panel(
+            section='decoder',
+            name='word_frequency_bars',
+            caption='The words emitted against the words asked for.',
+            build=lambda: F.word_frequency_bars(study),
+        ),
+        Panel(
+            section='geometry',
+            name='probe_heatmap',
+            caption='What each representation carries.',
+            build=lambda: F.probe_heatmap(study),
+        ),
+        Panel(
+            section='geometry',
+            name='variance_budget_pie',
+            caption='Who versus what.',
+            build=lambda: F.variance_budget_pie(study),
+        ),
+        Panel(
+            section='geometry',
+            name='identity_vs_content',
+            caption='Identity against content, sized by effective rank.',
+            build=lambda: F.identity_vs_content(study),
+        ),
+        Panel(
+            section='geometry',
+            name='metric_correlations',
+            caption='Whether the headline metrics are saying one thing.',
+            build=lambda: F.metric_correlations(study),
+        ),
+        Panel(
+            section='geometry',
+            name='scalp_3d',
+            caption='The electrode geometry the encoder reads.',
+            build=lambda: F.scalp_3d(montage_csv=montage_csv),
+        ),
+        Panel(
+            section='training',
+            name='learning_curves',
+            caption='Train and validation loss per epoch.',
+            build=lambda: F.learning_curves(study),
+        ),
+        Panel(
+            section='training',
+            name='mechanism_curves',
+            caption='Did each mechanism engage, or was it merely configured?',
+            build=lambda: F.mechanism_curves(study),
+        ),
+    )
+
+
 def _panels(study: Study, montage_csv: str | None) -> Iterator[tuple[str, 'Figure | None', str]]:
     """Yields `(section, figure, caption)` for every chart, skipping the ones with no data behind them."""
-    builders: tuple[tuple[str, Callable[[], Any], str], ...] = (
-        (
-            'headline',
-            lambda: F.metric_explorer(study),
-            'Every headline behind one selector — start here, then read the confound section before believing any of it.',
-        ),
-        (
-            'headline',
-            lambda: F.headline_bars(study, 'held_out_rank_percentile'),
-            'Rank percentile per arm, mean ± sd over seeds, with each seed drawn on its bar.',
-        ),
-        (
-            'headline',
-            lambda: F.headline_bars(study, 'held_out_top1'),
-            'Top-1 per arm. Quoted alone this is not evidence of decoding -- see the confound section.',
-        ),
-        ('headline', lambda: F.bit_budget_bars(study), 'What the conditioning channel delivered against its ceiling.'),
-        ('headline', lambda: F.seed_histogram(study), 'Every run as one observation; a bimodal shape is the finding.'),
-        ('headline', lambda: F.bit_budget_pie(study), 'The 9.45 bits of sentence identity, and who supplies them.'),
-        ('folds', lambda: F.loso_heatmap(study), 'Which brains a recipe reaches, and which it never does.'),
-        ('folds', lambda: F.fold_spread(study), 'The fold-to-fold distribution; a bimodal arm is visible here.'),
-        ('folds', lambda: F.subject_difficulty(study), 'Per-subject difficulty, pooled across runs.'),
-        ('ablation', lambda: F.ablation_bars(study, 'held_out_rank_percentile'), 'Each lever on the honest headline.'),
-        (
-            'ablation',
-            lambda: F.ablation_bars(study, 'stratified_top1'),
-            'Each lever inside the length-matched gallery.',
-        ),
-        ('ablation', lambda: F.mechanism_matrix(study), 'Which levers each run actually had on, read off its config.'),
-        ('confound', lambda: F.length_confound_scatter(study), 'The encoder against a length-only oracle.'),
-        ('confound', lambda: F.length_leakage_bars(study), 'Length leakage before and after the projection.'),
-        ('confound', lambda: F.within_task_bars(study), 'Within-task pools against their own chance level.'),
-        ('confound', lambda: F.length_vs_score(study), 'Sentence length against decode quality, per condition.'),
-        ('decoder', lambda: F.control_ladder(study), 'The decode against every brain-independent control.'),
-        ('decoder', lambda: F.score_distributions(study), 'The whole per-sentence distribution, not its mean.'),
-        ('decoder', lambda: F.text_overlap_heatmap(study), 'Where the decode landed, sentence by sentence.'),
-        ('decoder', lambda: F.word_frequency_bars(study), 'The words emitted against the words asked for.'),
-        ('geometry', lambda: F.probe_heatmap(study), 'What each representation carries.'),
-        ('geometry', lambda: F.variance_budget_pie(study), 'Who versus what.'),
-        ('geometry', lambda: F.identity_vs_content(study), 'Identity against content, sized by effective rank.'),
-        ('geometry', lambda: F.metric_correlations(study), 'Whether the headline metrics are saying one thing.'),
-        ('geometry', lambda: F.scalp_3d(montage_csv=montage_csv), 'The electrode geometry the encoder reads.'),
-        ('training', lambda: F.learning_curves(study), 'Train and validation loss per epoch.'),
-        ('training', lambda: F.mechanism_curves(study), 'Did each mechanism engage, or was it merely configured?'),
-    )
-    for section, build, caption in builders:
+    for panel in panel_builders(study, montage_csv):
         try:
-            figure = build()
+            figure = panel.build()
         except (KeyError, ValueError, TypeError) as exc:
-            _LOG.warning('Panel %r skipped (%r).', caption, exc)
+            _LOG.warning('Panel %r skipped (%r).', panel.name, exc)
             continue
-        yield section, figure, caption
+
+        yield panel.section, figure, panel.caption
 
 
 def _render(figure: 'Figure | None', *, include_js: bool) -> str | None:

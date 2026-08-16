@@ -57,7 +57,7 @@ def generation_html(
         out = out.with_suffix('.html')
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = _build_payload(block or {}, run_name, min_prefix_kl)
+    payload = generation_payload(block or {}, run_name, min_prefix_kl)
     data_json = json.dumps(payload, separators=(',', ':')).replace('<', '\\u003c')
     html = _TEMPLATE.replace('__TITLE__', _esc(run_name)).replace('__DATA__', data_json)
     out.write_text(html, encoding='utf-8')
@@ -65,10 +65,25 @@ def generation_html(
     return out
 
 
-def _build_payload(
+def generation_payload(
     block: dict[str, Any], run_name: str, min_prefix_kl: float = _DEFAULT_MIN_PREFIX_KL
 ) -> dict[str, Any]:
-    """Normalises the generation report into the small JSON island the page consumes."""
+    """Normalises a generation report into the JSON island the page -- and any other reader -- consumes.
+
+    Note:
+        The `verdict` block is the gate's own five-clause AND rather than a re-derivation of part of it, so a
+        reader that renders this payload cannot advertise past a clause it failed to evaluate.
+
+    Args:
+        block (dict[str, Any]): The dict from `zte.evaluation.generation.generation_report`; every sub-block is
+            optional and read defensively.
+        run_name (str): Human label for the run.
+        min_prefix_kl (float, optional): The run's verdict floor in nats. Defaults to the `DecoderConfig` default.
+
+    Returns:
+        dict[str, Any]: The normalised payload. A block that was never scored comes back with `applicable: False`
+        and a `reason`, and carries no verdict for a caller to mistake for a passing one.
+    """
     if not block.get('applicable'):
         return _clean(
             {

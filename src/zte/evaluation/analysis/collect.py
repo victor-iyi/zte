@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import pandas as pd
@@ -19,8 +19,10 @@ _LOG = get_logger('evaluation.analysis.collect')
 # authoritative for both; this only recovers them for a run whose config was not mirrored alongside it.
 _RUN_NAME = re.compile(r'^(?P<arm>.+?)(?:_lo(?P<holdout>[A-Z]{2,4}))?(?:_s(?P<seed>\d+))?$')
 
-# What every headline table reads, and where it lives inside `evaluation/metrics.json`.
-_HEADLINES: dict[str, tuple[str, ...]] = {
+# What every headline table reads, and where it lives inside `evaluation/metrics.json`. The pooled and word-level
+# keys travel beside the held-out ones because a reader chasing a suspicious number wants both, but only
+# `held_out_*` is the result: `pooled_top1` inverted the champion once already.
+HEADLINES: Final[dict[str, tuple[str, ...]]] = {
     'held_out_top1': ('scoreboard', 'held_out_retrieval', 'top1'),
     'held_out_top5': ('scoreboard', 'held_out_retrieval', 'top5'),
     'held_out_rank_percentile': ('scoreboard', 'held_out_retrieval', 'rank_percentile'),
@@ -57,6 +59,7 @@ _HEADLINES: dict[str, tuple[str, ...]] = {
     'same_word_purity': ('emergence', 'neighbourhood', 'same_word_purity'),
     'cross_subject_neighbours': ('emergence', 'neighbourhood', 'cross_subject_neighbour_fraction'),
 }
+"""Every headline metric, keyed by name, as a path into a run's `evaluation/metrics.json`."""
 
 # Config levers the ablation tables pivot on. Each is a dotted path into the resolved `config.yaml`.
 _LEVERS: dict[str, str] = {
@@ -219,7 +222,12 @@ def _load_run(run_dir: Path) -> dict[str, Any] | None:
         'run': run_dir.name,
         'arm': fallback.get('arm') or run_dir.name,
         'path': str(run_dir),
-        'real_data': not str(dig(manifest, 'data_root', default='')).endswith('synthetic_zuco'),
+        # `zte-run --synthetic` records the flag outright; the data-root suffix is the fallback for a run whose
+        # manifest predates it. Reading only the path would let a smoke run with a relocated cache read as real.
+        'real_data': not (
+            bool(dig(manifest, 'synthetic', default=False))
+            or str(dig(manifest, 'data_root', default='')).endswith('synthetic_zuco')
+        ),
         'n_words': dig(manifest, 'dataset', 'n_words'),
         'n_subjects': dig(manifest, 'dataset', 'n_subjects'),
         'wall_seconds': dig(manifest, 'wall_seconds'),
@@ -232,7 +240,7 @@ def _load_run(run_dir: Path) -> dict[str, Any] | None:
     if record.get('seed') is None and fallback.get('seed'):
         record['seed'] = int(str(fallback['seed']))
 
-    for name, path in _HEADLINES.items():
+    for name, path in HEADLINES.items():
         value = dig(metrics, *path)
         if value is None and path[0] in {'rescoring'}:
             value = dig(generation, *path)

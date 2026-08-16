@@ -9,11 +9,14 @@ import torch.nn.functional as F
 from torch import nn
 
 from zte.config import ObjectiveConfig
+from zte.logging_utils import get_logger
 from zte.models.embedding import ZTEModel
 from zte.models.encoder.consensus import ConsensusDistiller, build_consensus
 from zte.models.heads import SubjectAdversary
 from zte.models.objectives.lexical import LexicalAligner, build_lexical_aligner
 from zte.models.objectives.losses import identity_orthogonality, vicreg_terms
+
+_LOG = get_logger('models.objectives.base')
 
 
 def _usable_mask(batch: dict[str, Any]) -> torch.Tensor:
@@ -154,6 +157,13 @@ class _ObjectiveBase(nn.Module):
             proj = nn.Linear(int(feature_dim), target_dim, bias=False)
             proj.requires_grad_(False)  # frozen random target projection (never trained)
             self.data2vec_proj = proj
+        elif self.config.data2vec_aux_weight > 0.0:
+            _LOG.warning(
+                'data2vec auxiliary head disabled: it needs a factored embedding with nuisance dims and a flattened '
+                'band-power feature width, and this frontend supplies %s. data2vec_aux_weight=%.3g is ignored.',
+                'no feature width (raw frontend)' if not feature_dim else 'no nuisance subspace',
+                self.config.data2vec_aux_weight,
+            )
 
     def attach_lexical(self, matrix: torch.Tensor) -> None:
         """Attaches the frozen `(n_word_types, text_dim)` word-embedding target and sizes the aligner to it.
@@ -167,16 +177,20 @@ class _ObjectiveBase(nn.Module):
         if aligner is not None:
             aligner.attach(matrix)
 
-    def attach_consensus(self, n_sentences: int, n_content: int) -> None:
+    def attach_consensus(self, n_sentences: int, n_content: int, text_tasks: torch.Tensor | None = None) -> None:
         """Builds the cross-reader prototype banks once the stimulus and word-slot counts are known.
 
         Args:
             n_sentences (int): Number of distinct stimulus texts in the training split.
             n_content (int): Number of distinct word slots across those stimuli.
+            text_tasks (torch.Tensor | None, optional): Long `(n_sentences,)` task per stimulus text; when given, the
+                sentence gallery draws its distractors same-task only (`within_task_negatives`). Defaults to None.
         """
         self.consensus_sentence, self.consensus_word = build_consensus(
             self.config, n_sentences, n_content, self._content_dim, n_subjects=self._n_subjects
         )
+        if self.consensus_sentence is not None and text_tasks is not None:
+            self.consensus_sentence.attach_tasks(text_tasks)
 
     def sentence_consensus(self, z_sent: torch.Tensor, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Scores pooled sentence vectors against the cross-reader consensus of the stimulus they read.
@@ -219,6 +233,26 @@ class _ObjectiveBase(nn.Module):
             gallery_weight=self.config.consensus_word_weight,
             prefix='consensus_word',
         )
+
+    def sentence_regularize(self, z_sent: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
+        """Applies the VICReg variance/covariance guard to the content slice of the pooled sentence embedding.
+
+        Retrieval is scored on the pooled sentence vector, not on the token embeddings the shared guard watches, so
+        anti-collapse has to hold on this tensor too. Both weights at zero compute nothing at all.
+
+        Args:
+            z_sent (torch.Tensor): Pooled sentence embeddings `(batch_size, embed_dim)`.
+
+        Returns:
+            tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`; zero and empty when both weights are 0.
+        """
+        var_w, cov_w = self.config.sentence_variance_weight, self.config.sentence_covariance_weight
+        if var_w <= 0.0 and cov_w <= 0.0:
+            return z_sent.new_zeros(()), {}
+
+        loss, metrics = vicreg_terms(self._content_slice(z_sent), self.config.variance_target, var_w, cov_w)
+
+        return loss, {f'sentence_{key}': value for key, value in metrics.items()}
 
     def _content_slice(self, emb: torch.Tensor) -> torch.Tensor:
         """Returns the content subspace of `emb` (all dims unless the model is factored)."""

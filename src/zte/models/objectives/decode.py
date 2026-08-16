@@ -484,7 +484,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
             if bool(has_target.any())
             else prefix.sum() * 0.0
         )
-        ground = self._grounding(cond, ids, mask, text_id, has_target, has_target & ~replaced)
+        ground = self._grounding(cond, ids, mask, text_id, has_target, has_target & ~replaced, batch.get('task_id'))
         loss = ce + self.decoder_config.ground_weight * ground
 
         metrics: dict[str, float] = {
@@ -630,6 +630,7 @@ class PrefixDecodeObjective(_ObjectiveBase):
         text_id: torch.Tensor,
         has_target: torch.Tensor,
         anchors: torch.Tensor,
+        task_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Scores each item's own reference against in-batch negatives under its own prefix.
 
@@ -645,15 +646,25 @@ class PrefixDecodeObjective(_ObjectiveBase):
             text_id (torch.Tensor): `(batch_size,)` stimulus ids, so a negative is never the same sentence.
             has_target (torch.Tensor): `(batch_size,)` rows usable as candidates.
             anchors (torch.Tensor): `(batch_size,)` rows usable as queries.
+            task_id (torch.Tensor | None, optional): `(batch_size,)` task ids; under `within_task_negatives` a
+                negative must share the anchor's task, since task and stimulus are fully confounded on ZuCo and a
+                cross-task negative is separable by task alone. Defaults to None.
 
         Returns:
             torch.Tensor: Scalar softmax cross-entropy over `(1 + ground_negatives)` candidates.
+
+        Raises:
+            ValueError: If `within_task_negatives` is set but the batch carries no task ids.
         """
         prefix = cond.prefix
         n_neg = self.decoder_config.ground_negatives
         if n_neg <= 0 or prefix.shape[0] < 2:
             return prefix.sum() * 0.0
         allowed = (text_id[:, None] != text_id[None, :]) & has_target[None, :] & has_target[:, None]
+        if self.config.within_task_negatives:
+            if task_id is None:
+                raise ValueError('within_task_negatives needs task_id in the batch; collate_sentences provides it.')
+            allowed &= task_id[:, None] == task_id[None, :]
         if self.decoder_config.ground_hard_length:
             allowed = _length_matched(allowed, mask.sum(dim=1))
         usable = anchors & (allowed.sum(dim=1) > 0)

@@ -49,6 +49,16 @@ class ObjectiveConfig:
     variance_target: float = 1.0
     """Target per-dimension std (`gamma`) for the variance-hinge term."""
 
+    sentence_variance_weight: float = 0.0
+    """Weight of the VICReg variance hinge applied to the content slice of the pooled *sentence* embedding
+    (0 disables). The token-level guard never touches the pooled vector retrieval is actually scored on, which is how
+    sentence-level effective rank can collapse while every token metric looks healthy; anti-collapse has to guard the
+    evaluated tensor. Uses `variance_target` as its per-dimension std target."""
+
+    sentence_covariance_weight: float = 0.0
+    """Weight of the VICReg covariance penalty on the same pooled-sentence content slice (0 disables), decorrelating
+    its dimensions so the sentence space keeps its effective rank rather than degenerating into a few directions."""
+
     anisotropy_weight: float = 0.0
     """Weight of the anti-cone uniformity penalty (0 disables). Spreads L2-normalised embeddings over the sphere so
     their angular arrangement cannot degenerate; complements `whiten`, which removes the shared-mean cone."""
@@ -99,6 +109,13 @@ class ObjectiveConfig:
 
     hard_negative_keys: tuple[str, ...] = ('subject', 'task')
     """Batch fields that a negative must match the anchor on when `hard_negatives` is set."""
+
+    within_task_negatives: bool = False
+    """Restrict every sentence-level contrastive denominator -- the in-batch CLIP InfoNCE, the full-gallery CE, the
+    consensus gallery and the decoder's grounding negatives -- to candidates from the anchor's own task. On real ZuCo
+    no sentence appears under both tasks (task and stimulus are fully confounded), so a cross-task negative is
+    separable by task alone and the loss pays the encoder for being a task detector; same-task denominators make that
+    shortcut worthless."""
 
     # -- Eye-tracking privileged supervision -------------------------------- #
     behaviour_weight: float = 0.0

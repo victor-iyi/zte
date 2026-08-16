@@ -151,12 +151,17 @@ def run_rebaseline(
     if subject is None:
         raise ValueError('Nothing to hold out: the dataset has a single subject and none was named.')
 
+    tasks = sent_meta['task'].astype(str).to_numpy() if 'task' in sent_meta.columns else None
+    if tasks is None:
+        _LOG.warning('Sentence metadata carries no task column; the menu audit falls back to length-only matching.')
+
     report = rebaseline_report(
         sent_emb,
         np.asarray(sent_ids),
         subjects,
         subject,
         n_words,
+        tasks=tasks,
         length_tol=length_tol,
         oracle_tols=oracle_tols,
         ks=(1, 5, 10),
@@ -233,6 +238,14 @@ def main() -> None:
         budget.get('bits_needed', float('nan')),
         budget.get('bits_from_length', float('nan')),
         budget.get('bits_from_eeg', float('nan')),
+    )
+    menu = report.get('menu') or {}
+    flavors = menu.get('flavors') or {}
+    _LOG.info(
+        'Menu capacity at >= %s: length-matched K=%s, open K=%s.',
+        menu.get('target'),
+        (flavors.get('length_matched') or {}).get('capacity'),
+        (flavors.get('open') or {}).get('capacity'),
     )
     _LOG.info('Audit written to %s (rebaseline.json + rebaseline.md).', out_dir)
 

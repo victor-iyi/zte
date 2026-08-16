@@ -77,6 +77,37 @@ def parameter_groups(model: nn.Module, objective: nn.Module, config: ZTEConfig) 
     return groups
 
 
+def stage_for_epoch(epoch: int, config: ZTEConfig) -> str | None:
+    """Returns the curriculum stage `epoch` runs in, or `None` when the training mode has no stages.
+
+    Args:
+        epoch (int): The 1-based epoch about to run.
+        config (ZTEConfig): The full run configuration.
+
+    Returns:
+        str | None: `STAGE_A` or `STAGE_B`, or `None` for an `encoder` run.
+
+    Raises:
+        ValueError: When `train.mode='decoder'` is combined with `train.freeze_encoder=false` -- a decoder run
+            keeps the encoder frozen throughout, so unfreezing it needs `train.mode='joint'`.
+    """
+    train = config.train
+    match train.mode:
+        case 'encoder':
+            return None
+        case 'decoder':
+            if not train.freeze_encoder:
+                raise ValueError(
+                    "train.mode='decoder' keeps the encoder frozen for every epoch, so train.freeze_encoder=false "
+                    "contradicts the mode. Use train.mode='joint' to unfreeze the encoder after train.stage_a_epochs."
+                )
+            return STAGE_A
+        case _:
+            if train.freeze_encoder or epoch <= train.stage_a_epochs:
+                return STAGE_A
+            return STAGE_B
+
+
 def apply_stage(epoch: int, model: nn.Module, objective: nn.Module, config: ZTEConfig) -> bool:
     """Applies the curriculum for `epoch` and reports whether the trainable parameter set changed.
 
@@ -89,10 +120,10 @@ def apply_stage(epoch: int, model: nn.Module, objective: nn.Module, config: ZTEC
     Returns:
         bool: `True` when the encoder's `requires_grad` flipped, so the caller must rebuild any cached parameter list.
     """
-    train = config.train
-    if train.mode == 'encoder':
+    stage = stage_for_epoch(epoch, config)
+    if stage is None:
         return False
-    stage = STAGE_B if _encoder_trains(epoch, config) else STAGE_A
+
     set_stage = getattr(objective, 'set_stage', None)
     if callable(set_stage):
         set_stage(stage)
@@ -124,14 +155,6 @@ def trainable_parameters(model: nn.Module, objective: nn.Module) -> list[nn.Para
             seen.add(id(param))
             out.append(param)
     return out
-
-
-def _encoder_trains(epoch: int, config: ZTEConfig) -> bool:
-    """Returns whether the encoder should receive gradients during `epoch`."""
-    train = config.train
-    if train.freeze_encoder:
-        return False
-    return train.mode != 'joint' or epoch > train.stage_a_epochs
 
 
 def _set_trainable(module: nn.Module, trainable: bool) -> bool:

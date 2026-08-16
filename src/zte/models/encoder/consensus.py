@@ -131,6 +131,8 @@ class ConsensusDistiller(nn.Module):
         logit_scale (nn.Parameter): Learnable inverse temperature for the gallery term, clamped in the forward pass.
     """
 
+    task_of_key: torch.Tensor | None
+
     def __init__(
         self,
         n_keys: int,
@@ -157,6 +159,18 @@ class ConsensusDistiller(nn.Module):
         self.bank = ConsensusBank(n_keys, dim, n_subjects=n_subjects, decay=decay, min_readers=min_readers)
         self.logit_scale = nn.Parameter(torch.tensor(float(1.0 / max(temperature, 1e-4))).log())
         self.gallery_size = int(gallery_size)
+        self.register_buffer('task_of_key', None, persistent=False)
+
+    def attach_tasks(self, tasks: torch.Tensor) -> None:
+        """Attaches the `(n_keys,)` task id of every stimulus, restricting the gallery denominator to same-task keys.
+
+        Task and stimulus are fully confounded on ZuCo, so a cross-task distractor is separable by task alone and the
+        gallery term would reward a task detector rather than sentence identity.
+
+        Args:
+            tasks (torch.Tensor): Long task id per stimulus key (`-1` = unknown, which matches no anchor).
+        """
+        self.task_of_key = tasks.long()
 
     def compute(
         self,
@@ -224,6 +238,13 @@ class ConsensusDistiller(nn.Module):
         gallery = F.normalize(self.bank.prototypes[served], dim=-1).to(z.dtype)
         scale = self.logit_scale.exp().clamp(max=100.0)
         logits = (z[ready] @ gallery.t()) * scale
+
+        # Same-task denominator when a task map is attached: a cross-task distractor is separable by task alone, so
+        # leaving it in pays the encoder for being a task detector. The anchor's own key shares its task and survives.
+        if self.task_of_key is not None:
+            tasks = self.task_of_key.to(z.device)
+            same_task = tasks[served][None, :] == tasks[keys[ready]][:, None]
+            logits = logits.masked_fill(~same_task, torch.finfo(logits.dtype).min)
 
         # Position of each anchor's own key inside `served`, which is what cross-entropy needs as the label.
         position = torch.full((self.bank.n_keys,), -1, device=z.device, dtype=torch.long)

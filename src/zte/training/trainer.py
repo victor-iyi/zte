@@ -126,6 +126,8 @@ class Trainer:
         self._last_grad_norm: float | None = None
         self._start_epoch = 1
         self._epochs_since_best = 0
+        # Curriculum stage of the most recent epoch (ran or resumed); `None` until there is one to compare against.
+        self._stage: str | None = None
         self._wall_start = time.perf_counter()
         self._wall_seconds = 0.0
         if resume:
@@ -164,6 +166,7 @@ class Trainer:
         previous = self._install_signal_handlers()
         try:
             for epoch in range(self._start_epoch, total + 1):
+                self._enter_stage(epoch)
                 train_loss = self._train_one_epoch(epoch)
                 self.history['train_loss'].append(train_loss)
                 self._record_learning_rates()
@@ -248,6 +251,24 @@ class Trainer:
             return
         for name, group in zip(self._group_names, groups, strict=False):
             self.history[f'lr_{name}'].append(group['lr'])
+
+    def _enter_stage(self, epoch: int) -> None:
+        """Tracks the curriculum stage, resetting the best monitor and patience when a boundary is crossed."""
+        stage = stages.stage_for_epoch(epoch, self.config)
+        if stage is None:
+            return
+
+        # Stage B adds the joint auxiliaries to the val loss too, so a lifetime best would pin `best.pt` to stage A.
+        if self._stage is not None and stage != self._stage:
+            self.ckpt.reset_best()
+            self._epochs_since_best = 0
+            _LOG.info(
+                'Stage %s -> %s at epoch %d: best-checkpoint monitor and early-stop patience reset.',
+                self._stage.upper(),
+                stage.upper(),
+                epoch,
+            )
+        self._stage = stage
 
     def _should_early_stop(self, epoch: int) -> bool:
         """Reports whether patience on the monitored metric has run out (`early_stop_patience=0` disables)."""
@@ -477,6 +498,8 @@ class Trainer:
             best = monitor
         extra['best_metric'] = best
         extra['epochs_since_best'] = self._epochs_since_best
+        if self._stage is not None:
+            extra['stage'] = self._stage
         extra['history'] = {k: list(v) for k, v in self.history.items()}
         extra['provenance'] = self.provenance()
         extra.update(self._decoder_extras())
@@ -579,6 +602,9 @@ class Trainer:
             teacher.module.load_state_dict(extra['teacher_state'])
         self.ckpt.best_metric = extra.get('best_metric', self.ckpt.best_metric)
         self._epochs_since_best = int(extra.get('epochs_since_best', 0))
+        # Older payloads carry no stage; `None` keeps their monitor behaviour unchanged rather than guessing a reset.
+        stage = extra.get('stage')
+        self._stage = stage if isinstance(stage, str) else None
         self._wall_seconds = float((extra.get('provenance') or {}).get('wall_seconds', 0.0))
         for key, values in extra.get('history', {}).items():
             self.history[key] = list(values)

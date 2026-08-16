@@ -72,6 +72,36 @@ def _build_content_vocab(ds: ZuCoDataset) -> dict[tuple[str, int], int]:
     return vocab
 
 
+def join_text_tasks(text_ids: list[int], task_ids: list[int], n_texts: int) -> torch.Tensor:
+    """Joins aligned per-sentence `(sentence_text_id, task_id)` pairs into a per-text `(n_texts,)` task buffer.
+
+    Args:
+        text_ids (list[int]): Per-sentence text id (`-1` entries are skipped).
+        task_ids (list[int]): Per-sentence task id, aligned with `text_ids`.
+        n_texts (int): Size of the text vocabulary.
+
+    Returns:
+        torch.Tensor: Long `(n_texts,)` task id per text, `-1` for texts no sentence here reads.
+
+    Raises:
+        ValueError: If one text id appears under two different tasks, which would make a same-task denominator
+            ill-defined for it.
+    """
+    tasks = torch.full((n_texts,), -1, dtype=torch.long)
+    for text_id, task_id in zip(text_ids, task_ids, strict=True):
+        if text_id < 0 or text_id >= n_texts:
+            continue
+        seen = int(tasks[text_id])
+        if seen >= 0 and seen != task_id:
+            raise ValueError(
+                f'Sentence text id {text_id} appears under two tasks ({seen} and {task_id}); within-task negatives '
+                'need every sentence text to belong to exactly one task.'
+            )
+        tasks[text_id] = task_id
+
+    return tasks
+
+
 @dataclass(slots=True)
 class SentenceSample:
     """One sentence's tensors prior to collation.
@@ -240,6 +270,21 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         stimulus-holding-out split leaks its held-out sentences in as negatives.
         """
         return sorted({int(t) for t in self._sentence_text_id if t >= 0})
+
+    def text_task_ids(self) -> torch.Tensor:
+        """Task id per `text_vocab` row, joined from this split's sentences; `-1` marks texts this split never reads.
+
+        Note:
+            The vocab key is the normalised sentence text itself, so parsing keys can never recover a task; the only
+            honest signal is the join over each sentence's own `(sentence_text_id, task_id)` pair.
+
+        Returns:
+            torch.Tensor: Long `(n_texts,)` task id per text.
+
+        Raises:
+            ValueError: If one sentence text appears under two different tasks.
+        """
+        return join_text_tasks(self._sentence_text_id, self._task_id, len(self._text_vocab))
 
     @property
     def reading_ids(self) -> list[int]:

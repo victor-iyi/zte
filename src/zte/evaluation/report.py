@@ -287,6 +287,7 @@ def evaluate_representation(
     # 4c) Emergent properties: do the same / related thoughts cluster ACROSS subjects (the north star)?
     emergence = _emergence_report(word_emb, word_meta, analogy)
 
+    fit_label = _postprocess_fit(do_whiten or n_top > 0, train_sent_emb is not None)
     metrics: dict[str, Any] = {
         'run_name': run_name,
         'n_word_embeddings': int(len(word_emb)),
@@ -295,7 +296,7 @@ def evaluate_representation(
         'sentence_retrieval': sent_ret,
         'sentence_retrieval_phase_control': phase_ret,
         'sentence_retrieval_transductive': sent_ret_transductive,
-        'postprocess_fit': _postprocess_fit(do_whiten or n_top > 0, train_sent_emb is not None),
+        'postprocess_fit': fit_label,
         'length_projection': length_projection,
         'gallery_exposure': _gallery_exposure(config),
         'word_retrieval': word_ret,
@@ -350,10 +351,31 @@ def evaluate_representation(
             phase_sent_emb=(None if phase_sent_emb is None else _postprocess(phase_sent_emb, None, do_whiten, n_top)),
             generation=generation,
             rescoring=rescoring,
+            postprocess_fit=fit_label,
         )
     except (ValueError, KeyError, IndexError, MemoryError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Scoreboard skipped: %r', exc)
         metrics['scoreboard'] = None
+
+    # The retrieval clause reads the held-out block when one exists; pooled `sentence_retrieval` is never a headline.
+    board = metrics.get('scoreboard') or {}
+    phase_block = board.get('phase_control_retrieval')
+    if isinstance(phase_block, dict):
+        phase_block.pop('top1_hits', None)
+    held_block = board.get('held_out_retrieval')
+    if isinstance(held_block, dict):
+        # Popped, not kept: the per-query vector feeds the CI here and would bloat metrics.json.
+        held_hits = [float(h) for h in held_block.pop('top1_hits', [])]
+        held_point, held_lo, held_hi = _diff_ci(held_hits, float(held_block.get('chance_top1', float('nan'))))
+        held_pass = bool(np.isfinite(held_lo) and held_lo > 0.0)
+        if 'retrieval_above_phase' in metrics['verdict']:
+            held_pass = held_pass and bool(metrics['verdict']['retrieval_above_phase'])
+        metrics['verdict']['retrieval_above_chance'] = held_pass
+        metrics['verdict']['retrieval_ci'] = [round(held_point, 4), round(held_lo, 4), round(held_hi, 4)]
+        metrics['verdict']['retrieval_basis'] = 'held_out_retrieval'
+    else:
+        metrics['verdict']['retrieval_basis'] = 'sentence_retrieval (pooled; the split holds no subject out)'
+
     perm = honesty.get('retrieval_permutation') or {}
     if perm.get('applicable'):
         metrics['verdict']['retrieval_permutation_p'] = perm['p_value']
@@ -1167,7 +1189,7 @@ def _verdict(
         if lo > effect_floor:
             beats_noise.append(t)
 
-    # Retrieval lift over its query-weighted chance rate.
+    # Pooled retrieval lift; the held-out scoreboard block supersedes this clause whenever the split provides one.
     ret_chance = float(sent_ret.get('chance_top1', float('nan')))
     ret_point, ret_lo, ret_hi = _diff_ci(sent_top1_hits, ret_chance, seed=seed)
     retrieval_pass = bool(np.isfinite(ret_lo) and ret_lo > 0.0)
@@ -1306,6 +1328,10 @@ def _render_report(
     health = metrics['embedding_health']
     sent = metrics['sentence_retrieval']
     verdict = metrics['verdict']
+    # The retrieval clause is judged on the held-out block when one exists, so its numbers come from there too.
+    held = (metrics.get('scoreboard') or {}).get('held_out_retrieval') or {}
+    on_held_out = verdict.get('retrieval_basis') == 'held_out_retrieval'
+    ret_src = held if on_held_out else sent
     lines = [
         f'# ZTE evaluation report -- {metrics["run_name"]}',
         '',
@@ -1332,15 +1358,13 @@ def _render_report(
         f'(effective-rank ratio {health["effective_rank_ratio"]:.2f}, '
         f'dead dims {health["dead_dim_fraction"]:.0%})',
         f'- Cross-subject retrieval above chance: **{verdict["retrieval_above_chance"]}** '
-        f'(Top-1 {sent.get("top1", float("nan")):.3f} vs query-weighted chance '
-        f'{sent.get("chance_top1", float("nan")):.3f}; '
+        f'(judged on `{verdict.get("retrieval_basis", "sentence_retrieval")}`; '
+        f'Top-1 {ret_src.get("top1", float("nan")):.3f} vs query-weighted chance '
+        f'{ret_src.get("chance_top1", float("nan")):.3f}; '
         f'lift CI {_fmt_ci(verdict.get("retrieval_ci"))}'
         + (f'; permutation p={verdict["retrieval_permutation_p"]:.3f}' if 'retrieval_permutation_p' in verdict else '')
-        + (
-            f'; rank-percentile {sent["rank_percentile"]:.3f}, median rank {sent["median_rank"]:.0f}'
-            if 'rank_percentile' in sent
-            else ''
-        )
+        + (f'; rank-percentile {ret_src["rank_percentile"]:.3f}' if 'rank_percentile' in ret_src else '')
+        + (f', median rank {ret_src["median_rank"]:.0f}' if 'median_rank' in ret_src else '')
         + '). The headline requires BOTH the CI lift and the permutation null; '
         'rank-percentile (1.0 = correct match ranked first) shows the whole distribution, not just the tail.',
     ]

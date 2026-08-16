@@ -480,6 +480,7 @@ class ZTEDecoder:
         length_normalise: bool = True,
         batch_size: int = 8,
         chunk: int | None = None,
+        pmi: bool | None = None,
     ) -> np.ndarray:
         """Scores every gallery sentence under every conditioning vector -- this is RETRIEVAL, not generation.
 
@@ -495,6 +496,9 @@ class ZTEDecoder:
             batch_size (int, optional): Queries per pass. Defaults to 8.
             chunk (int | None, optional): Candidate rows per LM forward. Defaults to None, which uses the
                 configured `decoder.rescore_chunk`.
+            pmi (bool | None, optional): Subtract each candidate's null-prefix score, cancelling the candidate-side
+                familiarity bias the train-fitted decoder gives train-cell texts. Defaults to None, which reads
+                `decoder.rescore_pmi`.
 
         Returns:
             np.ndarray: `(n_query, n_candidates)` length-normalised sequence log-probabilities.
@@ -502,6 +506,7 @@ class ZTEDecoder:
         ids, mask = self._tokenise(candidate_texts)
         tensor = _as_tensor(readings.z, self.device.device)
         rows = chunk or self.decoder_config.rescore_chunk
+        use_pmi = self.decoder_config.rescore_pmi if pmi is None else pmi
         scores: list[np.ndarray] = []
         for lo, hi in progress(list(_spans(tensor.shape[0], batch_size)), description='rescoring gallery'):
             prefix = self.bridge(tensor[lo:hi])
@@ -510,7 +515,44 @@ class ZTEDecoder:
             scores.append(block.float().cpu().numpy())
         if not scores:
             return np.empty((0, len(candidate_texts)), dtype=np.float32)
-        return np.concatenate(scores).astype(np.float32)
+
+        out = np.concatenate(scores).astype(np.float32)
+        if use_pmi:
+            # The null branch is query-independent, so one gallery pass broadcasts over every query.
+            out = out - self._null_candidate_scores(ids, mask, length_normalise, rows)[None, :]
+        return out
+
+    @torch.no_grad()
+    def null_rescore(
+        self,
+        candidate_texts: Sequence[str],
+        *,
+        length_normalise: bool = True,
+        chunk: int | None = None,
+    ) -> np.ndarray:
+        """Scores every gallery sentence under the learned null prefix -- the unconditional half of the PMI score.
+
+        Args:
+            candidate_texts (Sequence[str]): The gallery, in the order the returned entries follow.
+            length_normalise (bool, optional): Divide by token count. Defaults to True.
+            chunk (int | None, optional): Candidate rows per LM forward. Defaults to None, which uses the
+                configured `decoder.rescore_chunk`.
+
+        Returns:
+            np.ndarray: `(n_candidates,)` length-normalised sequence log-probabilities.
+        """
+        ids, mask = self._tokenise(candidate_texts)
+        rows = chunk or self.decoder_config.rescore_chunk
+
+        return self._null_candidate_scores(ids, mask, length_normalise, rows)
+
+    def _null_candidate_scores(
+        self, ids: torch.Tensor, mask: torch.Tensor, length_normalise: bool, rows: int
+    ) -> np.ndarray:
+        """Scores the tokenised gallery under the null prefix once, with no evidence, so no query enters the number."""
+        block = self.lm.sequence_logprob(self.bridge.null(1), ids, mask, length_normalise, rows, None)
+
+        return block[0].float().cpu().numpy().astype(np.float32)
 
     @torch.no_grad()
     def teacher_forced_nll(self, readings: ReadingBatch, texts: Sequence[str], batch_size: int = 8) -> np.ndarray:

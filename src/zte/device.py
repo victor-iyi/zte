@@ -6,7 +6,7 @@ import contextlib
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 
@@ -197,6 +197,33 @@ def auto_num_workers(spec: DeviceSpec, requested: int) -> int:
     if spec.kind in {'cuda', 'mps', 'xla'}:
         return min(4, max(1, (os.cpu_count() or 2) - 1))
     return 0
+
+
+def device_plan(prefer: DeviceKind | Literal['auto'] = 'auto') -> dict[str, Any]:
+    """Reports what ZTE will do with this machine, so an out-of-memory kill later is predictable rather than a mystery.
+
+    Args:
+        prefer (DeviceKind | Literal['auto'], optional): Backend to plan for. Defaults to `'auto'`.
+
+    Returns:
+        dict[str, Any]: The resolved backend beside the four settings that decide whether a run fits -- precision,
+        pinned memory, worker count and static shapes.
+
+    Raises:
+        RuntimeError: If a named backend is unavailable on this machine.
+    """
+    spec = resolve_device(prefer)
+
+    return {
+        'backend': spec.kind,
+        'device': spec.name,
+        'autocast_dtype': str(spec.autocast_dtype).removeprefix('torch.') if spec.autocast_dtype else 'fp32',
+        'mixed_precision': spec.use_amp,
+        'pin_memory': spec.supports_pin_memory,
+        'dataloader_workers_auto': auto_num_workers(spec, -1),
+        'tf32_matmul': spec.kind == 'cuda',
+        'static_shapes': spec.kind == 'xla',
+    }
 
 
 def _device_name(kind: DeviceKind, device: torch.device) -> str:

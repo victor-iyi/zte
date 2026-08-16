@@ -159,9 +159,12 @@ def run_training(
     if obj.lexical_weight > 0.0 or obj.lexical_reader_weight > 0.0:
         _attach_lexical(config, objective, train_td, device)
 
+    # Built only when the knob is on, so a run without it never trips the one-text-one-task assertion.
+    text_tasks = train_td.text_task_ids() if obj.within_task_negatives else None
+
     # Twelve subjects read the same stimuli, so every stimulus has a cross-reader consensus worth distilling toward.
     if _consensus_requested(obj):
-        objective.attach_consensus(len(train_td.text_vocab), train_td.n_content)
+        objective.attach_consensus(len(train_td.text_vocab), train_td.n_content, text_tasks=text_tasks)
 
     # Embed every unique sentence once with the frozen text encoder, then attach it as the alignment target.
     ordered_texts = train_td.ordered_texts()
@@ -169,7 +172,7 @@ def run_training(
     if obj.name in {'clip', 'decode'} and callable(attach_text):
         head = getattr(objective, 'clip_head', None)
         text_matrix = _text_matrix(config, ordered_texts, device, fallback_dim=_head_width(head))
-        _attach_text_target(attach_text, text_matrix, ordered_texts, train_td.split_text_ids)
+        _attach_text_target(attach_text, text_matrix, ordered_texts, train_td.split_text_ids, text_tasks)
         if obj.semantic_hard_negatives:
             from zte.data.targets.text import mine_hard_negatives
 
@@ -244,15 +247,23 @@ def _consensus_requested(obj: ObjectiveConfig) -> bool:
     return max(obj.consensus_weight, obj.consensus_gallery_weight, obj.consensus_word_weight) > 0.0
 
 
-def _attach_text_target(attach: Any, text_matrix: np.ndarray, texts: list[str], split_text_ids: list[int]) -> None:
+def _attach_text_target(
+    attach: Any,
+    text_matrix: np.ndarray,
+    texts: list[str],
+    split_text_ids: list[int],
+    text_tasks: torch.Tensor | None = None,
+) -> None:
     """Attaches the frozen gallery, handing the extras to the objectives whose signature accepts them.
 
-    Only the CLIP objective scores against a length-matched, split-restricted denominator; the decoder's
-    `attach_text` takes the matrix alone, so the extras are offered rather than forced.
+    Only the CLIP objective scores against a length-matched, split-restricted, optionally task-matched denominator;
+    the decoder's `attach_text` takes the matrix alone, so the extras are offered rather than forced.
     """
     matrix = torch.from_numpy(text_matrix)
-    if 'text_lengths' in inspect.signature(attach).parameters:
-        attach(matrix, text_word_counts(texts), split_text_ids)
+    params = inspect.signature(attach).parameters
+    if 'text_lengths' in params:
+        kwargs = {'text_tasks': text_tasks} if 'text_tasks' in params else {}
+        attach(matrix, text_word_counts(texts), split_text_ids, **kwargs)
         return
 
     attach(matrix)

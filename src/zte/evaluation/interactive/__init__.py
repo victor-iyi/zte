@@ -14,7 +14,7 @@ from zte.evaluation.interactive.atlas import neuron_atlas_html
 from zte.evaluation.interactive.classic import embedding_explorer_html
 from zte.evaluation.interactive.compare import build_comparison, combined_dashboard_html
 from zte.evaluation.interactive.explorer import thought_space_explorer_html
-from zte.evaluation.interactive.generation import generation_html
+from zte.evaluation.interactive.generation import generation_html, generation_payload
 from zte.evaluation.interactive.scoreboard import scoreboard_html
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     'combined_dashboard_html',
     'embedding_explorer_html',
     'generation_html',
+    'generation_payload',
     'neuron_atlas_html',
     'scoreboard_html',
     'thought_space_explorer_html',
