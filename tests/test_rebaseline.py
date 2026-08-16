@@ -149,6 +149,18 @@ def test_retrieval_declines_a_single_subject_cohort() -> None:
     assert stratified_retrieval(emb, content, subjects, 'ZAB', words) is None
 
 
+def test_a_query_with_no_reachable_positive_is_excluded_and_counted() -> None:
+    """An unanswerable query is dropped from the statistic and reported, never scored as a zero-percentile miss."""
+    emb, content, subjects, _ = _cohort(n_stimuli=10, codes=('ZAB', 'ZDM'))
+    keep = ~((subjects == 'ZDM') & (content == 0))
+
+    out = stratified_retrieval(emb[keep], content[keep], subjects[keep], 'ZAB', None, n_boot=100)
+    assert out is not None
+    assert out['excluded_no_positive'] == 1
+    assert out['n_queries'] == 9
+    assert out['rank_percentile'] == pytest.approx(1.0)
+
+
 # --------------------------------------------------------------------------- #
 # the non-transductive fit
 # --------------------------------------------------------------------------- #

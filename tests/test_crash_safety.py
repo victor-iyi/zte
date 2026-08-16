@@ -146,6 +146,31 @@ def test_mirror_tree_skips_heavy_dirs(tmp_path: Path) -> None:
     assert not (dst / 'bundle').exists()
 
 
+def test_mirror_tree_leaves_the_rotation_history_behind_without_losing_last_pt(tmp_path: Path) -> None:
+    """`ckpt_epoch*.pt` is history a fresh VM cannot resume from; `best.pt` and `last.pt` are the run itself."""
+    src, dst = tmp_path / 'run', tmp_path / 'drive'
+    (src / 'checkpoints').mkdir(parents=True)
+    for name in ('best.pt', 'last.pt', 'ckpt_epoch03.pt', 'ckpt_epoch07.pt'):
+        (src / 'checkpoints' / name).write_bytes(b'0' * 16)
+
+    copied, failed = mirror_tree(src, dst, exclude_files=('ckpt_epoch*.pt',))
+
+    # Two copied and *zero* failed: a file deliberately left behind must never be counted as a mirror failure.
+    assert (copied, failed) == (2, 0)
+    assert sorted(p.name for p in (dst / 'checkpoints').iterdir()) == ['best.pt', 'last.pt']
+
+
+def test_mirror_tree_excludes_nothing_by_default(tmp_path: Path) -> None:
+    """A caller that names no pattern gets every file, so the exclusion is opt-in rather than a surprise."""
+    src, dst = tmp_path / 'run', tmp_path / 'drive'
+    (src / 'checkpoints').mkdir(parents=True)
+    (src / 'checkpoints' / 'ckpt_epoch03.pt').write_bytes(b'0')
+    (src / 'checkpoints' / 'best.pt').write_bytes(b'1')
+
+    assert mirror_tree(src, dst) == (2, 0)
+    assert (dst / 'checkpoints' / 'ckpt_epoch03.pt').is_file()
+
+
 def test_mirror_tree_never_raises_on_a_bad_destination(tmp_path: Path) -> None:
     """An unusable Drive path degrades to a logged failure, never an exception."""
     src = tmp_path / 'run'

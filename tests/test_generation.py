@@ -461,14 +461,14 @@ def test_verdict_ignores_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_generation_page_refuses_what_the_verdict_refuses() -> None:
     """The offline page reads the same ledger as the gate, so it cannot advertise a pass the gate denies."""
-    from zte.evaluation.interactive.generation import _build_payload
+    from zte.evaluation.interactive.generation import generation_payload
 
-    payload = _build_payload(_working_block(), 'run')
+    payload = generation_payload(_working_block(), 'run')
     assert payload['honest_split'] is True
     assert payload['verdict']['beats_all_controls'] is True
     assert payload['verdict']['above_controls'] is True
 
-    crippled = _build_payload(
+    crippled = generation_payload(
         _working_block(split='val', controls_unavailable={'phase': 'no raw signal to destroy'}),
         'run',
     )
@@ -480,11 +480,11 @@ def test_the_generation_page_refuses_what_the_verdict_refuses() -> None:
 
 def test_the_generation_page_refuses_a_null_the_controls_alone_cannot_catch() -> None:
     """Beating every control is one clause of five; the page's headline is the whole gate, not that clause."""
-    from zte.evaluation.interactive.generation import _build_payload
+    from zte.evaluation.interactive.generation import generation_payload
 
     # Beats every control and runs on the honest split, but the pairing is chance and the prompt ignores the brain.
     block = _working_block(permutation={'applicable': True, 'p_value': 0.42}, prefix_influence_kl=0.0001)
-    payload = _build_payload(block, 'run', min_prefix_kl=0.05)
+    payload = generation_payload(block, 'run', min_prefix_kl=0.05)
 
     assert payload['verdict']['beats_all_controls'] is True, 'the control clause alone still passes'
     assert payload['verdict']['above_controls'] is False

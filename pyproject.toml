@@ -78,8 +78,10 @@ zte-compare = 'zte.cli.compare:main'
 zte-loso-summary = 'zte.cli.loso_summary:main'
 zte-encodability = 'zte.cli.encodability:main'
 zte-pack = 'zte.cli.pack:main'
+zte-parallax = 'zte.cli.parallax:main'
 zte-analyze = 'zte.cli.analyze:main'
 zte-studio = 'zte.cli.studio:main'
+zte-colab = 'zte.cli.colab:main'
 
 [build-system]
 requires = ['hatchling']
@@ -93,6 +95,9 @@ artifacts = [
   'src/zte/evaluation/interactive/web/*/*.html',
   'src/zte/evaluation/interactive/web/*/*.css',
   'src/zte/evaluation/interactive/web/*/*.js',
+  'src/zte/parallax/web/*/*.html',
+  'src/zte/parallax/web/*/*.css',
+  'src/zte/parallax/web/*/*.js',
 ]
 
 [tool.uv]
