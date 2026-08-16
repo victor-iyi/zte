@@ -166,7 +166,7 @@ train:
   drive_backup_dir: null
   compile_model: false
   mode: decoder
-  encoder_ckpt: res/experiments/exp14_zte_lexical_raw_loZAB/checkpoints/best.pt
+  encoder_ckpt: res/experiments/exp16_residual_off_loZAB_s42/checkpoints/best.pt
   freeze_encoder: true
   bridge_lr: 0.001
   encoder_lr_scale: 0.1

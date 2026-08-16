@@ -2,7 +2,7 @@
 #
 # THE ARITHMETIC THIS IS BUILT AROUND, measured on the real 700-stimulus SR+NR gallery and not negotiable:
 # sentence identity needs 9.4512 bits; word count alone carries 5.1422 of them, free, because ZuCo's word
-# segmentation comes from eye tracking; the encoder has been measured at 1.4965 (train-fitted, full gallery).
+# segmentation comes from eye tracking; the encoder it actually ran over measures 0.6390 (train-fitted, full gallery).
 # A 19.6-word English sentence needs roughly 190 bits. Free generation is therefore an expected null and is
 # reported as one. The powered readout is decoder-rescoring retrieval, and it is labelled retrieval everywhere.
 #
@@ -197,7 +197,7 @@ train:
   drive_backup_dir: null
   compile_model: false
   mode: decoder
-  encoder_ckpt: res/experiments/exp14_zte_lexical_raw_loZAB/checkpoints/best.pt
+  encoder_ckpt: res/experiments/exp16_residual_off_loZAB_s42/checkpoints/best.pt
   freeze_encoder: true
   bridge_lr: 0.001
   encoder_lr_scale: 0.1

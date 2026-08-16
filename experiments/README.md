@@ -85,14 +85,14 @@ State these next to any result from this directory; they are in every `evaluatio
 | `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                           | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline. |
 | `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation    | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                    |
 | `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | Rank percentile **0.9672** (0.9635–0.9708), and stable to 0.0002 across seeds. The alignment stack itself is a measured no-op — see below.             |
-| `zte_encoder_v3` (`exp16_zte_encoder_v3`) | + predictive residual, cross-reader consensus, length-matched gallery, length projection | as `zte_lexical_raw`, byte-identical | **Not yet measured on real ZuCo.** Four architectural mechanisms after thirteen lever arms landed within noise of each other (2 to 9 hits in 700). See `docs/METHODS.md` §9-12.  |
-| `zte_lexical_raw` (`exp14_zte_lexical_raw`) | + token-level lexical alignment               | as `zte_raw_aligned`, byte-identical                                             | **Not yet measured on real ZuCo.** It is here because it is the encoder the v2 decoder is built over; promote or retire it on the next sweep.          |
-| `decode_zte_v2` (`exp15_decode_zte_v2`)     | frozen-LM prefix decode, metered and steered  | frozen `exp14_zte_lexical_raw`; frozen `Qwen/Qwen2.5-0.5B`                       | **Not yet measured on real ZuCo.** The rebuilt decoder: a rate-limited conditioning channel and a word-synchronous pointer. See `docs/DECODER.md`.     |
+| `zte_encoder_v3` (`exp16_zte_encoder_v3`) | + predictive residual, cross-reader consensus, length-matched gallery, length projection | as `zte_lexical_raw`, byte-identical | **Measured 2026-08-15 and falsified as a champion.** Held-out Top-1 0.010/0.021/0.029 across seeds 42/43/44, effective-rank ratio 0.06–0.09 (collapsed), and its own `exp16_residual_off` ablation beats it (0.0371, eff-rank 0.289): the predictive residual subtracts the sentence-constant code retrieval needs, and the gallery CE hurts too (off 0.030). The exp17 family in `ablation/` is the repair. |
+| `zte_lexical_raw` (`exp14_zte_lexical_raw`) | + token-level lexical alignment               | as `zte_raw_aligned`, byte-identical                                             | **Not yet measured on real ZuCo.** It is here because it is the encoder the v2 decoder was built over; promote or retire it on the next sweep.          |
+| `decode_zte_v2` (`exp15_decode_zte_v2`)     | frozen-LM prefix decode, metered and steered  | frozen encoder named by `encoder_ckpt` (best measured: `exp16_residual_off`); frozen `Qwen/Qwen2.5-0.5B` | **Measured 2026-08-15 over the v3 encoder** (via `--encoder-ckpt` override): free generation fails 6 of 7 controls (verdict False, as the bit budget predicts), and gallery rescoring adds nothing over the encoder. See `docs/DECODER.md`.     |
 
-> **Three rows here have no number yet** — `exp14_zte_lexical_raw`, `exp15_decode_zte_v2` and
-> `exp16_zte_encoder_v3`. They sit in `flagship/` as the current best-*designed* recipe of each kind, not the
-> best-measured one, and this table says so rather than implying a result. The tier rule on this project is measured
-> performance; the next sweep either earns them the row or moves them out.
+> **The tier rule on this project is measured performance.** `exp16_zte_encoder_v3` stays on this board only as the
+> documented parent of its ablation family; the best-measured encoder arm today is `ablation/exp16_residual_off`
+> (held-out Top-1 0.0371, one seed — seeds 43/44 are the first item on the run matrix). `exp14_zte_lexical_raw`
+> remains unmeasured.
 
 The encoder arms are all EEG-only — an honest "thought, not gaze" choice, since eye-tracking is a reading artefact absent from imagined thought — and all are scored leave-one-subject-out.
 
@@ -206,6 +206,10 @@ The text-encoder A/B that used to sit here (E5 vs Qwen vs BGE vs MPNet) is in [`
 | `exp16_gallery_off`                                             | `objective.gallery_weight` -- in-batch denominator only                     | `exp16_zte_encoder_v3`  |
 | `exp16_gallery_band_off`                                        | `objective.gallery_length_band` -- full gallery, no length matching        | `exp16_zte_encoder_v3`  |
 | `exp16_length_projection_off`                                   | `objective.length_projection` -- changes the measurement, not the model   | `exp16_zte_encoder_v3`  |
+| `exp17_base`                                                    | `objective.gallery_weight: 0` on top of residual off -- the repair base   | `exp16_residual_off`    |
+| `exp17_sent_vicreg`                                             | VICReg on the pooled content slice -- anti-collapse where retrieval reads | `exp17_base`            |
+| `exp17_task_blocked`                                            | `objective.within_task_negatives` -- task-pure contrastive denominators   | `exp17_base`            |
+| `exp17_align_train`                                             | `dataset.raw_align_fit: train` -- the deployable alignment fit            | `exp17_base`            |
 | `exp14_lexical_off`                                             | Both token-level lexical weights off                                      | `exp14_zte_lexical_raw` |
 | `exp14_lexical_reader_off`                                      | The same-word-different-reader half only                                  | `exp14_zte_lexical_raw` |
 | `feature_bandpower_mlp`                                         | `model.frontend` — band power instead of raw waveforms                    | `exp14_zte_lexical_raw` |
@@ -220,6 +224,23 @@ Each `exp12_*` arm is the flagship `zte_raw_aligned` recipe with exactly one of 
 disabled, so the delta attributable to that change is readable directly. The four `study_invariance_*` /
 `study_vicreg_*` files are generated from `ZTEConfig` objects by `scripts/make_study_configs.py`, so they cannot
 drift from the schema. For a *new* lever, prefer `zte-ablate` (below) over hand-writing a pair.
+
+## `parallax/` — one encoder per task
+
+ZuCo's task is fully confounded with its stimulus set (Cramér V 0.998), so a cross-task contrastive run can win on
+register. Each config here trains on exactly one task, removing the confound structurally; all three are byte-identical
+to `ablation/exp17_base.yaml` except `dataset.tasks` and `run_name`.
+
+| Config (`run_name`)             | Trains on                                      | The question                                                               |
+| ------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------- |
+| `parallax_nr` (`parallax_nr`)   | NR readings only, 11 subjects, `ZAB` held out  | Does a register-free NR code transfer to SR/TSR stimuli it has never seen? |
+| `parallax_sr` (`parallax_sr`)   | SR readings only, 11 subjects, `ZAB` held out  | Does a register-free SR code transfer to NR/TSR stimuli it has never seen? |
+| `parallax_tsr` (`parallax_tsr`) | TSR readings only, 11 subjects, `ZAB` held out | Does a code carrying TSR's relation-search attention transfer out at all?  |
+
+The prize is the 3×3 cross-task transfer matrix `zte-parallax` builds from these runs: each off-diagonal cell scores a
+never-seen subject reading never-seen stimuli — stratified rank percentile with bootstrap CI, plus per-pair CKA between
+the models. Results land beside every other run on Drive under `Sharables/ZTE/<date>/`, aggregated into
+`PARALLAX.json` / `PARALLAX.md`; design and artifacts: [`../docs/PARALLAX.md`](../docs/PARALLAX.md).
 
 ## `archive/` — retired, kept for the record
 

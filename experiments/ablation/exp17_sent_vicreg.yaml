@@ -1,8 +1,7 @@
-# decode_v2_evidence_only -- word-synchronous evidence alone, with the continuous conditioning vector.
+# exp17_sent_vicreg -- exp17 matched pair. Byte-identical to experiments/ablation/exp17_base.yaml
+# except for the one lever named below, so any difference in held-out rank percentile is attributable to it.
 #
-# Isolates the word-steering half against the pooled baseline. Read it beside `length_only` in the control
-# ladder: the evidence path receives the word count through its pointer schedule, and so does that control, so
-# any margin between them is lexical content and nothing else.
+# Lever: objective.sentence_variance_weight + sentence_covariance_weight (one mechanism: VICReg on the pooled content slice). Answers whether an anti-collapse floor on the tensor retrieval actually scores -- rather than the pre-contextual token embeddings no eval reads -- raises effective rank and held-out retrieval together.
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -80,8 +79,12 @@ model:
   factored: true
   content_dim: 384
   band_routing: false
+  residual_coding: false
+  residual_layers: 1
+  residual_gate: 1.0
+  residual_predict_weight: 1.0
 objective:
-  name: decode
+  name: clip
   temperature: 0.07
   context_window: 2
   mask_ratio: 0.5
@@ -92,17 +95,19 @@ objective:
   cpc_steps: 4
   variance_weight: 1.0
   covariance_weight: 1.0
+  sentence_variance_weight: 1.0
+  sentence_covariance_weight: 1.0
   variance_target: 1.0
   anisotropy_weight: 1.0
   whiten: true
   cross_subject_positives: true
   meaning_positives: true
-  subject_adversary_weight: 0.1
-  identity_orthogonality_weight: 0.0
+  subject_adversary_weight: 0.05
+  identity_orthogonality_weight: 1.0
   stimulus_adversary_weight: 0.3
-  meaning_distill_weight: 0.0
-  meaning_source: res/vectors/glove.300d.txt
-  meaning_dim: 300
+  meaning_distill_weight: 1.0
+  meaning_source: null
+  meaning_dim: 768
   hard_negatives: false
   hard_negative_keys:
   - subject
@@ -118,29 +123,37 @@ objective:
   alignment_weight: 0.1
   tau_plus: 0.1
   data2vec_aux_weight: 0.5
-  meaning_contextual: null
-  meaning_context_layer: -1
+  meaning_contextual: bert-base-uncased
+  meaning_context_layer: 8
   eval_phase_shuffle: false
   eval_seen_novel: true
   eval_freq_matched: true
-  eval_generation: true
-  eval_rescoring: true
-  eval_length_stratified: true
   text_source: intfloat/e5-base-v2
   text_backend: sentence-transformers
   text_query_prefix: 'query: '
   clip_temperature: 0.07
   semantic_hard_negatives: true
   hard_negative_pool: 8
-  lexical_weight: 0.0
-  lexical_reader_weight: 0.0
+  lexical_weight: 1.0
+  lexical_reader_weight: 1.0
   lexical_temperature: 0.07
   lexical_source: null
   lexical_max_tokens: 4096
   lexical_same_subject_negatives: true
+  consensus_weight: 1.0
+  consensus_gallery_weight: 0.5
+  consensus_word_weight: 0.25
+  consensus_decay: 0.99
+  consensus_min_readers: 2
+  consensus_temperature: 0.07
+  consensus_gallery_size: 1024
+  gallery_weight: 0.0
+  gallery_length_band: 2
+  gallery_min_candidates: 32
+  length_projection: true
 train:
-  epochs: 20
-  batch_size: 16
+  epochs: 40
+  batch_size: 128
   lr: 0.0003
   weight_decay: 0.01
   warmup_ratio: 0.1
@@ -151,75 +164,17 @@ train:
   precision: auto
   num_workers: -1
   static_shapes: auto
-  split: by_subject_and_stimulus
+  split: by_subject_loso
   val_fraction: 0.1
-  test_fraction: 0.15
+  test_fraction: 0.1
   loso_holdout_subject: ZAB
   seed: 42
   deterministic: true
   log_every: 10
   eval_every: 1
   ckpt_dir: res/checkpoints
-  ckpt_keep_last: 1
+  ckpt_keep_last: 3
   tensorboard: true
   drive_backup_dir: null
   compile_model: false
-  mode: decoder
-  encoder_ckpt: res/experiments/exp16_residual_off_loZAB_s42/checkpoints/best.pt
-  freeze_encoder: true
-  bridge_lr: 0.001
-  encoder_lr_scale: 0.1
-  stage_a_epochs: 3
-  early_stop_patience: 8
-run_name: exp15_decode_v2_evidence_only
-decoder:
-  lm_source: Qwen/Qwen2.5-0.5B
-  lm_revision: null
-  tokenizer_source: null
-  lm_cache_dir: null
-  conditioning: pooled
-  prefix_slots: 8
-  word_slots: 8
-  bottleneck: 128
-  gap_correction: mean_scale
-  null_prefix_prob: 0.1
-  cfg_weight: 1.0
-  ground_weight: 0.5
-  ground_negatives: 3
-  max_target_tokens: 96
-  max_new_tokens: 96
-  beams: 1
-  stage0_epochs: 20
-  min_prefix_kl: 0.05
-  clip_aux_weight: 1.0
-  cache_embeddings: false
-  prompt_template: '
-
-    Sentence: '
-  generation_controls:
-  - mean_prefix
-  - null_prefix
-  - phase
-  - noise
-  - shuffled_z
-  - length_only
-  - mismatch
-  n_permutations: 1000
-  rescore_gallery: true
-  length_tol: 1
-  rate_ladder: none
-  rate_stages: 4
-  rate_codes: 256
-  rate_length_stage: false
-  rate_length_weight: 1.0
-  evidence_schedule: linear
-  evidence_rank: 64
-  evidence_width: 1.5
-  evidence_gate_init: 0.0
-  ground_hard_length: true
-  bridge_depth: 2
-  within_task_pools:
-  - SR
-  - NR
-  rescore_chunk: 64
-  eval_seeds: []
+run_name: exp17_sent_vicreg
