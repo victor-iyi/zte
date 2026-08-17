@@ -14,12 +14,23 @@ _LOG = get_logger('parallax.chamber')
 # The page cannot draw a single panel without these; optional sections (capacity, cka, provenance) degrade per panel.
 _REQUIRED_KEYS: Final[tuple[str, ...]] = ('tasks', 'points', 'transfer')
 
+# Every gap note names the notebook cell that produces the missing artifact, so an empty panel is an instruction.
+_FIX_POINTS: Final[str] = (
+    '&sect;5 of notebooks/zte_parallax.ipynb (the transfer matrix) writes the embeddings this panel reduces.'
+)
+_FIX_CELLS: Final[str] = '&sect;5 of notebooks/zte_parallax.ipynb (the transfer matrix) produces its transfer cells.'
+_FIX_MENU: Final[str] = (
+    '&sect;5 of notebooks/zte_parallax.ipynb writes the menu audit into each diagonal transfer cell.'
+)
+_FIX_TRIAD: Final[str] = '&sect;4 of notebooks/zte_parallax.ipynb trains its arm and &sect;5 measures the pairs.'
+
 
 def build_chamber(report_dir: Path, out: Path) -> Path:
     """Renders `CHAMBER_DATA.json` from a `zte-parallax report` directory as one self-contained offline HTML page.
 
     Args:
-        report_dir (Path): Directory holding `CHAMBER_DATA.json` (and optionally `PARALLAX.json` for provenance).
+        report_dir (Path): Directory holding `CHAMBER_DATA.json` (and optionally `PARALLAX.json`, which
+            supplies provenance and the menu decomposition).
         out (Path): Destination `.html` path (parents created; a non-html suffix is rewritten).
 
     Returns:
@@ -31,7 +42,7 @@ def build_chamber(report_dir: Path, out: Path) -> Path:
         ImportError: If plotly is not installed.
     """
     data = _read_chamber_data(Path(report_dir))
-    provenance = _provenance(Path(report_dir))
+    sidecar = _sidecar(Path(report_dir))
 
     try:
         from plotly.offline import get_plotlyjs
@@ -39,7 +50,13 @@ def build_chamber(report_dir: Path, out: Path) -> Path:
         raise ImportError('plotly is required to build the Parallax Chamber; `uv sync` installs it.') from exc
 
     # The payload rides in an application/json island; `<` is escaped so sentence text can never close the tag.
-    payload = _clean({'data': data, 'provenance': provenance})
+    payload = _clean(
+        {
+            'data': data,
+            'provenance': sidecar['provenance'],
+            'menu_decomposition': sidecar['menu_decomposition'],
+        }
+    )
     blob = json.dumps(payload, separators=(',', ':'), allow_nan=False).replace('<', '\\u003c')
 
     out = Path(out)
@@ -47,11 +64,23 @@ def build_chamber(report_dir: Path, out: Path) -> Path:
         out = out.with_suffix('.html')
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # Panel gaps are decided server-side so the honest state survives even with scripting disabled.
+    decomp = sidecar['menu_decomposition']
+    has_decomp = isinstance(decomp, dict) and any(isinstance(row, dict) and row for row in decomp.values())
+    notes = _missing_notes(data)
+
     html = (
         load_page('chamber')
         .replace('/*__CHAMBER_PLOTLY_JS__*/', get_plotlyjs())
         .replace('__CHAMBER_DATA__', blob, 1)
         .replace('__CHAMBER_TITLE__', _esc(str(data.get('holdout', '?'))))
+        .replace('__CHAMBER_MISS_PARALLAX__', notes['parallax'])
+        .replace('__CHAMBER_MISS_FLOW__', notes['flow'])
+        .replace('__CHAMBER_MISS_DIALS__', notes['dials'])
+        .replace('__CHAMBER_MISS_RAIN__', notes['rain'])
+        .replace('__CHAMBER_MISS_TRIAD__', notes['triad'])
+        .replace('__CHAMBER_DECOMP_PLOT_HIDDEN__', '' if has_decomp else ' hidden')
+        .replace('__CHAMBER_DECOMP_NOTE_HIDDEN__', ' hidden' if has_decomp else '')
     )
     out.write_text(html, encoding='utf-8')
     _LOG.info('Parallax Chamber written to %s (%.1f MB).', out, out.stat().st_size / 1e6)
@@ -78,27 +107,72 @@ def _read_chamber_data(report_dir: Path) -> dict[str, Any]:
     return data
 
 
-def _provenance(report_dir: Path) -> dict[str, Any] | None:
-    """Pulls seeds and provenance from `PARALLAX.json` when the report ships one; the page renders without it."""
+def _sidecar(report_dir: Path) -> dict[str, Any]:
+    """Provenance and the menu decomposition from `PARALLAX.json`; the page renders without either."""
+    empty: dict[str, Any] = {'provenance': None, 'menu_decomposition': None}
     path = report_dir / 'PARALLAX.json'
     if not path.is_file():
-        return None
+        return empty
 
     try:
         parallax = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         _LOG.warning('PARALLAX.json under %s is unreadable (%r); the page renders without provenance.', report_dir, exc)
-        return None
+        return empty
 
     if not isinstance(parallax, dict):
-        return None
+        return empty
 
     # The footer prints scalars only, so the nested git dict is flattened to the commit it carries.
     prov = parallax.get('provenance')
     if isinstance(prov, dict) and isinstance(prov.get('git'), dict) and 'git_commit' not in prov:
         prov = {**prov, 'git_commit': prov['git'].get('commit')}
 
-    return {'seeds': parallax.get('seeds'), 'provenance': prov}
+    decomp = parallax.get('menu_decomposition')
+
+    return {
+        'provenance': {'seeds': parallax.get('seeds'), 'provenance': prov},
+        'menu_decomposition': decomp if isinstance(decomp, dict) else None,
+    }
+
+
+def _missing_notes(data: dict[str, Any]) -> dict[str, str]:
+    """Static per-panel gap notes naming each declared task a panel cannot draw, and the cell that fills it."""
+    tasks = [str(t) for t in data.get('tasks') or []]
+    points = data.get('points') if isinstance(data.get('points'), dict) else {}
+    transfer = data.get('transfer') if isinstance(data.get('transfer'), dict) else {}
+    capacity = data.get('capacity') if isinstance(data.get('capacity'), dict) else {}
+    cka = data.get('cka') if isinstance(data.get('cka'), dict) else {}
+
+    has_points = {t for t in tasks if points.get(t)}
+    has_transfer = {
+        t for t in tasks if transfer.get(t) or any(t in row for row in transfer.values() if isinstance(row, dict))
+    }
+    has_capacity = {t for t in tasks if isinstance(capacity.get(t), dict)}
+    in_cka = {part for key in cka for part in str(key).split('|')}
+    has_triad = {t for t in tasks if t in in_cka or t in has_transfer or t in has_points}
+
+    return {
+        'parallax': _notes_for(tasks, has_points, 'has no sentence points in this report', _FIX_POINTS),
+        'flow': _notes_for(tasks, has_transfer, 'has no transfer cells in this report', _FIX_CELLS),
+        'dials': _notes_for(tasks, has_capacity, 'has no menu-capacity audit in this report', _FIX_MENU),
+        'rain': _notes_for(tasks, has_points, 'has no percentile drops in this report', _FIX_POINTS),
+        'triad': _notes_for(tasks, has_triad, 'is missing from the CKA triad', _FIX_TRIAD),
+    }
+
+
+def _notes_for(tasks: list[str], have: set[str], gap: str, fix: str) -> str:
+    """One gap-note card per declared-but-absent task; empty when nothing is missing or nothing is drawable."""
+
+    # With nothing drawable at all the page's own full empty-state card owns the panel; a note would double it.
+    if not have:
+        return ''
+
+    return ''.join(
+        f'<div class="missnote"><span class="noteicon">&#9676;</span><span>{_esc(t)} {gap} &mdash; {fix}</span></div>'
+        for t in tasks
+        if t not in have
+    )
 
 
 def _clean(obj: Any) -> Any:

@@ -114,6 +114,7 @@ def build_report(
         'seeds': sorted({c.seed for c in cells}),
         'cells': nested,
         'cka': cka,
+        'menu_decomposition': _menu_decomposition(cells, holdout),
         'provenance': {'transfers_dir': str(Path(transfers).resolve()), 'n_cells': len(cells), 'git': git_info()},
     }
 
@@ -133,6 +134,9 @@ def _summary(report: dict[str, Any]) -> dict[str, Any]:
     length = report.get('held_out_length_stratified') or {}
     menu = report.get('menu') or {}
     flavor = (menu.get('flavors') or {}).get(menu.get('headline_flavor') or '', {})
+    # The enrolled twin of the headline flavor: best cross-subject reading instead of the centroid,
+    # reported beside the prototype capacity and never in its place.
+    enrolled = (menu.get('flavors') or {}).get(f'{menu.get("headline_flavor") or ""}_enrolled') or {}
 
     return {
         'seed': report.get('seed'),
@@ -154,6 +158,8 @@ def _summary(report: dict[str, Any]) -> dict[str, Any]:
         'length_stratified_ci': length.get('rank_percentile_ci'),
         'menu_capacity': flavor.get('capacity'),
         'menu_k2_accuracy': ((flavor.get('per_k') or {}).get('2') or {}).get('accuracy'),
+        'menu_capacity_enrolled': enrolled.get('capacity'),
+        'menu_k2_enrolled': ((enrolled.get('per_k') or {}).get('2') or {}).get('accuracy'),
         'postprocess_fit': report.get('postprocess_fit'),
         'run_name': (report.get('provenance') or {}).get('run_name'),
     }
@@ -250,6 +256,67 @@ def _cka_pairs(cells: list[TransferCell]) -> dict[str, Any]:
             pairs[f'{a}|{b}'] = {'eval_task': eval_task, 'per_seed': per_seed}
 
     return pairs
+
+
+def _menu_decomposition(cells: list[TransferCell], holdout: str) -> dict[str, Any]:
+    """2-way accuracy per scoring rule and length tolerance, isolating why the menu and percentile disagree.
+
+    The retrieval percentile ranks the FIRST matching reading among ~11 cross-subject positives -- a
+    best-of-many statistic -- while the certified menu scores one prototype inside an exact-length pool
+    with ties losing. This diagnostic recomputes 2-way accuracy on the diagonal cells under each rule
+    ({prototype, best reading} x {exact length, tol 1}), so the gap decomposes into named factors
+    instead of standing as a mystery. Diagnostic only: nothing here feeds a capacity or a verdict.
+    """
+    out: dict[str, Any] = {}
+    for task in PARALLAX_TASKS:
+        per_seed: dict[str, list[float]] = {}
+        for cell in cells:
+            if cell.train_task != task or cell.eval_task != task:
+                continue
+            block = _load_embeddings(cell.path)
+            if block is None:
+                continue
+            scores = _two_way_grid(block, holdout)
+            for name, value in scores.items():
+                per_seed.setdefault(name, []).append(value)
+
+        if per_seed:
+            out[task] = {name: float(np.mean(values)) for name, values in per_seed.items()}
+
+    return out
+
+
+def _two_way_grid(block: dict[str, np.ndarray], holdout: str) -> dict[str, float]:
+    """One cell's 2-way accuracies under {prototype, best reading} x {tol 0, tol 1}, ties losing."""
+    subjects = block['subjects'].astype(str)
+    ids = block['content_ids'].astype(int)
+    lengths = np.asarray(block['n_words'], dtype=np.float64)
+    mask = subjects != holdout
+
+    emb = fit_postprocess(np.asarray(block['sent_emb'], dtype=np.float32)[mask])(block['sent_emb'])
+    emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
+
+    sent_ids = sorted({int(c) for c in ids[mask]})
+    rows_of = {cid: np.where((ids == cid) & mask)[0] for cid in sent_ids}
+    protos = np.stack([emb[rows_of[cid]].mean(axis=0) for cid in sent_ids])
+    protos = protos / (np.linalg.norm(protos, axis=1, keepdims=True) + 1e-12)
+    sent_len = np.asarray([float(np.median(lengths[rows_of[cid]])) for cid in sent_ids])
+    index_of = {cid: i for i, cid in enumerate(sent_ids)}
+
+    queries = np.where((subjects == holdout) & np.isin(ids, np.asarray(sent_ids)))[0]
+    grid: dict[str, list[float]] = {f'{rule}_tol{tol}': [] for rule in ('prototype', 'best_reading') for tol in (0, 1)}
+    for q in queries:
+        target = index_of[int(ids[q])]
+        proto_scores = protos @ emb[q]
+        best_scores = np.asarray([float(np.max(emb[rows_of[cid]] @ emb[q])) for cid in sent_ids])
+        for tol in (0, 1):
+            pool = (np.abs(sent_len - sent_len[target]) <= tol) & (np.arange(len(sent_ids)) != target)
+            if not pool.any():
+                continue
+            for rule, scores in (('prototype', proto_scores), ('best_reading', best_scores)):
+                grid[f'{rule}_tol{tol}'].append(float(np.mean(scores[pool] < scores[target])))
+
+    return {name: float(np.mean(values)) for name, values in grid.items() if values}
 
 
 # --------------------------------------------------------------------------- #
@@ -497,7 +564,7 @@ def _pooled_transfer(nested: dict[str, dict[str, list[dict[str, Any]]]]) -> dict
 
 
 def _pooled_capacity(nested: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
-    """Diagonal menu capacity per arm: the smallest certified K across seeds, and the mean 2-way accuracy."""
+    """Diagonal menu capacity per arm, prototype and enrolled: smallest certified K and mean 2-way accuracy."""
     capacity: dict[str, Any] = {}
     for train, evals in nested.items():
         summaries = evals.get(train)
@@ -505,9 +572,15 @@ def _pooled_capacity(nested: dict[str, dict[str, list[dict[str, Any]]]]) -> dict
             continue
         caps = [s['menu_capacity'] for s in summaries]
         k2 = [s['menu_k2_accuracy'] for s in summaries if s['menu_k2_accuracy'] is not None]
+        enrolled_caps = [s.get('menu_capacity_enrolled') for s in summaries]
+        enrolled_k2 = [s.get('menu_k2_enrolled') for s in summaries if s.get('menu_k2_enrolled') is not None]
         capacity[train] = {
             'k_at_target': int(min(caps)) if caps and all(c is not None for c in caps) else None,
             'k2_accuracy': float(np.mean(k2)) if k2 else None,
+            'enrolled_k_at_target': (
+                int(min(enrolled_caps)) if enrolled_caps and all(c is not None for c in enrolled_caps) else None
+            ),
+            'enrolled_k2_accuracy': float(np.mean(enrolled_k2)) if enrolled_k2 else None,
         }
 
     return capacity
@@ -595,8 +668,38 @@ def render_markdown(parallax: dict[str, Any]) -> str:
             k = block.get('k_at_target')
             k2 = block.get('k2_accuracy')
             lines.append(
-                f'- `{arm}`: certified capacity K = {"none" if k is None else k}, '
+                f'- `{arm}` prototype: certified capacity K = {"none" if k is None else k}, '
                 f'2-way accuracy {"—" if k2 is None else format(k2, ".4f")}.'
+            )
+            ek = block.get('enrolled_k_at_target')
+            ek2 = block.get('enrolled_k2_accuracy')
+            lines.append(
+                f'- `{arm}` enrolled (best cross-subject reading): certified capacity K = '
+                f'{"none" if ek is None else ek}, 2-way accuracy {"—" if ek2 is None else format(ek2, ".4f")}.'
+            )
+
+    decomposition = parallax.get('menu_decomposition') or {}
+    if decomposition:
+
+        def _cell(value: Any) -> str:
+            return '—' if value is None else format(float(value), '.4f')
+
+        lines += [
+            '',
+            '## Why the menu and the percentile disagree -- 2-way decomposition (diagnostic)',
+            '',
+            'The retrieval percentile ranks the first of ~11 cross-subject readings of the true sentence -- a '
+            'best-of-many statistic -- while the certified menu scores one prototype inside an exact-length pool '
+            'with ties losing. The grid isolates each factor on the diagonal cells (mean across seeds). '
+            'Diagnostic only: no capacity or verdict reads it.',
+            '',
+            '| task | prototype, exact len | prototype, ±1 | best reading, exact len | best reading, ±1 |',
+            '| --- | --- | --- | --- | --- |',
+        ]
+        for task, row in decomposition.items():
+            lines.append(
+                f'| {task} | {_cell(row.get("prototype_tol0"))} | {_cell(row.get("prototype_tol1"))} '
+                f'| {_cell(row.get("best_reading_tol0"))} | {_cell(row.get("best_reading_tol1"))} |'
             )
 
     cka = parallax.get('cka') or {}

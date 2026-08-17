@@ -127,6 +127,34 @@ The repair family is `ablation/exp17_*` (residual off + gallery off as the base,
 task-pure negatives, and the deployable alignment fit as matched pairs). The best-measured encoder arm today is
 `exp16_residual_off` at one seed; seeds 43/44 are the first item on the run matrix.
 
+## The parallax transfer matrix (2026-08-16/17, held out on `ZAB`, seeds 42/43/44)
+
+The per-task encoders (`experiments/parallax/`, the exp17 recipe on one task each) measured on real ZuCo. Full design
+and per-cell CIs: [`PARALLAX.md`](PARALLAX.md).
+
+| cell | rank percentile (s42 / s43 / s44) |
+| --- | --- |
+| NR → SR (never-seen subject × never-seen sentences) | 0.9507 / 0.9647 / 0.9715 |
+| SR → NR (never-seen subject × never-seen sentences) | 0.9515 / 0.9577 / 0.9591 |
+| NR → NR diagonal (pooled over seeds) | 0.9530 |
+| SR → SR diagonal (pooled over seeds) | 0.9575 |
+
+Length-stratified, the off-diagonal cells hold at ~0.92–0.93, and effective-rank ratios sit at 0.41–0.46 against the
+v3 encoder's 0.06–0.09 — the geometry healed without giving the transfer back. The honest statement: **a
+task-invariant, stimulus-set-invariant code reaches a never-seen subject at rank-percentile ~0.95–0.97,
+length-stratified ~0.92; single-reference exact-length menus remain at chance; TSR carries no measurable content
+signal in-task.**
+
+The two findings behind the qualifiers, stated as measured:
+
+- **TSR in-task is a null.** At s44: held-out Top-1 0.00246 — exactly chance on its 407-sentence gallery — lift
+  −0.0003, permutation *p* = 0.998, effective rank 0.33. Healthy geometry, no content signal.
+- **The certified menu is at chance on exact-length prototype pools.** K=2 accuracy 0.522 (CI 0.484–0.560,
+  permutation *p* = 0.12) for NR s44; the ±1/±2 tolerance rows read 0.526 / 0.538, so tolerance is not the driver.
+  The open menu's 0.707 (*p* = 0.002) is stamped `gamed: true` by its own 0.971 length oracle and self-disqualifies.
+  The discriminative signal lives in individual readings, not centroids — the enrolled menu flavor exists to score
+  exactly that.
+
 ## Not yet measured
 
 `flagship/zte_lexical_raw` (exp14) remains unmeasured on real ZuCo, and the `exp17_*` repair family exists as

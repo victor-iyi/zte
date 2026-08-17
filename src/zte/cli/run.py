@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from zte.cli.support.io import read_json, write_json
 from zte.cli.support.provision import add_provision_args, provision_from_args
@@ -398,7 +398,7 @@ def _run(args: argparse.Namespace) -> None:
     # Catalogue: manifest, per-run README and the shared index row.
     write_json(run_dir / 'manifest.json', manifest, default=str)
     (run_dir / 'README.md').write_text(_render_run_readme(config, manifest, run_dir), encoding='utf-8')
-    _catalogue(Path(args.out_root), config.run_name, manifest)
+    _catalogue(Path(args.out_root), config.run_name, manifest, remote_index=_remote_index_path(args))
     _mirror_to_drive(run_dir, args, 'catalogue', index=Path(args.out_root) / 'INDEX.md')
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
 
@@ -678,8 +678,58 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
     return '\n'.join(lines)
 
 
-def _catalogue(out_root: Path, run_name: str, manifest: dict[str, Any]) -> None:
-    """Appends/updates a one-line entry for this run in the experiments index."""
+# Normalised on every write: rows from any older column layout cannot be reconciled with this table.
+_INDEX_HEADER: Final[str] = (
+    '# ZTE experiment catalogue\n\n'
+    '| run | words | held-out retrieval Top-1 (honest) | pooled retrieval Top-1 (inflated) | '
+    'subject-transfer Top-1 | eff-rank ratio |\n'
+    '| --- | --- | --- | --- | --- | --- |\n'
+)
+"""Header every catalogue write emits before its rows."""
+
+
+def _remote_index_path(args: argparse.Namespace) -> Path | None:
+    """Returns the Drive-side `INDEX.md` the catalogue mirror will overwrite, or `None` without a mounted target."""
+    if not args.drive_backup:
+        return None
+    from zte.data.io.remote import is_mounted_path
+
+    if not is_mounted_path(args.drive_backup):
+        return None
+
+    return Path(args.drive_backup) / 'INDEX.md'
+
+
+def _index_rows(index: Path | None) -> dict[str, str]:
+    """Returns a catalogue's data rows keyed by run name in file order; empty when absent, unreadable or pre-held-out."""
+    if index is None:
+        return {}
+    try:
+        text = index.read_text(encoding='utf-8')
+    except OSError:
+        return {}
+    # A pre-held-out INDEX has a different column layout, so its rows cannot be reconciled with the header.
+    if 'held-out retrieval' not in text:
+        return {}
+
+    rows: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith('|'):
+            continue
+        name = line.split('|')[1].strip()
+        # The header row and the `| --- |` separator are re-emitted from `_INDEX_HEADER`, never carried as data.
+        if name and name != 'run' and set(name) != {'-'}:
+            rows[name] = line
+
+    return rows
+
+
+# The catalogue mirror pushes the local file whole over the Drive copy, and a fresh VM starts with no local
+# rows at all -- so the write must be the union of both indexes keyed by run name, local rows winning on
+# conflict. A session can then add or update its own runs but never erase another session's; an unreachable
+# remote degrades to local-only.
+def _catalogue(out_root: Path, run_name: str, manifest: dict[str, Any], remote_index: Path | None = None) -> None:
+    """Appends/updates this run's row in the experiments index, merged with the mirrored Drive copy."""
     index = out_root / 'INDEX.md'
     ev = manifest.get('evaluation', {})
     # Held-out retrieval is the honest LOSO headline; pooled sentence retrieval is shown but flagged as
@@ -691,21 +741,12 @@ def _catalogue(out_root: Path, run_name: str, manifest: dict[str, Any]) -> None:
         f'{ev.get("sentence_retrieval_top1", "-")} | {ev.get("subject_transfer_top1", "-")} | '
         f'{ev.get("effective_rank_ratio", "-")} |'
     )
-    header = (
-        '# ZTE experiment catalogue\n\n'
-        '| run | words | held-out retrieval Top-1 (honest) | pooled retrieval Top-1 (inflated) | '
-        'subject-transfer Top-1 | eff-rank ratio |\n'
-        '| --- | --- | --- | --- | --- | --- |\n'
-    )
-    existing = index.read_text(encoding='utf-8') if index.exists() else header
-    # A pre-held-out INDEX has a different column layout, so its rows cannot be reconciled with the new
-    # header; rebuild from the header in that case rather than emit a ragged table.
-    if 'held-out retrieval' not in existing:
-        existing = header
-    lines = [ln for ln in existing.splitlines() if not ln.startswith(f'| {run_name} |')]
-    if not lines or not lines[0].startswith('# ZTE'):
-        lines = header.rstrip('\n').splitlines()
-    index.write_text('\n'.join([*lines, row]) + '\n', encoding='utf-8')
+
+    # Remote rows first, then local rows over them, then this run's row: last write wins per run name.
+    rows = _index_rows(remote_index)
+    rows |= _index_rows(index)
+    rows[run_name] = row
+    index.write_text(_INDEX_HEADER + '\n'.join(rows.values()) + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':

@@ -482,3 +482,108 @@ def test_a_duplicate_hiding_behind_case_or_whitespace_still_fails_the_novelty_cl
     assert report['stimulus_overlap'] == 0
     assert report['stimulus_overlap_normalized'] == 6
     assert report['novel_stimuli'] is False
+
+
+def test_menu_decomposition_recovers_a_clean_signal_under_every_rule(tmp_path: Path) -> None:
+    """The diagnostic grid sits high under every scoring rule when same-sentence readings genuinely cluster."""
+    rng = np.random.default_rng(5)
+    n_stimuli = 24
+    directions = rng.standard_normal((n_stimuli, 16)).astype(np.float32)
+    lengths = np.asarray([5.0, 10.0])[rng.integers(0, 2, size=n_stimuli)]
+
+    emb, content, subjects, words, texts = [], [], [], [], []
+    for code in _SUBJECTS:
+        emb.append(directions + 0.05 * rng.standard_normal(directions.shape).astype(np.float32))
+        content.append(np.arange(n_stimuli))
+        subjects += [code] * n_stimuli
+        words.append(lengths)
+        texts.append(np.array([f'NR sentence {i}' for i in range(n_stimuli)]))
+
+    report = transfer_report(
+        np.concatenate(emb),
+        np.concatenate(content),
+        np.array(subjects),
+        np.concatenate(words),
+        np.concatenate(texts),
+        train_task='NR',
+        eval_task='NR',
+        holdout='ZAB',
+        train_stimulus_texts={f'NR sentence {i}' for i in range(n_stimuli)},
+        n_boot=100,
+    )
+    write_cell(
+        tmp_path / 'cells' / cell_name('NR', 'NR', 42),
+        report,
+        sent_emb=np.concatenate(emb),
+        content_ids=np.concatenate(content),
+        subjects=np.array(subjects),
+        n_words=np.concatenate(words),
+        texts=np.concatenate(texts),
+    )
+
+    out = build_report(tmp_path / 'cells', tmp_path / 'rep')
+
+    grid = out['menu_decomposition']['NR']
+    for name in ('prototype_tol0', 'prototype_tol1', 'best_reading_tol0', 'best_reading_tol1'):
+        assert grid[name] > 0.9, (name, grid[name])
+    text = (tmp_path / 'rep' / 'PARALLAX.md').read_text(encoding='utf-8')
+    assert 'decomposition (diagnostic)' in text
+
+
+def test_the_enrolled_capacity_travels_through_the_report_round_trip(tmp_path: Path) -> None:
+    """The enrolled menu numbers land in PARALLAX.json, CHAMBER_DATA.json and the markdown, beside the prototype's."""
+    rng = np.random.default_rng(9)
+    n_stimuli = 24
+    directions = rng.standard_normal((n_stimuli, 16)).astype(np.float32)
+    lengths = np.asarray([5.0, 10.0])[rng.integers(0, 2, size=n_stimuli)]
+
+    emb, content, subjects, words, texts = [], [], [], [], []
+    for code in _SUBJECTS:
+        emb.append(directions + 0.05 * rng.standard_normal(directions.shape).astype(np.float32))
+        content.append(np.arange(n_stimuli))
+        subjects += [code] * n_stimuli
+        words.append(lengths)
+        texts.append(np.array([f'NR sentence {i}' for i in range(n_stimuli)]))
+
+    report = transfer_report(
+        np.concatenate(emb),
+        np.concatenate(content),
+        np.array(subjects),
+        np.concatenate(words),
+        np.concatenate(texts),
+        train_task='NR',
+        eval_task='NR',
+        holdout='ZAB',
+        train_stimulus_texts={f'NR sentence {i}' for i in range(n_stimuli)},
+        n_boot=100,
+    )
+    write_cell(
+        tmp_path / 'cells' / cell_name('NR', 'NR', 42),
+        report,
+        sent_emb=np.concatenate(emb),
+        content_ids=np.concatenate(content),
+        subjects=np.array(subjects),
+        n_words=np.concatenate(words),
+        texts=np.concatenate(texts),
+    )
+
+    build_report(tmp_path / 'cells', tmp_path / 'rep')
+
+    # PARALLAX.json: the per-seed summary carries the enrolled capacity beside the prototype's.
+    parallax = json.loads((tmp_path / 'rep' / 'PARALLAX.json').read_text(encoding='utf-8'))
+    summary = parallax['cells']['NR']['NR'][0]
+    assert summary['menu_capacity_enrolled'] is not None
+    assert summary['menu_k2_enrolled'] is not None and summary['menu_k2_enrolled'] > 0.9
+
+    # CHAMBER_DATA.json: the pooled capacity block gains the enrolled keys, prototype keys untouched.
+    chamber = json.loads((tmp_path / 'rep' / 'CHAMBER_DATA.json').read_text(encoding='utf-8'))
+    block = chamber['capacity']['NR']
+    assert set(block) == {'k_at_target', 'k2_accuracy', 'enrolled_k_at_target', 'enrolled_k2_accuracy'}
+    assert block['enrolled_k_at_target'] is not None
+    assert block['enrolled_k2_accuracy'] is not None and block['enrolled_k2_accuracy'] > 0.9
+
+    # PARALLAX.md: both lines per arm, each naming its scoring rule.
+    markdown = (tmp_path / 'rep' / 'PARALLAX.md').read_text(encoding='utf-8')
+    assert '## Menu capacity (in-task diagonal)' in markdown
+    assert '- `NR` prototype: certified capacity K =' in markdown
+    assert '- `NR` enrolled (best cross-subject reading): certified capacity K =' in markdown

@@ -19,6 +19,14 @@ HEADLINE_TOL: Final[int] = 0
 SENSITIVITY_TOLS: Final[tuple[int, ...]] = (1, 2)
 """Widened tolerances reported as labelled diagnostics; no verdict or capacity may read them."""
 
+PROTOTYPE_SCORING: Final[str] = 'prototype'
+"""Scoring label of the single-reference flavors -- one training-subject centroid per candidate."""
+
+# Max, not mean: clinical enrollment stores N reference recordings per menu item and a query need only
+# land near one of them, whereas a centroid can sit between reading styles and represent neither.
+ENROLLED_SCORING: Final[str] = 'enrolled reading (max over cross-subject readings)'
+"""Scoring label of the `_enrolled` flavors -- best cosine over a candidate's enrolled training readings."""
+
 
 def menu_report(
     sent_emb: np.ndarray,
@@ -55,6 +63,14 @@ def menu_report(
     length-oracle null (`gamed` flips true if word count alone escapes chance inside the pool) and a
     permutation p per K (the true label reassigned uniformly within the candidate set).
 
+    Every flavor block names its `scoring` rule. The certified `_enrolled` twins
+    (`length_matched_enrolled`, plus `length_task_matched_enrolled` when task labels are given) score
+    a candidate by its best enrolled training reading -- max cosine over that sentence's train-mask
+    readings -- modelling the clinical enrollment of N reference recordings per menu item. They run
+    the same pools, oracle null and certification as the prototype flavors; the headline flavor stays
+    the prototype one, the strictest single-reference claim, and enrolled capacity is reported beside
+    it, never in its place.
+
     Args:
         sent_emb (np.ndarray): Sentence embeddings `(n, d)`, before any post-processing.
         content_ids (np.ndarray): Stimulus id per reading `(n,)`.
@@ -78,6 +94,10 @@ def menu_report(
         dict | None: `{'postprocess_fit', 'headline_flavor', 'target', 'holdout', 'n_queries',
             'n_gallery', 'dropped_no_prototype', 'tie_policy', 'flavors', 'sensitivity'}`; `None`
             when there is nothing to score.
+
+    Raises:
+        ValueError: If `train_mask` admits a held-out reading -- a query would then be scored
+            against its own enrolled reading.
     """
     from zte.evaluation.audit.rebaseline import fit_postprocess
 
@@ -89,6 +109,11 @@ def menu_report(
     q_mask = subjects == holdout
     if int(q_mask.sum()) == 0 or int(mask.sum()) < 2:
         return None
+
+    # A held-out row in the reference set would let a query meet its own reading (prototype or enrolled),
+    # so an overlapping mask is refused outright rather than silently scored.
+    if bool(np.any(mask & q_mask)):
+        raise ValueError('train_mask admits held-out readings; a query would be scored against its own reading.')
 
     emb = np.asarray(sent_emb, dtype=np.float32)
     if postprocess:
@@ -126,15 +151,23 @@ def menu_report(
         return None
 
     sims = emb[q_idx] @ protos.T  # (n_queries, n_gallery) -- gallery is distinct sentences, not readings
+    enrolled = _enrolled_scores(emb, q_idx, content_ids, proto_id_arr, mask)
+    by_scoring = {PROTOTYPE_SCORING: sims, ENROLLED_SCORING: enrolled}
 
-    flavor_specs: list[tuple[str, int | None, bool]] = [('length_matched', HEADLINE_TOL, False), ('open', None, False)]
+    flavor_specs: list[tuple[str, int | None, bool, str]] = [
+        ('length_matched', HEADLINE_TOL, False, PROTOTYPE_SCORING),
+        ('open', None, False, PROTOTYPE_SCORING),
+        ('length_matched_enrolled', HEADLINE_TOL, False, ENROLLED_SCORING),
+    ]
     if proto_task is not None:
-        flavor_specs.insert(0, ('length_task_matched', HEADLINE_TOL, True))
+        flavor_specs.insert(0, ('length_task_matched', HEADLINE_TOL, True, PROTOTYPE_SCORING))
+        flavor_specs.insert(3, ('length_task_matched_enrolled', HEADLINE_TOL, True, ENROLLED_SCORING))
     sensitivity_specs = [
         (
             f'{"length_task_matched" if proto_task is not None else "length_matched"}_tol{tol}',
             tol,
             proto_task is not None,
+            PROTOTYPE_SCORING,
         )
         for tol in SENSITIVITY_TOLS
     ]
@@ -143,9 +176,9 @@ def menu_report(
     flavors: dict[str, Any] = {}
     sensitivity: dict[str, Any] = {}
     for certified, specs in ((True, flavor_specs), (False, sensitivity_specs)):
-        for name, tol, task_matched in specs:
+        for name, tol, task_matched, scoring in specs:
             block = _score_flavor(
-                sims,
+                by_scoring[scoring],
                 q_idx,
                 content_ids,
                 lengths,
@@ -154,6 +187,7 @@ def menu_report(
                 proto_task,
                 tol=tol,
                 task_matched=task_matched,
+                scoring=scoring,
                 ks=ks,
                 target=target,
                 n_boot=n_boot,
@@ -179,7 +213,7 @@ def menu_report(
 
 
 def _score_flavor(
-    sims: np.ndarray,
+    scores: np.ndarray,
     q_idx: np.ndarray,
     content_ids: np.ndarray,
     lengths: np.ndarray,
@@ -189,6 +223,7 @@ def _score_flavor(
     *,
     tol: int | None,
     task_matched: bool,
+    scoring: str,
     ks: tuple[int, ...],
     target: float,
     n_boot: int,
@@ -196,7 +231,7 @@ def _score_flavor(
     rng: np.random.Generator,
     with_oracle: bool,
 ) -> dict[str, Any]:
-    """Scores one distractor-pool definition: per-K accuracy, capacity, permutation p, oracle null."""
+    """Scores one (distractor pool, scoring rule) pair from a `(n_queries, n_gallery)` score matrix."""
     # Per query: the candidate set is the pool plus the true sentence; `beaten[c]` counts, for each
     # candidate as pseudo-true, how many of the others it strictly beats. The observed statistic reads
     # the true row; the permutation null redraws the true label uniformly from the same set.
@@ -211,7 +246,7 @@ def _score_flavor(
         candidates[t] = True
         cand_idx = np.where(candidates)[0]
 
-        cand_sims = sims[row, cand_idx]
+        cand_sims = scores[row, cand_idx]
         order = np.sort(cand_sims)
         beaten = np.searchsorted(order, cand_sims, side='left')  # strict wins within the candidate set
         # The length-only adversary: closer stimulus word count wins; must sit at chance in this pool.
@@ -268,6 +303,7 @@ def _score_flavor(
         'capacity_point': capacity_point,
         'tol': tol,
         'task_matched': bool(task_matched and proto_task is not None),
+        'scoring': scoring,
     }
     if with_oracle:
         oracle_rows = [q for q in per_query if q['m'] >= 1]
@@ -280,6 +316,24 @@ def _score_flavor(
             block['gamed'] = bool(o_lo > 0.5)
 
     return block
+
+
+def _enrolled_scores(
+    emb: np.ndarray,
+    q_idx: np.ndarray,
+    content_ids: np.ndarray,
+    proto_id_arr: np.ndarray,
+    reference_mask: np.ndarray,
+) -> np.ndarray:
+    """Entry `(q, s)`: best cosine between query `q` and any enrolled training reading of sentence `s`."""
+    # The reference mask is the train mask, already refused if it admits a held-out row -- a query can
+    # therefore never meet its own reading here, only other brains' readings of the same sentence.
+    ref_rows = [np.where((content_ids == cid) & reference_mask)[0] for cid in proto_id_arr]
+    sizes = np.asarray([rows.size for rows in ref_rows], dtype=np.intp)
+    starts = np.concatenate(([0], np.cumsum(sizes[:-1])))
+    sims = emb[q_idx] @ emb[np.concatenate(ref_rows)].T
+
+    return np.maximum.reduceat(sims, starts, axis=1)
 
 
 def _win_prob(beaten: int, m: int, k: int) -> float:
@@ -307,8 +361,10 @@ def menu_markdown_lines(menu: dict[str, Any]) -> list[str]:
         f'ties lose). The headline flavor `{headline}` matches distractors on exact stimulus-level '
         f'word count{" and task" if headline == "length_task_matched" else ""}, so a hit can be '
         f'neither a length nor a task-register shortcut; `open` draws from the full gallery, where '
-        f'length may legitimately help, as it would in deployment. A certified size needs CI-low ≥ '
-        f'{target:.0%} and permutation p < 0.05.',
+        f'length may legitimately help, as it would in deployment. Flavors ending `_enrolled` score a '
+        f'candidate by its best enrolled training reading instead of the prototype (each block names '
+        f'its `scoring` rule); the headline stays the prototype flavor, the strictest single-reference '
+        f'claim. A certified size needs CI-low ≥ {target:.0%} and permutation p < 0.05.',
         '',
         '| flavor | K | chance | accuracy (95% CI) | perm p | n |',
         '| --- | --- | --- | --- | --- | --- |',

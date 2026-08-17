@@ -361,7 +361,25 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 | `decode_nostage0_ablation.yaml`          | Required reported ablation: `stage0_epochs: 0`.                                                 |
 | `decode_words_ablation.yaml`             | Registered ablation: `conditioning: pooled_plus_words` (16-slot prefix).                        |
 | `rebaseline_e5raw.yaml`                  | The length-confound audit arm: the encoder recipe on the decoder's own split.                   |
+| `decoder/decode_parallax_nr.yaml`        | Phase 3: the v2 decoder over the parallax NR encoder, PMI rescoring on, NR gallery.             |
+| `decoder/decode_parallax_nr_joint.yaml`  | Phase 3: the same with `mode: joint` — the encoder unfreezes after 3 stage-A epochs.            |
 | `smoke/decode_tiny_mps.yaml`             | Wiring only. `lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`, always `--synthetic`. |
+
+### Phase 3 — the parallax decoder arms
+
+The parallax study measured a cross-task, cross-stimulus code that reaches the held-out subject at rank percentile
+~0.95–0.97 (length-stratified ~0.92), so the decoder now gets its first encoder worth rescoring with.
+`decode_parallax_nr.yaml` is `decode_zte_v2` with exactly one lever moved: the encoder and its task gallery —
+`train.encoder_ckpt` names the parallax NR winner (`parallax_nr_loZAB_s44`; the notebook overrides per seed via
+`--encoder-ckpt`), `dataset.tasks: [NR]` scores it against its own task's gallery, and `decoder.rescore_pmi: true`
+subtracts each candidate's null-prefix likelihood so candidate-side familiarity cancels.
+`decode_parallax_nr_joint.yaml` flips one further lever — `train.mode: joint` with `freeze_encoder: false` — so
+stage B fine-tuning of the encoder becomes measurable against the frozen arm.
+
+The pre-registered expectations, stated before the runs: the PMI-rescored **length-stratified** rank-percentile CI
+sits above 0.5, where the raw conditional scorer measured 0.43; free-running generation remains the expected null
+under the full verdict gate; and the joint arm must produce a `best.pt` from stage B — the stage-comparable monitor
+exists so that stage A cannot lock it out. Rescoring stays labelled retrieval, never generation.
 
 ## How to run
 

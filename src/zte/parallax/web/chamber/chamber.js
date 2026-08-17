@@ -9,6 +9,7 @@ const POINTS = D.points || {};
 const TRANSFER = D.transfer || {};
 const CAPACITY = D.capacity || {};
 const CKA = D.cka || {};
+const DECOMP = RAW.menu_decomposition && typeof RAW.menu_decomposition === "object" ? RAW.menu_decomposition : {};
 
 /* First three categorical slots (all-pairs CVD-safe): one fixed hue per task, never re-assigned. */
 const TASK_COLOR = { NR: "#3987e5", SR: "#d95926", TSR: "#199e70" };
@@ -37,9 +38,15 @@ function hexA(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-function emptyPanel(hostId, msg) {
+/* A designed empty-state card: icon, one sentence naming the gap, and the notebook cell that fills it. */
+function emptyPanel(hostId, msg, fix) {
   const host = document.getElementById(hostId);
-  if (host) host.innerHTML = `<div class="emptycell">${esc(msg)}</div>`;
+  if (!host) return;
+  host.innerHTML =
+    '<div class="emptycell"><span class="emptyicon">◌</span>' +
+    `<p>${esc(msg)}</p>` +
+    (fix ? `<p class="emptyhint">${esc(fix)}</p>` : "") +
+    "</div>";
 }
 
 /* ---- header ---- */
@@ -53,7 +60,11 @@ document.getElementById("holdoutpill").textContent = `held-out subject ${D.holdo
 function buildParallax() {
   const evalTasks = TASKS.filter((t) => Array.isArray(POINTS[t]) && POINTS[t].length);
   if (!evalTasks.length) {
-    emptyPanel("parallax3d", "No sentence points in this report yet.");
+    emptyPanel(
+      "parallax3d",
+      "No sentence points in this report yet.",
+      "§5 of notebooks/zte_parallax.ipynb (the transfer matrix) writes the embeddings this panel reduces."
+    );
     return;
   }
 
@@ -214,7 +225,11 @@ function buildParallax() {
 function buildFlow() {
   const trains = TASKS.filter((t) => TRANSFER[t] && Object.keys(TRANSFER[t]).length);
   if (!trains.length) {
-    emptyPanel("sankey", "No transfer cells in this report yet.");
+    emptyPanel(
+      "sankey",
+      "No transfer cells in this report yet.",
+      "§5 of notebooks/zte_parallax.ipynb (the transfer matrix) produces them."
+    );
     return;
   }
   const evals = TASKS.filter((e) => trains.some((t) => TRANSFER[t][e]));
@@ -286,14 +301,19 @@ function buildDials() {
   const host = document.getElementById("dials");
   const trains = TASKS.filter((t) => CAPACITY[t] && typeof CAPACITY[t] === "object");
   if (!trains.length) {
-    emptyPanel("dials", "No menu-capacity audit in this report yet.");
+    emptyPanel(
+      "dials",
+      "No menu-capacity audit in this report yet.",
+      "§5 of notebooks/zte_parallax.ipynb writes the menu audit into each diagonal transfer cell."
+    );
     return;
   }
 
-  const top = Math.max(
-    5,
-    Math.ceil(Math.log2(Math.max(2, ...trains.map((t) => (fin(CAPACITY[t].k_at_target) ? CAPACITY[t].k_at_target : 2)))))
+  const kMax = Math.max(
+    2,
+    ...trains.flatMap((t) => [CAPACITY[t].k_at_target, CAPACITY[t].enrolled_k_at_target].filter(fin))
   );
+  const top = Math.max(5, Math.ceil(Math.log2(kMax)));
   const ticks = [];
   for (let i = 1; i <= top; i++) ticks.push(i);
 
@@ -302,40 +322,84 @@ function buildDials() {
   const cells = trains.map((t) => {
     const cap = CAPACITY[t];
     const certified = fin(cap.k_at_target) && cap.k_at_target >= 2;
+    const gamed = cap.gamed === true;
+    const open = cap.open && typeof cap.open === "object" ? cap.open : null;
     const cell = document.createElement("div");
     cell.className = "dial";
+
+    /* A gamed audit never renders as a healthy number — the badge replaces the value outright. */
+    const value = gamed
+      ? '<span class="gamedbadge">length-gamed — disqualified</span>'
+      : certified
+        ? "K = " + cap.k_at_target
+        : "none certified";
+    const enrolledBits = [];
+    if (fin(cap.enrolled_k_at_target)) enrolledBits.push(`enrolled K = ${cap.enrolled_k_at_target}`);
+    if (fin(cap.enrolled_k2_accuracy)) enrolledBits.push(`enrolled K=2 ${fmt(cap.enrolled_k2_accuracy, 2)}`);
     cell.innerHTML =
-      `<div class="dialname">${esc(t)} model</div><div class="dialplot"></div>` +
-      `<div class="dialvalue ${certified ? "" : "none"}">${certified ? "K = " + cap.k_at_target : "none certified"}</div>` +
-      `<div class="dialsub">K=2 accuracy ${fmt(cap.k2_accuracy, 2)}</div>`;
+      `<div class="dialname">${esc(t)} model</div>` +
+      `<div class="dialstage"><div class="dialplot"></div>` +
+      `<div class="dialvalue ${certified && !gamed ? "" : "none"}">${value}</div></div>` +
+      `<div class="dialsub">K=2 accuracy ${fmt(cap.k2_accuracy, 2)} · chance 0.5 · target 0.8</div>` +
+      (enrolledBits.length ? `<div class="dialsub">${enrolledBits.join(" · ")}</div>` : "") +
+      (open
+        ? `<div class="dialsub open">open menu K=2 ${fmt(open.k2_accuracy, 2)}` +
+          (open.gamed === true ? ' <span class="gamedbadge">length-gamed — disqualified</span>' : "") +
+          "</div>"
+        : "");
     host.appendChild(cell);
     return cell;
   });
 
   trains.forEach((t, i) => {
-    const cell = cells[i];
-    const k = CAPACITY[t].k_at_target;
-    const certified = fin(k) && k >= 2;
+    const cap = CAPACITY[t];
+    const certified = fin(cap.k_at_target) && cap.k_at_target >= 2;
+    const target = cells[i].querySelector(".dialplot");
+
+    /* The enrolled reading is the second needle on either dial; absent keys mean prototype-only. */
+    const enrolledK = fin(cap.enrolled_k_at_target) && cap.enrolled_k_at_target >= 2 ? cap.enrolled_k_at_target : null;
+    const enrolledAcc = fin(cap.enrolled_k2_accuracy) ? cap.enrolled_k2_accuracy : null;
+    const needle = (v) => ({ line: { color: INK, width: 3 }, thickness: 0.8, value: v });
+
+    const gauge = certified
+      ? {
+          /* Certified: the log-2 K dial — the bar is the prototype capacity, the needle the enrolled one. */
+          axis: {
+            range: [0, top],
+            tickvals: ticks,
+            ticktext: ticks.map((v) => String(Math.pow(2, v))),
+            tickcolor: MUTED,
+            tickfont: { size: 10, color: MUTED },
+          },
+          bar: { color: taskColor(t), thickness: 0.55 },
+          bgcolor: "rgba(255,255,255,0.05)",
+          borderwidth: 0,
+          ...(enrolledK != null ? { threshold: needle(Math.log2(enrolledK)) } : {}),
+        }
+      : {
+          /* Uncertified: the measured K=2 accuracy as a labelled needle against chance and target ticks. */
+          axis: {
+            range: [0, 1],
+            tickvals: [0, 0.5, 0.8, 1],
+            ticktext: ["0", "chance 0.5", "target 0.8", "1"],
+            tickcolor: MUTED,
+            tickfont: { size: 9, color: MUTED },
+          },
+          bar: { color: hexA(taskColor(t), 0.85), thickness: 0.55 },
+          steps: [{ range: [0.8, 1], color: "rgba(63,224,205,0.12)" }],
+          bgcolor: "rgba(255,255,255,0.05)",
+          borderwidth: 0,
+          ...(enrolledAcc != null ? { threshold: needle(enrolledAcc) } : {}),
+        };
 
     Plotly.newPlot(
-      cell.querySelector(".dialplot"),
+      target,
       [
         {
           type: "indicator",
           mode: "gauge",
-          value: certified ? Math.log2(k) : 0,
-          gauge: {
-            axis: {
-              range: [0, top],
-              tickvals: ticks,
-              ticktext: ticks.map((i) => String(Math.pow(2, i))),
-              tickcolor: MUTED,
-              tickfont: { size: 10, color: MUTED },
-            },
-            bar: { color: certified ? taskColor(t) : "rgba(0,0,0,0)", thickness: 0.55 },
-            bgcolor: "rgba(255,255,255,0.05)",
-            borderwidth: 0,
-          },
+          value: certified ? Math.log2(cap.k_at_target) : fin(cap.k2_accuracy) ? cap.k2_accuracy : 0,
+          gauge,
         },
       ],
       { ...BASE, margin: { l: 18, r: 18, t: 12, b: 4 }, height: 130 },
@@ -382,7 +446,11 @@ function buildRain() {
     }
   }
   if (!traces.length) {
-    emptyPanel("rain", "No per-sentence percentiles in this report yet.");
+    emptyPanel(
+      "rain",
+      "No per-sentence percentiles in this report yet.",
+      "§5 of notebooks/zte_parallax.ipynb (the transfer matrix) writes the embeddings this panel reduces."
+    );
     return;
   }
 
@@ -416,12 +484,112 @@ function buildRain() {
         xanchor: "right",
         y: 0.5,
         yanchor: "bottom",
-        text: "chance",
+        text: "chance = 0.5",
         showarrow: false,
         font: { color: "#ff6ba6", size: 11 },
       },
     ],
   }, CONFIG);
+}
+
+/* ---- panel 5: menu decomposition ---- */
+
+function buildDecomp() {
+  const host = document.getElementById("decomp");
+  if (!host || host.hidden) return;
+
+  const rows = TASKS.filter((t) => {
+    const d = DECOMP[t];
+    return d && typeof d === "object" && (fin(d.prototype_tol0) || fin(d.best_reading_tol0));
+  });
+  if (!rows.length) {
+    emptyPanel(
+      "decomp",
+      "No menu decomposition travelled with this report.",
+      "§6 of notebooks/zte_parallax.ipynb (zte-parallax report) writes it into PARALLAX.json."
+    );
+    return;
+  }
+
+  /* Reversed so the first task reads at the top of the category axis. */
+  const y = rows.slice().reverse();
+  const proto = y.map((t) => (fin(DECOMP[t].prototype_tol0) ? DECOMP[t].prototype_tol0 : null));
+  const best = y.map((t) => (fin(DECOMP[t].best_reading_tol0) ? DECOMP[t].best_reading_tol0 : null));
+  const tol1 = (key) => y.map((t) => fmt(DECOMP[t][key], 3));
+
+  const traces = y.map((t, i) => ({
+    type: "scatter",
+    mode: "lines",
+    x: [proto[i], best[i]],
+    y: [t, t],
+    line: { color: hexA(taskColor(t), 0.5), width: 3 },
+    hoverinfo: "skip",
+    showlegend: false,
+  }));
+  traces.push({
+    type: "scatter",
+    mode: "markers",
+    name: "prototype (one reference per sentence)",
+    x: proto,
+    y,
+    marker: { size: 11, symbol: "circle-open", color: y.map(taskColor), line: { width: 2.5 } },
+    customdata: tol1("prototype_tol1"),
+    hovertemplate: "%{y} prototype · 2-way %{x:.3f} (tol ±1 word: %{customdata})<extra></extra>",
+  });
+  traces.push({
+    type: "scatter",
+    mode: "markers",
+    name: "best enrolled reading",
+    x: best,
+    y,
+    marker: { size: 11, color: y.map(taskColor) },
+    customdata: tol1("best_reading_tol1"),
+    hovertemplate: "%{y} best reading · 2-way %{x:.3f} (tol ±1 word: %{customdata})<extra></extra>",
+  });
+
+  Plotly.newPlot(
+    host,
+    traces,
+    {
+      ...BASE,
+      height: 110 + rows.length * 56,
+      margin: { l: 56, r: 24, t: 34, b: 46 },
+      hoverlabel: { bgcolor: "#101a30", bordercolor: "rgba(255,255,255,0.15)", font: { color: INK, size: 12 } },
+      xaxis: {
+        range: [0, 1.02],
+        gridcolor: GRID,
+        tickvals: [0, 0.25, 0.5, 0.75, 1],
+        title: { text: "2-way accuracy, exact-length pool (higher is better)", font: { size: 11 } },
+      },
+      yaxis: { type: "category", tickfont: { size: 12 } },
+      showlegend: true,
+      legend: { orientation: "h", y: 1.24, font: { size: 11 } },
+      shapes: [
+        {
+          type: "line",
+          x0: 0.5,
+          x1: 0.5,
+          yref: "paper",
+          y0: 0,
+          y1: 1,
+          line: { color: "rgba(255,107,166,0.65)", dash: "dash", width: 1 },
+        },
+      ],
+      annotations: [
+        {
+          x: 0.5,
+          yref: "paper",
+          y: 0,
+          yanchor: "top",
+          yshift: -26,
+          text: "chance = 0.5",
+          showarrow: false,
+          font: { color: "#ff6ba6", size: 11 },
+        },
+      ],
+    },
+    CONFIG
+  );
 }
 
 /* ---- panel 5: CKA triad ---- */

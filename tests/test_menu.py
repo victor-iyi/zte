@@ -3,7 +3,15 @@
 import numpy as np
 import pytest
 
-from zte.evaluation.audit.menu import DEFAULT_MENU_KS, HEADLINE_TOL, menu_markdown_lines, menu_report
+import zte.evaluation.audit.menu as menu_mod
+from zte.evaluation.audit.menu import (
+    DEFAULT_MENU_KS,
+    ENROLLED_SCORING,
+    HEADLINE_TOL,
+    PROTOTYPE_SCORING,
+    menu_markdown_lines,
+    menu_report,
+)
 from zte.evaluation.audit.rebaseline import rebaseline_report, render_markdown
 
 _SUBJECTS: tuple[str, ...] = ('ZAB', 'ZDM', 'ZKB')
@@ -220,6 +228,150 @@ def test_the_default_menu_sweep_and_headline_tolerance_are_pinned() -> None:
     """The sweep and the exact-match rule are quoted in docs; a silent default change cannot move a headline."""
     assert DEFAULT_MENU_KS == (2, 4, 8, 16, 32, 64)
     assert HEADLINE_TOL == 0
+
+
+# --------------------------------------------------------------------------- #
+# the enrolled flavors
+# --------------------------------------------------------------------------- #
+def test_tight_readings_make_enrolled_and_prototype_agree() -> None:
+    """When every reading of a sentence clusters tightly, the best reading and the centroid tell one story."""
+    emb, content, subjects, words = _cohort(noise=0.05)
+    out = menu_report(emb, content, subjects, 'ZAB', words, ks=(2,), postprocess=False, n_boot=200, n_perm=200)
+    assert out is not None
+
+    proto = out['flavors']['length_matched']['per_k']['2']['accuracy']
+    enrolled = out['flavors']['length_matched_enrolled']['per_k']['2']['accuracy']
+    assert proto > 0.9 and enrolled > 0.9
+    assert enrolled == pytest.approx(proto, abs=0.05)
+
+
+def test_split_reading_styles_are_reachable_by_enrollment_but_not_by_the_centroid() -> None:
+    """The signal lives in individual readings: antipodal reading styles beat the centroid, not the enrollment.
+
+    Each sentence's cross-subject readings form two distant sub-clusters and the held-out reading sits in one
+    of them. The best enrolled reading is essentially the query's own style and wins the 2-way menu; the
+    centroid averages the styles away and sits at chance. Both directions are pinned, because this is the
+    measured phenomenon -- retrieval percentile high, prototype menu at chance -- reproduced synthetically.
+    """
+    rng = np.random.default_rng(7)
+    n_stimuli, dim = 40, 32
+    directions = rng.standard_normal((n_stimuli, dim)).astype(np.float32)
+
+    emb_parts, content, subjects, words = [], [], [], []
+    for code, sign in (('ZAB', 1.0), ('S1', 1.0), ('S2', 1.0), ('S3', -1.0), ('S4', -1.0)):
+        noise = 0.05 * rng.standard_normal(directions.shape).astype(np.float32)
+        emb_parts.append(sign * directions + noise)
+        content.append(np.arange(n_stimuli))
+        subjects += [code] * n_stimuli
+        words.append(np.full(n_stimuli, 10.0))
+
+    out = menu_report(
+        np.concatenate(emb_parts),
+        np.concatenate(content),
+        np.array(subjects),
+        'ZAB',
+        np.concatenate(words),
+        ks=(2,),
+        postprocess=False,
+        n_boot=500,
+        n_perm=300,
+    )
+    assert out is not None
+
+    proto = out['flavors']['length_matched']
+    _, proto_lo, proto_hi = proto['per_k']['2']['ci']
+    assert proto_lo < 0.5 < proto_hi, (proto_lo, proto_hi)
+    assert proto['per_k']['2']['accuracy'] < 0.65
+    assert proto['capacity'] is None
+
+    enrolled = out['flavors']['length_matched_enrolled']
+    cell = enrolled['per_k']['2']
+    assert cell['accuracy'] > 0.9
+    assert cell['ci'][1] > 0.8 and cell['perm_p'] is not None and cell['perm_p'] < 0.05
+    assert enrolled['capacity'] == 2
+    assert enrolled['gamed'] is False, 'the length oracle applies to enrolled pools and must sit at chance here'
+
+
+def test_mutation_readmitting_holdout_readings_to_enrollment_blows_the_canary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MUTATION: enrolled references drawn from every row let each query meet its own reading -- red, loudly.
+
+    The honest random cohort sits at chance. With the reference mask widened to all rows, the query's own
+    reading is enrolled, its cosine hits 1.0 and the 2-way accuracy saturates -- exactly the leak the
+    train-mask restriction exists to prevent, so the at-chance canary must go red under this mutation.
+    """
+    rng = np.random.default_rng(0)
+    _, content, subjects, words = _cohort(n_stimuli=60)
+    emb = rng.standard_normal((len(subjects), 16)).astype(np.float32)
+
+    honest = menu_report(emb, content, subjects, 'ZAB', words, ks=(2,), n_boot=300, n_perm=100)
+    assert honest is not None
+    _, lo, hi = honest['flavors']['length_matched_enrolled']['per_k']['2']['ci']
+    assert lo < 0.5 < hi, (lo, hi)
+
+    real = menu_mod._enrolled_scores
+
+    def leaky(
+        emb: np.ndarray,
+        q_idx: np.ndarray,
+        content_ids: np.ndarray,
+        proto_id_arr: np.ndarray,
+        reference_mask: np.ndarray,
+    ) -> np.ndarray:
+        return real(emb, q_idx, content_ids, proto_id_arr, np.ones_like(reference_mask))
+
+    monkeypatch.setattr(menu_mod, '_enrolled_scores', leaky)
+    mutated = menu_report(emb, content, subjects, 'ZAB', words, ks=(2,), n_boot=300, n_perm=100)
+    assert mutated is not None
+
+    leaked = mutated['flavors']['length_matched_enrolled']['per_k']['2']
+    assert leaked['accuracy'] > 0.95, 'the leak the mask exists to prevent must saturate the menu'
+    assert leaked['ci'][1] > 0.5, 'the at-chance canary above must fail under this mutation'
+
+
+def test_a_train_mask_admitting_holdout_readings_is_refused() -> None:
+    """The enrolled references' precondition is enforced, not assumed: a leaky train_mask is an error."""
+    emb, content, subjects, words = _cohort(n_stimuli=8)
+    leaky_mask = np.ones(len(subjects), dtype=bool)
+
+    with pytest.raises(ValueError, match='held-out'):
+        menu_report(emb, content, subjects, 'ZAB', words, train_mask=leaky_mask)
+
+
+def test_every_flavor_block_names_its_scoring_rule() -> None:
+    """Each flavor says how a candidate was scored, so a reader can never mistake enrolled for prototype."""
+    emb, content, subjects, words = _cohort(n_stimuli=20, noise=0.3)
+    tasks = np.array(['SR' if cid < 10 else 'NR' for cid in content])
+    out = menu_report(emb, content, subjects, 'ZAB', words, tasks=tasks, ks=(2,), n_boot=100, n_perm=50)
+    assert out is not None
+    assert out['headline_flavor'] == 'length_task_matched', 'the headline stays the strictest prototype claim'
+
+    expected = {
+        'length_task_matched': PROTOTYPE_SCORING,
+        'length_matched': PROTOTYPE_SCORING,
+        'open': PROTOTYPE_SCORING,
+        'length_task_matched_enrolled': ENROLLED_SCORING,
+        'length_matched_enrolled': ENROLLED_SCORING,
+    }
+    assert {name: block['scoring'] for name, block in out['flavors'].items()} == expected
+    for block in out['sensitivity'].values():
+        assert block['scoring'] == PROTOTYPE_SCORING
+
+
+def test_a_random_cohort_gives_enrollment_no_free_lunch() -> None:
+    """Taking the best of several references must not manufacture signal: enrolled brackets chance too."""
+    rng = np.random.default_rng(1)
+    _, content, subjects, words = _cohort(n_stimuli=60)
+    emb = rng.standard_normal((len(subjects), 16)).astype(np.float32)
+
+    out = menu_report(emb, content, subjects, 'ZAB', words, ks=(2, 4), n_boot=500, n_perm=300)
+    assert out is not None
+
+    block = out['flavors']['length_matched_enrolled']
+    _, lo, hi = block['per_k']['2']['ci']
+    assert lo < 0.5 < hi, (lo, hi)
+    assert block['capacity'] is None and block['capacity_point'] is None
 
 
 def test_markdown_lines_survive_an_unservable_size() -> None:

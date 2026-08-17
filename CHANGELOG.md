@@ -1,5 +1,31 @@
 # Changelog
 
+## Parallax phase 3: the reading-level menu, the INDEX merge, and the decoder arms
+
+The 2026-08-16/17 sessions measured real cross-task transfer (NR↔SR rank percentile 0.95–0.97 at every seed,
+length-stratified ~0.92–0.93, on a never-seen subject reading never-seen sentences) while the certified exact-length
+prototype menu stayed at chance — the discriminative signal lives in individual readings, not centroids. This phase
+follows that finding through the stack:
+
+- **The enrolled menu flavor** (`zte.evaluation.audit.menu`) scores each K-way option against the enrolled
+  individual readings of its sentence (best reading match, never a centroid), certified with the same exact-length
+  pools, losing ties and built-in length-oracle guard as the other flavors.
+- **The 2-way decomposition diagnostic** (`menu_decomposition` in `PARALLAX.json`) re-scores every diagonal cell
+  under {prototype, best reading} × {exact length, ±1 word}, so the menu-vs-percentile gap decomposes into named
+  factors. Diagnostic only; it gates nothing.
+- **The chart-quality pass** over the study's rendered artifacts.
+- **The notebook task-derivation fix**: `notebooks/zte_parallax.ipynb` §3b no longer derives the task list by
+  globbing the raw dataset directory — on a fresh runtime that check missed TSR, silently shrinking the §5 transfer
+  loop to 2×2 and dropping TSR from the §4 loop. The TSR-involving cells complete on re-run.
+- **The experiments INDEX now merges instead of clobbering.** `zte-run`'s catalogue rewrote the local `INDEX.md`
+  from local knowledge alone and the Drive mirror pushed it whole over the shared copy, so a fresh VM erased every
+  row earlier sessions had written (observed: the overnight TSR rows vanished on 2026-08-17). The catalogue now
+  takes the union of the mirrored and local rows keyed by `run_name` — a session can add or update its own runs,
+  never erase another session's; an unreachable remote degrades to local-only.
+- **The phase-3 decoder configs**: `experiments/decoder/decode_parallax_nr.yaml` (the v2 decoder over the parallax
+  NR encoder, `decoder.rescore_pmi: true`, NR gallery) and `decode_parallax_nr_joint.yaml` (`mode: joint` one lever
+  further), with the pre-registered expectations in `docs/DECODER.md`.
+
 ## Torn cache entries can no longer poison the store
 
 A prepared-bundle cache entry now exists only when it is *complete*. Copies between the local cache and the

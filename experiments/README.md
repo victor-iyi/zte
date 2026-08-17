@@ -9,13 +9,13 @@ uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --root res/dat
 uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --drive <folder-id-or-url> --loso-holdout ZAB
 ```
 
-| Tier             | What lives there                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| `flagship/`      | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
-| `decoder/`       | The frozen-LM prefix decoder over a trained encoder, its ablations and its length audit.       |
-| `benchmark/`     | The controls a flagship must beat to earn its place.                                           |
-| `ablation/`      | Single-lever studies — matched pairs that flip exactly one knob.                               |
-| `archive/`       | Superseded or failed arms, kept for the record and for reproducibility.                        |
+| Tier         | What lives there                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| `flagship/`  | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
+| `decoder/`   | The frozen-LM prefix decoder over a trained encoder, its ablations and its length audit.       |
+| `benchmark/` | The controls a flagship must beat to earn its place.                                           |
+| `ablation/`  | Single-lever studies — matched pairs that flip exactly one knob.                               |
+| `archive/`   | Superseded or failed arms, kept for the record and for reproducibility.                        |
 
 > **File paths and `run_name` are independent.** A config's run directory is named by the `run_name` inside the YAML, not by its file path, so moving a config between tiers never breaks `--resume` against runs already on Drive.
 > The name in the left column below is the *file*; the run directory uses the `run_name` in brackets.
@@ -32,14 +32,14 @@ ranked arms by *pooled* retrieval, which is computed over the 11 training subjec
 it rewards memorising the brains you have rather than reaching the one you do not. Re-scored honestly (700 queries,
 chance 1/700, exact binomial tail):
 
-| Config (run_name)                                        | Frontend      | Top-5 hits / 700 | *p*    | Eff-rank  | Subject probe (raw baseline) |
-| -------------------------------------------------------- | ------------- | ---------------- | ------ | --------- | ---------------------------- |
-| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)              | raw_conformer | **32**           | 7e-16  | 0.264     | 0.45 (0.81)                  |
-| `flagship/clip_e5_meaning_raw` (`exp10_..._raw`)         | raw_conformer | **32**           | 7e-16  | 0.264     | 0.41 (0.81)                  |
-| `archive/clip_e5_meaning_raw_v2` (`exp10_..._raw_v2`)    | raw_conformer | 19               | 1e-06  | **0.535** | 0.36 (0.81)                  |
-| `archive/clip_e5_meaning` (`exp9_clip_e5_meaning`)       | band_power    | 10               | 3e-02  | 0.160     | 0.23 (0.16)                  |
-| `archive/clip_bge_meaning`                               | band_power    | 9                | 7e-02  | 0.160     | 0.23 (0.16)                  |
-| `archive/clip_qwen_bandpower` (`exp8_clip_qwen`)         | band_power    | 5                | 5.6e-01| 0.170     | 0.22 (0.16)                  |
+| Config (run_name)                                     | Frontend      | Top-5 hits / 700 | *p*     | Eff-rank  | Subject probe (raw baseline) |
+| ----------------------------------------------------- | ------------- | ---------------- | ------- | --------- | ---------------------------- |
+| `flagship/clip_e5_raw` (`exp8_clip_e5_raw`)           | raw_conformer | **32**           | 7e-16   | 0.264     | 0.45 (0.81)                  |
+| `flagship/clip_e5_meaning_raw` (`exp10_..._raw`)      | raw_conformer | **32**           | 7e-16   | 0.264     | 0.41 (0.81)                  |
+| `archive/clip_e5_meaning_raw_v2` (`exp10_..._raw_v2`) | raw_conformer | 19               | 1e-06   | **0.535** | 0.36 (0.81)                  |
+| `archive/clip_e5_meaning` (`exp9_clip_e5_meaning`)    | band_power    | 10               | 3e-02   | 0.160     | 0.23 (0.16)                  |
+| `archive/clip_bge_meaning`                            | band_power    | 9                | 7e-02   | 0.160     | 0.23 (0.16)                  |
+| `archive/clip_qwen_bandpower` (`exp8_clip_qwen`)      | band_power    | 5                | 5.6e-01 | 0.170     | 0.22 (0.16)                  |
 
 Read that table as three findings.
 
@@ -80,14 +80,14 @@ State these next to any result from this directory; they are in every `evaluatio
 
 ## `flagship/` — start here
 
-| Config (`run_name`)                         | Objective                                     | Encoder                                                                          | Why it is here                                                                                                                                         |
-| ------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                           | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline. |
-| `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation    | raw-conformer, ~700 ms window, 40 filters                                        | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                    |
-| `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                    | Rank percentile **0.9672** (0.9635–0.9708), and stable to 0.0002 across seeds. The alignment stack itself is a measured no-op — see below.             |
-| `zte_encoder_v3` (`exp16_zte_encoder_v3`) | + predictive residual, cross-reader consensus, length-matched gallery, length projection | as `zte_lexical_raw`, byte-identical | **Measured 2026-08-15 and falsified as a champion.** Held-out Top-1 0.010/0.021/0.029 across seeds 42/43/44, effective-rank ratio 0.06–0.09 (collapsed), and its own `exp16_residual_off` ablation beats it (0.0371, eff-rank 0.289): the predictive residual subtracts the sentence-constant code retrieval needs, and the gallery CE hurts too (off 0.030). The exp17 family in `ablation/` is the repair. |
-| `zte_lexical_raw` (`exp14_zte_lexical_raw`) | + token-level lexical alignment               | as `zte_raw_aligned`, byte-identical                                             | **Not yet measured on real ZuCo.** It is here because it is the encoder the v2 decoder was built over; promote or retire it on the next sweep.          |
-| `decode_zte_v2` (`exp15_decode_zte_v2`)     | frozen-LM prefix decode, metered and steered  | frozen encoder named by `encoder_ckpt` (best measured: `exp16_residual_off`); frozen `Qwen/Qwen2.5-0.5B` | **Measured 2026-08-15 over the v3 encoder** (via `--encoder-ckpt` override): free generation fails 6 of 7 controls (verdict False, as the bit budget predicts), and gallery rescoring adds nothing over the encoder. See `docs/DECODER.md`.     |
+| Config (`run_name`)                         | Objective                                                                                | Encoder                                                                                                  | Why it is here                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `clip_e5_raw` (`exp8_clip_e5_raw`)          | sentence-level CLIP                                                                      | raw-conformer, ~700 ms window, 40 filters                                                                | **Co-best measured** — 32 Top-5 hits / 700, *p* 7e-16, eff-rank 0.264, best content probes. Subject-entangled: probe 0.45 against a 0.81 raw baseline.                                                                                                                                                                                                                                                       |
+| `clip_e5_meaning_raw` (`exp10_…_raw`)       | sentence-level CLIP + meaning distillation                                               | raw-conformer, ~700 ms window, 40 filters                                                                | **Co-best measured** — the same 32 hits / 700, with the subject probe pulled to 0.41 by meaning distillation alone.                                                                                                                                                                                                                                                                                          |
+| `zte_raw_aligned` (`exp12_zte_raw_aligned`) | + identity orthogonality, over CLIP + meaning                                            | raw-conformer, 40 filters, Euclidean-aligned, subject adapter                                            | Rank percentile **0.9672** (0.9635–0.9708), and stable to 0.0002 across seeds. The alignment stack itself is a measured no-op — see below.                                                                                                                                                                                                                                                                   |
+| `zte_encoder_v3` (`exp16_zte_encoder_v3`)   | + predictive residual, cross-reader consensus, length-matched gallery, length projection | as `zte_lexical_raw`, byte-identical                                                                     | **Measured 2026-08-15 and falsified as a champion.** Held-out Top-1 0.010/0.021/0.029 across seeds 42/43/44, effective-rank ratio 0.06–0.09 (collapsed), and its own `exp16_residual_off` ablation beats it (0.0371, eff-rank 0.289): the predictive residual subtracts the sentence-constant code retrieval needs, and the gallery CE hurts too (off 0.030). The exp17 family in `ablation/` is the repair. |
+| `zte_lexical_raw` (`exp14_zte_lexical_raw`) | + token-level lexical alignment                                                          | as `zte_raw_aligned`, byte-identical                                                                     | **Not yet measured on real ZuCo.** It is here because it is the encoder the v2 decoder was built over; promote or retire it on the next sweep.                                                                                                                                                                                                                                                               |
+| `decode_zte_v2` (`exp15_decode_zte_v2`)     | frozen-LM prefix decode, metered and steered                                             | frozen encoder named by `encoder_ckpt` (best measured: `exp16_residual_off`); frozen `Qwen/Qwen2.5-0.5B` | **Measured 2026-08-15 over the v3 encoder** (via `--encoder-ckpt` override): free generation fails 6 of 7 controls (verdict False, as the bit budget predicts), and gallery rescoring adds nothing over the encoder. See `docs/DECODER.md`.                                                                                                                                                                  |
 
 > **The tier rule on this project is measured performance.** `exp16_zte_encoder_v3` stays on this board only as the
 > documented parent of its ablation family; the best-measured encoder arm today is `ablation/exp16_residual_off`
@@ -145,20 +145,22 @@ The decoder does **not** replace the encoder arms; it consumes one. `train.mode:
 bridge between them. Nothing else in the run can learn, which is what makes "the output is corpus recall" a checkable
 claim rather than a matter of trust: 700 ZuCo sentences cannot be stored in weights that are not being updated.
 
-| Config                          | What it is                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `decode_v2_pooled`              | **The baseline the rebuild must beat.** Every v2 knob at its no-op default, i.e. the pooled-prefix decoder.        |
-| `decode_v2_ladder_only`         | The semantic rate ladder alone. How little it costs measures how few bits the continuous vector was using.         |
-| `decode_v2_evidence_only`       | Word-synchronous evidence alone, over the continuous conditioning vector.                                          |
-| `decode_v2_no_length_stage`     | Required companion to the headline: the ladder with no stage reserved for the 5.14-bit word count.                 |
-| `decode_v2_bandpower`           | The frontend row of the feature-ablation table — the decoder over a band-power encoder.                            |
-| `decode_frozen_e5raw`           | The v1 headline. Bridge only, over `exp8_clip_e5_raw`, on the honest four-cell `by_subject_and_stimulus` split.    |
-| `decode_joint_e5raw`            | The encoder unfreezes after 3 stage-A epochs at a tenth of the bridge LR; the CLIP loss stays on as an anchor.     |
-| `decode_encoder_only`           | The regression control: `mode: encoder` must still reproduce `exp8_clip_e5_raw`'s history under the same seed.     |
-| `decode_nostage0_ablation`      | Required reported ablation — text-only bridge pretraining off. If the delta needs it, Stage 0 was doing the work.  |
-| `decode_words_ablation`         | Registered ablation — `conditioning: pooled_plus_words` adds 8 resampled word slots to the 8 pooled ones.          |
-| `rebaseline_e5raw`              | The length-confound audit arm: the encoder recipe on the decoder's own split, then scored by `zte-rebaseline`.     |
-| `smoke/decode_tiny_mps`         | Wiring only (`lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`). Always `--synthetic`; never a result.   |
+| Config                      | What it is                                                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `decode_v2_pooled`          | **The baseline the rebuild must beat.** Every v2 knob at its no-op default, i.e. the pooled-prefix decoder.       |
+| `decode_v2_ladder_only`     | The semantic rate ladder alone. How little it costs measures how few bits the continuous vector was using.        |
+| `decode_v2_evidence_only`   | Word-synchronous evidence alone, over the continuous conditioning vector.                                         |
+| `decode_v2_no_length_stage` | Required companion to the headline: the ladder with no stage reserved for the 5.14-bit word count.                |
+| `decode_v2_bandpower`       | The frontend row of the feature-ablation table — the decoder over a band-power encoder.                           |
+| `decode_frozen_e5raw`       | The v1 headline. Bridge only, over `exp8_clip_e5_raw`, on the honest four-cell `by_subject_and_stimulus` split.   |
+| `decode_joint_e5raw`        | The encoder unfreezes after 3 stage-A epochs at a tenth of the bridge LR; the CLIP loss stays on as an anchor.    |
+| `decode_encoder_only`       | The regression control: `mode: encoder` must still reproduce `exp8_clip_e5_raw`'s history under the same seed.    |
+| `decode_nostage0_ablation`  | Required reported ablation — text-only bridge pretraining off. If the delta needs it, Stage 0 was doing the work. |
+| `decode_words_ablation`     | Registered ablation — `conditioning: pooled_plus_words` adds 8 resampled word slots to the 8 pooled ones.         |
+| `rebaseline_e5raw`          | The length-confound audit arm: the encoder recipe on the decoder's own split, then scored by `zte-rebaseline`.    |
+| `decode_parallax_nr`        | Phase 3: the v2 decoder over the parallax NR encoder (`parallax_nr_loZAB_s44`), PMI rescoring on, NR gallery.     |
+| `decode_parallax_nr_joint`  | Phase 3, one lever further: `mode: joint` — the encoder unfreezes after stage A; stage B must earn `best.pt`.     |
+| `smoke/decode_tiny_mps`     | Wiring only (`lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`). Always `--synthetic`; never a result.  |
 
 ```sh
 # The decoder needs a trained encoder; --encoder-ckpt overrides the path in the YAML. Do NOT add
@@ -201,10 +203,10 @@ The text-encoder A/B that used to sit here (E5 vs Qwen vs BGE vs MPNet) is in [`
 | `exp12_orthogonality_off`                                       | `objective.identity_orthogonality_weight` — the decorrelation penalty off | `exp12_zte_raw_aligned` |
 | `study_invariance_baseline_loso` / `study_invariance_full_loso` | The whole invariance stack, off vs on, under LOSO                         | each other              |
 | `study_vicreg_off` / `study_vicreg_on`                          | The VICReg variance+covariance anti-collapse penalty                      | each other              |
-| `exp16_residual_off`                                            | `model.residual_coding` -- no context de-trending                            | `exp16_zte_encoder_v3`  |
-| `exp16_consensus_off`                                           | All three cross-reader consensus weights off                             | `exp16_zte_encoder_v3`  |
-| `exp16_gallery_off`                                             | `objective.gallery_weight` -- in-batch denominator only                     | `exp16_zte_encoder_v3`  |
-| `exp16_gallery_band_off`                                        | `objective.gallery_length_band` -- full gallery, no length matching        | `exp16_zte_encoder_v3`  |
+| `exp16_residual_off`                                            | `model.residual_coding` -- no context de-trending                         | `exp16_zte_encoder_v3`  |
+| `exp16_consensus_off`                                           | All three cross-reader consensus weights off                              | `exp16_zte_encoder_v3`  |
+| `exp16_gallery_off`                                             | `objective.gallery_weight` -- in-batch denominator only                   | `exp16_zte_encoder_v3`  |
+| `exp16_gallery_band_off`                                        | `objective.gallery_length_band` -- full gallery, no length matching       | `exp16_zte_encoder_v3`  |
 | `exp16_length_projection_off`                                   | `objective.length_projection` -- changes the measurement, not the model   | `exp16_zte_encoder_v3`  |
 | `exp17_base`                                                    | `objective.gallery_weight: 0` on top of residual off -- the repair base   | `exp16_residual_off`    |
 | `exp17_sent_vicreg`                                             | VICReg on the pooled content slice -- anti-collapse where retrieval reads | `exp17_base`            |
@@ -241,6 +243,11 @@ The prize is the 3×3 cross-task transfer matrix `zte-parallax` builds from thes
 never-seen subject reading never-seen stimuli — stratified rank percentile with bootstrap CI, plus per-pair CKA between
 the models. Results land beside every other run on Drive under `Sharables/ZTE/<date>/`, aggregated into
 `PARALLAX.json` / `PARALLAX.md`; design and artifacts: [`../docs/PARALLAX.md`](../docs/PARALLAX.md).
+
+**Measured 2026-08-16/17 (holdout `ZAB`, seeds 42/43/44):** cross-task transfer is real — NR→SR rank percentile
+0.9507/0.9647/0.9715 and SR→NR 0.9515/0.9577/0.9591, length-stratified ~0.92–0.93, at healed effective rank
+(0.41–0.46) — while the certified exact-length prototype menu stays at chance and the TSR diagonal is an in-task null
+(Top-1 at chance, permutation *p* = 0.998). Numbers and the honest wording: [`../docs/RESULTS.md`](../docs/RESULTS.md).
 
 ## `archive/` — retired, kept for the record
 

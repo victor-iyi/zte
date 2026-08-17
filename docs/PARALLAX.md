@@ -52,6 +52,27 @@ Stated before the runs, so the reading of the results is pre-committed:
 - **TSR is the odd vantage point by design.** TSR carries an explicit relation-search instruction, so its EEG contains task-driven attention components the other two tasks lack. Asymmetries involving TSR — weaker transfer into or out of it, lower CKA against it — are expected and are read as register, not as a failure of the method. NR and SR are the closer pair of registers.
 - **"Never-seen subject" carries one qualifier: checkpoint selection.** Under `by_subject_loso` the validation split *is* the holdout, and `best.pt` is the epoch with the lowest validation loss — so the model's parameters never saw the holdout, but the choice of *which epoch to keep* did (on the order of $\log_2(\text{epochs})$ bits). Every transfer cell records `checkpoint_selection` in its provenance for exactly this reason. Scoring `last.pt` through the same CLI is the selection-free sensitivity check; a claim that survives both is the one to quote.
 
+## Measured (2026-08-16/17)
+
+The first real run of the study — Colab sessions of 2026-08-16/17 on Drive, holdout `ZAB`, seeds 42/43/44 — measured the NR/SR half of the matrix and the TSR diagonal. Numbers as recorded, per-cell bootstrap CIs in `transfer.json` / `PARALLAX.json`.
+
+**Cross-task transfer is real.** The strongest generalization cell this project can produce — a never-seen subject reading never-seen stimuli — clears chance decisively and does so at every seed:
+
+| Cell | Rank percentile (seeds 42 / 43 / 44) |
+| --- | --- |
+| NR → SR | 0.9507 / 0.9647 / 0.9715 |
+| SR → NR | 0.9515 / 0.9577 / 0.9591 |
+| NR → NR (diagonal, pooled over seeds) | 0.9530 |
+| SR → SR (diagonal, pooled over seeds) | 0.9575 |
+
+Length-stratified, the off-diagonal cells hold at ~0.92–0.93 — the transfer is not the length confound. And the geometry healed with the exp17 recipe: effective-rank ratios sit at 0.41–0.46 where the v3 encoder measured 0.06–0.09.
+
+**TSR in-task is a null, stated plainly as a finding.** At s44 the TSR diagonal scores held-out Top-1 0.00246 — exactly chance on its 407-sentence gallery — with lift −0.0003 and permutation *p* = 0.998, at a healthy effective rank of 0.33. The geometry is fine; there is no measurable content signal. This is the odd-vantage-point outcome the pre-registration anticipated, now with a number.
+
+**The menu is at chance where the percentile is not, and the decomposition says why.** The certified prototype menu on exact-length pools reads K=2 accuracy 0.522 (CI 0.484–0.560, permutation *p* = 0.12) for NR s44 — chance — and the ±1/±2 tolerance sensitivity rows read 0.526 / 0.538, so tolerance is not the driver. The open menu reaches K=2 0.707 (permutation *p* = 0.002), but its built-in length oracle scores 0.971, so the block is stamped `gamed: true` and correctly self-disqualifies. The reconciliation: the retrieval percentile ranks the first of ~11 cross-subject *readings* of the true sentence, while the certified menu scores one *prototype centroid* inside an exact-length pool. The sentence-level discriminative signal lives in individual readings, not in centroids — which is exactly what the enrolled menu flavor (below) is built to score honestly.
+
+**One operational note.** In the 2026-08-17 session the notebook's §3b derived the task list by globbing the raw dataset directory, and on a fresh runtime that check missed TSR — so the transfer loop ran 2×2 (all 15 TSR-involving cells absent) and the local `INDEX.md`, rebuilt without TSR rows, was mirrored over the Drive copy. All three TSR arms were in fact trained *and* evaluated on Drive; the matrix completes on re-run, and the catalogue mirror now merges by run name instead of overwriting, so a session can no longer erase another session's rows.
+
 ## Operations
 
 Three configs, each byte-identical to `experiments/ablation/exp17_base.yaml` except for `dataset.tasks` and `run_name` — so the per-task encoders inherit the best-measured recipe exactly and differ from it, and from each other, by one field:
@@ -81,5 +102,10 @@ uv run zte-parallax chamber --report-dir res/parallax/report --out res/parallax/
 `transfer` writes one directory per cell, named `<train_task>_to_<eval_task>_s<seed>/`, holding `transfer.json` and `embeddings.npz` (the held-out sentence embeddings with their content ids, subjects and word counts). `transfer.json` carries the cell whole: train and eval task, seed, holdout, `novel_stimuli` and `stimulus_overlap`, `n_queries`, the `held_out` and `held_out_length_stratified` retrieval blocks, the `menu` block, the `postprocess_fit` label, and provenance — checkpoint path and sha256, git commit, `run_name`, and the training tasks read from the checkpoint's own config, so a cell can never misstate which encoder produced it.
 
 `report` writes three artifacts: **`PARALLAX.json`** (the full matrix — per-seed cell summaries under `cells[train][eval]`, the per-pair CKA, holdout, seeds, provenance), **`PARALLAX.md`** (the human-readable board), and **`CHAMBER_DATA.json`** — the render-ready payload: per eval task, at most 700 points (one per distinct sentence, the cross-subject prototype), each with its text, cluster, word count, per-model rank percentile, and a 3D coordinate per model view, PCA-reduced and Procrustes-aligned across the three models so the vantage points are visually comparable; plus the transfer matrix with CIs, the certified menu capacities, and the three CKA scores. `chamber` renders that payload to a single self-contained HTML page and computes nothing — every number on the page exists in the JSON first.
+
+Two audit surfaces exist because the measured menu-vs-percentile gap demanded them:
+
+- **The enrolled menu flavor** (`zte.evaluation.audit.menu`) scores each K-way option against the *enrolled individual readings* of its sentence — the non-holdout subjects' readings, each kept as its own reference — taking the option's best reading match rather than collapsing the readings into a prototype centroid first. It is certified like the other flavors: exact stimulus-level length matching in the distractor pool, ties losing, and the built-in length-oracle guard that stamps `gamed: true` when length alone reproduces the score. The rationale is measured, not aesthetic: the retrieval percentile ranks readings and clears chance while the prototype menu does not, so a menu that never leaves reading space is the honest test of whether that signal supports a forced choice.
+- **The 2-way decomposition diagnostic** (`menu_decomposition` in `PARALLAX.json`, rendered in `PARALLAX.md`) re-scores every diagonal cell under the four combinations of {prototype, best reading} × {exact length, ±1 word}, so the gap between the menu and the percentile decomposes into named factors instead of being argued about. It is a diagnostic and gates nothing; no cell of it is a headline.
 
 **No claim from this study enters [`RESULTS.md`](RESULTS.md) without directional consistency across seeds.** A cell whose seeds disagree on sign is reported as unresolved, not averaged into a headline — three seeds are the minimum to say anything, and the optional 45/46 exist to settle exactly this.
