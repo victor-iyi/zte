@@ -1,5 +1,21 @@
 # Changelog
 
+## The lens: a single-reading inspection surface
+
+`src/zte/lens/` (`saliency`, `trace`, `page`) and the `zte-lens` CLI walk one reading — one subject reading one
+sentence — through a trained checkpoint and show what the model did with it: the thought embedding, occlusion-based
+word saliency (each word masked out of the pad mask in turn, scored by the cosine drop of the re-embedded sentence),
+occlusion-based channel saliency grouped by montage region (`null`, with an honest note on the page, when the
+checkpoint has no montage), the reading's top-k neighborhood in the gallery, and — for decoder checkpoints, via
+`zte-lens decode` — the greedy generation with per-prefix-slot occlusion, the word-synchronous evidence weights when
+the checkpoint uses them, and the null-prefix control side by side. The artifact is one `lens.json` per reading
+(plus a self-contained `LENS.html` with `--html`, built by `zte.lens.page.build_lens_page`), with full provenance.
+This is an inspection tool, never an evaluation: every artifact carries and every page renders the disclaimer
+"inspection, not a result -- no number here is a headline", the neighbor gallery never contains the query reading
+itself, and a non-holdout subject is rendered prominently as a training brain. Driven from §8 of
+`notebooks/zte_parallax.ipynb`, with every artifact written to Drive; definitions and the honest-reading guidance:
+`docs/LENS.md`.
+
 ## The parallax study: three per-task encoders and the cross-task transfer matrix
 
 ZuCo's task is fully confounded with its stimulus set (Cramér V 0.998; no sentence appears under two tasks), and the

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The Lens — __LENS_TITLE__</title>
+    <script>/*__LENS_PLOTLY_JS__*/</script>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark"></span>
+          <div>
+            <h1>The Lens</h1>
+            <p class="sub" id="sub"></p>
+          </div>
+        </div>
+        <span class="badge" id="subjectbadge"></span>
+      </header>
+
+      <div class="caveat" id="disclaimer"></div>
+
+      <main class="grid">
+        <section class="panel span2" id="readingpanel">
+          <div class="panelhead">
+            <h2>The reading</h2>
+            <span class="pill" id="embedpill"></span>
+          </div>
+          <div class="sentence" id="sentence"></div>
+          <p class="legendline" id="readinglegend">
+            Each word is tinted by <b>occlusion saliency</b>: the reading is re-embedded with that word masked out of
+            the pad mask, and the tint is the cosine drop against the full-sentence embedding — warm means the
+            embedding leaned on the word, cool means masking it moved the embedding the other way. Hover a word for
+            the exact drop.
+          </p>
+          <p class="disclaim">inspection, not a result — no number here is a headline</p>
+        </section>
+
+        <section class="panel" id="scalppanel">
+          <div class="panelhead">
+            <h2>The scalp</h2>
+            <div class="segmented" id="scalpview"></div>
+          </div>
+          <div class="stage" id="scalp"__LENS_SCALP_PLOT_HIDDEN__></div>
+          <div class="emptycell" id="scalpnote"__LENS_SCALP_NOTE_HIDDEN__>
+            No montage geometry travelled with this checkpoint, so channel saliency was not computed and there is
+            no scalp to draw. That is the honest state of this capture, not a rendering gap.
+          </div>
+          <p class="legendline" id="scalplegend">
+            Top-down view of the montage, nose up. Each electrode is sized and coloured by <b>occlusion saliency</b>:
+            its region is zeroed, the reading is re-embedded, and the cosine drop is recorded. Hover for the channel,
+            its region and the exact drop; the 3D toggle shows the same scores on the true electrode positions.
+          </p>
+          <p class="disclaim">inspection, not a result — no number here is a headline</p>
+        </section>
+
+        <section class="panel" id="neighborpanel">
+          <div class="panelhead"><h2>The neighbourhood</h2></div>
+          <div class="strips" id="strips"></div>
+          <p class="legendline" id="neighborlegend">
+            The gallery sentences nearest this embedding, ranked by cosine. Glowing strips are <b>other subjects
+            reading this very sentence</b>; a dotted edge marks this subject reading something else. A neighbourhood
+            crowded with same-subject strips means the space organised around <b>identity, not content</b> — the
+            model found the person, not the sentence.
+          </p>
+          <p class="disclaim">inspection, not a result — no number here is a headline</p>
+        </section>
+
+        <section class="panel span2" id="decodepanel"__LENS_DECODE_HIDDEN__>
+          <div class="panelhead"><h2>The decode trace</h2></div>
+          <div class="tokens" id="tokens"></div>
+          <div class="plot" id="ribbon"></div>
+          <div class="decoderow">
+            <div class="glyphbox">
+              <div class="boxcap">prefix-slot influence</div>
+              <div class="glyph" id="slots"></div>
+            </div>
+            <div class="genbox">
+              <div class="boxcap">decoded from this reading</div>
+              <div class="gentext" id="gentext"></div>
+            </div>
+            <div class="genbox nullbox">
+              <div class="boxcap">what the LM says with no brain attached</div>
+              <div class="gentext" id="nulltext"></div>
+            </div>
+          </div>
+          <p class="legendline" id="decodelegend">
+            The greedy generation, token by token. The ribbon shows the word-synchronous evidence weights when the
+            checkpoint carries that head — and the pointer walk is a <b>fixed monotonic schedule</b>, a function of
+            step and word counts and never of content, so the diagonal band is the schedule, not a discovered
+            alignment. Each spoke of the glyph is one prefix slot: its length is the mean absolute shift in the
+            generated tokens' log-probabilities when that slot is zeroed and the same tokens are re-scored (nothing
+            is regenerated). The right-hand box is the <b>null control</b> — the bridge's learned unconditional
+            prefix, the LM with no brain attached. If the two boxes read alike, the brain contributed little; that
+            is a finding, reported plainly.
+          </p>
+          <p class="disclaim">inspection, not a result — no number here is a headline</p>
+        </section>
+      </main>
+
+      <footer class="prov" id="prov"></footer>
+    </div>
+
+    <script id="lens-data" type="application/json">__LENS_DATA__</script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

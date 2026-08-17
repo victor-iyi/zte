@@ -77,6 +77,7 @@ zte-visualize = 'zte.cli.visualize:main'
 zte-compare = 'zte.cli.compare:main'
 zte-loso-summary = 'zte.cli.loso_summary:main'
 zte-encodability = 'zte.cli.encodability:main'
+zte-lens = 'zte.cli.lens:main'
 zte-pack = 'zte.cli.pack:main'
 zte-parallax = 'zte.cli.parallax:main'
 zte-analyze = 'zte.cli.analyze:main'
@@ -98,6 +99,9 @@ artifacts = [
   'src/zte/parallax/web/*/*.html',
   'src/zte/parallax/web/*/*.css',
   'src/zte/parallax/web/*/*.js',
+  'src/zte/lens/web/*/*.html',
+  'src/zte/lens/web/*/*.css',
+  'src/zte/lens/web/*/*.js',
 ]
 
 [tool.uv]

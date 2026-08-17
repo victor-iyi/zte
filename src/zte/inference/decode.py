@@ -668,6 +668,20 @@ class ZTEDecoder:
             durations = torch.from_numpy(readings.durations[lo:hi]).to(device)
         return lambda steps: self.evidence.nudge(words, valid, steps, durations)  # type: ignore[union-attr]
 
+    def evidence_fn(self, readings: ReadingBatch, lo: int, hi: int, *, content: bool = True) -> EvidenceFn | None:
+        """The per-step evidence nudge for one row span, or `None` when the run has no evidence path.
+
+        Args:
+            readings (ReadingBatch): The batch the closure will nudge.
+            lo (int): First row of the span.
+            hi (int): Row past the span's end.
+            content (bool, optional): False swaps the words for the evidence module's null. Defaults to True.
+
+        Returns:
+            EvidenceFn | None: The nudge closure, or `None` without an evidence path.
+        """
+        return self._evidence_fn(readings, lo, hi, content=content)
+
     @torch.no_grad()
     def decode_trace(
         self,
@@ -792,6 +806,17 @@ class ZTEDecoder:
             torch.from_numpy(targets.ids).to(device),
             torch.from_numpy(targets.mask).to(device),
         )
+
+    def tokenise(self, texts: Sequence[str]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Token ids and attention mask for `texts` under the checkpoint's own tokeniser.
+
+        Args:
+            texts (Sequence[str]): Sentences to tokenise.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: `(ids, mask)` on the decoder's device.
+        """
+        return self._tokenise(texts)
 
 
 def _spans(n: int, size: int) -> Iterator[tuple[int, int]]:
