@@ -23,6 +23,16 @@ REMOTE_ENV_VAR: str = 'ZTE_CACHE_REMOTE'
 # under their own namespace, so they survive a reclaimed VM like the bundles do.
 ARTIFACT_SUBDIR: str = '_artifacts'
 
+# A torn copy is the failure this guards: `mirror_tree` walks alphabetically, so `meta.json` can land on
+# a store before the pickles it describes -- one file's existence is not an entry's existence.
+REQUIRED_ENTRY_FILES: tuple[str, ...] = ('meta.json', 'words.pkl', 'sentences.pkl', 'arrays.npz')
+"""Files a cache entry (bundle or extract) must carry before any layer counts it as present."""
+
+
+def _is_complete(directory: Path | None) -> bool:
+    """Whether a cache directory carries every required file of a finished entry."""
+    return directory is not None and all((directory / name).is_file() for name in REQUIRED_ENTRY_FILES)
+
 
 def _artifact_remote(local: str | Path) -> Path | None:
     """Returns the persistent-store path for a local artifact file, or `None` without a remote."""
@@ -127,9 +137,9 @@ class BundleStore:
             str | None: Which layer holds the entry, or `None` if neither does.
         """
         local_dir, remote_dir = self._dirs(key, kind)
-        if (local_dir / 'meta.json').is_file():
+        if _is_complete(local_dir):
             return 'local'
-        if remote_dir is not None and (remote_dir / 'meta.json').is_file():
+        if _is_complete(remote_dir):
             return 'persistent'
         return None
 
@@ -144,16 +154,32 @@ class BundleStore:
             Path | None: A local directory ready to load, or `None` on a miss.
         """
         local_dir, remote_dir = self._dirs(key, kind)
-        if (local_dir / 'meta.json').is_file():
+        if _is_complete(local_dir):
             return local_dir
-        if remote_dir is not None and (remote_dir / 'meta.json').is_file():
+        if local_dir.is_dir():
+            # A local cache entry is rebuildable by definition, so a torn one is cleared, never trusted.
+            _LOG.warning('Local cache entry %s is incomplete (torn copy); discarding it.', local_dir)
+            shutil.rmtree(local_dir, ignore_errors=True)
+
+        if remote_dir is not None and remote_dir.is_dir():
+            if not _is_complete(remote_dir):
+                _LOG.warning(
+                    'Persistent cache entry %s is incomplete (torn publish); ignoring it -- the entry will be '
+                    'rebuilt and the store repaired on the next publish.',
+                    remote_dir,
+                )
+                return None
             _LOG.info('Cache hit on the persistent store; copying %s -> %s ...', remote_dir, local_dir)
             copied, failed = mirror_tree(remote_dir, local_dir, exclude_dirs=())
-            if failed or not (local_dir / 'meta.json').is_file():
-                _LOG.warning('Could not stage %s locally (%d file(s) failed).', remote_dir, failed)
+            if failed or not _is_complete(local_dir):
+                _LOG.warning(
+                    'Could not stage %s locally (%d file(s) failed); clearing the partial copy.', remote_dir, failed
+                )
+                shutil.rmtree(local_dir, ignore_errors=True)
                 return None
             _LOG.info('Staged %d file(s) from the persistent store.', copied)
             return local_dir
+
         return None
 
     def reserve(self, key: str, kind: str = 'bundle') -> Path:
@@ -168,16 +194,17 @@ class BundleStore:
         then safe even if training is interrupted seconds later.
         """
         local_dir, remote_dir = self._dirs(key, kind)
-        if remote_dir is None or not (local_dir / 'meta.json').is_file():
+        if remote_dir is None or not _is_complete(local_dir):
             return
 
-        # Entries are immutable, so an existing copy is already correct. The memory-mapped raw array
-        # stays local: re-deriving costs minutes, where pushing ~24 GB up would bloat the store for none.
-        if (remote_dir / 'meta.json').is_file():
+        # A COMPLETE remote entry is immutable and already correct. Completeness, not existence, gates the
+        # early return: an interrupted publish can land `meta.json` without the pickles it describes, and an
+        # existence check would then freeze that torn entry into the store forever.
+        if _is_complete(remote_dir):
             return
         copied, failed = mirror_tree(local_dir, remote_dir, exclude_dirs=())
-        if failed:
-            _LOG.warning('Published %s with %d failure(s); it will be retried next time.', key, failed)
+        if failed or not _is_complete(remote_dir):
+            _LOG.warning('Published %s incompletely (%d failure(s)); it will be repaired next time.', key, failed)
         else:
             _LOG.info('Published %s to the persistent store (%d file(s)).', key, copied)
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import pickle
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -189,22 +191,34 @@ class ZuCoDataset:
         store = BundleStore.create(self.config.cache_dir, self.config.cache_remote)
         key, extract_key = self._cache_key(), self._extract_key()
 
-        # Level 2: the finished bundle for exactly this config.
+        # Level 2: the finished bundle for exactly this config. An unreadable entry costs a rebuild,
+        # never the run: it is cleared and the build falls through to processing, checkpoint-style.
         if not force:
             hit = store.find(key)
             if hit is not None:
                 _LOG.info('Loading processed dataset from cache: %s', hit)
-                self.load(hit, into=self)
-                store.publish(key)  # a local-only hit still gets persisted
-                return self
+                try:
+                    self.load(hit, into=self)
+                except (OSError, KeyError, ValueError, EOFError, pickle.UnpicklingError) as exc:
+                    _LOG.warning('Cache entry %s is unreadable (%r); discarding it and rebuilding.', hit, exc)
+                    shutil.rmtree(hit, ignore_errors=True)
+                else:
+                    store.publish(key)  # a local-only hit still gets persisted
+                    return self
 
         # Level 1: the `.mat` extraction, which depends on far fewer settings than the processing does,
         # so a config that only changes normalisation/imputation/filters skips the expensive parse.
         extract_hit = None if force else store.find(extract_key, kind='extract')
+        loaded_extract = False
         if extract_hit is not None:
             _LOG.info('Reusing cached .mat extraction: %s', extract_hit)
-            self._load_extract(extract_hit)
-        else:
+            try:
+                self._load_extract(extract_hit)
+                loaded_extract = True
+            except (OSError, KeyError, ValueError, EOFError, pickle.UnpicklingError) as exc:
+                _LOG.warning('Cached extraction %s is unreadable (%r); discarding it and re-parsing.', extract_hit, exc)
+                shutil.rmtree(extract_hit, ignore_errors=True)
+        if not loaded_extract:
             self._load_mat(show_progress=show_progress)
             if self.config.cache_extracts:
                 self._save_extract(store.reserve(extract_key, kind='extract'))

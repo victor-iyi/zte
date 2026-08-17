@@ -1,5 +1,16 @@
 # Changelog
 
+## Torn cache entries can no longer poison the store
+
+A prepared-bundle cache entry now exists only when it is *complete*. Copies between the local cache and the
+persistent Drive store walk files alphabetically, so an interrupted copy could land `meta.json` before the pickles
+it describes; the old existence check then treated the torn directory as a warm hit — and, because publish
+early-returned on `meta.json`, the poisoned entry was frozen into the store and crashed every later session with
+`FileNotFoundError: .../sentences.pkl` (observed on the TSR bundle, 2026-08-17). Every layer now requires all four
+required files before counting an entry as present: torn local copies are cleared and rebuilt, torn persistent
+entries are reported loudly and repaired by the next publish, and a complete-but-unreadable bundle is discarded and
+rebuilt instead of crashing — the checkpoint layer's fall-back-past-a-torn-file discipline, applied to the cache.
+
 ## The lens: a single-reading inspection surface
 
 `src/zte/lens/` (`saliency`, `trace`, `page`) and the `zte-lens` CLI walk one reading — one subject reading one

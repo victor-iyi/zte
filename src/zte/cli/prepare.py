@@ -156,7 +156,7 @@ def _prepare_configs(args: argparse.Namespace) -> None:
         store.describe(),
     )
 
-    # `has` only stats meta.json on each layer, so this costs nothing even when the store is on Drive.
+    # `has` only stats the entry's required files on each layer, so this costs nothing even on Drive.
     located = {key: store.has(key) for key in wanted}
     missing = sorted(key for key, where in located.items() if where is None)
 

@@ -12,12 +12,20 @@ import pandas as pd
 import pytest
 
 from zte.config import DatasetConfig, MissingConfig
-from zte.data.cache import REMOTE_ENV_VAR, BundleStore
+from zte.data.cache import REMOTE_ENV_VAR, REQUIRED_ENTRY_FILES, BundleStore
 from zte.data.dataset import ZuCoDataset
 
 
 def _entry(directory: Path, payload: str = '{}') -> Path:
-    """Creates a minimal cache entry (a directory carrying a `meta.json`)."""
+    """Creates a minimal COMPLETE cache entry: every required file present, `meta.json` carrying the payload."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_ENTRY_FILES:
+        (directory / name).write_text(payload if name == 'meta.json' else 'x', encoding='utf-8')
+    return directory
+
+
+def _torn_entry(directory: Path, payload: str = '{}') -> Path:
+    """Creates a torn cache entry: `meta.json` landed, the pickles it describes did not."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'meta.json').write_text(payload, encoding='utf-8')
     return directory
@@ -262,3 +270,66 @@ def test_extract_round_trip_keeps_the_requested_config(tmp_path: Path) -> None:
     assert restored.features is None
     assert restored.presence is None
     assert restored.normalizer is None
+
+
+# --------------------------------------------------------------------------- #
+# torn entries: an interrupted copy must cost a rebuild, never the run
+# --------------------------------------------------------------------------- #
+def test_a_torn_local_entry_is_a_miss_and_is_cleared(tmp_path: Path) -> None:
+    """A local directory with `meta.json` but no pickles is a torn copy: refused and removed, never loaded."""
+    store = BundleStore(local=tmp_path / 'local', remote=None)
+    torn = _torn_entry(tmp_path / 'local' / 'k')
+
+    assert store.find('k') is None
+    assert not torn.exists()
+    assert store.has('k') is None
+
+
+def test_a_torn_persistent_entry_is_refused_and_never_staged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A torn entry on the persistent store is reported loudly and treated as a miss, not copied down."""
+    import logging
+
+    store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
+    _torn_entry(tmp_path / 'drive' / 'k')
+
+    with caplog.at_level(logging.WARNING, logger='zte.data.cache'):
+        assert store.find('k') is None
+
+    assert not (tmp_path / 'local' / 'k').exists()
+    assert any('torn publish' in record.message for record in caplog.records)
+    assert store.has('k') is None
+
+
+def test_publish_repairs_an_incomplete_persistent_entry(tmp_path: Path) -> None:
+    """A torn remote entry is completed by the next publish rather than frozen forever behind `meta.json`."""
+    store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
+    _entry(tmp_path / 'local' / 'k', payload='{"v": 1}')
+    _torn_entry(tmp_path / 'drive' / 'k', payload='{"v": 1}')
+
+    store.publish('k')
+
+    for name in REQUIRED_ENTRY_FILES:
+        assert (tmp_path / 'drive' / 'k' / name).is_file(), name
+    assert store.has('k') == 'local'
+
+
+def test_build_falls_back_past_an_unreadable_bundle(synthetic_dir: Path, tmp_path: Path) -> None:
+    """A complete-but-corrupt cache entry is discarded and rebuilt, checkpoint-style, instead of crashing."""
+    config = DatasetConfig(
+        root=str(synthetic_dir),
+        tasks=('SR',),
+        representation='band_power',
+        cache_dir=str(tmp_path / 'cache'),
+    )
+    first = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+    n_sentences = len(first.sentences)
+
+    entries = [p for p in (tmp_path / 'cache').iterdir() if p.is_dir() and not p.name.startswith('_')]
+    assert len(entries) == 1
+    (entries[0] / 'sentences.pkl').write_bytes(b'not a pickle')
+
+    rebuilt = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+
+    assert len(rebuilt.sentences) == n_sentences
+    reread = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+    assert len(reread.sentences) == n_sentences

@@ -263,6 +263,8 @@ A saved bundle is the unit of reuse: build once with `zte-prepare`, then train, 
 
 `--cache-dir` is a fast local cache; `--cache-remote` (or `$ZTE_CACHE_REMOTE`, which every `zte-*` command honours) is a persistent one, typically a mounted Drive folder. Lookups read local first, then the persistent store, staging a hit down once; a freshly built bundle is published upward immediately, so an interrupted run never costs a rebuild.
 
+**A cache entry exists only when it is complete.** Copies between layers walk files alphabetically, so an interrupted copy can land `meta.json` on a store before the pickles it describes — and a mere existence check would then freeze that torn entry in place forever, crashing every later session that stages it. Every layer therefore counts an entry as present only when *all* of its required files (`meta.json`, `words.pkl`, `sentences.pkl`, `arrays.npz`) exist: a torn local copy is cleared and treated as a miss, a torn persistent entry is reported loudly, ignored, and *repaired* by the next publish, and an entry that is complete but unreadable is discarded and rebuilt rather than crashing the run — the same fall-back-past-a-torn-file discipline the checkpoint layer uses.
+
 ```sh
 export ZTE_CACHE_REMOTE="/content/drive/MyDrive/Sharables/ZTE/prepared"
 
