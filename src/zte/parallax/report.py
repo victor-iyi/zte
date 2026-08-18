@@ -158,8 +158,14 @@ def _summary(report: dict[str, Any]) -> dict[str, Any]:
         'length_stratified_ci': length.get('rank_percentile_ci'),
         'menu_capacity': flavor.get('capacity'),
         'menu_k2_accuracy': ((flavor.get('per_k') or {}).get('2') or {}).get('accuracy'),
+        'menu_gamed': flavor.get('gamed'),
         'menu_capacity_enrolled': enrolled.get('capacity'),
         'menu_k2_enrolled': ((enrolled.get('per_k') or {}).get('2') or {}).get('accuracy'),
+        'menu_gamed_enrolled': enrolled.get('gamed'),
+        'menu_open_k2': (((menu.get('flavors') or {}).get('open') or {}).get('per_k', {}).get('2') or {}).get(
+            'accuracy'
+        ),
+        'menu_open_gamed': ((menu.get('flavors') or {}).get('open') or {}).get('gamed'),
         'postprocess_fit': report.get('postprocess_fit'),
         'run_name': (report.get('provenance') or {}).get('run_name'),
     }
@@ -258,15 +264,11 @@ def _cka_pairs(cells: list[TransferCell]) -> dict[str, Any]:
     return pairs
 
 
+# The retrieval percentile ranks the first of ~11 cross-subject positives (a best-of-many statistic) while
+# the certified menu scores one prototype in an exact-length pool with ties losing; recomputing 2-way
+# accuracy under {prototype, best reading} x {tol 0, tol 1} names which factor carries the gap.
 def _menu_decomposition(cells: list[TransferCell], holdout: str) -> dict[str, Any]:
-    """2-way accuracy per scoring rule and length tolerance, isolating why the menu and percentile disagree.
-
-    The retrieval percentile ranks the FIRST matching reading among ~11 cross-subject positives -- a
-    best-of-many statistic -- while the certified menu scores one prototype inside an exact-length pool
-    with ties losing. This diagnostic recomputes 2-way accuracy on the diagonal cells under each rule
-    ({prototype, best reading} x {exact length, tol 1}), so the gap decomposes into named factors
-    instead of standing as a mystery. Diagnostic only: nothing here feeds a capacity or a verdict.
-    """
+    """2-way accuracy per scoring rule and length tolerance on the diagonal cells; feeds no verdict."""
     out: dict[str, Any] = {}
     for task in PARALLAX_TASKS:
         per_seed: dict[str, list[float]] = {}
@@ -572,15 +574,22 @@ def _pooled_capacity(nested: dict[str, dict[str, list[dict[str, Any]]]]) -> dict
             continue
         caps = [s['menu_capacity'] for s in summaries]
         k2 = [s['menu_k2_accuracy'] for s in summaries if s['menu_k2_accuracy'] is not None]
-        enrolled_caps = [s.get('menu_capacity_enrolled') for s in summaries]
-        enrolled_k2 = [s.get('menu_k2_enrolled') for s in summaries if s.get('menu_k2_enrolled') is not None]
+        enrolled_caps = [s['menu_capacity_enrolled'] for s in summaries]
+        enrolled_k2 = [s['menu_k2_enrolled'] for s in summaries if s['menu_k2_enrolled'] is not None]
+        open_k2 = [value for s in summaries if (value := s.get('menu_open_k2')) is not None]
         capacity[train] = {
             'k_at_target': int(min(caps)) if caps and all(c is not None for c in caps) else None,
             'k2_accuracy': float(np.mean(k2)) if k2 else None,
+            # Any gamed seed taints the pooled arm: a disqualification must never average away.
+            'gamed': bool(any(s.get('menu_gamed') or s.get('menu_gamed_enrolled') for s in summaries)),
             'enrolled_k_at_target': (
                 int(min(enrolled_caps)) if enrolled_caps and all(c is not None for c in enrolled_caps) else None
             ),
             'enrolled_k2_accuracy': float(np.mean(enrolled_k2)) if enrolled_k2 else None,
+            'open': {
+                'k2_accuracy': float(np.mean(open_k2)) if open_k2 else None,
+                'gamed': bool(any(s.get('menu_open_gamed') for s in summaries)),
+            },
         }
 
     return capacity
@@ -667,16 +676,27 @@ def render_markdown(parallax: dict[str, Any]) -> str:
         for arm, block in capacity.items():
             k = block.get('k_at_target')
             k2 = block.get('k2_accuracy')
+            gamed_note = ' ⚠ length-gamed — disqualified.' if block.get('gamed') else ''
             lines.append(
                 f'- `{arm}` prototype: certified capacity K = {"none" if k is None else k}, '
-                f'2-way accuracy {"—" if k2 is None else format(k2, ".4f")}.'
+                f'2-way accuracy {"—" if k2 is None else format(k2, ".4f")}.{gamed_note}'
             )
             ek = block.get('enrolled_k_at_target')
             ek2 = block.get('enrolled_k2_accuracy')
-            lines.append(
-                f'- `{arm}` enrolled (best cross-subject reading): certified capacity K = '
-                f'{"none" if ek is None else ek}, 2-way accuracy {"—" if ek2 is None else format(ek2, ".4f")}.'
-            )
+            if ek2 is None and ek is None:
+                lines.append(f'- `{arm}` enrolled: not measured (the cells predate the enrolled flavor).')
+            else:
+                lines.append(
+                    f'- `{arm}` enrolled (best cross-subject reading): certified capacity K = '
+                    f'{"none" if ek is None else ek}, 2-way accuracy {"—" if ek2 is None else format(ek2, ".4f")}.'
+                )
+            open_block = block.get('open') or {}
+            if open_block.get('k2_accuracy') is not None:
+                badge = ' ⚠ length-gamed — disqualified' if open_block.get('gamed') else ''
+                lines.append(
+                    f'- `{arm}` open pool (diagnostic, never certified): 2-way accuracy '
+                    f'{format(open_block["k2_accuracy"], ".4f")}.{badge}'
+                )
 
     decomposition = parallax.get('menu_decomposition') or {}
     if decomposition:

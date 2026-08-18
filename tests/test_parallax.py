@@ -578,7 +578,7 @@ def test_the_enrolled_capacity_travels_through_the_report_round_trip(tmp_path: P
     # CHAMBER_DATA.json: the pooled capacity block gains the enrolled keys, prototype keys untouched.
     chamber = json.loads((tmp_path / 'rep' / 'CHAMBER_DATA.json').read_text(encoding='utf-8'))
     block = chamber['capacity']['NR']
-    assert set(block) == {'k_at_target', 'k2_accuracy', 'enrolled_k_at_target', 'enrolled_k2_accuracy'}
+    assert set(block) == {'k_at_target', 'k2_accuracy', 'gamed', 'enrolled_k_at_target', 'enrolled_k2_accuracy', 'open'}
     assert block['enrolled_k_at_target'] is not None
     assert block['enrolled_k2_accuracy'] is not None and block['enrolled_k2_accuracy'] > 0.9
 
@@ -587,3 +587,37 @@ def test_the_enrolled_capacity_travels_through_the_report_round_trip(tmp_path: P
     assert '## Menu capacity (in-task diagonal)' in markdown
     assert '- `NR` prototype: certified capacity K =' in markdown
     assert '- `NR` enrolled (best cross-subject reading): certified capacity K =' in markdown
+
+
+def test_the_capacity_block_carries_the_gamed_verdicts(tmp_path: Path) -> None:
+    """The pooled capacity block carries gamed and the open diagnostic, so the chamber's badge is reachable."""
+    emb, content, subjects, words, texts = _cohort(n_stimuli=20)
+    report = transfer_report(
+        emb,
+        content,
+        subjects,
+        words,
+        texts,
+        train_task='NR',
+        eval_task='NR',
+        holdout='ZAB',
+        train_stimulus_texts={f'SR sentence {i}' for i in range(20)},
+        n_boot=100,
+    )
+    write_cell(
+        tmp_path / 'cells' / cell_name('NR', 'NR', 42),
+        report,
+        sent_emb=emb,
+        content_ids=content,
+        subjects=subjects,
+        n_words=words,
+        texts=texts,
+    )
+
+    build_report(tmp_path / 'cells', tmp_path / 'rep')
+
+    chamber = json.loads((tmp_path / 'rep' / 'CHAMBER_DATA.json').read_text(encoding='utf-8'))
+    block = chamber['capacity']['NR']
+    assert set(block) >= {'k_at_target', 'k2_accuracy', 'gamed', 'enrolled_k_at_target', 'open'}
+    assert isinstance(block['gamed'], bool)
+    assert set(block['open']) == {'k2_accuracy', 'gamed'}

@@ -85,8 +85,14 @@ def test_a_perfect_embedding_is_certified_at_every_servable_menu_size() -> None:
             assert per_k[k]['perm_p'] is not None and per_k[k]['perm_p'] < 0.05
         # 30 stimuli cannot serve a 64-way menu: no pool holds 63 distractors, so the size reports empty.
         assert per_k['64']['accuracy'] is None and per_k['64']['n_queries'] == 0
-        assert out['flavors'][flavor]['capacity'] == 4
         assert out['flavors'][flavor]['capacity_point'] == 4
+
+    # The exact-length pool is length-clean by construction, so a perfect embedding certifies there.
+    # The open pool carries length information, so its certification is at the oracle's mercy: gamed vetoes it.
+    matched = out['flavors']['length_matched']
+    assert matched['gamed'] is False and matched['capacity'] == 4
+    open_block = out['flavors']['open']
+    assert open_block['capacity'] == (None if open_block['gamed'] else 4)
 
 
 def test_a_random_embedding_sits_at_chance_and_certifies_nothing() -> None:
@@ -381,3 +387,52 @@ def test_markdown_lines_survive_an_unservable_size() -> None:
     assert out is not None
     text = '\n'.join(menu_markdown_lines(out))
     assert '| 64 |' in text and '| — | — | 0 |' in text
+
+
+def test_a_gamed_pool_can_never_certify_a_capacity() -> None:
+    """Certification ANDs the oracle verdict: a pool where word count alone wins may not certify any K."""
+    rng = np.random.default_rng(7)
+    n_per_band, bands = 15, (5.0, 10.0, 15.0, 20.0)
+    n_stimuli = n_per_band * len(bands)
+    lengths = np.repeat(bands, n_per_band)
+    # The embedding knows the word count and nothing else, so the open pool is winnable -- and so is its
+    # oracle, which must flag the pool gamed and veto the certification the accuracy alone would earn.
+    directions = np.eye(len(bands), dtype=np.float32)[np.repeat(np.arange(len(bands)), n_per_band)]
+
+    emb, content, subjects, words = [], [], [], []
+    for code in ('ZAB', 'ZDM', 'ZKB'):
+        emb.append(directions + 0.05 * rng.standard_normal((n_stimuli, len(bands))).astype(np.float32))
+        content.append(np.arange(n_stimuli))
+        subjects += [code] * n_stimuli
+        words.append(lengths)
+
+    out = menu_report(
+        np.concatenate(emb),
+        np.concatenate(content),
+        np.array(subjects),
+        'ZAB',
+        np.concatenate(words),
+        ks=(2,),
+        postprocess=False,
+        n_boot=300,
+        n_perm=200,
+    )
+    assert out is not None
+    open_block = out['flavors']['open']
+
+    assert open_block['gamed'] is True
+    cell = open_block['per_k']['2']
+    assert cell['accuracy'] > 0.8 and cell['perm_p'] < 0.05, 'the pool would certify but for the oracle'
+    assert open_block['capacity'] is None and open_block['capacity_point'] is not None
+
+
+def test_enrolled_blocks_carry_their_reading_counts() -> None:
+    """Max-over-readings grows with enrollment size, so every enrolled block records the counts it drew from."""
+    emb, content, subjects, words = _cohort(noise=0.1)
+    out = menu_report(emb, content, subjects, 'ZAB', words, ks=(2,), n_boot=100, n_perm=50)
+    assert out is not None
+
+    enrolled = out['flavors']['length_matched_enrolled']
+    counts = enrolled['enrolled_reading_counts']
+    assert counts == {'mean': 2.0, 'min': 2, 'max': 2}
+    assert 'enrolled_reading_counts' not in out['flavors']['length_matched']

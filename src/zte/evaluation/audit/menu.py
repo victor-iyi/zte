@@ -91,9 +91,9 @@ def menu_report(
         seed (int, optional): Bootstrap and permutation seed. Defaults to 0.
 
     Returns:
-        dict | None: `{'postprocess_fit', 'headline_flavor', 'target', 'holdout', 'n_queries',
-            'n_gallery', 'dropped_no_prototype', 'tie_policy', 'flavors', 'sensitivity'}`; `None`
-            when there is nothing to score.
+        dict | None: `{'postprocess_fit', 'headline_flavor', 'headline_tol', 'target', 'holdout',
+            'n_queries', 'n_gallery', 'dropped_no_prototype', 'tie_policy', 'flavors', 'sensitivity'}`;
+            `None` when there is nothing to score.
 
     Raises:
         ValueError: If `train_mask` admits a held-out reading -- a query would then be scored
@@ -197,6 +197,14 @@ def menu_report(
             )
             (flavors if certified else sensitivity)[name] = block
 
+    # Max-over-readings is an order statistic that grows with enrollment size, so the counts ride along
+    # for auditability -- a systematic true-vs-distractor count imbalance would otherwise pass unmodelled.
+    counts = np.asarray([int(np.sum((content_ids == cid) & mask)) for cid in proto_id_arr.tolist()])
+    reading_counts = {'mean': float(counts.mean()), 'min': int(counts.min()), 'max': int(counts.max())}
+    for block in flavors.values():
+        if block['scoring'] == ENROLLED_SCORING:
+            block['enrolled_reading_counts'] = reading_counts
+
     return {
         'postprocess_fit': 'train split' if postprocess else 'none',
         'headline_flavor': 'length_task_matched' if proto_task is not None else 'length_matched',
@@ -262,6 +270,19 @@ def _score_flavor(
             }
         )
 
+    # The oracle verdict is settled before certification so a length-gamed pool can never certify a K.
+    oracle: dict[str, Any] | None = None
+    gamed = False
+    if with_oracle:
+        oracle_rows = [q for q in per_query if q['m'] >= 1]
+        if oracle_rows:
+            oracle_probs = np.array(
+                [_win_prob(q['oracle_beaten'][q['true_slot']], q['m'], 2) for q in oracle_rows], dtype=np.float64
+            )
+            o_mean, o_lo, o_hi = _bootstrap_ci(oracle_probs, n_boot=n_boot, seed=int(rng.integers(2**31)))
+            oracle = {'accuracy': o_mean, 'ci': (o_mean, o_lo, o_hi)}
+            gamed = bool(o_lo > 0.5)
+
     per_k: dict[str, Any] = {}
     capacity: int | None = None
     capacity_point: int | None = None
@@ -292,7 +313,7 @@ def _score_flavor(
             'n_queries': len(rows),
             'perm_p': perm_p,
         }
-        if lo >= target and (perm_p is None or perm_p < 0.05):
+        if lo >= target and (perm_p is None or perm_p < 0.05) and not gamed:
             capacity = k
         if mean >= target:
             capacity_point = k
@@ -305,15 +326,9 @@ def _score_flavor(
         'task_matched': bool(task_matched and proto_task is not None),
         'scoring': scoring,
     }
-    if with_oracle:
-        oracle_rows = [q for q in per_query if q['m'] >= 1]
-        if oracle_rows:
-            oracle_probs = np.array(
-                [_win_prob(q['oracle_beaten'][q['true_slot']], q['m'], 2) for q in oracle_rows], dtype=np.float64
-            )
-            o_mean, o_lo, o_hi = _bootstrap_ci(oracle_probs, n_boot=n_boot, seed=int(rng.integers(2**31)))
-            block['length_oracle_2way'] = {'accuracy': o_mean, 'ci': (o_mean, o_lo, o_hi)}
-            block['gamed'] = bool(o_lo > 0.5)
+    if oracle is not None:
+        block['length_oracle_2way'] = oracle
+        block['gamed'] = gamed
 
     return block
 

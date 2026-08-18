@@ -24,6 +24,14 @@ _FIX_MENU: Final[str] = (
 )
 _FIX_TRIAD: Final[str] = '&sect;4 of notebooks/zte_parallax.ipynb trains its arm and &sect;5 measures the pairs.'
 
+# Rendered server-side from the capacity blocks alone, so a healthy page provably carries no trace of it:
+# the class name and wording exist nowhere in the page assets.
+_GAMED_NOTE: Final[str] = (
+    '<div class="missnote srv-gamed-note" style="border-color:#e8a13c;color:#e8a13c;">'
+    '<span class="noteicon">&#9888;</span><span>{task}: length-gamed &mdash; disqualified. Word count alone '
+    'beats chance in this pool, so no capacity may be read from it.</span></div>'
+)
+
 
 def build_chamber(report_dir: Path, out: Path) -> Path:
     """Renders `CHAMBER_DATA.json` from a `zte-parallax report` directory as one self-contained offline HTML page.
@@ -77,6 +85,7 @@ def build_chamber(report_dir: Path, out: Path) -> Path:
         .replace('__CHAMBER_MISS_PARALLAX__', notes['parallax'])
         .replace('__CHAMBER_MISS_FLOW__', notes['flow'])
         .replace('__CHAMBER_MISS_DIALS__', notes['dials'])
+        .replace('__CHAMBER_GAMED_NOTES__', _gamed_notes(data))
         .replace('__CHAMBER_MISS_RAIN__', notes['rain'])
         .replace('__CHAMBER_MISS_TRIAD__', notes['triad'])
         .replace('__CHAMBER_DECOMP_PLOT_HIDDEN__', '' if has_decomp else ' hidden')
@@ -139,10 +148,10 @@ def _sidecar(report_dir: Path) -> dict[str, Any]:
 def _missing_notes(data: dict[str, Any]) -> dict[str, str]:
     """Static per-panel gap notes naming each declared task a panel cannot draw, and the cell that fills it."""
     tasks = [str(t) for t in data.get('tasks') or []]
-    points = data.get('points') if isinstance(data.get('points'), dict) else {}
-    transfer = data.get('transfer') if isinstance(data.get('transfer'), dict) else {}
-    capacity = data.get('capacity') if isinstance(data.get('capacity'), dict) else {}
-    cka = data.get('cka') if isinstance(data.get('cka'), dict) else {}
+    points = _dict_or_empty(data.get('points'))
+    transfer = _dict_or_empty(data.get('transfer'))
+    capacity = _dict_or_empty(data.get('capacity'))
+    cka = _dict_or_empty(data.get('cka'))
 
     has_points = {t for t in tasks if points.get(t)}
     has_transfer = {
@@ -159,6 +168,25 @@ def _missing_notes(data: dict[str, Any]) -> dict[str, str]:
         'rain': _notes_for(tasks, has_points, 'has no percentile drops in this report', _FIX_POINTS),
         'triad': _notes_for(tasks, has_triad, 'is missing from the CKA triad', _FIX_TRIAD),
     }
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    """The value when it is a JSON object, else an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
+def _gamed_notes(data: dict[str, Any]) -> str:
+    """One amber disqualification note per arm whose capacity block (or open diagnostic) is length-gamed."""
+    capacity = _dict_or_empty(data.get('capacity'))
+    tainted = []
+    for task, block in capacity.items():
+        if not isinstance(block, dict):
+            continue
+        open_block = _dict_or_empty(block.get('open'))
+        if block.get('gamed') or open_block.get('gamed'):
+            tainted.append(str(task))
+
+    return ''.join(_GAMED_NOTE.format(task=_esc(task)) for task in sorted(tainted))
 
 
 def _notes_for(tasks: list[str], have: set[str], gap: str, fix: str) -> str:
