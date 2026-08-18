@@ -28,6 +28,7 @@
         <section class="panel span2" id="readingpanel">
           <div class="panelhead">
             <h2>The reading</h2>
+            <span class="cue">warm = leaned on &middot; cool = pushed away</span>
             <span class="pill" id="embedpill"></span>
           </div>
           <div class="sentence" id="sentence"></div>
@@ -43,12 +44,16 @@
         <section class="panel" id="scalppanel">
           <div class="panelhead">
             <h2>The scalp</h2>
+            <span class="cue">bigger + warmer = more influence</span>
             <div class="segmented" id="scalpview"></div>
           </div>
           <div class="stage" id="scalp"__LENS_SCALP_PLOT_HIDDEN__></div>
           <div class="emptycell" id="scalpnote"__LENS_SCALP_NOTE_HIDDEN__>
-            No montage geometry travelled with this checkpoint, so channel saliency was not computed and there is
-            no scalp to draw. That is the honest state of this capture, not a rendering gap.
+            <span class="emptyicon">&#9676;</span>
+            <p>No montage geometry travelled with this checkpoint, so channel saliency was not computed and there is
+            no scalp to draw. That is the honest state of this capture, not a rendering gap.</p>
+            <p class="emptyhint">Re-run zte-lens (&sect;8 of notebooks/zte_parallax.ipynb) against a checkpoint
+            trained with montage geometry to fill this panel.</p>
           </div>
           <p class="legendline" id="scalplegend">
             Top-down view of the montage, nose up. Each electrode is sized and coloured by <b>occlusion saliency</b>:
@@ -59,7 +64,10 @@
         </section>
 
         <section class="panel" id="neighborpanel">
-          <div class="panelhead"><h2>The neighbourhood</h2></div>
+          <div class="panelhead">
+            <h2>The neighbourhood</h2>
+            <span class="cue">cosine, higher = closer</span>
+          </div>
           <div class="strips" id="strips"></div>
           <p class="legendline" id="neighborlegend">
             The gallery sentences nearest this embedding, ranked by cosine. Glowing strips are <b>other subjects
@@ -71,12 +79,16 @@
         </section>
 
         <section class="panel span2" id="decodepanel"__LENS_DECODE_HIDDEN__>
-          <div class="panelhead"><h2>The decode trace</h2></div>
+          <div class="panelhead">
+            <h2>The decode trace</h2>
+            <span class="cue">darker cell = more evidence weight</span>
+          </div>
           <div class="tokens" id="tokens"></div>
           <div class="plot" id="ribbon"></div>
           <div class="decoderow">
             <div class="glyphbox">
               <div class="boxcap">prefix-slot influence</div>
+              <div class="boxcue">longer spoke = more influence</div>
               <div class="glyph" id="slots"></div>
             </div>
             <div class="genbox">

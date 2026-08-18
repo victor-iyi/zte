@@ -217,3 +217,29 @@ def test_malformed_lens_json_raises(tmp_path: Path) -> None:
     bad.write_text(json.dumps(wrong), encoding='utf-8')
     with pytest.raises(ValueError, match='unknown mode'):
         build_lens_page(bad, tmp_path / 'LENS.html')
+
+
+def test_every_lens_panel_carries_a_direction_cue(tmp_path: Path) -> None:
+    """Each panel states which way is better -- warm/cool, cosine, evidence weight and spoke length are all named."""
+    src = _write_lens(tmp_path / 'lens.json', _decode_lens())
+
+    html = build_lens_page(src, tmp_path / 'LENS.html').read_text(encoding='utf-8')
+
+    assert 'warm = leaned on &middot; cool = pushed away' in html
+    assert 'bigger + warmer = more influence' in html
+    assert 'cosine, higher = closer' in html
+    assert 'darker cell = more evidence weight' in html
+    assert 'longer spoke = more influence' in html
+
+
+def test_the_scalp_gap_note_names_the_gap_and_its_fix(tmp_path: Path) -> None:
+    """The montage-less scalp note says exactly what is missing and what run would fill the panel."""
+    data = _encode_lens()
+    data['channel_saliency'] = None
+    src = _write_lens(tmp_path / 'lens.json', data)
+
+    html = build_lens_page(src, tmp_path / 'LENS.html').read_text(encoding='utf-8')
+
+    assert 'No montage geometry travelled with this checkpoint' in html
+    assert 'zte-lens' in html
+    assert 'class="emptyicon"' in html

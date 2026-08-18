@@ -183,6 +183,17 @@ button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.cue {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cool);
+  border: 1px solid rgba(63, 224, 205, 0.35);
+  background: rgba(63, 224, 205, 0.08);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
 .legendline {
   margin: 10px 0 0;
   color: var(--muted);
@@ -203,10 +214,25 @@ button:focus-visible {
 .emptycell {
   border: 1px dashed var(--glass-edge);
   border-radius: 12px;
-  padding: 36px 16px;
+  padding: 30px 16px;
   text-align: center;
   color: var(--muted);
   font-size: 12.5px;
+}
+.emptyicon {
+  display: block;
+  font-size: 22px;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+.emptycell p {
+  margin: 0 auto;
+  max-width: 620px;
+}
+.emptyhint {
+  margin-top: 6px !important;
+  font-size: 11.5px;
+  opacity: 0.8;
 }
 
 /* ---- the reading ---- */
@@ -355,6 +381,13 @@ button:focus-visible {
   letter-spacing: 0.1em;
   color: var(--muted);
   margin-bottom: 6px;
+}
+.boxcue {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cool);
+  margin: -2px 0 6px;
 }
 .nullbox .boxcap {
   color: var(--warm);

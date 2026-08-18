@@ -579,9 +579,8 @@ function buildDecomp() {
         {
           x: 0.5,
           yref: "paper",
-          y: 0,
-          yanchor: "top",
-          yshift: -26,
+          y: 1.0,
+          yanchor: "bottom",
           text: "chance = 0.5",
           showarrow: false,
           font: { color: "#ff6ba6", size: 11 },
@@ -592,7 +591,7 @@ function buildDecomp() {
   );
 }
 
-/* ---- panel 5: CKA triad ---- */
+/* ---- panel 6: CKA triad ---- */
 
 function buildTriad() {
   const measured = (t) =>
@@ -602,7 +601,10 @@ function buildTriad() {
   const present = TASKS.filter(measured);
   const svg = document.getElementById("triad");
   if (present.length < 2) {
-    svg.outerHTML = '<div class="emptycell">Fewer than two models measured — no pairwise geometry yet.</div>';
+    svg.outerHTML =
+      '<div class="emptycell"><span class="emptyicon">◌</span>' +
+      "<p>Fewer than two models measured — no pairwise geometry yet.</p>" +
+      '<p class="emptyhint">§4 of notebooks/zte_parallax.ipynb trains the arms and §5 measures the pairs.</p></div>';
     return;
   }
 
@@ -669,5 +671,6 @@ buildParallax();
 buildFlow();
 buildDials();
 buildRain();
+buildDecomp();
 buildTriad();
 buildProv();

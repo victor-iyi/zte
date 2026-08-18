@@ -45,6 +45,16 @@ function hexA(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
+/* A designed empty-state card: icon, one sentence naming the gap, and what produces the missing piece. */
+function emptyCard(msg, fix) {
+  return (
+    '<div class="emptycell"><span class="emptyicon">◌</span>' +
+    `<p>${esc(msg)}</p>` +
+    (fix ? `<p class="emptyhint">${esc(fix)}</p>` : "") +
+    "</div>"
+  );
+}
+
 /* ---- header, badge, disclaimer ---- */
 
 function buildHeader() {
@@ -226,7 +236,10 @@ function buildScalp() {
 function buildNeighbors() {
   const host = document.getElementById("strips");
   if (!NEIGHBORS.length) {
-    host.innerHTML = '<div class="emptycell">No gallery neighbours travelled with this capture.</div>';
+    host.innerHTML = emptyCard(
+      "No gallery neighbours travelled with this capture.",
+      "zte-lens writes them when a gallery is supplied (§8 of notebooks/zte_parallax.ipynb)."
+    );
     return;
   }
 
@@ -281,8 +294,10 @@ function buildRibbon(tokens) {
   const host = document.getElementById("ribbon");
   const we = Array.isArray(DECODE.word_evidence) ? DECODE.word_evidence : null;
   if (!we || !we.length || !tokens.length || !WORDS.length) {
-    host.innerHTML =
-      '<div class="emptycell">This checkpoint carries no word-synchronous evidence head — there is no honest token → word ribbon to draw.</div>';
+    host.innerHTML = emptyCard(
+      "This checkpoint carries no word-synchronous evidence head — there is no honest token → word ribbon to draw.",
+      "Train the decoder with the word-evidence head and re-run zte-lens decode to fill it."
+    );
     return;
   }
 
@@ -327,7 +342,10 @@ function buildSlots() {
   const host = document.getElementById("slots");
   const sl = Array.isArray(DECODE.slot_influence) ? DECODE.slot_influence : [];
   if (!sl.length) {
-    host.innerHTML = '<div class="emptycell">No slot-occlusion trace in this capture.</div>';
+    host.innerHTML = emptyCard(
+      "No slot-occlusion trace in this capture.",
+      "zte-lens decode records it (§8 of notebooks/zte_parallax.ipynb)."
+    );
     return;
   }
 
