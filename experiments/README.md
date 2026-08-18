@@ -160,6 +160,7 @@ claim rather than a matter of trust: 700 ZuCo sentences cannot be stored in weig
 | `rebaseline_e5raw`          | The length-confound audit arm: the encoder recipe on the decoder's own split, then scored by `zte-rebaseline`.    |
 | `decode_parallax_nr`        | Phase 3: the v2 decoder over the parallax NR encoder (`parallax_nr_loZAB_s44`), PMI rescoring on, NR gallery.     |
 | `decode_parallax_nr_joint`  | Phase 3, one lever further: `mode: joint` — the encoder unfreezes after stage A; stage B must earn `best.pt`.     |
+| `decode_v2_pmi`             | The PMI-only matched control: `decode_zte_v2` with `rescore_pmi` alone flipped, so the Phase-3 bundle decomposes. |
 | `smoke/decode_tiny_mps`     | Wiring only (`lm_source: tiny`, batch 4, 2 epochs, `run_name: smoke_mps`). Always `--synthetic`; never a result.  |
 
 ```sh

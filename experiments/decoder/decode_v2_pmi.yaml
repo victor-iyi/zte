@@ -1,12 +1,12 @@
-# decode_parallax_nr -- the Phase 3 COMPOSITE arm, not a matched pair: three semantic fields move together
-# against experiments/flagship/decode_zte_v2.yaml (train.encoder_ckpt -> the parallax NR winner, dataset.tasks
-# [NR], decoder.rescore_pmi true), so a delta against decode_zte_v2's 0.43 attributes to the bundle, never to one
-# knob. The matched pairs are decode_parallax_nr vs decode_parallax_nr_joint (mode alone) and decode_zte_v2 vs
-# decode_v2_pmi (PMI alone). Prediction: the PMI-rescored length-stratified rank-percentile CI sits above 0.5
-# where the raw scorer measured 0.43; free generation remains the expected null.
+# decode_v2_pmi -- decoder matched pair. Byte-identical to experiments/flagship/decode_zte_v2.yaml
+# except the one lever named below, so any difference in the rescoring readout is attributable to it.
+#
+# Lever: decoder.rescore_pmi. Answers how much of the below-chance stratified rescoring (0.43 raw) was the
+# candidate-side train-text familiarity bias PMI cancels, with the encoder and gallery held fixed.
 dataset:
   root: res/data/zuco_extracted
   tasks:
+  - SR
   - NR
   subjects: null
   granularity: word
@@ -165,13 +165,13 @@ train:
   drive_backup_dir: null
   compile_model: false
   mode: decoder
-  encoder_ckpt: res/experiments/parallax_nr_loZAB_s44/checkpoints/best.pt
+  encoder_ckpt: res/experiments/exp16_residual_off_loZAB_s42/checkpoints/best.pt
   freeze_encoder: true
   bridge_lr: 0.001
   encoder_lr_scale: 0.1
   stage_a_epochs: 3
   early_stop_patience: 8
-run_name: decode_parallax_nr
+run_name: decode_v2_pmi
 decoder:
   lm_source: Qwen/Qwen2.5-0.5B
   lm_revision: null

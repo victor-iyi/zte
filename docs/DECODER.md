@@ -369,7 +369,7 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 
 The parallax study measured a cross-task, cross-stimulus code that reaches the held-out subject at rank percentile
 ~0.95–0.97 (length-stratified ~0.92), so the decoder now gets its first encoder worth rescoring with.
-`decode_parallax_nr.yaml` is `decode_zte_v2` with exactly one lever moved: the encoder and its task gallery —
+`decode_parallax_nr.yaml` is the composite Phase-3 arm: three fields move together against `decode_zte_v2` (the encoder, its task gallery, and PMI rescoring), so its delta attributes to the bundle; the single-lever pairs are `decode_parallax_nr` vs `decode_parallax_nr_joint` (mode alone) and `decode_zte_v2` vs `decode_v2_pmi` (PMI alone). The bundle moves the encoder and its task gallery —
 `train.encoder_ckpt` names the parallax NR winner (`parallax_nr_loZAB_s44`; the notebook overrides per seed via
 `--encoder-ckpt`), `dataset.tasks: [NR]` scores it against its own task's gallery, and `decoder.rescore_pmi: true`
 subtracts each candidate's null-prefix likelihood so candidate-side familiarity cancels.
