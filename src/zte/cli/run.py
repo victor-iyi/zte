@@ -701,7 +701,7 @@ def _remote_index_path(args: argparse.Namespace) -> Path | None:
 
 
 def _index_rows(index: Path | None) -> dict[str, str]:
-    """Returns a catalogue's data rows keyed by run name in file order; empty when absent, unreadable or pre-held-out."""
+    """Data rows of a catalogue keyed by run name, in file order; empty when absent, unreadable or pre-held-out."""
     if index is None:
         return {}
     try:
@@ -724,12 +724,15 @@ def _index_rows(index: Path | None) -> dict[str, str]:
     return rows
 
 
-# The catalogue mirror pushes the local file whole over the Drive copy, and a fresh VM starts with no local
-# rows at all -- so the write must be the union of both indexes keyed by run name, local rows winning on
-# conflict. A session can then add or update its own runs but never erase another session's; an unreachable
-# remote degrades to local-only.
+# The mirror pushes the file whole and a fresh VM has no local rows, so the write is the union of both
+# indexes keyed by run name (local wins on conflict); an unreachable remote degrades to local-only.
 def _catalogue(out_root: Path, run_name: str, manifest: dict[str, Any], remote_index: Path | None = None) -> None:
-    """Appends/updates this run's row in the experiments index, merged with the mirrored Drive copy."""
+    """Appends/updates this run's row in the experiments index, merged with the mirrored Drive copy.
+
+    Note:
+        The union has no tombstones -- removing a run's row for good means deleting it on Drive and on
+        every machine whose local index still carries it, or it is resurrected by the next merge.
+    """
     index = out_root / 'INDEX.md'
     ev = manifest.get('evaluation', {})
     # Held-out retrieval is the honest LOSO headline; pooled sentence retrieval is shown but flagged as

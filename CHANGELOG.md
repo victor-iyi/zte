@@ -9,7 +9,11 @@ follows that finding through the stack:
 
 - **The enrolled menu flavor** (`zte.evaluation.audit.menu`) scores each K-way option against the enrolled
   individual readings of its sentence (best reading match, never a centroid), certified with the same exact-length
-  pools, losing ties and built-in length-oracle guard as the other flavors.
+  pools, losing ties and built-in length-oracle guard as the other flavors. Every enrolled block records the
+  reading counts it drew from, and a `gamed` pool can certify no capacity: certification ANDs the oracle verdict,
+  and the gamed state travels into `CHAMBER_DATA.json` where the chamber renders it as a server-side amber
+  disqualification note. `experiments/decoder/decode_v2_pmi.yaml` joins the decoder tier as the PMI-only matched
+  control, so the Phase-3 composite arm's delta decomposes into named factors.
 - **The 2-way decomposition diagnostic** (`menu_decomposition` in `PARALLAX.json`) re-scores every diagonal cell
   under {prototype, best reading} × {exact length, ±1 word}, so the menu-vs-percentile gap decomposes into named
   factors. Diagnostic only; it gates nothing.
