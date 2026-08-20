@@ -36,6 +36,8 @@ CONDITION_COLOURS: dict[str, str] = {
     'shuffled_z': '#5c677d',
     'length_only': '#b08968',
     'mismatch': '#4a5759',
+    'model': '#e4572e',
+    'shuffled_eeg': '#5c677d',
 }
 SEQUENTIAL = 'Viridis'
 DIVERGING = 'RdBu'
@@ -77,6 +79,23 @@ _MECHANISM_LEVERS: tuple[str, ...] = (
 # H(identity) - H(identity | n_words) on the real 700-stimulus SR+NR gallery: what word count gives away for free.
 _LENGTH_BITS: float = 5.1422
 
+# H(identity) on that gallery, and H(identity | n_words) under it: a certified bit is credited against the residual
+# that survives knowing word count, never against the total.
+_IDENTITY_BITS: float = 9.4512
+_RESIDUAL_BITS: float = 4.3090
+
+# The conditioning arms of the capacity certification, in the order it argues them: the claim, then the controls.
+_CAPACITY_ARMS: tuple[tuple[str, str], ...] = (
+    ('model', 'model (EEG prefix)'),
+    ('length_only', 'length-only prefix'),
+    ('shuffled_eeg', 'shuffled EEG (derangement)'),
+    ('mismatch', 'mismatched stimulus'),
+    ('null_prefix', 'no prefix'),
+)
+
+# Only the claim and the control that decides it get an interval band; four bands hide the gap the panel exists for.
+_CAPACITY_RIBBONS: frozenset[str] = frozenset({'model', 'length_only'})
+
 
 def _go() -> Any:
     """Imports `plotly.graph_objects`, raising a message that names the dependency group when it is missing."""
@@ -104,6 +123,38 @@ def _layout(fig: 'Figure', title: str, *, height: int = 420, **kwargs: Any) -> '
 def _arm_colour(index: int) -> str:
     """Returns a stable colour for the `index`-th arm."""
     return ARM_COLOURS[index % len(ARM_COLOURS)]
+
+
+def _rgba(colour: str, alpha: float) -> str:
+    """A hex colour as an `rgba()` string, so a fill can sit under a line without hiding it."""
+    value = colour.lstrip('#')
+    red, green, blue = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+    return f'rgba({red}, {green}, {blue}, {alpha})'
+
+
+def _capacity_frame(study: Study, subset: str = 'per_k') -> pd.DataFrame:
+    """The headline score-family and pool-flavor rows of the capacity frame, for one subset."""
+    frame = study.capacity
+    if frame.empty or 'headline' not in frame.columns or 'subset' not in frame.columns:
+        return pd.DataFrame()
+
+    return frame[frame['headline'].astype(bool) & (frame['subset'] == subset)].copy()
+
+
+def _capacity_focus(block: pd.DataFrame) -> str:
+    """The run a single-run capacity panel draws -- the one that certified the largest menu."""
+    ranked = block.groupby('run')['certified_k'].max().sort_values(ascending=False, na_position='last')
+
+    return str(ranked.index[0])
+
+
+def _capacity_note(certified: Any, reason: Any) -> str:
+    """The certified menu size, or an em dash with the reason it is absent -- never a blank and never a zero."""
+    if certified is None or not np.isfinite(pd.to_numeric(certified, errors='coerce')):
+        return f'certified K = — ({reason or "no menu size certified"})'
+
+    return f'certified K = {int(certified)}'
 
 
 def _lever_strength(value: Any) -> float:
@@ -1066,3 +1117,374 @@ def scalp_3d(
     )
     suffix = ' (approximate geometry)' if getattr(geometry, 'approximate', False) else ''
     return _layout(fig, f'Electrode map{suffix}', height=560)
+
+
+def capacity_curve(study: Study) -> 'Figure | None':
+    """Menu accuracy against menu size for every conditioning arm, with the certifying gap shaded.
+
+    Args:
+        study (Study): The collected study.
+
+    Returns:
+        Figure | None: The curve, or `None` when no run carried a decoder capacity report.
+
+    Note:
+        The height of the model line is not the result -- a length-only prefix already scores well above chance
+        inside a pool it shares a word count with, so what certifies is the vertical gap to that control. Chance
+        is drawn as a curve because it is exactly 1/K and moves with the menu size, and a size no pool could fill
+        is greyed rather than drawn as a failure: exact word-count pools hold a median of eight candidates.
+    """
+    go = _go()
+    block = _capacity_frame(study)
+    if block.empty:
+        return None
+
+    run = _capacity_focus(block)
+    block = block[block['run'] == run].sort_values('k')
+    sizes = sorted(int(k) for k in block['k'].dropna().unique())
+    if not sizes:
+        return None
+
+    per_size = block.drop_duplicates('k').set_index('k')
+    fig = go.Figure()
+
+    # Shapes on a log axis take raw data values but their annotations take log10 ones, so the two are placed apart.
+    unreachable = [k for k in sizes if not bool(per_size.loc[k, 'feasible'])]
+    for k in unreachable:
+        fig.add_vrect(x0=k / 1.3, x1=k * 1.3, fillcolor='#ebe8e3', opacity=0.8, line_width=0, layer='below')
+    if unreachable:
+        fig.add_annotation(
+            x=float(np.log10(unreachable[0])),
+            y=1.0,
+            yref='paper',
+            text='no pool could fill this menu',
+            showarrow=False,
+            font={'color': '#6b6157', 'size': 11},
+        )
+
+    curves = {
+        arm: block[block['arm'] == arm].dropna(subset=['accuracy']).sort_values('k')
+        for arm, _ in _CAPACITY_ARMS
+        if not block[block['arm'] == arm].dropna(subset=['accuracy']).empty
+    }
+    if not curves:
+        return None
+
+    # The gap is the claim, so it is filled beneath the lines and named in the legend as such.
+    model, length = curves.get('model'), curves.get('length_only')
+    if model is not None and length is not None:
+        shared = sorted(set(model['k']) & set(length['k']))
+        if shared:
+            floor = length[length['k'].isin(shared)].sort_values('k')['accuracy']
+            ceiling = model[model['k'].isin(shared)].sort_values('k')['accuracy']
+            fig.add_scatter(x=shared, y=floor, mode='lines', line={'width': 0}, showlegend=False, hoverinfo='skip')
+            fig.add_scatter(
+                x=shared,
+                y=ceiling,
+                mode='lines',
+                line={'width': 0},
+                fill='tonexty',
+                fillcolor=_rgba(CONDITION_COLOURS['model'], 0.14),
+                name='model over length-only — the certifying gap',
+                hoverinfo='skip',
+            )
+
+    chance = per_size.loc[sizes, 'chance'].tolist()
+    fig.add_scatter(
+        x=sizes,
+        y=chance,
+        mode='lines',
+        line={'color': '#5c5c5c', 'dash': 'dash', 'width': 1.6},
+        name='chance = 1/K (moves with K)',
+        hovertemplate='K %{x}<br>chance %{y:.4f}<extra></extra>',
+    )
+
+    for arm, label in _CAPACITY_ARMS:
+        rows = curves.get(arm)
+        if rows is None:
+            continue
+        colour = CONDITION_COLOURS.get(arm, '#8c8c8c')
+        if arm in _CAPACITY_RIBBONS and rows['ci_lo'].notna().any():
+            fig.add_scatter(
+                x=rows['k'], y=rows['ci_hi'], mode='lines', line={'width': 0}, showlegend=False, hoverinfo='skip'
+            )
+            fig.add_scatter(
+                x=rows['k'],
+                y=rows['ci_lo'],
+                mode='lines',
+                line={'width': 0},
+                fill='tonexty',
+                fillcolor=_rgba(colour, 0.16),
+                showlegend=False,
+                hoverinfo='skip',
+            )
+        fig.add_scatter(
+            x=rows['k'],
+            y=rows['accuracy'],
+            mode='lines+markers',
+            name=label,
+            line={'color': colour, 'width': 3.2 if arm == 'model' else 1.8},
+            marker={'size': 10 if arm == 'model' else 7},
+            customdata=rows['n_queries'],
+            hovertemplate='K %{x}<br>accuracy %{y:.4f}<br>%{customdata} queries<extra>' + label + '</extra>',
+        )
+
+    certified = per_size['certified_k'].dropna()
+    if not certified.empty:
+        fig.add_vline(x=float(certified.iloc[0]), line={'color': '#1baf7a', 'dash': 'dot'})
+        fig.add_annotation(
+            x=float(np.log10(float(certified.iloc[0]))),
+            y=0.55,
+            yref='paper',
+            text=f'certified K = {int(certified.iloc[0])}',
+            showarrow=False,
+            xanchor='right',
+            bgcolor='rgba(255, 255, 255, 0.85)',
+            font={'color': '#1baf7a', 'size': 11},
+        )
+
+    labels = [f'{k}<br>n={int(per_size.loc[k, "n_queries"] or 0)}' for k in sizes]
+    reason = block['failed_clauses'].replace('', np.nan).dropna()
+    note = _capacity_note(
+        certified.iloc[0] if not certified.empty else None,
+        f'failing clauses: {reason.iloc[0].replace(";", ", ")}' if not reason.empty else None,
+    )
+
+    _layout(
+        fig,
+        f'Decoder menu capacity — {run} · {note}',
+        height=560,
+        xaxis={
+            'type': 'log',
+            'tickvals': sizes,
+            'ticktext': labels,
+            'title': 'menu size K (log2 axis) — n is the queries whose pool could fill that menu',
+        },
+        yaxis_title='accuracy: the read sentence above every distractor',
+    )
+    # Six legend entries wrap onto two rows, which would sit on top of the title at the shared legend anchor.
+    fig.update_layout(legend={'y': 1.04}, margin={'l': 60, 'r': 30, 't': 110, 'b': 80})
+
+    return fig
+
+
+def capacity_bits_ledger(study: Study) -> 'Figure | None':
+    """What word count gives away for free, what the decoder certified, and what is still unrecovered.
+
+    Args:
+        study (Study): The collected study.
+
+    Returns:
+        Figure | None: The stacked bars, or `None` when no run carried a decoder capacity report.
+
+    Note:
+        The 4.3090-bit residual is drawn as a band rather than left in the caption, because a certified bit count
+        is credited against the identity that survives knowing word count and never against the 9.4512 bits of
+        the full gallery. A run that certified nothing keeps its row, with an em dash where the bits would be.
+    """
+    go = _go()
+    runs = study.runs
+    if runs.empty or 'capacity_readout' not in runs.columns:
+        return None
+
+    block = runs[runs['capacity_readout'].notna()]
+    if block.empty:
+        return None
+
+    names = block['run'].astype(str).tolist()
+    bits = pd.to_numeric(block.get('capacity_bits'), errors='coerce')
+    earned = bits.fillna(0.0)
+    unrecovered = [max(_IDENTITY_BITS - _LENGTH_BITS - value, 0.0) for value in earned]
+
+    fig = go.Figure()
+    fig.add_bar(
+        y=names,
+        x=[_LENGTH_BITS] * len(names),
+        orientation='h',
+        name=f'word count, free — {_LENGTH_BITS:.4f} bits',
+        marker_color='#b08968',
+        hovertemplate='%{y}<br>word count gives %{x:.4f} bits free<extra></extra>',
+    )
+    fig.add_bar(
+        y=names,
+        x=earned,
+        orientation='h',
+        name='decoder certified (menu selection)',
+        marker_color='#e4572e',
+        text=['—' if not np.isfinite(value) else f'{value:.2f}' for value in bits],
+        textposition='inside',
+        hovertemplate='%{y}<br>certified %{x:.4f} bits<extra></extra>',
+    )
+    fig.add_bar(
+        y=names,
+        x=unrecovered,
+        orientation='h',
+        name='unrecovered',
+        marker_color='#dcdcdc',
+        hovertemplate='%{y}<br>unrecovered %{x:.4f} bits<extra></extra>',
+    )
+
+    # A run that certified nothing keeps its row, so the em dash is written where its bar would have been.
+    for name, value in zip(names, bits, strict=True):
+        if np.isfinite(value):
+            continue
+        fig.add_annotation(
+            x=_LENGTH_BITS + 0.1,
+            y=name,
+            text='— nothing certified',
+            showarrow=False,
+            xanchor='left',
+            font={'color': '#c1121f', 'size': 11},
+        )
+
+    fig.add_vrect(x0=_LENGTH_BITS, x1=_IDENTITY_BITS, fillcolor='#4a5759', opacity=0.06, line_width=0, layer='below')
+    fig.add_vline(x=_IDENTITY_BITS, line={'color': '#c1121f', 'dash': 'dot'})
+    fig.add_vline(x=_LENGTH_BITS, line={'color': '#b08968', 'dash': 'dot'})
+
+    # The denominator is drawn above the bars as its own span, because a reader who takes it from the caption
+    # instead of the picture is one step from crediting the certified bits against 9.4512.
+    fig.add_shape(
+        type='line',
+        xref='x',
+        yref='paper',
+        x0=_LENGTH_BITS,
+        x1=_IDENTITY_BITS,
+        y0=1.09,
+        y1=1.09,
+        line={'color': '#4a5759', 'width': 1.4},
+    )
+    for value, colour, text in (
+        (_LENGTH_BITS, '#b08968', f'{_LENGTH_BITS} — word count alone'),
+        (_IDENTITY_BITS, '#c1121f', f'{_IDENTITY_BITS} — full stimulus identity'),
+    ):
+        fig.add_annotation(
+            x=value,
+            y=1.01,
+            yref='paper',
+            text=text,
+            showarrow=False,
+            xanchor='right',
+            font={'color': colour, 'size': 11},
+        )
+    fig.add_annotation(
+        x=(_LENGTH_BITS + _IDENTITY_BITS) / 2.0,
+        y=1.11,
+        yref='paper',
+        text=f'{_RESIDUAL_BITS:.4f} bits — the honest denominator: identity left once word count is known',
+        showarrow=False,
+        font={'color': '#4a5759', 'size': 11},
+    )
+
+    _layout(
+        fig,
+        'The bits ledger — free, certified, and still unrecovered',
+        barmode='stack',
+        height=250 + 46 * len(names),
+        xaxis_title='bits of stimulus identity',
+    )
+    # The legend moves under the bars: the reference labels and the denominator span own the space above them.
+    fig.update_layout(
+        margin={'l': 140, 'r': 30, 't': 130, 'b': 110},
+        legend={'orientation': 'h', 'yanchor': 'top', 'y': -0.25, 'xanchor': 'left', 'x': 0},
+    )
+
+    return fig
+
+
+def capacity_seed_strip(study: Study, k: int = 2) -> 'Figure | None':
+    """Every run's 2-way menu accuracy as its own point, over the interval the runs jointly support.
+
+    Args:
+        study (Study): The collected study.
+        k (int, optional): Menu size to read. Defaults to 2.
+
+    Returns:
+        Figure | None: The strip, or `None` when no run scored a menu of that size.
+
+    Note:
+        Run-to-run drift on this project has been the size of the effect, so a bar over the runs would hide
+        exactly what a reader needs. A single run is labelled a measurement rather than a result.
+    """
+    go = _go()
+    block = _capacity_frame(study)
+    if block.empty:
+        return None
+
+    rows = block[(block['arm'] == 'model') & (block['k'] == k)].dropna(subset=['accuracy']).sort_values('run')
+    if rows.empty:
+        return None
+
+    accuracy = pd.to_numeric(rows['accuracy'], errors='coerce')
+    lo = pd.to_numeric(rows['ci_lo'], errors='coerce').fillna(accuracy)
+    hi = pd.to_numeric(rows['ci_hi'], errors='coerce').fillna(accuracy)
+    certified = pd.to_numeric(rows['certified_k'], errors='coerce')
+    labels = [
+        f'{run}<br>{holdout or "?"}' for run, holdout in zip(rows['run'], rows.get('holdout', rows['run']), strict=True)
+    ]
+
+    fig = go.Figure()
+    fig.add_hrect(
+        y0=float(lo.min()),
+        y1=float(hi.max()),
+        fillcolor='#dfe4ea',
+        opacity=0.55,
+        line_width=0,
+        layer='below',
+        annotation_text='interval every run supports (union of per-run CIs)',
+        annotation_position='bottom left',
+    )
+
+    # Two traces rather than a colour list, so the legend says what the colours mean.
+    for passed, colour, name in (
+        (True, CONDITION_COLOURS['model'], 'run certified a menu size'),
+        (False, '#8896ab', 'run certified nothing'),
+    ):
+        picked = [i for i, value in enumerate(certified) if bool(np.isfinite(value)) is passed]
+        if not picked:
+            continue
+        fig.add_scatter(
+            x=[labels[i] for i in picked],
+            y=accuracy.iloc[picked],
+            mode='markers',
+            name=name,
+            marker={'size': 14, 'color': colour, 'line': {'color': 'white', 'width': 1.2}},
+            error_y={
+                'type': 'data',
+                'symmetric': False,
+                'array': (hi - accuracy).iloc[picked].tolist(),
+                'arrayminus': (accuracy - lo).iloc[picked].tolist(),
+                'color': '#8c8c8c',
+            },
+            customdata=rows['certified_k'].fillna('—').iloc[picked],
+            hovertemplate='%{x}<br>accuracy %{y:.4f}<br>certified K %{customdata}<extra></extra>',
+        )
+
+    fig.add_hline(
+        y=float(pd.to_numeric(rows['chance'], errors='coerce').mean()),
+        line={'color': '#5c5c5c', 'dash': 'dash'},
+        annotation_text=f'chance = 1/{k}',
+        annotation_position='top left',
+    )
+    fig.add_hline(
+        y=float(accuracy.mean()),
+        line={'color': '#5c677d', 'dash': 'dot'},
+        annotation_text=f'mean over runs = {accuracy.mean():.4f}',
+        annotation_position='bottom right',
+    )
+    if len(rows) == 1:
+        fig.add_annotation(
+            text='one seed is a measurement, not yet a result',
+            xref='paper',
+            yref='paper',
+            x=0.5,
+            y=0.02,
+            showarrow=False,
+            font={'color': '#c1121f', 'size': 13},
+        )
+
+    return _layout(
+        fig,
+        f'Every run as its own point — the {k}-way menu across seeds',
+        height=460,
+        yaxis_title=f'{k}-way menu accuracy',
+    )

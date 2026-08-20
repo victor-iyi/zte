@@ -7,7 +7,7 @@ a person the model has never seen. See `docs/SUBJECT_ALIGNMENT.md`.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -85,11 +85,13 @@ def _sample_rows(mask: np.ndarray, limit: int = _MAX_REF_TRIALS) -> np.ndarray:
     return idx
 
 
-def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndarray:
-    """Mean per-trial channel covariance `(n_channels, n_channels)` over the rows `idx` of `raw`.
+def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> tuple[np.ndarray, float]:
+    """Mean per-trial channel covariance `(n_channels, n_channels)` over the rows `idx` of `raw`, and their RMS.
 
     Accumulated in chunks so the float64 working set stays bounded regardless of how many trials are
-    requested -- the raw tensor does not fit in memory twice.
+    requested -- the raw tensor does not fit in memory twice. The trace-normalised covariance keeps only the
+    SHAPE of a subject's channel geometry, so the amplitude is carried out separately as the second return
+    value rather than being recovered by a second pass over the tensor.
     """
     n_ch = int(raw.shape[1])
     device = _accel_device()
@@ -99,6 +101,7 @@ def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndar
         # MPS has no float64; accumulating in float32 there is fine for a 105x105 covariance.
         dtype = torch.float32 if device.type == 'mps' else torch.float64
         acc_t = torch.zeros((n_ch, n_ch), dtype=dtype, device=device)
+        trace_acc = 0.0
         seen = 0
         for start in range(0, len(idx), _COV_CHUNK):
             block = np.ascontiguousarray(raw[idx[start : start + _COV_CHUNK]])
@@ -109,10 +112,13 @@ def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndar
             cov = (x @ x.transpose(1, 2)) / max(t, 1)
             trace = cov.diagonal(dim1=1, dim2=2).sum(-1)[:, None, None]
             acc_t += (cov / trace.clamp_min(eps)).sum(dim=0)
+            trace_acc += float(trace.sum().item())
             seen += len(block)
-        return (acc_t / max(seen, 1)).cpu().numpy().astype(np.float64)
+        cov_mean = (acc_t / max(seen, 1)).cpu().numpy().astype(np.float64)
+        return cov_mean, _rms_from_trace(trace_acc, seen, n_ch, eps)
 
     acc = np.zeros((n_ch, n_ch), dtype=np.float64)
+    trace_acc = 0.0
     seen = 0
     for start in range(0, len(idx), _COV_CHUNK):
         x = np.nan_to_num(np.asarray(raw[idx[start : start + _COV_CHUNK]], dtype=np.float64), nan=0.0)
@@ -122,27 +128,47 @@ def _channel_covariance(raw: np.ndarray, idx: np.ndarray, eps: float) -> np.ndar
         cov = np.einsum('nct,ndt->ncd', x, x) / max(t, 1)
         trace = np.trace(cov, axis1=1, axis2=2)[:, None, None]
         acc += (cov / np.clip(trace, eps, None)).sum(axis=0)
+        trace_acc += float(trace.sum())
         seen += len(x)
 
-    return acc / max(seen, 1)
+    return acc / max(seen, 1), _rms_from_trace(trace_acc, seen, n_ch, eps)
+
+
+def _rms_from_trace(trace_acc: float, seen: int, n_ch: int, eps: float) -> float:
+    """Root-mean-square voltage implied by a summed covariance trace, with the mean square floored at `eps`."""
+    mean_square = trace_acc / max(seen, 1) / max(n_ch, 1)
+
+    return float(np.sqrt(max(mean_square, eps)))
 
 
 class RawSubjectAligner:
     """Whitens each subject's raw windows to a shared reference, and describes what whitening cannot remove.
 
+    Note:
+        The reference is estimated from trace-normalised trials, so it equalises the shape of a subject's channel
+        covariance and leaves their overall amplitude -- the largest single carrier of subject identity -- intact.
+        `match_amplitude` divides that amplitude out too, making the map scale-equivariant; it changes every
+        downstream number, so it is off unless a config asks for it.
+
     Attributes:
         references (dict[str, np.ndarray]): Per-subject whitening maps `R_s^-1/2`.
         signatures (dict[str, np.ndarray]): Per-subject descriptors, computed before whitening.
+        scales (dict[str, float]): Per-subject RMS voltage, divided out only when `match_amplitude` is set.
     """
 
-    def __init__(self, shrinkage: float = 0.1, eps: float = 1e-8, n_regions: int = 8) -> None:
+    def __init__(
+        self, shrinkage: float = 0.1, eps: float = 1e-8, n_regions: int = 8, match_amplitude: bool = False
+    ) -> None:
         self.shrinkage = shrinkage
         self.eps = eps
         self.n_regions = n_regions
+        self.match_amplitude = match_amplitude
         self.references: dict[str, np.ndarray] = {}
         self.signatures: dict[str, np.ndarray] = {}
+        self.scales: dict[str, float] = {}
         self._global_reference: np.ndarray | None = None
         self._global_signature: np.ndarray | None = None
+        self._global_scale: float = 1.0
         self._region_index: np.ndarray | None = None
         self._sig_mean: np.ndarray | None = None
         self._sig_std: np.ndarray | None = None
@@ -183,7 +209,7 @@ class RawSubjectAligner:
         )
 
         # The cohort reference doubles as the fallback for a subject with too few usable trials.
-        pooled = _channel_covariance(raw, _sample_rows(mask), self.eps)
+        pooled, self._global_scale = _channel_covariance(raw, _sample_rows(mask), self.eps)
         self._global_reference = _spd_power(pooled, -0.5, self.shrinkage, self.eps)
         self._global_signature = self._signature_from(pooled)
 
@@ -196,9 +222,10 @@ class RawSubjectAligner:
                     _MIN_TRIALS,
                 )
                 continue
-            cov = _channel_covariance(raw, _sample_rows(rows), self.eps)
+            cov, scale = _channel_covariance(raw, _sample_rows(rows), self.eps)
             self.references[str(code)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(np.float32)
             self.signatures[str(code)] = self._signature_from(cov)
+            self.scales[str(code)] = scale
 
         # Standardise across the cohort so the hypernetwork sees a zero-mean, unit-scale descriptor.
         stack = np.stack(list(self.signatures.values())) if self.signatures else self._global_signature[None, :]
@@ -270,6 +297,12 @@ class RawSubjectAligner:
 
         for n_done, code in enumerate(progress(codes, description='aligning subjects'), start=1):
             w = self.references.get(str(code), self._global_reference.astype(np.float32))
+
+            # Folding the amplitude into the whitener costs nothing per trial, and a subject the fit never
+            # saw borrows the cohort RMS along with the cohort reference.
+            if self.match_amplitude:
+                w = (w / self.scales.get(str(code), self._global_scale)).astype(np.float32)
+
             rows = np.flatnonzero(subjects == code)
             for start in range(0, len(rows), chunk):
                 idx = rows[start : start + chunk]
@@ -291,9 +324,10 @@ class RawSubjectAligner:
                 len(baseline_raw),
             )
             return self
-        cov = _channel_covariance(baseline_raw, _sample_rows(np.ones(len(baseline_raw), dtype=bool)), self.eps)
+        cov, scale = _channel_covariance(baseline_raw, _sample_rows(np.ones(len(baseline_raw), dtype=bool)), self.eps)
         self.references[str(subject)] = _spd_power(cov, -0.5, self.shrinkage, self.eps).astype(np.float32)
         self.signatures[str(subject)] = self._signature_from(cov)
+        self.scales[str(subject)] = scale
         return self
 
     @property
@@ -303,10 +337,13 @@ class RawSubjectAligner:
             'shrinkage': self.shrinkage,
             'eps': self.eps,
             'n_regions': self.n_regions,
+            'match_amplitude': self.match_amplitude,
             'references': self.references,
             'signatures': self.signatures,
+            'scales': self.scales,
             'global_reference': self._global_reference,
             'global_signature': self._global_signature,
+            'global_scale': self._global_scale,
             'region_index': self._region_index,
             'sig_mean': self._sig_mean,
             'sig_std': self._sig_std,
@@ -319,9 +356,14 @@ class RawSubjectAligner:
             shrinkage=float(state['shrinkage']),  # type: ignore[arg-type]
             eps=float(state['eps']),  # type: ignore[arg-type]
             n_regions=int(state['n_regions']),  # type: ignore[arg-type]
+            match_amplitude=bool(state.get('match_amplitude', False)),
         )
         obj.references = dict(state['references'])  # type: ignore[arg-type]
         obj.signatures = dict(state['signatures'])  # type: ignore[arg-type]
+
+        # A state saved without amplitude matching carries no scales, and none are needed: the knob is off.
+        obj.scales = dict(cast('dict[str, float]', state.get('scales', {})))
+        obj._global_scale = float(cast('float', state.get('global_scale', 1.0)))
         obj._global_reference = state['global_reference']  # type: ignore[assignment]
         obj._global_signature = state['global_signature']  # type: ignore[assignment]
         obj._region_index = state['region_index']  # type: ignore[assignment]

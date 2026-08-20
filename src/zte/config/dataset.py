@@ -105,6 +105,10 @@ class DatasetConfig(PathFields):
     """Per-subject alignment of raw EEG windows. `euclidean` whitens each subject by their own mean channel
     covariance. Note `normalize` only ever applied to band power, so this is the raw path's only alignment."""
 
+    raw_align_amplitude: bool = False
+    """Also divide each subject's windows by their own RMS voltage. The covariance reference is trace-normalised and
+    therefore fixes only the shape of a subject's channel geometry; amplitude is the larger identity carrier."""
+
     raw_align_fit: Literal['train', 'all'] = 'all'
     """Whose windows the alignment maps are fitted on. `all` includes the held-out subject, which is label-free
     calibration rather than leakage; `train` withholds it as the strict ablation."""

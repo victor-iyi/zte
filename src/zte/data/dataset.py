@@ -332,7 +332,7 @@ class ZuCoDataset:
             _LOG.warning('align_raw: no usable rows to fit on; skipping alignment.')
             return
 
-        self.aligner = RawSubjectAligner().fit(
+        self.aligner = RawSubjectAligner(match_amplitude=self.config.raw_align_amplitude).fit(
             self.raw_eeg, subjects, present=fit_mask, region_index=self._region_index()
         )
         self._write_aligned(subjects)
@@ -402,7 +402,11 @@ class ZuCoDataset:
 
     def _aligned_path(self) -> Path:
         """Scratch memmap for the whitened windows, kept out of the shared bundle (which stays unaligned)."""
-        return Path(self.config.cache_dir) / '_aligned' / f'{self._cache_key()}_{self.config.raw_align_fit}.npy'
+        # Amplitude matching yields different windows from the same bundle, so it has to key differently.
+        suffix = '_amp' if self.config.raw_align_amplitude else ''
+        name = f'{self._cache_key()}_{self.config.raw_align_fit}{suffix}.npy'
+
+        return Path(self.config.cache_dir) / '_aligned' / name
 
     def _region_index(self) -> np.ndarray | None:
         """Per-electrode scalp-region id from the montage, or `None` to fall back to contiguous blocks."""
@@ -876,6 +880,7 @@ class ZuCoDataset:
             'montage_csv',
             'raw_align',
             'raw_align_fit',
+            'raw_align_amplitude',
             'subject_signature',
         ):
             payload.pop(ignore, None)

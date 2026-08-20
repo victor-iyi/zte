@@ -120,6 +120,7 @@ def write_tables(study: Study, out_dir: str | Path) -> list[Path]:
         'history': study.history,
         'generations': study.generations,
         'rebaseline': study.rebaseline,
+        'capacity': study.capacity,
         'multi_seed': multi_seed_table(study),
         'feature_ablation': feature_ablation_table(study),
         'within_task': within_task_table(study),
@@ -285,6 +286,35 @@ def panel_builders(study: Study, montage_csv: str | None = None) -> tuple[Panel,
             name='length_vs_score',
             caption='Sentence length against decode quality, per condition.',
             build=lambda: F.length_vs_score(study),
+        ),
+        Panel(
+            section='decoder',
+            name='capacity_curve',
+            caption=(
+                'Read the length-only trace before the model line. The claim is the shaded gap between them, not '
+                'the height of either: a length-matched prefix already scores far above chance. Greyed sizes are '
+                'menus no candidate pool could fill, which is not the same fact as the model failing there.'
+            ),
+            build=lambda: F.capacity_curve(study),
+        ),
+        Panel(
+            section='decoder',
+            name='capacity_bits_ledger',
+            caption=(
+                'Bits are credited against the 4.31 that survive knowing word count, never against the 9.45 of '
+                'full sentence identity -- the band marks the denominator. An em dash is a run that certified '
+                'nothing, and it is a result.'
+            ),
+            build=lambda: F.capacity_bits_ledger(study),
+        ),
+        Panel(
+            section='decoder',
+            name='capacity_seed_strip',
+            caption=(
+                'One point per run at the 2-way menu, each with its own interval. Run-to-run drift here has been '
+                'the size of the effect, so a single point is a measurement and not yet a result.'
+            ),
+            build=lambda: F.capacity_seed_strip(study),
         ),
         Panel(
             section='decoder',

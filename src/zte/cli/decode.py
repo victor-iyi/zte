@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -19,8 +19,10 @@ from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab
 from zte.device import DeviceKind, resolve_device
+from zte.evaluation.audit.capacity import CAPACITY_KS, DEFAULT_N_PERM, HEADLINE_FLAVOR, HEADLINE_SCORE
 from zte.evaluation.generation import generation_report, per_sentence_scores, tokenise
 from zte.evaluation.report import missing_controls
+from zte.inference.capacity import GalleryScores, capacity_arms, gallery_scores
 from zte.inference.decode import ReadingBatch, ZTEDecoder, paired_shuffle
 from zte.logging_utils import configure_logging, get_logger
 from zte.training.checkpoint import CheckpointManager
@@ -30,6 +32,16 @@ _LOG = get_logger('cli.decode')
 # Every control decodes through the identical path; only the conditioning vector or the prefix changes.
 CONTROLS: tuple[str, ...] = ('mean_prefix', 'null_prefix', 'phase', 'noise', 'shuffled_z', 'length_only', 'mismatch')
 SPLITS: tuple[str, ...] = ('test', 'test_seen_stim', 'val', 'train')
+
+# The capacity gallery rows are stimulus prototypes rather than readings, so they need a subject label that no
+# real subject code can collide with; it is what marks them as the reference side of the audit.
+GALLERY_ROW: Final[str] = '<gallery>'
+"""Subject label of the prototype rows that define the capacity audit's gallery."""
+
+# A capacity that did not certify is a real, reportable outcome; rendered as a blank or a zero it reads as a
+# number, so the one thing it must never look like is a measurement.
+EM_DASH: Final[str] = '—'
+"""What an uncertified menu size and its bits are printed as."""
 
 
 @dataclass(slots=True)
@@ -48,6 +60,11 @@ class DecodeOptions:
         length_tol (int): Word-count tolerance for the stratified gallery and the mismatch derangement.
         mean_prefix_readings (int): Training readings averaged into the `mean_prefix` control.
         within_task_pools (tuple[str, ...]): Tasks whose candidate pool is also reported on its own.
+        capacity (bool): Certify the largest K-way menu the decoder serves, sliced out of the gallery pass.
+        capacity_ks (tuple[int, ...]): Menu sizes the certification sweeps.
+        capacity_alpha (float): Significance level of every certification clause.
+        capacity_n_perm (int): Label permutations behind each per-K p-value.
+        capacity_score (str): Score families to certify -- `pmi`, `raw` or `both`.
         seeds (tuple[int, ...]): Extra decode seeds re-run for a mean +/- sd headline.
         seed (int): Seed for the surrogates, the derangement, the bootstrap and the permutation null.
     """
@@ -63,6 +80,11 @@ class DecodeOptions:
     length_tol: int = 1
     mean_prefix_readings: int = 512
     within_task_pools: tuple[str, ...] = ('SR', 'NR')
+    capacity: bool = False
+    capacity_ks: tuple[int, ...] = CAPACITY_KS
+    capacity_alpha: float = 0.05
+    capacity_n_perm: int = DEFAULT_N_PERM
+    capacity_score: str = HEADLINE_SCORE
     seeds: tuple[int, ...] = field(default_factory=tuple)
     seed: int = 0
 
@@ -138,6 +160,35 @@ def parse_arguments() -> argparse.Namespace:
         help="Comma-separated tasks whose candidate pool is also reported alone (e.g. 'SR,NR'), or '' to skip.",
     )
     parser.add_argument(
+        '--capacity',
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help='Certify the largest K-way menu the decoder serves. Default: objective.eval_capacity.',
+    )
+    parser.add_argument(
+        '--capacity-ks',
+        type=str,
+        default=None,
+        dest='capacity_ks',
+        help="Comma-separated menu sizes to sweep. Default: decoder.capacity_ks. A size the gallery's "
+        'word-count pools cannot fill is reported as unreachable, never silently dropped.',
+    )
+    parser.add_argument(
+        '--capacity-alpha',
+        type=float,
+        default=None,
+        dest='capacity_alpha',
+        help='Significance level of every certification clause. Default: decoder.capacity_alpha.',
+    )
+    parser.add_argument(
+        '--capacity-n-perm',
+        type=int,
+        default=None,
+        dest='capacity_n_perm',
+        help='Permutations behind each per-K p-value; the attainable floor is 1/(n+1). '
+        'Default: decoder.capacity_n_perm.',
+    )
+    parser.add_argument(
         '--seeds',
         type=str,
         default=None,
@@ -186,6 +237,10 @@ def options_from_args(args: argparse.Namespace, config: ZTEConfig) -> DecodeOpti
         else tuple(decoder.within_task_pools)
     )
     seeds = getattr(args, 'seeds', None)
+    capacity = getattr(args, 'capacity', None)
+    capacity_ks = getattr(args, 'capacity_ks', None)
+    capacity_alpha = getattr(args, 'capacity_alpha', None)
+    capacity_n_perm = getattr(args, 'capacity_n_perm', None)
     return DecodeOptions(
         controls=controls,
         oracle=bool(args.oracle),
@@ -198,6 +253,13 @@ def options_from_args(args: argparse.Namespace, config: ZTEConfig) -> DecodeOpti
         length_tol=int(args.length_tol if args.length_tol is not None else decoder.length_tol),
         mean_prefix_readings=int(args.mean_prefix_readings),
         within_task_pools=pools,
+        capacity=bool(config.objective.eval_capacity if capacity is None else capacity),
+        capacity_ks=(
+            tuple(int(k) for k in capacity_ks.split(',') if k.strip()) if capacity_ks else tuple(decoder.capacity_ks)
+        ),
+        capacity_alpha=float(capacity_alpha if capacity_alpha is not None else decoder.capacity_alpha),
+        capacity_n_perm=int(capacity_n_perm if capacity_n_perm is not None else decoder.capacity_n_perm),
+        capacity_score=str(decoder.capacity_score),
         seeds=tuple(int(s) for s in seeds.split(',') if s.strip()) if seeds else tuple(decoder.eval_seeds),
         seed=int(args.seed),
     )
@@ -369,8 +431,8 @@ def decode_evaluation(
         run_name (str, optional): Label for the interactive page. Defaults to 'zte-decode'.
 
     Returns:
-        dict[str, Any]: `{'generation', 'rescoring', 'bit_budget', 'split', 'n', 'controls_unavailable',
-            'provenance'}`.
+        dict[str, Any]: `{'generation', 'rescoring', 'capacity', 'bit_budget', 'split', 'n',
+            'controls_unavailable', 'provenance'}`.
     """
     opts = options or DecodeOptions()
     readings = decoder.conditioning(dataset, indices, opts.batch_size)
@@ -384,7 +446,10 @@ def decode_evaluation(
         readings, max_new_tokens=opts.max_new_tokens, beams=opts.beams, batch_size=opts.batch_size
     )
 
-    controls, unavailable = _controls(decoder, dataset, indices, readings, opts, config)
+    # The capacity audit's `length_only` arm is built from the training split, so it is embedded up front and the
+    # control layer reuses it rather than paying for a second pass over the same readings.
+    train = _train_conditioning(decoder, dataset, config, opts) if opts.capacity else None
+    controls, unavailable = _controls(decoder, dataset, indices, readings, opts, config, train=train)
     gallery = _gallery_dataset(decoder, dataset)
     oracle = _oracle(decoder, gallery, readings, config, opts) if opts.oracle else None
     prefix_kl = decoder.prefix_influence_kl(readings.z, batch_size=opts.batch_size)
@@ -413,11 +478,25 @@ def decode_evaluation(
     if opts.seeds:
         block['seed_spread'] = _seed_spread(decoder, dataset, indices, readings, references, hypotheses, opts, config)
 
-    rescoring = _rescoring(decoder, dataset, gallery, readings, opts) if opts.rescore and n >= 2 else None
+    # One gallery pass feeds both readouts: scoring is per-(query, candidate), so every K-way menu the capacity
+    # audit certifies is a column slice of the same matrix retrieval ranks.
+    rescore_bundle = (
+        _gallery_bundle(decoder, dataset, gallery, readings, opts, evidence_content=True)
+        if opts.rescore and n >= 2
+        else None
+    )
+    rescoring = _rescoring(decoder, readings, rescore_bundle, opts) if rescore_bundle is not None else None
+    capacity = (
+        _capacity(decoder, dataset, gallery, readings, train, opts, config, split, bundle=rescore_bundle)
+        if opts.capacity and n >= 2
+        else None
+    )
+
     provenance = _provenance(decoder, config, split, opts, n)
     result = {
         'generation': block,
         'rescoring': rescoring,
+        'capacity': capacity,
         'bit_budget': decoder.bit_report(readings),
         'split': split,
         'n': n,
@@ -447,12 +526,13 @@ def _controls(
     readings: ReadingBatch,
     opts: DecodeOptions,
     config: ZTEConfig,
+    *,
+    train: ReadingBatch | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
     """Decodes each brain-independent control through the same `generate` path the headline uses."""
     n = len(readings)
     out: dict[str, list[str]] = {}
     unavailable: dict[str, str] = {}
-    train: ReadingBatch | None = None
 
     def free_prefix(prefix: torch.Tensor, *, content: bool = True) -> list[str]:
         return decoder.generate_from_prefix(
@@ -663,25 +743,45 @@ def candidate_set_size(hypotheses: list[str], gallery: Sequence[str]) -> int | N
     return len(known)
 
 
-def _rescoring(
+def _gallery_bundle(
     decoder: ZTEDecoder,
     dataset: ZuCoDataset,
     gallery: ZuCoTorchDataset,
     readings: ReadingBatch,
     opts: DecodeOptions,
+    *,
+    evidence_content: bool,
+) -> GalleryScores | None:
+    """Scores every gallery sentence under every reading once, with the stimulus-level length and task labels."""
+    texts = gallery.ordered_texts()
+    if len(texts) < 2:
+        return None
+
+    return gallery_scores(
+        decoder,
+        readings,
+        texts,
+        gallery_n_words=_gallery_lengths(gallery, len(texts)),
+        gallery_tasks=_gallery_tasks(dataset, gallery, len(texts)),
+        batch_size=opts.batch_size,
+        evidence_content=evidence_content,
+    )
+
+
+def _rescoring(
+    decoder: ZTEDecoder,
+    readings: ReadingBatch,
+    bundle: GalleryScores,
+    opts: DecodeOptions,
 ) -> dict[str, Any] | None:
     """Ranks the sentence gallery by decoder likelihood. This is RETRIEVAL and is named so everywhere."""
     from zte.evaluation.audit.scoreboard import decoder_rescoring_retrieval, within_task_retrieval
 
-    texts = gallery.ordered_texts()
-    if len(texts) < 2:
-        return None
-    scores = decoder.rescore(readings, texts, batch_size=opts.batch_size, pmi=False)
-    raw_scores = scores
-    if decoder.decoder_config.rescore_pmi:
-        # The null scores are query-independent, so the unconditional gallery pass runs once, not per query.
-        scores = raw_scores - decoder.null_rescore(texts)[None, :]
-    gallery_words = _gallery_lengths(gallery, len(texts))
+    texts = bundle.texts
+    raw_scores = bundle.raw
+    # The null scores are query-independent, so the unconditional gallery pass ran once, not per query.
+    scores = bundle.pmi if decoder.decoder_config.rescore_pmi else raw_scores
+    gallery_words = bundle.gallery_n_words
     block = decoder_rescoring_retrieval(
         scores,
         readings.meta['text_id'].to_numpy(),
@@ -704,17 +804,132 @@ def _rescoring(
             n_boot=opts.n_boot,
             seed=opts.seed,
         )
-    if opts.within_task_pools:
+    if opts.within_task_pools and bundle.gallery_tasks is not None:
         block['within_task'] = within_task_retrieval(
             scores,
             readings.meta,
-            gallery_tasks=_gallery_tasks(dataset, gallery, len(texts)),
+            gallery_tasks=bundle.gallery_tasks,
             gallery_n_words=gallery_words,
             pools=opts.within_task_pools,
             length_tol=opts.length_tol,
             seed=opts.seed,
         )
     return block
+
+
+def _capacity(
+    decoder: ZTEDecoder,
+    dataset: ZuCoDataset,
+    gallery: ZuCoTorchDataset,
+    readings: ReadingBatch,
+    train: ReadingBatch | None,
+    opts: DecodeOptions,
+    config: ZTEConfig,
+    split: str,
+    *,
+    bundle: GalleryScores | None,
+) -> dict[str, Any] | None:
+    """Certifies the largest K-way menu the decoder serves. This is SELECTION and is named so everywhere.
+
+    Note:
+        No arm may keep the word-synchronous evidence path, because a control built from a bare conditioning
+        vector has no words to run it on and would lose for that reason alone. A checkpoint that decodes with
+        one therefore cannot share the retrieval pass, and buys its own evidence-free gallery pass here.
+    """
+    from zte.evaluation.audit.capacity import capacity_report
+
+    evidence_content = not decoder.uses_evidence
+    scored = bundle if bundle is not None and bundle.evidence_content == evidence_content else None
+    if scored is None:
+        scored = _gallery_bundle(decoder, dataset, gallery, readings, opts, evidence_content=evidence_content)
+    if scored is None:
+        return None
+
+    if train is None:
+        _LOG.warning(
+            'The capacity audit has no training split, so the length_only arm is omitted and the '
+            'beats_length_only_paired clause fails; nothing can certify.'
+        )
+
+    query_ids = readings.meta['text_id'].to_numpy()
+    query_words = readings.meta['n_words'].to_numpy()
+    arms = {
+        family: capacity_arms(
+            scored,
+            decoder,
+            readings,
+            query_n_words=query_words,
+            query_content_ids=query_ids,
+            score=family,
+            train=train,
+            seed=opts.seed,
+            batch_size=opts.batch_size,
+        )
+        for family in _capacity_families(opts.capacity_score)
+    }
+
+    rows = _capacity_rows(readings, scored, split)
+
+    return capacity_report(
+        arms,
+        rows['content_ids'],
+        rows['subjects'],
+        rows['holdout'],
+        rows['n_words'],
+        tasks=rows['tasks'],
+        train_mask=rows['train_mask'],
+        ks=tuple(opts.capacity_ks),
+        alpha=opts.capacity_alpha,
+        n_perm=opts.capacity_n_perm,
+        n_boot=opts.n_boot,
+        seed=opts.seed,
+        # `test` under a subject-and-stimulus split is the only cell whose queries share neither a brain nor a
+        # sentence with anything the bridge was fitted on; every other cell fails the clause on purpose.
+        honest_split=split == 'test',
+        split_strategy=str(config.train.split),
+        split_cell=split,
+        evidence_content=scored.evidence_content,
+    )
+
+
+def _capacity_families(score: str) -> tuple[str, ...]:
+    """Score families to certify; `both` costs a second length-matched gallery pass for the raw family."""
+    return ('raw', 'pmi') if score == 'both' else (str(score),)
+
+
+def _capacity_rows(readings: ReadingBatch, bundle: GalleryScores, split: str) -> dict[str, Any]:
+    """Lays the queries and one prototype row per gallery sentence out in the order the score columns follow.
+
+    Note:
+        `capacity_report` derives its gallery from the reference rows, taking each stimulus-level word count as
+        the median over them. One prototype row per gallery sentence carrying the count `gallery_scores` already
+        computed reproduces that exactly, and keeps the column order the arms were scored in.
+    """
+    n_query = len(readings)
+    n_gallery = len(bundle.texts)
+    subjects = sorted({str(s) for s in readings.meta.get('subject', [])})
+    holdout = subjects[0] if len(subjects) == 1 else f'{split} cell ({len(subjects)} subjects)'
+
+    query_tasks = readings.meta['task'].astype(str).to_numpy() if 'task' in readings.meta else np.full(n_query, '')
+    gallery_tasks = None if bundle.gallery_tasks is None else bundle.gallery_tasks.astype(str)
+    # A gallery whose sentences all carry one task label makes a task-matched pool identical to a length-matched
+    # one, so the labels are withheld and the report headlines `length_matched` under its own name.
+    if gallery_tasks is not None and len({t for t in gallery_tasks.tolist() if t}) < 2:
+        gallery_tasks = None
+    tasks = None if gallery_tasks is None else np.concatenate([query_tasks, gallery_tasks])
+
+    return {
+        'content_ids': np.concatenate(
+            [readings.meta['text_id'].to_numpy(dtype=np.int64), np.arange(n_gallery, dtype=np.int64)]
+        ),
+        'subjects': np.array([holdout] * n_query + [GALLERY_ROW] * n_gallery, dtype=object),
+        'n_words': np.concatenate(
+            [readings.meta['n_words'].to_numpy(dtype=np.float64), bundle.gallery_n_words.astype(np.float64)]
+        ),
+        'tasks': tasks,
+        'train_mask': np.arange(n_query + n_gallery) >= n_query,
+        'holdout': holdout,
+    }
 
 
 def _rank_percentiles(scores: np.ndarray, query_ids: np.ndarray, gallery_ids: np.ndarray) -> np.ndarray:
@@ -877,6 +1092,12 @@ def _write_artifacts(
         },
         default=str,
     )
+    if result.get('capacity') is not None:
+        write_json(
+            out_dir / 'capacity.json',
+            {'capacity': result['capacity'], 'provenance': result['provenance']},
+            default=str,
+        )
     lines = _jsonl_rows(meta, references, hypotheses, controls, oracle, prefix_kl)
     (out_dir / 'generation.jsonl').write_text(
         ''.join(json.dumps(row, default=str) + '\n' for row in lines), encoding='utf-8'
@@ -944,8 +1165,8 @@ def decoder_blocks(
     split: str | None = None,
     options: DecodeOptions | None = None,
     run_name: str = 'zte-eval',
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Returns `(generation, rescoring)` for a decoder checkpoint, or `(None, None)` for an encoder run.
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Returns `(generation, rescoring, capacity)` for a decoder checkpoint, or all `None` for an encoder run.
 
     This is the hook `zte-evaluate` and `zte-run` call behind `objective.eval_generation` /
     `objective.eval_rescoring`, so the report, the scoreboard and the verdict see exactly what `zte-decode` writes.
@@ -961,18 +1182,19 @@ def decoder_blocks(
         run_name (str, optional): Label for the interactive page. Defaults to 'zte-eval'.
 
     Returns:
-        tuple[dict | None, dict | None]: The generation block and the rescoring block.
+        tuple[dict | None, dict | None, dict | None]: The generation, rescoring and menu-capacity blocks.
     """
     obj = config.objective
     want_generation = bool(getattr(obj, 'eval_generation', False))
     want_rescoring = bool(getattr(obj, 'eval_rescoring', False))
-    if config.train.mode == 'encoder' or not (want_generation or want_rescoring):
-        return None, None
+    want_capacity = bool(getattr(obj, 'eval_capacity', False))
+    if config.train.mode == 'encoder' or not (want_generation or want_rescoring or want_capacity):
+        return None, None, None
     try:
         decoder = ZTEDecoder.from_checkpoint(ckpt, dataset, device=resolve_device(device))
     except ValueError as exc:
         _LOG.info('Generation eval skipped: %s', exc)
-        return None, None
+        return None, None, None
 
     opts = options or DecodeOptions(
         controls=tuple(config.decoder.generation_controls),
@@ -980,6 +1202,11 @@ def decoder_blocks(
         rescore=want_rescoring,
         length_tol=config.decoder.length_tol,
         within_task_pools=tuple(config.decoder.within_task_pools),
+        capacity=want_capacity,
+        capacity_ks=tuple(config.decoder.capacity_ks),
+        capacity_alpha=config.decoder.capacity_alpha,
+        capacity_n_perm=config.decoder.capacity_n_perm,
+        capacity_score=config.decoder.capacity_score,
         seeds=tuple(config.decoder.eval_seeds),
     )
     for name in (split, 'test', 'val') if split else ('test', 'val'):
@@ -998,9 +1225,10 @@ def decoder_blocks(
             return (
                 result.get('generation') if want_generation else None,
                 result.get('rescoring'),
+                result.get('capacity'),
             )
     _LOG.warning('Generation eval skipped: the run produces no held-out cell to decode.')
-    return None, None
+    return None, None, None
 
 
 def main() -> None:
@@ -1110,6 +1338,42 @@ def _report(result: dict[str, Any], config: ZTEConfig, options: DecodeOptions) -
                 pool.get('rank_percentile', float('nan')),
                 pool.get('n_queries'),
             )
+
+    capacity = result.get('capacity')
+    if capacity:
+        _log_capacity(capacity)
+
+
+def _log_capacity(capacity: dict[str, Any]) -> None:
+    """Logs the certified menu size, or a dash and the clauses that failed -- never a blank or a zero."""
+    headline = capacity.get('headline') or {}
+    score = str(headline.get('score', HEADLINE_SCORE))
+    flavor = str(headline.get('flavor', HEADLINE_FLAVOR))
+    block = ((capacity.get('scores') or {}).get(score) or {}).get(flavor) or {}
+    bits = capacity.get('bits') or {}
+    certified = capacity.get('certified_k')
+    certified_bits = bits.get('bits_certified')
+
+    _LOG.info(
+        'Decoder menu SELECTION capacity (%s / %s, %s queries over %s candidates): certified K = %s, worth %s of '
+        'the %s bits of stimulus identity that survive knowing word count.',
+        score,
+        flavor,
+        capacity.get('n_queries'),
+        capacity.get('n_gallery'),
+        EM_DASH if certified is None else certified,
+        EM_DASH if certified_bits is None else f'{certified_bits:.4f} bits',
+        bits.get('entropy_identity_given_length'),
+    )
+    if unreachable := (block.get('ks_unreachable') or []):
+        _LOG.warning(
+            'Menu sizes %s are unreachable on this gallery: their word-count pools hold too few candidates. '
+            'Feasible sizes: %s.',
+            ', '.join(str(k) for k in unreachable),
+            ', '.join(str(k) for k in (block.get('ks_feasible') or [])) or 'none',
+        )
+    if certified is None:
+        _LOG.warning('Nothing certified. %s', (capacity.get('verdict') or {}).get('reason'))
 
 
 if __name__ == '__main__':

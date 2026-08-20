@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from zte.config._paths import PathFields
 from zte.config.types import Conditioning, EvidenceSchedule, GapCorrection, LMDtype, RateLadder
+
+type CapacityScore = Literal['pmi', 'raw', 'both']
+"""Score families the menu-capacity certification is run in; `pmi` is the headline and `both` adds the raw family."""
 
 
 @dataclass
@@ -211,3 +214,25 @@ class DecoderConfig(PathFields):
     eval_seeds: tuple[int, ...] = field(default_factory=tuple)
     """Extra decode seeds re-run at evaluation time for a mean +/- sd headline. Empty uses the single decode seed;
     training-seed variation is a separate axis and is swept by `scripts/run_zte_study.sh`."""
+
+    # ---- Menu-capacity certification ---- #
+
+    # The same ladder the embedding-side menu audit sweeps, so the two capacities are read on identical sizes.
+    # Exact word-count pools hold a median of 8 candidates on a 300-sentence gallery, so the top of this ladder
+    # is routinely unreachable; the report names the unreachable sizes rather than dropping them.
+    capacity_ks: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
+    """Menu sizes the capacity certification sweeps, smallest first. Certification is contiguous from the smallest."""
+
+    # One alpha for every clause: the bootstrap intervals, the exact sign tests and the permutation null all read
+    # it, so a certification cannot be bought by loosening one test in isolation.
+    capacity_alpha: float = 0.05
+    """Significance level of every certification clause."""
+
+    # The attainable p floor is `1 / (n_perm + 1)`, so this is what decides whether a per-K p can reach alpha at all.
+    capacity_n_perm: int = 2000
+    """Label permutations behind each per-K p-value."""
+
+    # PMI subtracts the query-independent null-prefix score, so a candidate cannot win on the frozen LM's own
+    # priors; `both` also certifies the raw family, which costs a second length-matched gallery pass.
+    capacity_score: CapacityScore = 'pmi'
+    """Score families the capacity is certified in. The headline is always PMI."""

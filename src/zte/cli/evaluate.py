@@ -291,10 +291,10 @@ def main() -> None:
     train_sent, train_sent_n_words = train_split_sent_emb(embedder, dataset, embedder.config)
     train_vocab = training_vocab(dataset, embedder.config) if getattr(obj_cfg, 'eval_seen_novel', False) else None
 
-    # A decoder checkpoint decodes its held-out cell here; an encoder checkpoint returns `(None, None)`.
+    # A decoder checkpoint decodes its held-out cell here; an encoder checkpoint returns all `None`.
     from zte.cli.decode import decoder_blocks
 
-    generation, rescoring = decoder_blocks(
+    generation, rescoring, decoder_capacity = decoder_blocks(
         args.ckpt,
         dataset,
         embedder.config,
@@ -329,6 +329,7 @@ def main() -> None:
         sent_n_words=n_words,
         generation=generation,
         rescoring=rescoring,
+        decoder_capacity=decoder_capacity,
         min_prefix_kl=embedder.config.decoder.min_prefix_kl,
     )
     _LOG.info('Verdict: %s', json.dumps(metrics['verdict']))

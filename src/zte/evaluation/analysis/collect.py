@@ -44,6 +44,16 @@ HEADLINES: Final[dict[str, tuple[str, ...]]] = {
     'rescoring_top1': ('rescoring', 'top1'),
     'rescoring_rank_percentile': ('rescoring', 'rank_percentile'),
     'rescoring_stratified_top1': ('rescoring', 'length_stratified', 'top1'),
+    # A decode-only run writes the capacity block to `evaluation/capacity.json` alone, which `_load_run` falls back to.
+    'capacity_certified': ('decoder_capacity', 'verdict', 'capacity_certified'),
+    'capacity_k': ('decoder_capacity', 'certified_k'),
+    'capacity_bits': ('decoder_capacity', 'bits', 'bits_certified'),
+    'capacity_bits_unrecovered': ('decoder_capacity', 'bits', 'bits_unrecovered'),
+    'capacity_fraction_of_residual': ('decoder_capacity', 'bits', 'fraction_of_residual'),
+    'capacity_readout': ('decoder_capacity', 'readout'),
+    'capacity_flavor': ('decoder_capacity', 'headline', 'flavor'),
+    'capacity_n_queries': ('decoder_capacity', 'n_queries'),
+    'capacity_reason': ('decoder_capacity', 'verdict', 'reason'),
     'generation_verdict': ('scoreboard', 'verdict', 'generation_above_controls'),
     'generation_delta': ('scoreboard', 'held_out_generation', 'worst_control_ci', 'point'),
     'generation_delta_lo': ('scoreboard', 'held_out_generation', 'worst_control_ci', 'lo'),
@@ -108,6 +118,8 @@ class Study:
         history (pd.DataFrame): Per-epoch training history, for the learning curves.
         generations (pd.DataFrame): Per-sentence decodes with their controls -- the text-level analysis.
         rebaseline (pd.DataFrame): The length-oracle audit rows, per run and tolerance.
+        capacity (pd.DataFrame): The decoder menu-capacity sweep, one row per run x score family x pool flavor x
+            subset x menu size x arm, with the paired control comparison carried on the control rows.
         roots (list[Path]): The directories that were walked.
     """
 
@@ -118,6 +130,7 @@ class Study:
     history: pd.DataFrame = field(default_factory=pd.DataFrame)
     generations: pd.DataFrame = field(default_factory=pd.DataFrame)
     rebaseline: pd.DataFrame = field(default_factory=pd.DataFrame)
+    capacity: pd.DataFrame = field(default_factory=pd.DataFrame)
     roots: list[Path] = field(default_factory=list)
 
     @property
@@ -165,6 +178,7 @@ def collect_study(roots: str | Path | list[str | Path], *, max_generation_rows: 
     history: list[dict[str, Any]] = []
     generations: list[dict[str, Any]] = []
     rebaseline: list[dict[str, Any]] = []
+    capacity: list[dict[str, Any]] = []
 
     for root in directories:
         if not root.is_dir():
@@ -183,6 +197,7 @@ def collect_study(roots: str | Path | list[str | Path], *, max_generation_rows: 
             subjects.extend(_subject_rows(run_dir.name, metrics))
             history.extend(_history_rows(run_dir.name, metrics, run_dir))
             rebaseline.extend(_rebaseline_rows(run_dir.name, run_dir))
+            capacity.extend(_capacity_rows(run_dir.name, _capacity_payload(run_dir, metrics)))
             if len(generations) < max_generation_rows:
                 generations.extend(_generation_rows(run_dir.name, run_dir, max_generation_rows - len(generations)))
 
@@ -193,16 +208,19 @@ def collect_study(roots: str | Path | list[str | Path], *, max_generation_rows: 
         history=pd.DataFrame(history),
         generations=pd.DataFrame(generations),
         rebaseline=pd.DataFrame(rebaseline),
+        capacity=pd.DataFrame(capacity),
         roots=directories,
     )
     study.folds = _fold_frame(study.runs)
     _LOG.info(
-        'Collected %d run(s): %d probe rows, %d subject rows, %d generation rows, %d rebaseline rows.',
+        'Collected %d run(s): %d probe rows, %d subject rows, %d generation rows, %d rebaseline rows, '
+        '%d capacity rows.',
         len(study.runs),
         len(study.probes),
         len(study.subjects),
         len(study.generations),
         len(study.rebaseline),
+        len(study.capacity),
     )
     return study
 
@@ -240,10 +258,13 @@ def _load_run(run_dir: Path) -> dict[str, Any] | None:
     if record.get('seed') is None and fallback.get('seed'):
         record['seed'] = int(str(fallback['seed']))
 
+    capacity = _capacity_payload(run_dir, metrics)
     for name, path in HEADLINES.items():
         value = dig(metrics, *path)
         if value is None and path[0] in {'rescoring'}:
             value = dig(generation, *path)
+        if value is None and path[0] == 'decoder_capacity':
+            value = dig(capacity, *path[1:])
         record[name] = value
     record['held_out_lift'] = _sub(record.get('held_out_top1'), record.get('held_out_chance'))
     record['word_lift'] = _sub(record.get('word_top1'), record.get('word_chance'))
@@ -398,6 +419,101 @@ def _rebaseline_rows(run: str, run_dir: Path) -> list[dict[str, Any]]:
                 },
             }
         )
+    return rows
+
+
+def _capacity_payload(run_dir: Path, metrics: dict[str, Any]) -> dict[str, Any]:
+    """The decoder capacity block, from `metrics.json` or from the `capacity.json` a decode-only run writes."""
+    block = metrics.get('decoder_capacity')
+    if isinstance(block, dict) and block:
+        return block
+
+    payload = _read_json(run_dir / 'evaluation' / 'capacity.json') or _read_json(run_dir / 'capacity.json')
+    block = payload.get('capacity')
+
+    return block if isinstance(block, dict) else {}
+
+
+def _capacity_rows(run: str, capacity: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flattens a capacity report into one row per score family, pool flavor, subset, menu size and arm.
+
+    Note:
+        `feasible` marks the sizes a candidate pool could actually fill. Exact word-count pools hold a median of
+        eight candidates, so the largest swept sizes are routinely unreachable -- which is not the same fact as
+        the model failing there, and a chart that conflates the two reads as a collapse.
+    """
+    headline = capacity.get('headline') or {}
+    rows: list[dict[str, Any]] = []
+
+    for family, flavors in (capacity.get('scores') or {}).items():
+        if not isinstance(flavors, dict):
+            continue
+        for flavor, block in flavors.items():
+            if not isinstance(block, dict):
+                continue
+            unreachable = {int(k) for k in (block.get('ks_unreachable') or [])}
+            shared = {
+                'run': run,
+                'holdout': capacity.get('holdout'),
+                'seed': dig(capacity, 'provenance', 'seed'),
+                'score': str(family),
+                'flavor': str(flavor),
+                'headline': family == headline.get('score') and flavor == headline.get('flavor'),
+                'alpha': _float(headline.get('alpha')),
+                'certifiable': bool(block.get('certifiable')),
+                'gamed': bool(block.get('gamed')),
+                'certified_k': block.get('certified_k'),
+            }
+            for subset in ('per_k', 'common_subset'):
+                for key, cell in (block.get(subset) or {}).items():
+                    size = int(key)
+                    base = shared | {'subset': subset, 'k': size, 'feasible': size not in unreachable}
+                    rows.extend(_capacity_cell_rows(base, cell if isinstance(cell, dict) else {}))
+
+    return rows
+
+
+def _capacity_cell_rows(base: dict[str, Any], cell: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per arm inside a scored menu size, with the paired comparison carried on the control rows."""
+    common = base | {
+        'chance': _float(cell.get('chance')),
+        'n_queries': cell.get('n_queries'),
+        'perm_p': _float(cell.get('perm_p')),
+        'perm_p_floor': _float(cell.get('perm_p_floor')),
+        'certified': bool(cell.get('certified')),
+        'failed_clauses': ';'.join(cell.get('failed_clauses') or []),
+    }
+    arms = cell.get('arms') or {}
+
+    # A size no pool could fill still gets a row, so the sweep's shape survives into the frame with an empty
+    # accuracy rather than a missing size a chart would silently close over.
+    if not arms:
+        return [common | {'arm': 'model', 'accuracy': None}]
+
+    paired = cell.get('paired') or {}
+    rows: list[dict[str, Any]] = []
+    for arm, block in arms.items():
+        interval = block.get('ci') or []
+        pair = paired.get(arm) or {}
+        pair_ci = pair.get('ci') or []
+        rows.append(
+            common
+            | {
+                'arm': str(arm),
+                'accuracy': _float(block.get('accuracy')),
+                'ci_lo': _float(interval[1]) if len(interval) >= 3 else None,
+                'ci_hi': _float(interval[2]) if len(interval) >= 3 else None,
+                'delta': _float(pair.get('delta')),
+                'delta_lo': _float(pair_ci[1]) if len(pair_ci) >= 3 else None,
+                'delta_hi': _float(pair_ci[2]) if len(pair_ci) >= 3 else None,
+                'sign_test_p': _float(pair.get('sign_test_p')),
+                'model_wins': pair.get('model_wins'),
+                'control_wins': pair.get('control_wins'),
+                'ties': pair.get('ties'),
+                'n_pairs': pair.get('n_pairs'),
+            }
+        )
+
     return rows
 
 

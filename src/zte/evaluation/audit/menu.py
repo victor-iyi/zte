@@ -1,5 +1,6 @@
 """The menu-capacity audit: the largest K-way closed set the embedding serves at a target accuracy."""
 
+from dataclasses import dataclass
 from math import comb
 from typing import Any, Final
 
@@ -177,7 +178,7 @@ def menu_report(
     sensitivity: dict[str, Any] = {}
     for certified, specs in ((True, flavor_specs), (False, sensitivity_specs)):
         for name, tol, task_matched, scoring in specs:
-            block = _score_flavor(
+            block = score_menu_flavor(
                 by_scoring[scoring],
                 q_idx,
                 content_ids,
@@ -220,7 +221,91 @@ def menu_report(
     }
 
 
-def _score_flavor(
+@dataclass(slots=True, frozen=True, kw_only=True)
+class MenuPool:
+    """One query's candidate set: the true sentence plus every distractor the flavor's rule admits.
+
+    Note:
+        `m` is the distractor count -- one less than `cand_idx.size` -- because every win probability is
+        conditioned on the true sentence already occupying a slot.
+    """
+
+    row: int
+    cand_idx: np.ndarray
+    true_slot: int
+    m: int
+    oracle_beaten: np.ndarray
+
+
+def menu_pools(
+    q_idx: np.ndarray,
+    content_ids: np.ndarray,
+    lengths: np.ndarray,
+    proto_id_arr: np.ndarray,
+    proto_len: np.ndarray,
+    proto_task: np.ndarray | None,
+    *,
+    tol: int | None,
+    task_matched: bool,
+) -> list[MenuPool]:
+    """Builds one candidate pool per query, so any score matrix over the same gallery can be scored through them.
+
+    The pools depend only on stimulus identity, word count and task, never on the scores, which is what lets a
+    caller construct them once and reuse them across score families, conditioning arms and menu sizes.
+
+    Args:
+        q_idx (np.ndarray): Row indices of the query readings within the full arrays `(n_queries,)`.
+        content_ids (np.ndarray): Stimulus id per reading `(n,)`.
+        lengths (np.ndarray): Word count per reading `(n,)`, read by the length oracle.
+        proto_id_arr (np.ndarray): Stimulus id per gallery entry `(n_gallery,)`.
+        proto_len (np.ndarray): Stimulus-level word count per gallery entry `(n_gallery,)`.
+        proto_task (np.ndarray | None): Task label per gallery entry `(n_gallery,)`, or None when unlabelled.
+        tol (int | None): Word-count tolerance a distractor must sit within; None draws from the full gallery.
+        task_matched (bool): Whether distractors must share the query's task label.
+
+    Returns:
+        list[MenuPool]: One pool per query, in `q_idx` order.
+    """
+    pools: list[MenuPool] = []
+    for row, i in enumerate(q_idx):
+        t = int(np.where(proto_id_arr == content_ids[i])[0][0])
+        candidates = np.ones(proto_id_arr.shape[0], dtype=bool)
+        if tol is not None:
+            candidates &= np.abs(proto_len - proto_len[t]) <= tol
+        if task_matched and proto_task is not None:
+            candidates &= proto_task == proto_task[t]
+        candidates[t] = True
+        cand_idx = np.where(candidates)[0]
+
+        # The length-only adversary: closer stimulus word count wins; must sit at chance in this pool.
+        oracle_scores = -np.abs(proto_len[cand_idx] - lengths[i])
+        pools.append(
+            MenuPool(
+                row=row,
+                cand_idx=cand_idx,
+                true_slot=int(np.where(cand_idx == t)[0][0]),
+                m=int(cand_idx.size) - 1,
+                oracle_beaten=_strict_wins(oracle_scores),
+            )
+        )
+
+    return pools
+
+
+def beaten_in_pool(scores_row: np.ndarray, pool: MenuPool) -> int:
+    """How many of a pool's candidates the true sentence strictly beats -- the statistic every menu size reads.
+
+    Args:
+        scores_row (np.ndarray): One query's scores over the whole gallery `(n_gallery,)`.
+        pool (MenuPool): The candidate pool that query is scored against.
+
+    Returns:
+        int: Strict wins, between 0 and `pool.m`; ties count as losses.
+    """
+    return int(_strict_wins(scores_row[pool.cand_idx])[pool.true_slot])
+
+
+def score_menu_flavor(
     scores: np.ndarray,
     q_idx: np.ndarray,
     content_ids: np.ndarray,
@@ -239,45 +324,47 @@ def _score_flavor(
     rng: np.random.Generator,
     with_oracle: bool,
 ) -> dict[str, Any]:
-    """Scores one (distractor pool, scoring rule) pair from a `(n_queries, n_gallery)` score matrix."""
-    # Per query: the candidate set is the pool plus the true sentence; `beaten[c]` counts, for each
-    # candidate as pseudo-true, how many of the others it strictly beats. The observed statistic reads
-    # the true row; the permutation null redraws the true label uniformly from the same set.
-    per_query: list[dict[str, Any]] = []
-    for row, i in enumerate(q_idx):
-        t = int(np.where(proto_id_arr == content_ids[i])[0][0])
-        candidates = np.ones(proto_id_arr.shape[0], dtype=bool)
-        if tol is not None:
-            candidates &= np.abs(proto_len - proto_len[t]) <= tol
-        if task_matched and proto_task is not None:
-            candidates &= proto_task == proto_task[t]
-        candidates[t] = True
-        cand_idx = np.where(candidates)[0]
+    """Scores one (distractor pool, scoring rule) pair from a `(n_queries, n_gallery)` score matrix.
 
-        cand_sims = scores[row, cand_idx]
-        order = np.sort(cand_sims)
-        beaten = np.searchsorted(order, cand_sims, side='left')  # strict wins within the candidate set
-        # The length-only adversary: closer stimulus word count wins; must sit at chance in this pool.
-        oracle_scores = -np.abs(proto_len[cand_idx] - lengths[i])
-        oracle_beaten = np.searchsorted(np.sort(oracle_scores), oracle_scores, side='left')
-        true_slot = int(np.where(cand_idx == t)[0][0])
-        per_query.append(
-            {
-                'beaten': beaten,
-                'true_slot': true_slot,
-                'oracle_beaten': oracle_beaten,
-                'm': int(cand_idx.size) - 1,
-            }
-        )
+    Args:
+        scores (np.ndarray): Query-by-gallery scores `(n_queries, n_gallery)`, higher is better.
+        q_idx (np.ndarray): Row indices of the query readings within the full arrays `(n_queries,)`.
+        content_ids (np.ndarray): Stimulus id per reading `(n,)`.
+        lengths (np.ndarray): Word count per reading `(n,)`.
+        proto_id_arr (np.ndarray): Stimulus id per gallery entry `(n_gallery,)`.
+        proto_len (np.ndarray): Stimulus-level word count per gallery entry `(n_gallery,)`.
+        proto_task (np.ndarray | None): Task label per gallery entry `(n_gallery,)`, or None when unlabelled.
+        tol (int | None): Word-count tolerance a distractor must sit within; None draws from the full gallery.
+        task_matched (bool): Whether distractors must share the query's task label.
+        scoring (str): Label of the scoring rule, recorded in the block so enrolled is never read as prototype.
+        ks (tuple[int, ...]): Menu sizes to sweep.
+        target (float): Accuracy a menu size must clear to be certified.
+        n_boot (int): Bootstrap resamples behind each accuracy CI.
+        n_perm (int): Label permutations behind each per-K p-value; 0 skips the null entirely.
+        rng (np.random.Generator): Shared generator -- consumed sequentially across flavors and menu sizes.
+        with_oracle (bool): Whether to run the length-oracle null and let it veto certification.
+
+    Returns:
+        dict[str, Any]: `{'per_k', 'capacity', 'capacity_point', 'tol', 'task_matched', 'scoring'}`, plus
+            `'length_oracle_2way'` and `'gamed'` when the oracle ran.
+    """
+    pools = menu_pools(
+        q_idx, content_ids, lengths, proto_id_arr, proto_len, proto_task, tol=tol, task_matched=task_matched
+    )
+
+    # The observed statistic reads the true candidate; the relabelling null redraws the pseudo-true uniformly
+    # from the same set, so it needs every candidate's strict-win count and is built only when it will run.
+    beaten = [beaten_in_pool(scores[pool.row], pool) for pool in pools]
+    beaten_all = [_strict_wins(scores[pool.row, pool.cand_idx]) for pool in pools] if n_perm > 0 else []
 
     # The oracle verdict is settled before certification so a length-gamed pool can never certify a K.
     oracle: dict[str, Any] | None = None
     gamed = False
     if with_oracle:
-        oracle_rows = [q for q in per_query if q['m'] >= 1]
+        oracle_rows = [pool for pool in pools if pool.m >= 1]
         if oracle_rows:
             oracle_probs = np.array(
-                [_win_prob(q['oracle_beaten'][q['true_slot']], q['m'], 2) for q in oracle_rows], dtype=np.float64
+                [win_prob(pool.oracle_beaten[pool.true_slot], pool.m, 2) for pool in oracle_rows], dtype=np.float64
             )
             o_mean, o_lo, o_hi = _bootstrap_ci(oracle_probs, n_boot=n_boot, seed=int(rng.integers(2**31)))
             oracle = {'accuracy': o_mean, 'ci': (o_mean, o_lo, o_hi)}
@@ -287,22 +374,22 @@ def _score_flavor(
     capacity: int | None = None
     capacity_point: int | None = None
     for k in ks:
-        rows = [q for q in per_query if q['m'] >= k - 1]
+        rows = [j for j, pool in enumerate(pools) if pool.m >= k - 1]
         if not rows:
             per_k[str(k)] = {'accuracy': None, 'ci': None, 'chance': 1.0 / k, 'n_queries': 0, 'perm_p': None}
             continue
 
-        probs = np.array([_win_prob(q['beaten'][q['true_slot']], q['m'], k) for q in rows], dtype=np.float64)
+        probs = np.array([win_prob(beaten[j], pools[j].m, k) for j in rows], dtype=np.float64)
         mean, lo, hi = _bootstrap_ci(probs, n_boot=n_boot, seed=int(rng.integers(2**31)))
         perm_p: float | None = None
         if n_perm > 0:
             # Exact relabelling null: a pseudo-true drawn uniformly from the candidate set, using each
             # candidate's own win probability -- no re-scoring, so the null shares every artefact of the data.
-            pools = [np.array([_win_prob(b, q['m'], k) for b in q['beaten']], dtype=np.float64) for q in rows]
-            flat = np.concatenate(pools)
-            sizes = np.array([pool.size for pool in pools])
+            draw_pools = [np.array([win_prob(b, pools[j].m, k) for b in beaten_all[j]], dtype=np.float64) for j in rows]
+            flat = np.concatenate(draw_pools)
+            sizes = np.array([pool.size for pool in draw_pools])
             offsets = np.concatenate(([0], np.cumsum(sizes[:-1])))
-            picks = rng.integers(0, sizes, size=(n_perm, len(pools)))
+            picks = rng.integers(0, sizes, size=(n_perm, len(draw_pools)))
             draws = flat[offsets + picks].mean(axis=1)
             perm_p = float((np.sum(draws >= mean) + 1) / (n_perm + 1))
 
@@ -333,6 +420,11 @@ def _score_flavor(
     return block
 
 
+def _strict_wins(values: np.ndarray) -> np.ndarray:
+    """Per entry, how many of the others it strictly beats -- `side='left'` is what makes ties lose."""
+    return np.searchsorted(np.sort(values), values, side='left')
+
+
 def _enrolled_scores(
     emb: np.ndarray,
     q_idx: np.ndarray,
@@ -351,8 +443,17 @@ def _enrolled_scores(
     return np.maximum.reduceat(sims, starts, axis=1)
 
 
-def _win_prob(beaten: int, m: int, k: int) -> float:
-    """Exact probability the pseudo-true wins a K-way menu after strictly beating `beaten` of `m` others."""
+def win_prob(beaten: int, m: int, k: int) -> float:
+    """Exact probability the pseudo-true wins a K-way menu after strictly beating `beaten` of `m` others.
+
+    Args:
+        beaten (int): Candidates the pseudo-true strictly beats.
+        m (int): Distractors available in the pool.
+        k (int): Menu size, so `k - 1` distractors are drawn uniformly without replacement.
+
+    Returns:
+        float: `C(beaten, k - 1) / C(m, k - 1)` -- an exact expectation, so no sampling seed is involved.
+    """
     return comb(int(beaten), k - 1) / comb(int(m), k - 1)
 
 

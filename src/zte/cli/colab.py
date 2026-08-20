@@ -14,6 +14,13 @@ from zte.data.schema import SUBJECTS_V1
 from zte.device import device_plan
 from zte.evaluation.analysis import collect_study, panel_builders
 from zte.evaluation.analysis.collect import HEADLINES, dig
+from zte.evaluation.audit.capacity import (
+    CERTIFICATION_RULE,
+    CLAUSE_NAMES,
+    HEADLINE_FLAVOR,
+    HEADLINE_SCORE,
+    pooled_capacity,
+)
 from zte.evaluation.interactive import generation_payload
 from zte.logging_utils import configure_logging, get_logger
 from zte.utils.env import accelerator_info, env_defaults, machine_resources, project_root
@@ -43,6 +50,11 @@ DEFAULT_READING_METRICS: Final[tuple[str, ...]] = ('content_f1', 'wer')
 # a passing one, so the registered default stands in and the payload says which floor it used.
 DEFAULT_MIN_PREFIX_KL: Final[float] = DecoderConfig().min_prefix_kl
 """Prefix-influence floor in nats used when a decode artifact does not record the run's own."""
+
+# Written only when `zte-decode --capacity` ran, so its absence is a decode that never certified anything rather
+# than a certification that failed; the two are different answers and the reader must not conflate them.
+CAPACITY_ARTIFACT: Final[str] = 'capacity.json'
+"""Filename `zte-decode --capacity` leaves beside the generation artifacts."""
 
 
 def _venv_versions() -> dict[str, str]:
@@ -233,6 +245,203 @@ def read_decode_artifacts(
     }
 
 
+def _capacity_rows(per_k: dict[str, Any], unreachable: set[int]) -> list[dict[str, Any]]:
+    """One row per menu size, flat enough for a table, with the sizes no pool could fill kept in place."""
+    rows: list[dict[str, Any]] = []
+    for key, cell in sorted((per_k or {}).items(), key=lambda item: int(item[0])):
+        size = int(key)
+        interval = cell.get('ci') or [None, None, None]
+        rows.append(
+            {
+                'k': size,
+                'reachable': size not in unreachable,
+                'chance': cell.get('chance'),
+                'accuracy': cell.get('accuracy'),
+                'ci_lo': interval[1],
+                'ci_hi': interval[2],
+                'n_queries': cell.get('n_queries'),
+                'perm_p': cell.get('perm_p'),
+                'perm_p_floor': cell.get('perm_p_floor'),
+                'certified': bool(cell.get('certified')),
+                'failed_clauses': list(cell.get('failed_clauses') or []),
+            }
+        )
+
+    return rows
+
+
+def _arm_rows(per_k: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every arm's own menu accuracy, one row per menu size, so the controls plot beside the model."""
+    rows: list[dict[str, Any]] = []
+    for key, cell in sorted((per_k or {}).items(), key=lambda item: int(item[0])):
+        for arm, scored in (cell.get('arms') or {}).items():
+            interval = scored.get('ci') or [None, None, None]
+            rows.append(
+                {
+                    'k': int(key),
+                    'arm': arm,
+                    'accuracy': scored.get('accuracy'),
+                    'ci_lo': interval[1],
+                    'ci_hi': interval[2],
+                }
+            )
+
+    return rows
+
+
+def _paired_rows(per_k: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every paired model-minus-control comparison, one row per menu size and control arm."""
+    rows: list[dict[str, Any]] = []
+    for key, cell in sorted((per_k or {}).items(), key=lambda item: int(item[0])):
+        for arm, paired in (cell.get('paired') or {}).items():
+            interval = paired.get('ci') or [None, None, None]
+            rows.append(
+                {
+                    'k': int(key),
+                    'control': arm,
+                    'delta': paired.get('delta'),
+                    'ci_lo': interval[1],
+                    'ci_hi': interval[2],
+                    'sign_test_p': paired.get('sign_test_p'),
+                    'model_wins': paired.get('model_wins'),
+                    'control_wins': paired.get('control_wins'),
+                    'ties': paired.get('ties'),
+                    'n_pairs': paired.get('n_pairs'),
+                }
+            )
+
+    return rows
+
+
+# The clause set is read off the cell the certification rule reads: the certified size, or the smallest size swept
+# when nothing certified, so a report that certified nothing still names which clause stopped it.
+def _clause_flags(block: dict[str, Any], ks: list[int]) -> dict[str, bool]:
+    """Pass/fail per certification clause for one score family and candidate-pool rule."""
+    certified = block.get('certified_k')
+    key = str(certified if certified is not None else (ks[0] if ks else ''))
+    cell = (block.get('per_k') or {}).get(key) or {}
+    failed = set(cell['failed_clauses']) if 'failed_clauses' in cell else set(CLAUSE_NAMES)
+
+    return {name: name not in failed for name in CLAUSE_NAMES}
+
+
+def _capacity_of(directory: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The `capacity_report` block and the decode provenance a `zte-decode --capacity` directory holds."""
+    path = directory / CAPACITY_ARTIFACT
+    if not path.is_file():
+        raise FileNotFoundError(f'{path} is missing; re-run zte-decode with --capacity --out {directory}.')
+
+    artifact = json.loads(path.read_text(encoding='utf-8'))
+    capacity = artifact.get('capacity')
+    if not capacity:
+        raise ValueError(f'{path} holds no capacity block; the decode wrote the file but certified nothing.')
+
+    return dict(capacity), dict(artifact.get('provenance') or {})
+
+
+def read_capacity_artifact(
+    directory: str | Path,
+    *,
+    score: str = HEADLINE_SCORE,
+    flavor: str = HEADLINE_FLAVOR,
+    seeds: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Reads a `zte-decode --capacity` directory into the payload the notebook renders, clause by clause.
+
+    Note:
+        This certifies nothing. `zte-decode` already swept every menu size against every conditioning control,
+        so recomputing a cell here would show a number the run's verdict does not gate on. A size that certified
+        nothing comes back as `None` and keeps its failing clauses, because a blank reads as a pass.
+
+    Args:
+        directory (str | Path): A `zte-decode --out` directory holding `capacity.json`.
+        score (str, optional): Score family to read. Defaults to `pmi`, the headline.
+        flavor (str, optional): Candidate-pool rule to read. Defaults to `length_task_matched`, the headline.
+        seeds (list[str | Path] | None, optional): Further `--out` directories, one per seed, pooled with this
+            one into the capacity every run jointly supports. Defaults to None.
+
+    Returns:
+        dict[str, Any]: `source`, `selected`, `certified_k`, `clauses`, `ks`, `per_k`, `common_subset`, `arms`,
+        `paired`, `bits`, `verdict`, `pooled`, the `audit` knobs and the decode `provenance`. `certified_k` is
+        `None` when nothing certified, and `selected` records any substitution made because the requested
+        family or pool was not swept.
+
+    Raises:
+        FileNotFoundError: If a named directory holds no `capacity.json`.
+        ValueError: If the artifact carries no score families to read.
+    """
+    out_dir = Path(directory)
+    capacity, provenance = _capacity_of(out_dir)
+    families = capacity.get('scores') or {}
+    if not families:
+        raise ValueError(f'{out_dir / CAPACITY_ARTIFACT} swept no score families; there is nothing to read.')
+
+    # A requested family or pool the run never swept is substituted rather than invented, and the substitution
+    # travels in the payload -- an `open` pool silently standing in for a length-matched one would read as a win.
+    family = score if score in families else next(iter(families))
+    flavors = families[family] or {}
+    pool = flavor if flavor in flavors else (HEADLINE_FLAVOR if HEADLINE_FLAVOR in flavors else next(iter(flavors)))
+    block = flavors[pool] or {}
+
+    audit = capacity.get('provenance') or {}
+    ks = [int(k) for k in audit.get('ks') or []]
+    unreachable = {int(k) for k in block.get('ks_unreachable') or []}
+    headline = capacity.get('headline') or {}
+
+    # Deduplicated by resolved path so a directory named twice cannot count twice towards a pooled promise.
+    pooled: dict[str, Any] | None = None
+    if seeds:
+        paths: list[Path] = []
+        for candidate in [out_dir, *(Path(s) for s in seeds)]:
+            if candidate.resolve() not in {p.resolve() for p in paths}:
+                paths.append(candidate)
+        pooled = {**pooled_capacity([_capacity_of(p)[0] for p in paths]), 'sources': [str(p) for p in paths]}
+
+    return {
+        'source': {
+            'capacity_json': str(out_dir / CAPACITY_ARTIFACT),
+            'run_name': provenance.get('run_name'),
+            'holdout': capacity.get('holdout'),
+            'n_queries': capacity.get('n_queries'),
+            'n_gallery': capacity.get('n_gallery'),
+        },
+        'readout': capacity.get('readout'),
+        'tie_policy': capacity.get('tie_policy'),
+        'certification_rule': CERTIFICATION_RULE,
+        'honest_split': capacity.get('honest_split'),
+        'split_strategy': capacity.get('split_strategy'),
+        'split_cell': capacity.get('split_cell'),
+        'headline': headline,
+        'selected': {
+            'score': family,
+            'flavor': pool,
+            'requested_score': score,
+            'requested_flavor': flavor,
+            'substituted': bool(family != score or pool != flavor),
+            'is_headline': bool(family == headline.get('score') and pool == headline.get('flavor')),
+            'certifiable': bool(block.get('certifiable')),
+            'gamed': bool(block.get('gamed')),
+            'length_oracle_2way_distance': block.get('length_oracle_2way_distance'),
+        },
+        'certified_k': block.get('certified_k'),
+        'clauses': _clause_flags(block, ks),
+        'ks': {
+            'swept': ks,
+            'feasible': [int(k) for k in block.get('ks_feasible') or []],
+            'unreachable': sorted(unreachable),
+        },
+        'per_k': _capacity_rows(block.get('per_k') or {}, unreachable),
+        'common_subset': _capacity_rows(block.get('common_subset') or {}, unreachable),
+        'arms': _arm_rows(block.get('per_k') or {}),
+        'paired': _paired_rows(block.get('per_k') or {}),
+        'bits': capacity.get('bits') or {},
+        'verdict': capacity.get('verdict') or {},
+        'pooled': pooled,
+        'audit': audit,
+        'provenance': provenance,
+    }
+
+
 def _env(args: argparse.Namespace) -> dict[str, Any]:
     """Answers what interpreter, accelerator and machine the venv has."""
     root = project_root()
@@ -293,6 +502,8 @@ def _arms(args: argparse.Namespace) -> dict[str, Any]:
                     'label': _arm_label(path, config),
                     'objective': objective.get('name'),
                     'mode': train.get('mode'),
+                    'split': train.get('split'),
+                    'holdout': train.get('loso_holdout_subject'),
                 }
             )
 
@@ -425,6 +636,17 @@ def parse_arguments() -> argparse.Namespace:
     readings.add_argument('--pick', default=None, help='Exact reading indices, comma-separated.')
     readings.add_argument('--metrics', default=','.join(DEFAULT_READING_METRICS))
 
+    capacity = sub.add_parser('capacity', parents=[common], help="A decode run's certified K-way menu capacity.")
+    capacity.add_argument('--from', dest='source', required=True, type=Path, help='A zte-decode --out directory.')
+    capacity.add_argument('--score', default=HEADLINE_SCORE, help='Score family to read.')
+    capacity.add_argument('--flavor', default=HEADLINE_FLAVOR, help='Candidate-pool rule to read.')
+    capacity.add_argument(
+        '--seeds',
+        default=None,
+        help='Further zte-decode --out directories, comma-separated, pooled with this one into the capacity '
+        'every run jointly supports.',
+    )
+
     panels = sub.add_parser('panels', parents=[common], help='Draw the study charts to figure JSON for a renderer.')
     panels.add_argument('--experiments', nargs='+', type=Path, required=True, help='Run roots to collect.')
     panels.add_argument('--out', type=Path, required=True, help='Directory the figure JSON is written to.')
@@ -463,6 +685,13 @@ def main() -> None:
                 rows=args.rows,
                 pick=[int(i) for i in args.pick.split(',')] if args.pick else None,
                 metrics=tuple(m.strip() for m in args.metrics.split(',') if m.strip()),
+            )
+        case 'capacity':
+            payload = read_capacity_artifact(
+                args.source,
+                score=args.score,
+                flavor=args.flavor,
+                seeds=[s.strip() for s in args.seeds.split(',') if s.strip()] if args.seeds else None,
             )
         case 'panels':
             payload = _panels(args)

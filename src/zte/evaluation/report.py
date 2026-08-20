@@ -90,6 +90,7 @@ def evaluate_representation(
     sent_n_words: np.ndarray | None = None,
     generation: dict[str, Any] | None = None,
     rescoring: dict[str, Any] | None = None,
+    decoder_capacity: dict[str, Any] | None = None,
     min_prefix_kl: float = 0.05,
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
@@ -131,6 +132,9 @@ def evaluate_representation(
         sent_n_words (np.ndarray | None): Word count per sentence, enabling the length-stratified gallery.
         generation (dict[str, Any] | None): A `generation.generation_report` block from a decoder run.
         rescoring (dict[str, Any] | None): A `scoreboard.decoder_rescoring_retrieval` block.
+        decoder_capacity (dict[str, Any] | None): An `audit.capacity.capacity_report` block from a decoder run.
+            It is kept under `decoder_capacity`, apart from the encoder-side cosine `menu` audit and from
+            generation, because it certifies a menu-selection readout and nothing else.
         min_prefix_kl (float): Minimum prefix-influence KL (nats) the generation verdict requires.
 
     Returns:
@@ -147,15 +151,22 @@ def evaluate_representation(
     do_whiten = obj_cfg is not None and bool(getattr(obj_cfg, 'whiten', False))
     n_top = int(getattr(obj_cfg, 'all_but_top', 0) or 0) if obj_cfg is not None else 0
     sent_emb_transductive: np.ndarray | None = None
+    # A basis fitted in one coordinate frame and subtracted in another adds an arbitrary vector field instead of
+    # removing the nuisance, so each scored array carries the training rows through its own transform.
+    train_sent_emb_fitted: np.ndarray | None = None
+    train_sent_emb_transductive: np.ndarray | None = None
     if do_whiten or n_top > 0:
         # Fitting on the scored rows is transductive, and a decoder scoring one sentence cannot reproduce it.
-        sent_emb_transductive = _postprocess(sent_emb, None, do_whiten, n_top)
+        if train_sent_emb is None:
+            sent_emb_transductive = _postprocess(sent_emb, None, do_whiten, n_top)
+            sent_emb = sent_emb_transductive
+        else:
+            sent_emb_transductive, train_sent_emb_transductive = _postprocess_transductive(
+                sent_emb, train_sent_emb, do_whiten, n_top
+            )
+            train_sent_emb_fitted = _postprocess(train_sent_emb, train_sent_emb, do_whiten, n_top)
+            sent_emb = _postprocess(sent_emb, train_sent_emb, do_whiten, n_top)
         word_emb = _postprocess(word_emb, None, do_whiten, n_top)
-        sent_emb = (
-            sent_emb_transductive
-            if train_sent_emb is None
-            else _postprocess(sent_emb, train_sent_emb, do_whiten, n_top)
-        )
         _LOG.info(
             'Post-processed embeddings (whiten=%s, all_but_top=%d, fit=%s).',
             do_whiten,
@@ -165,14 +176,18 @@ def evaluate_representation(
     # Length is 5.14 of the 9.45 bits needed to name a ZuCo sentence, so removing it says what is left underneath.
     length_projection: dict[str, Any] | None = None
     if obj_cfg is not None and bool(getattr(obj_cfg, 'length_projection', False)):
-        projector, length_projection = _fit_length_projector(sent_n_words, train_sent_emb, train_sent_n_words)
+        fit_rows = train_sent_emb if train_sent_emb_fitted is None else train_sent_emb_fitted
+        projector, length_projection = _fit_length_projector(sent_n_words, fit_rows, train_sent_n_words)
         if projector is not None and sent_n_words is not None:
             n_words = np.asarray(sent_n_words)
             length_projection['length_leakage_before'] = length_leakage(sent_emb, n_words)
             sent_emb = projector.transform(sent_emb, n_words)
             length_projection['length_leakage_after'] = length_leakage(sent_emb, n_words)
-            if sent_emb_transductive is not None:
-                sent_emb_transductive = projector.transform(sent_emb_transductive, n_words)
+            transductive_projector, _ = _fit_length_projector(
+                sent_n_words, train_sent_emb_transductive, train_sent_n_words
+            )
+            if sent_emb_transductive is not None and transductive_projector is not None:
+                sent_emb_transductive = transductive_projector.transform(sent_emb_transductive, n_words)
             _LOG.info(
                 'Length projection: word count explained %.4f of sentence-embedding variance before, %.4f after.',
                 length_projection['length_leakage_before'],
@@ -327,6 +342,12 @@ def evaluate_representation(
         metrics['generation'] = generation
     if rescoring is not None:
         metrics['rescoring'] = rescoring
+
+    # Merged additively under its own keys: a certified menu is a forced choice among K candidates, so it
+    # must never reach a generation clause, and its key is not `menu`, which is the encoder cosine audit.
+    if decoder_capacity is not None:
+        metrics['decoder_capacity'] = decoder_capacity
+        metrics['verdict'].update(capacity_verdict(decoder_capacity))
 
     # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
     honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
@@ -498,11 +519,11 @@ def _length_projection_lines(block: dict[str, Any] | None) -> list[str]:
 
     before, after = block.get('length_leakage_before', float('nan')), block.get('length_leakage_after', float('nan'))
     return [
-        f'- Length projection (fitted on {block.get("n_fit")} train sentences): word count explained '
-        f'**{before:.4f}** of sentence-embedding variance before and **{after:.4f}** after, so every retrieval '
-        'number below is measured on the projected space. The residual is what the train-fitted basis failed to '
-        'transfer, not length the encoder is free to use -- read it beside the length-stratified gallery, which '
-        'bounds the confound a different way.'
+        f'- Length projection (fitted on {block.get("n_fit")} train sentences, in the same post-processed frame the '
+        f'retrieval below is scored in): word count explained **{before:.4f}** of sentence-embedding variance before '
+        f'and **{after:.4f}** after, so every retrieval number below is measured on the projected space. The residual '
+        'is the length a five-term basis fitted on other readers does not reach on these rows, and retrieval is free '
+        'to use it -- read it beside the length-stratified gallery, which bounds the confound a different way.'
     ]
 
 
@@ -533,6 +554,44 @@ def _postprocess(emb: np.ndarray, fit_on: np.ndarray | None, whiten: bool, n_top
     if n_top > 0:
         out = M.all_but_the_top(out, n_top)
     return out
+
+
+def _postprocess_transductive(
+    emb: np.ndarray, carry: np.ndarray, whiten: bool, n_top: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fits whitening then all-but-the-top on `emb` itself and returns `emb` and `carry` in that one frame.
+
+    Note:
+        Whitening equalises the variance of every direction, so the leading principal direction of the whitened
+        rows is numerically arbitrary and an independent refit picks a different one. `carry` therefore has to
+        ride the same eigendecomposition and the same SVD rather than being transformed by a second call.
+
+    Args:
+        emb (np.ndarray): Rows the transform is fitted on and applied to `(n, d)`.
+        carry (np.ndarray): Further rows to place in the same frame `(m, d)`.
+        whiten (bool): Apply ZCA whitening.
+        n_top (int): Leading principal directions to remove.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: The transformed `emb` and `carry`.
+    """
+    x = np.asarray(emb, dtype=np.float32)
+    c = np.asarray(carry, dtype=np.float32)
+    if whiten:
+        c = M.whiten_features(c, fit_on=x)
+        x = M.whiten_features(x)
+
+    if n_top > 0 and len(x) >= 2:
+        centred = np.asarray(x, dtype=np.float64)
+        mean = centred.mean(axis=0, keepdims=True)
+        centred = centred - mean
+        _, _, vt = np.linalg.svd(centred, full_matrices=False)
+        u = vt[: min(n_top, vt.shape[0])]
+        x = (centred - (centred @ u.T) @ u).astype(np.float32)
+        carried = np.asarray(c, dtype=np.float64) - mean
+        c = (carried - (carried @ u.T) @ u).astype(np.float32)
+
+    return x, c
 
 
 def _fit_length_projector(
@@ -1303,6 +1362,32 @@ def generation_verdict(generation: dict[str, Any], min_prefix_kl: float) -> dict
     }
 
 
+def capacity_verdict(capacity: dict[str, Any]) -> dict[str, Any]:
+    """The decoder menu-capacity outcome, restated with `capacity_` keys so it merges into the run verdict.
+
+    The seven-clause certification rule has exactly one implementation, in `zte.evaluation.audit.capacity`;
+    this reads the outcome it already reached rather than re-deriving it. Every key is namespaced, because
+    a menu is a forced choice among K candidates and can never license a free-generation headline.
+
+    Args:
+        capacity (dict[str, Any]): A `capacity_report` block.
+
+    Returns:
+        dict[str, Any]: `capacity_certified`, `capacity_k`, `capacity_bits`, `capacity_clauses`,
+            `capacity_readout` and `capacity_reason` -- and no key any other clause reads.
+    """
+    verdict = capacity.get('verdict') or {}
+
+    return {
+        'capacity_certified': bool(verdict.get('capacity_certified', False)),
+        'capacity_k': verdict.get('capacity_k'),
+        'capacity_bits': verdict.get('capacity_bits'),
+        'capacity_clauses': verdict.get('capacity_clauses') or {},
+        'capacity_readout': capacity.get('readout', 'menu selection'),
+        'capacity_reason': verdict.get('reason'),
+    }
+
+
 def _diff_ci(hits: list[float] | None, chance: float, seed: int = 0) -> tuple[float, float, float]:
     """Bootstrap CI of `mean(hits) - chance` (all `nan` when hits/chance are absent)."""
     if not hits or not np.isfinite(chance):
@@ -1381,6 +1466,15 @@ def _render_report(
             f'**{verdict["generation_above_controls"]}** '
             f'(worst control `{verdict.get("generation_worst_control")}`, '
             f'CI {_fmt_ci(verdict.get("generation_ci"))})'
+        )
+    if 'capacity_certified' in verdict:
+        bits = verdict.get('capacity_bits')
+        lines.append(
+            f'- Decoder menu capacity certified: **{verdict["capacity_certified"]}** '
+            f'(K = {"—" if verdict.get("capacity_k") is None else verdict["capacity_k"]}, '
+            f'{"—" if bits is None else format(bits, ".4f")} bits). The readout is '
+            f'{verdict.get("capacity_readout", "menu selection")} -- a forced choice among K candidates, '
+            'judged on its own clauses and never part of the generation gate.'
         )
     lines += [
         '',
@@ -1537,6 +1631,39 @@ def _generation_section(metrics: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _capacity_section(metrics: dict[str, Any]) -> list[str]:
+    """Markdown for the certified menu capacity, with the sizes no pool could fill named as unreachable."""
+    capacity = metrics.get('decoder_capacity') or {}
+    if not capacity:
+        return []
+
+    from zte.evaluation.audit.capacity import capacity_markdown_lines
+
+    headline = capacity.get('headline') or {}
+    block = ((capacity.get('scores') or {}).get(headline.get('score')) or {}).get(headline.get('flavor')) or {}
+    feasible = [str(k) for k in (block.get('ks_feasible') or [])]
+    unreachable = [str(k) for k in (block.get('ks_unreachable') or [])]
+
+    # Exact word-count pools hold a median of ~8 candidates on a 300-sentence gallery, so the larger sizes
+    # have no queries at all; read as failures they would understate a decoder that was never asked.
+    reach = (
+        f'Unreachable on this gallery -- no query had K-1 distractors at its own word count and task, so '
+        f'these sizes were never put to the decoder and their rows are absence of evidence rather than a '
+        f'failed certification: {", ".join(unreachable)}.'
+        if unreachable
+        else 'Every swept size had queries, so no row here is unreachable rather than failed.'
+    )
+
+    return [
+        *capacity_markdown_lines(capacity),
+        f'- Menu sizes with queries: {", ".join(feasible) or "none"}. {reach}',
+        f'- The readout is {capacity.get("readout", "menu selection")}: the decoder picks the read sentence out '
+        'of K candidates. It is retrieval-shaped, so it is gated on its own clauses and can never stand in for '
+        'the free-generation verdict above.',
+        '',
+    ]
+
+
 def _honesty_section(honesty: dict[str, Any]) -> list[str]:
     """Markdown for the permutation null, held-out cross-subject decode and calibration lift."""
     if not honesty or not honesty.get('applicable'):
@@ -1591,6 +1718,7 @@ def _extended_report_sections(metrics: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     lines += _emergence_section(metrics.get('emergence', {}))
     lines += _generation_section(metrics)
+    lines += _capacity_section(metrics)
     lines += _honesty_section(metrics.get('honesty', {}))
     analogy = metrics.get('analogy', {})
     st = analogy.get('subject_transfer', {})

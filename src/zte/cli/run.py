@@ -147,8 +147,17 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help='Leave-one-subject-out held-out subject code (overrides config.train.loso_holdout_subject; '
-        'forces split=by_subject_loso). When --name is unset the run name is suffixed with _lo<SUBJ> so '
-        'each held-out subject gets its own resumable run directory.',
+        'forces split=by_subject_loso). Refused on a decoder/joint run whose config named a different '
+        'split -- name train.loso_holdout_subject in the config instead. When --name is unset the run '
+        'name is suffixed with _lo<SUBJ> so each held-out subject gets its own resumable run directory.',
+    )
+    parser.add_argument(
+        '--allow-closed-set',
+        action='store_true',
+        dest='allow_closed_set',
+        help='Let --loso-holdout replace the honest split of a decoder run anyway. Every gallery sentence '
+        'is then also a training sentence, so the run is a closed-set control whose generation verdict '
+        'can never headline.',
     )
     parser.add_argument(
         '--resume',
@@ -175,6 +184,29 @@ def _resolve_root(args: argparse.Namespace, config: ZTEConfig) -> str:
     return resolve_root_if_needed(args, config.dataset)
 
 
+def _closed_set_swap(config: ZTEConfig, requested_split: str) -> bool:
+    """Whether `--loso-holdout` traded a decoder run's honest split for the closed-set `by_subject_loso`."""
+    return not (
+        config.train.mode == 'encoder'
+        or config.train.split != 'by_subject_loso'
+        or requested_split == 'by_subject_loso'
+    )
+
+
+# A warning scrolls past unread in a Colab log, and the run that follows it costs hours and can never
+# produce a headline, so the message is raised rather than logged and names its own opt-out.
+_CLOSED_SET_REFUSAL: Final[str] = (
+    '--loso-holdout is refused for a {mode} run.\n'
+    '  The config asked for split {requested!r}; the flag forced {applied!r}.\n'
+    '  {applied!r} shares all 700 stimuli between train and val, so every gallery sentence is also a '
+    'training sentence and the generation verdict fails its honest_split clause -- nothing this run '
+    'measures can be a headline.\n'
+    '  Remedy: set train.loso_holdout_subject: {subject} in the config and drop --loso-holdout.\n'
+    '  To run it deliberately as a closed-set control, pass --allow-closed-set.'
+)
+"""Refusal text raised when the flag would cost a decoder run its honest split."""
+
+
 def warn_on_split_override(config: ZTEConfig, requested_split: str) -> bool:
     """Warns when `--loso-holdout` traded a decoder run's honest split for `by_subject_loso`.
 
@@ -190,11 +222,7 @@ def warn_on_split_override(config: ZTEConfig, requested_split: str) -> bool:
         a decoder recites the corpus rather than reading one -- and the generation verdict refuses a headline on
         it. An encoder run loses nothing by the swap, so this reports rather than refuses.
     """
-    if (
-        config.train.mode == 'encoder'
-        or config.train.split != 'by_subject_loso'
-        or requested_split == 'by_subject_loso'
-    ):
+    if not _closed_set_swap(config, requested_split):
         return False
 
     _LOG.warning(
@@ -206,6 +234,65 @@ def warn_on_split_override(config: ZTEConfig, requested_split: str) -> bool:
         config.train.mode,
     )
     return True
+
+
+def guard_split_override(config: ZTEConfig, requested_split: str, *, allow_closed_set: bool = False) -> bool:
+    """Refuses a decoder run whose honest split `--loso-holdout` replaced, unless the closed set was asked for.
+
+    Args:
+        config (ZTEConfig): The configuration after every CLI override has been applied.
+        requested_split (str): The split the YAML named, before `--loso-holdout` touched it.
+        allow_closed_set (bool, optional): Downgrade the refusal to a warning. Defaults to False.
+
+    Returns:
+        bool: Whether the swap was detected (and, with `allow_closed_set`, warned about).
+
+    Raises:
+        SystemExit: When the swap happened and `--allow-closed-set` was not passed.
+    """
+    if allow_closed_set:
+        return warn_on_split_override(config, requested_split)
+
+    if not _closed_set_swap(config, requested_split):
+        return False
+
+    raise SystemExit(
+        _CLOSED_SET_REFUSAL.format(
+            mode=config.train.mode,
+            requested=requested_split,
+            applied=config.train.split,
+            subject=config.train.loso_holdout_subject,
+        )
+    )
+
+
+def resolve_run_name(config: ZTEConfig, args: argparse.Namespace) -> str:
+    """Returns the run directory name, suffixed so each held-out subject and seed gets its own resumable run.
+
+    Args:
+        config (ZTEConfig): The configuration after every CLI override has been applied.
+        args (argparse.Namespace): The parsed CLI arguments.
+
+    Returns:
+        str: `--name` verbatim when given, else the config name plus the `_lo<SUBJ>` and `_s<SEED>` suffixes.
+    """
+    if args.name:
+        return str(args.name)
+
+    name = config.run_name
+    holdout = config.train.loso_holdout_subject
+
+    if args.loso_holdout is not None:
+        name = f'{name}_lo{args.loso_holdout}'
+    # A decoder sweep names its held-out subject in the config rather than on the flag, and without the same
+    # suffix every fold of that sweep writes into one run directory on Drive.
+    elif config.train.mode != 'encoder' and holdout is not None and f'_lo{holdout}' not in name:
+        name = f'{name}_lo{holdout}'
+
+    if args.seed is not None:
+        name = f'{name}_s{args.seed}'
+
+    return name
 
 
 def main() -> None:
@@ -229,13 +316,6 @@ def _run(args: argparse.Namespace) -> None:
     if args.loso_holdout is not None:
         config.train.loso_holdout_subject = args.loso_holdout
         config.train.split = 'by_subject_loso'
-    if args.name:
-        config.run_name = args.name
-    else:
-        if args.loso_holdout is not None:
-            config.run_name = f'{config.run_name}_lo{args.loso_holdout}'
-        if args.seed is not None:
-            config.run_name = f'{config.run_name}_s{args.seed}'
     if args.epochs is not None:
         config.train.epochs = args.epochs
     if args.device is not None:
@@ -265,7 +345,9 @@ def _run(args: argparse.Namespace) -> None:
     if args.decode_eval:
         config.objective.eval_generation = True
 
-    warn_on_split_override(config, requested_split)
+    # Both read `train.mode`, so they wait until --mode has landed.
+    guard_split_override(config, requested_split, allow_closed_set=args.allow_closed_set)
+    config.run_name = resolve_run_name(config, args)
 
     run_dir = Path(args.out_root) / config.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -552,7 +634,7 @@ def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argp
 
     train_vocab = training_vocab(dataset, config) if getattr(config.objective, 'eval_seen_novel', False) else None
 
-    generation, rescoring = decoder_blocks(
+    generation, rescoring, decoder_capacity = decoder_blocks(
         ckpt,
         dataset,
         config,
@@ -582,6 +664,7 @@ def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argp
         sent_n_words=_sent_n_words(config, sent_meta),
         generation=generation,
         rescoring=rescoring,
+        decoder_capacity=decoder_capacity,
         min_prefix_kl=config.decoder.min_prefix_kl,
     )
 

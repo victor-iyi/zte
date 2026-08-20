@@ -192,6 +192,9 @@ class ObjectiveConfig:
     eval_rescoring: bool = True
     """Score the sentence gallery by decoder sequence likelihood. Reported as retrieval, never as generation."""
 
+    eval_capacity: bool = False
+    """Certify the largest K-way menu the decoder serves against its own conditioning arms, and price it in bits."""
+
     eval_length_stratified: bool = True
     """Also report held-out retrieval inside word-count strata, so a hit cannot be a sentence-length shortcut."""
 
