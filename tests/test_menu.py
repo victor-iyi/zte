@@ -9,8 +9,11 @@ from zte.evaluation.audit.menu import (
     ENROLLED_SCORING,
     HEADLINE_TOL,
     PROTOTYPE_SCORING,
+    beaten_in_pool,
     menu_markdown_lines,
+    menu_pools,
     menu_report,
+    score_menu_flavor,
 )
 from zte.evaluation.audit.rebaseline import rebaseline_report, render_markdown
 
@@ -436,3 +439,86 @@ def test_enrolled_blocks_carry_their_reading_counts() -> None:
     counts = enrolled['enrolled_reading_counts']
     assert counts == {'mean': 2.0, 'min': 2, 'max': 2}
     assert 'enrolled_reading_counts' not in out['flavors']['length_matched']
+
+
+# --------------------------------------------------------------------------- #
+# the public seam, and the two traps a capacity audit must not walk into
+# --------------------------------------------------------------------------- #
+def test_the_tol_zero_distance_oracle_is_zero_by_construction() -> None:
+    """`gamed: False` on a tol-0 flavor is a tautology, not evidence -- nobody may promote it into a gate.
+
+    A tol-0 pool admits only candidates whose stimulus word count equals the true sentence's, so the oracle
+    score `-|proto_len - length|` is the same number for every candidate. Ties lose, every strict-win count is
+    zero, and the 2-way oracle accuracy is exactly 0.0 whatever the query's own reading-level length happens to
+    be. The real length control has to come from outside the pool -- a decoder-side `length_only` arm.
+    """
+    # Reading-level lengths deliberately disagree with the stimulus-level ones: the oracle is blind to that,
+    # because within a tol-0 pool the query's length shifts every candidate's distance by the same amount.
+    proto_id_arr = np.array([0, 1, 2, 3])
+    proto_len = np.array([10.0, 10.0, 4.0, 4.0])
+    content_ids = np.array([0, 1, 2, 3])
+    lengths = np.array([7.0, 12.0, 4.0, 5.0])
+
+    pools = menu_pools(
+        np.arange(4), content_ids, lengths, proto_id_arr, proto_len, None, tol=HEADLINE_TOL, task_matched=False
+    )
+    assert [pool.m for pool in pools] == [1, 1, 1, 1]
+    for pool in pools:
+        assert np.all(pool.oracle_beaten == 0), 'a tol-0 pool has a constant oracle score, so nothing beats anything'
+
+    # And end to end: the certified flavor's oracle is pinned at 0.0, while the open pool's is genuinely alive.
+    emb, content, subjects, words = _cohort(n_stimuli=30, noise=0.3, length_values=(5, 10))
+    out = menu_report(emb, content, subjects, 'ZAB', words, ks=(2,), postprocess=False, n_boot=200, n_perm=100)
+    assert out is not None
+
+    matched = out['flavors']['length_matched']
+    assert matched['length_oracle_2way']['accuracy'] == 0.0
+    assert matched['gamed'] is False, 'this cannot be evidence of anything -- it is arithmetic'
+    assert out['flavors']['open']['length_oracle_2way']['accuracy'] > 0.0
+
+
+def test_a_constant_score_matrix_scores_zero_not_chance() -> None:
+    """Ties lose, so an embedding that ranks nothing scores 0.0 at every K -- never the 1/K a tie-split gives.
+
+    This is the direction that matters: a collapsed embedding must look worse than chance, not exactly like
+    chance, so a flat readout can never be mistaken for an honest coin flip.
+    """
+    n = 6
+    proto_id_arr = np.arange(n)
+    scores = np.full((n, n), 0.7, dtype=np.float64)
+
+    pools = menu_pools(
+        np.arange(n),
+        np.arange(n),
+        np.full(n, 10.0),
+        proto_id_arr,
+        np.full(n, 10.0),
+        None,
+        tol=HEADLINE_TOL,
+        task_matched=False,
+    )
+    assert [beaten_in_pool(scores[pool.row], pool) for pool in pools] == [0] * n
+
+    block = score_menu_flavor(
+        scores,
+        np.arange(n),
+        np.arange(n),
+        np.full(n, 10.0),
+        proto_id_arr,
+        np.full(n, 10.0),
+        None,
+        tol=HEADLINE_TOL,
+        task_matched=False,
+        scoring=PROTOTYPE_SCORING,
+        ks=(2, 4),
+        target=0.8,
+        n_boot=100,
+        n_perm=100,
+        rng=np.random.default_rng(0),
+        with_oracle=True,
+    )
+    for k, chance in (('2', 0.5), ('4', 0.25)):
+        assert block['per_k'][k]['accuracy'] == 0.0, 'a tie must lose, not split'
+        assert block['per_k'][k]['chance'] == pytest.approx(chance)
+        assert block['per_k'][k]['n_queries'] == n
+    assert block['capacity'] is None and block['capacity_point'] is None

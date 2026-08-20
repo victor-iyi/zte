@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+import yaml
 
 REPO: Final[Path] = Path(__file__).resolve().parents[1]
 """The checkout root, so these read the shipped notebooks rather than a copy."""
@@ -37,6 +38,11 @@ PYTHON_IN_SHELL: Final[re.Pattern[str]] = re.compile(
 )
 """Matches a shell line that would execute Python rather than install it."""
 
+# A decoder or joint run is the one that loads a frozen encoder, so `--encoder-ckpt` identifies the cells whose
+# config path is a variable the test cannot resolve.
+CLOSED_SET_MODES: Final[frozenset[str]] = frozenset({'decoder', 'joint'})
+"""Training modes `zte-run` refuses `--loso-holdout` for, because the flag costs them their honest split."""
+
 
 def _cells(notebook: Path) -> list[dict[str, Any]]:
     return json.loads(notebook.read_text(encoding='utf-8'))['cells']
@@ -64,6 +70,24 @@ def _as_python(source: str) -> str:
         lines.append(line)
 
     return '\n'.join(lines)
+
+
+def _shell_commands(source: str) -> list[str]:
+    """Every `!` command in a cell, backslash continuations joined, so prose naming a flag is not read as running it."""
+    commands: list[str] = []
+    parts: list[str] = []
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not parts and not stripped.startswith('!'):
+            continue
+
+        body = stripped.removeprefix('!').strip() if not parts else stripped
+        parts.append(body.removesuffix('\\').strip())
+        if not body.endswith('\\'):
+            commands.append(' '.join(parts))
+            parts = []
+
+    return commands
 
 
 def _import_roots(source: str, cell: int) -> set[str]:
@@ -129,6 +153,27 @@ def test_every_experiment_config_the_notebook_names_exists(notebook: Path, confi
     assert (REPO / config).is_file(), f'{config} is named in {notebook.name} but not on disk'
 
 
+@pytest.mark.parametrize('notebook', NOTEBOOKS, ids=lambda p: p.name)
+def test_no_decoder_run_cell_passes_the_closed_set_split_flag(notebook: Path) -> None:
+    """`--loso-holdout` forces `by_subject_loso`, so `zte-run` refuses it here and the cell would exit non-zero."""
+    offenders: list[tuple[int, str]] = []
+    for cell, source in _code_cells(notebook):
+        commands = [c for c in _shell_commands(source) if 'zte-run' in c and '--loso-holdout' in c]
+        if not commands:
+            continue
+
+        # The config is usually interpolated from a variable, so a frozen encoder is what identifies the mode.
+        if any('--encoder-ckpt' in command for command in commands):
+            offenders.append((cell, '--encoder-ckpt'))
+
+        for name in re.findall(r'experiments/[\w./-]+\.yaml', source):
+            config = yaml.safe_load((REPO / name).read_text(encoding='utf-8')) or {}
+            if ((config.get('train') or {}).get('mode') or 'encoder') in CLOSED_SET_MODES:
+                offenders.append((cell, name))
+
+    assert not offenders, f'{offenders} run a decoder arm with --loso-holdout; name train.loso_holdout_subject instead'
+
+
 # ---- The gateway's own render-only contract ---- #
 
 
@@ -159,6 +204,17 @@ def test_the_notebook_reaches_zte_through_the_colab_bridge() -> None:
 
     assert any('zte-colab' in source for source in sources), 'no cell calls zte-colab'
     assert any('def colab(' in source for source in sources), 'the colab() helper that parses its JSON is gone'
+
+
+def test_the_gateway_certifies_the_menu_capacity_and_renders_it_through_the_bridge() -> None:
+    """Menu selection is the readout this project can prove, so the front door must both ask for it and show it."""
+    sources = [source for _, source in _code_cells(GATEWAY)]
+
+    decode = [source for source in sources if 'zte-decode' in source]
+
+    assert decode, 'no cell runs zte-decode at all'
+    assert any('--capacity' in source for source in decode), 'the decode cell never certifies a menu capacity'
+    assert any("colab('capacity'" in source for source in sources), 'nothing renders the capacity payload'
 
 
 @pytest.mark.parametrize(

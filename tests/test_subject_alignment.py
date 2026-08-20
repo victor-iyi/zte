@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from zte.config import ModelConfig, ObjectiveConfig
+from zte.data.features import alignment
 from zte.data.features.alignment import RawSubjectAligner
 from zte.evaluation.audit.scoreboard import _binom_tail_p, _bootstrap_ci
 from zte.models.embedding import build_model
@@ -24,6 +26,27 @@ def _cohort(seed: int = 0, n: int = 150) -> tuple[np.ndarray, np.ndarray]:
         windows.append(np.einsum('cd,ndt->nct', mixing, rng.normal(size=(n, N_CH, N_T))))
         subjects += [code] * n
     return np.concatenate(windows).astype(np.float32), np.array(subjects)
+
+
+def _gain_pair(gain: float = 10.0, n: int = 120) -> tuple[np.ndarray, np.ndarray]:
+    """Two subjects with the identical channel geometry, one recorded `gain` times louder."""
+    rng = np.random.default_rng(1)
+    mixing = rng.normal(size=(N_CH, N_CH))
+    base = np.einsum('cd,ndt->nct', mixing, rng.normal(size=(n, N_CH, N_T)))
+    return np.concatenate([base, base * gain]).astype(np.float32), np.array(['A'] * n + ['B'] * n)
+
+
+def _power(windows: np.ndarray, subjects: np.ndarray, code: str) -> float:
+    """Mean square voltage of one subject's windows."""
+    return float(np.mean(windows[subjects == code] ** 2))
+
+
+@pytest.fixture(params=['accelerator', 'numpy'])
+def covariance_backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Exercises whatever accelerator this machine offers and the forced-numpy path, which differ in dtype."""
+    if request.param == 'numpy':
+        monkeypatch.setattr(alignment, '_accel_device', lambda: None)
+    return str(request.param)
 
 
 def _identity_gap(windows: np.ndarray) -> float:
@@ -102,6 +125,87 @@ def test_signature_survives_a_checkpoint_round_trip() -> None:
 
     assert np.allclose(aligner.signature_for('B'), restored.signature_for('B'))
     assert np.allclose(aligner.transform(raw.copy(), subjects), restored.transform(raw.copy(), subjects))
+
+
+def test_amplitude_matching_removes_the_per_subject_gain(covariance_backend: str) -> None:
+    """Two recordings that differ only in gain leave the map at the same amplitude -- but only with the knob on."""
+    raw, subjects = _gain_pair(gain=10.0)
+
+    off = RawSubjectAligner().fit(raw, subjects).transform(raw.copy(), subjects)
+    on = RawSubjectAligner(match_amplitude=True).fit(raw, subjects).transform(raw.copy(), subjects)
+
+    off_ratio = _power(off, subjects, 'B') / _power(off, subjects, 'A')
+    on_ratio = _power(on, subjects, 'B') / _power(on, subjects, 'A')
+
+    # The reference is estimated from trace-normalised trials, so the default map is blind to the gain.
+    assert off_ratio == pytest.approx(100.0, rel=1e-3), (off_ratio, covariance_backend)
+    assert on_ratio == pytest.approx(1.0, rel=1e-3), (on_ratio, covariance_backend)
+
+
+def test_amplitude_matching_leaves_the_default_path_untouched(covariance_backend: str) -> None:
+    """The knob is opt-in: constructing without it reproduces the unmatched maps bit for bit."""
+    raw, subjects = _gain_pair()
+
+    default = RawSubjectAligner().fit(raw, subjects)
+    explicit_off = RawSubjectAligner(match_amplitude=False).fit(raw, subjects)
+
+    assert not default.match_amplitude
+    assert np.array_equal(default.transform(raw.copy(), subjects), explicit_off.transform(raw.copy(), subjects))
+    # Both subjects share one whitener, which is the whole reason the gain survives.
+    assert np.allclose(default.references['A'], default.references['B'], atol=1e-6)
+
+
+def test_amplitude_matching_keeps_the_covariance_shape_alignment() -> None:
+    """Dividing the amplitude out must not cost the whitening it is bolted onto."""
+    raw, subjects = _cohort()
+    before = [_identity_gap(raw[subjects == c]) for c in 'ABC']
+
+    aligned = RawSubjectAligner(match_amplitude=True).fit(raw, subjects).transform(raw.copy(), subjects)
+    after = [_identity_gap(aligned[subjects == c]) for c in 'ABC']
+
+    assert all(a < b / 2 for a, b in zip(after, before, strict=True)), (before, after)
+    assert max(after) - min(after) < 0.01, after
+
+    # The cohort is built with per-subject gains of 0.5, 1.5 and 2.5; matched, they arrive at one amplitude.
+    powers = [_power(aligned, subjects, c) for c in 'ABC']
+    assert max(powers) / min(powers) < 1.1, powers
+
+
+def test_amplitude_matching_handles_a_subject_absent_from_the_fit() -> None:
+    """A stranger has no scale of their own, so they borrow the cohort's rather than raising."""
+    raw, subjects = _cohort()
+    aligner = RawSubjectAligner(match_amplitude=True).fit(raw, subjects, present=subjects != 'C')
+
+    assert set(aligner.scales) == {'A', 'B'}
+
+    aligned = aligner.transform(raw.copy(), subjects)
+    assert np.isfinite(aligned).all()
+    assert _power(aligned, subjects, 'C') > 0.0
+
+
+def test_amplitude_matching_survives_a_silent_recording() -> None:
+    """A flat-lined subject has no amplitude to divide by; the eps floor keeps the map finite."""
+    raw, subjects = _gain_pair()
+    raw[subjects == 'B'] = 0.0
+
+    aligner = RawSubjectAligner(match_amplitude=True).fit(raw, subjects)
+    aligned = aligner.transform(raw.copy(), subjects)
+
+    assert aligner.scales['B'] > 0.0
+    assert np.isfinite(aligned).all()
+
+
+def test_amplitude_matching_survives_a_checkpoint_round_trip() -> None:
+    """Scales travel in the state, and a state written without them loads as the unmatched default."""
+    raw, subjects = _gain_pair()
+    aligner = RawSubjectAligner(match_amplitude=True).fit(raw, subjects)
+    restored = RawSubjectAligner.from_state(aligner.state)
+
+    assert restored.match_amplitude and restored.scales == aligner.scales
+    assert np.array_equal(aligner.transform(raw.copy(), subjects), restored.transform(raw.copy(), subjects))
+
+    unmatched = {k: v for k, v in aligner.state.items() if k not in ('match_amplitude', 'scales', 'global_scale')}
+    assert RawSubjectAligner.from_state(unmatched).match_amplitude is False
 
 
 def test_adapter_starts_as_a_no_op_but_can_learn() -> None:

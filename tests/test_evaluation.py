@@ -13,7 +13,14 @@ import pytest
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.evaluation import metrics as M
-from zte.evaluation.report import _postprocess, _postprocess_fit, evaluate_representation
+from zte.evaluation.audit.capacity import CLAUSE_NAMES, capacity_report
+from zte.evaluation.report import (
+    _postprocess,
+    _postprocess_fit,
+    capacity_verdict,
+    evaluate_representation,
+    generation_verdict,
+)
 from zte.inference.embed import ZTEEmbedder
 from zte.inference.retrieval import NearestNeighborIndex
 from zte.training.pipeline import run_training
@@ -301,6 +308,98 @@ def test_the_evaluate_command_supplies_the_training_split(
     assert 0 < len(train_emb) < len(captured['sent_emb'])
 
 
+def _length_confounded_inputs(dim: int = 12) -> tuple[Any, ...]:
+    """Builds scored and training sentence embeddings whose word count owns one planted direction."""
+    rng = np.random.default_rng(11)
+    subjects, n_stimuli, n_train = ('ZAB', 'ZDM', 'ZJM'), 24, 72
+    direction = rng.standard_normal(dim).astype(np.float32)
+    direction /= np.linalg.norm(direction)
+
+    stim_words = rng.integers(5, 40, size=n_stimuli).astype(np.float32)
+    centres = rng.standard_normal((n_stimuli, dim)).astype(np.float32)
+    sent_emb = np.concatenate(
+        [
+            centres + np.outer(stim_words, direction) * 0.3 + rng.normal(scale=0.05, size=(n_stimuli, dim))
+            for _ in subjects
+        ]
+    ).astype(np.float32)
+    sent_ids = np.tile(np.arange(n_stimuli), len(subjects))
+    sent_n_words = np.tile(stim_words, len(subjects))
+
+    train_words = rng.integers(5, 40, size=n_train).astype(np.float32)
+    train_sent_emb = (
+        rng.standard_normal((n_train, dim))
+        + np.outer(train_words, direction) * 0.3
+        + rng.normal(scale=0.05, size=(n_train, dim))
+    ).astype(np.float32)
+
+    n_rows = len(sent_emb) * 2
+    word_meta = pd.DataFrame(
+        {
+            'word': [f'w{i % 9}' for i in range(n_rows)],
+            'word_len': rng.integers(2, 9, size=n_rows),
+            'log_freq': rng.normal(size=n_rows),
+            'subject': np.repeat(np.asarray(subjects), n_rows // len(subjects)),
+            'task': ['SR'] * n_rows,
+            'category': ['c'] * n_rows,
+            'sentence_idx': np.repeat(np.arange(n_rows // 2), 2),
+            'word_idx': [i % 2 for i in range(n_rows)],
+        }
+    )
+    sent_meta = pd.DataFrame({'subject': np.repeat(np.asarray(subjects), n_stimuli), 'category': ['c'] * len(sent_emb)})
+
+    return (
+        rng.standard_normal((n_rows, 8)).astype(np.float32),
+        word_meta,
+        rng.standard_normal((n_rows, 6)).astype(np.float32),
+        sent_emb,
+        sent_ids,
+        sent_meta,
+        sent_n_words,
+        train_sent_emb,
+        train_words,
+    )
+
+
+def test_length_projector_is_fitted_in_the_scored_frame(tmp_path: Path) -> None:
+    """Whitening moves the coordinates, so the length basis has to be fitted after it, not before.
+
+    Note:
+        A basis fitted on the raw training rows and subtracted from the whitened scored rows is a vector field in
+        the wrong coordinates: it adds structure word count predicts rather than removing it, and
+        `length_leakage_after` can come out above `length_leakage_before` while the report calls the number a
+        de-confounded one.
+    """
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, sent_n_words, train_emb, train_words = (
+        _length_confounded_inputs()
+    )
+    cfg = ZTEConfig()
+    cfg.objective.whiten = True
+    cfg.objective.all_but_top = 1
+    cfg.objective.length_projection = True
+
+    metrics = evaluate_representation(
+        word_emb,
+        word_meta,
+        raw_feats,
+        sent_emb,
+        sent_ids,
+        out_dir=tmp_path / 'eval',
+        run_name='length_frame',
+        sent_meta=sent_meta,
+        config=cfg,
+        tensorboard=False,
+        interactive=False,
+        train_sent_emb=train_emb,
+        train_sent_n_words=train_words,
+        sent_n_words=sent_n_words,
+    )
+
+    block = metrics['length_projection']
+    assert block['status'] == 'applied'
+    assert block['length_leakage_after'] < block['length_leakage_before']
+
+
 def test_the_two_post_processing_fits_are_not_the_same_transform() -> None:
     """The label would be decorative if both fits produced one geometry, so they must actually differ."""
     rng = np.random.default_rng(0)
@@ -380,3 +479,156 @@ def test_the_training_split_embedding_holds_the_training_readings(small_dataset:
     # The word counts travel with those rows, because the length projection is fitted against the pair.
     assert train_n_words is not None
     assert np.array_equal(train_n_words, expected_meta['n_words'].to_numpy())
+
+
+# --------------------------------------------------------------------------- #
+# the decoder menu capacity
+# --------------------------------------------------------------------------- #
+def _capacity_block(*, certified: bool, n_gallery: int = 16) -> dict[str, Any]:
+    """Runs the real certification on a model that wins every menu, or one that ties its controls everywhere."""
+    won = np.eye(n_gallery, dtype=np.float64)
+    lost = np.zeros((n_gallery, n_gallery), dtype=np.float64)
+    # K = 32 cannot be filled by a 16-sentence gallery, which is what makes it unreachable rather than failed.
+    report = capacity_report(
+        {'model': won if certified else lost, 'length_only': lost, 'shuffled_eeg': lost, 'mismatch': lost},
+        np.concatenate([np.arange(n_gallery), np.arange(n_gallery)]),
+        np.array(['A'] * n_gallery + ['B'] * n_gallery),
+        'B',
+        np.full(2 * n_gallery, 9.0),
+        tasks=np.array(['NR'] * (2 * n_gallery)),
+        ks=(2, 4, 8, 32),
+        n_perm=200,
+        n_boot=200,
+        honest_split=True,
+        split_strategy='by_subject_and_stimulus',
+        split_cell='test',
+    )
+    assert report is not None
+
+    return report
+
+
+def _failing_generation() -> dict[str, Any]:
+    """An honest-split generation block that beats nothing -- the case a certified menu must never rescue."""
+    delta = {'point': -0.01, 'lo': -0.05, 'hi': 0.03, 'beats': False}
+
+    return {
+        'applicable': True,
+        'primary_metric': 'content_f1',
+        'split': 'test',
+        'split_strategy': 'by_subject_and_stimulus',
+        'n': 24,
+        'n_candidate_sentences': None,
+        'controls_requested': ['mean_prefix'],
+        'deltas': {'mean_prefix': {'content_f1': delta}},
+        'permutation': {'applicable': True, 'p_value': 0.4},
+        'prefix_influence_kl': 0.2,
+        'worst_control': 'mean_prefix',
+        'worst_control_ci': {'point': -0.01, 'lo': -0.05, 'hi': 0.03},
+    }
+
+
+def _eval_with(tmp_path: Path, **extra: Any) -> dict[str, Any]:
+    """Runs a light evaluation over the synthetic sentences, with whatever decoder blocks the test supplies."""
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, sent_n_words, _, _ = _length_confounded_inputs()
+
+    return evaluate_representation(
+        word_emb,
+        word_meta,
+        raw_feats,
+        sent_emb,
+        sent_ids,
+        out_dir=tmp_path / 'eval',
+        run_name='capacity',
+        sent_meta=sent_meta,
+        config=ZTEConfig(),
+        tensorboard=False,
+        interactive=False,
+        sent_n_words=sent_n_words,
+        **extra,
+    )
+
+
+def test_the_capacity_block_travels_into_metrics_under_its_own_key(tmp_path: Path) -> None:
+    """The certified menu reaches `metrics.json` as `decoder_capacity`, never sharing `menu` with the cosine audit.
+
+    Note:
+        `rebaseline.json` already carries a `menu` block, and that one is the encoder's cosine menu. Two
+        different readouts under one key would be read as one table and compared as if they were.
+    """
+    capacity = _capacity_block(certified=True)
+    metrics = _eval_with(tmp_path, decoder_capacity=capacity)
+
+    assert metrics['decoder_capacity'] == capacity
+    assert 'menu' not in metrics
+
+    on_disk = json.loads((tmp_path / 'eval' / 'metrics.json').read_text(encoding='utf-8'))
+    assert on_disk['decoder_capacity']['readout'] == 'menu selection'
+    assert on_disk['decoder_capacity']['certified_k'] == 8
+
+
+def test_the_capacity_verdict_keys_are_merged_additively(tmp_path: Path) -> None:
+    """The run verdict gains the capacity outcome under namespaced keys and loses none of its own."""
+    without = _eval_with(tmp_path / 'plain')['verdict']
+    with_capacity = _eval_with(tmp_path / 'certified', decoder_capacity=_capacity_block(certified=True))['verdict']
+
+    assert with_capacity['capacity_certified'] is True
+    assert with_capacity['capacity_k'] == 8
+    assert with_capacity['capacity_bits'] == pytest.approx(3.0)
+    assert with_capacity['capacity_readout'] == 'menu selection'
+    assert set(with_capacity['capacity_clauses']) == set(CLAUSE_NAMES)
+
+    # Additive: every pre-existing key survives, and only `capacity_*` keys are new.
+    assert set(without) <= set(with_capacity)
+    assert all(key.startswith('capacity_') for key in set(with_capacity) - set(without))
+
+
+def test_the_capacity_verdict_writes_nothing_a_generation_clause_could_read() -> None:
+    """A menu result is retrieval-shaped, so every key it contributes is namespaced away from the other gates."""
+    assert all(key.startswith('capacity_') for key in capacity_verdict(_capacity_block(certified=True)))
+
+
+def test_a_certified_menu_never_licenses_a_generation_headline(tmp_path: Path) -> None:
+    """Selecting the read sentence out of eight candidates is not free generation and cannot pass its gate.
+
+    Note:
+        A K-way menu hands the decoder the answer among K-1 distractors; free generation asks for ~190 bits
+        with nothing given. Letting the certified menu into the generation AND would license the exact
+        overclaim the gate exists to refuse.
+    """
+    generation = _failing_generation()
+    verdict = _eval_with(tmp_path, generation=generation, decoder_capacity=_capacity_block(certified=True))['verdict']
+
+    assert verdict['capacity_certified'] is True
+    assert verdict['generation_above_controls'] is False
+    assert not any(key.startswith('capacity') for key in verdict['generation_clauses'])
+
+    # The clauses are byte-identical to the ones the generation gate reaches on its own.
+    assert verdict['generation_clauses'] == generation_verdict(generation, 0.05)['generation_clauses']
+
+
+def test_the_capacity_section_names_the_menu_sizes_no_pool_could_fill(tmp_path: Path) -> None:
+    """An uncertified capacity renders an em dash and the failing clauses, and says which sizes were never asked."""
+    metrics = _eval_with(tmp_path, decoder_capacity=_capacity_block(certified=False))
+    assert metrics['verdict']['capacity_certified'] is False
+
+    report = (tmp_path / 'eval' / 'report.md').read_text(encoding='utf-8')
+    assert '## Decoder menu capacity' in report
+    assert 'menu selection' in report
+
+    # Never a blank or a zero: nothing certified has to read as nothing certified.
+    assert 'Certified menu size: **K = —**' in report
+    assert 'above_chance' in report
+
+    assert 'Menu sizes with queries: 2, 4, 8.' in report
+    reach = next(line for line in report.splitlines() if 'Unreachable on this gallery' in line)
+    assert reach.rstrip().endswith('32.')
+
+
+def test_an_evaluation_without_a_capacity_block_is_unchanged(tmp_path: Path) -> None:
+    """The capacity wiring is opt-in, so a run that never measured one reports no menu anywhere."""
+    metrics = _eval_with(tmp_path)
+
+    assert 'decoder_capacity' not in metrics
+    assert not [key for key in metrics['verdict'] if key.startswith('capacity')]
+    assert 'Decoder menu capacity' not in (tmp_path / 'eval' / 'report.md').read_text(encoding='utf-8')

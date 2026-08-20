@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, Final
+
+# The whole decoder test path is offline: `lm_source='tiny'` builds its LM and tokeniser locally.
+os.environ.setdefault('HF_HUB_OFFLINE', '1')
 
 import numpy as np
 import pytest
+import torch
 
 from zte.cli.decode import (
     CONTROLS,
     DecodeOptions,
     candidate_set_size,
+    decode_evaluation,
     mismatch_partners,
     noise_transform,
     options_from_args,
@@ -21,8 +29,14 @@ from zte.cli.decode import (
     split_indices,
 )
 from zte.cli.rebaseline import default_out_dir, resolve_holdout
-from zte.config import DecoderConfig, ZTEConfig
+from zte.config import DecoderConfig, ModelConfig, ObjectiveConfig, TrainConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
+from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab
+from zte.device import resolve_device
+from zte.inference.capacity import gallery_scores
+from zte.inference.decode import ZTEDecoder
+from zte.models.decoder import GapCorrector, build_bridge, build_lm
+from zte.models.embedding import build_model
 
 # --------------------------------------------------------------------------- #
 # the mismatch control
@@ -170,6 +184,10 @@ def _args(**overrides: object) -> argparse.Namespace:
         'length_tol': None,
         'mean_prefix_readings': 512,
         'within_task': None,
+        'capacity': None,
+        'capacity_ks': None,
+        'capacity_alpha': None,
+        'capacity_n_perm': None,
         'seeds': None,
         'seed': 0,
     }
@@ -256,6 +274,269 @@ def test_decode_parser_accepts_the_documented_flags(monkeypatch: pytest.MonkeyPa
         64,
         2,
     )
+
+
+# --------------------------------------------------------------------------- #
+# the menu-capacity options
+# --------------------------------------------------------------------------- #
+
+
+def test_capacity_is_off_unless_something_asks_for_it() -> None:
+    """The audit costs a length-matched gallery pass, so an existing run stays behaviourally identical."""
+    assert DecodeOptions().capacity is False
+    assert ZTEConfig().objective.eval_capacity is False
+    assert options_from_args(_args(), ZTEConfig()).capacity is False
+
+
+def test_capacity_follows_the_objective_and_the_flag_overrides_it() -> None:
+    """`objective.eval_capacity` turns the audit on; an explicit flag wins over it in both directions."""
+    on = ZTEConfig(objective=ObjectiveConfig(eval_capacity=True))
+    assert options_from_args(_args(), on).capacity is True
+    assert options_from_args(_args(capacity=False), on).capacity is False
+    assert options_from_args(_args(capacity=True), ZTEConfig()).capacity is True
+
+
+def test_capacity_settings_fall_back_to_the_checkpoint_decoder_config() -> None:
+    """An unset flag reads the value the run was configured with, not a CLI constant."""
+    config = ZTEConfig(
+        decoder=DecoderConfig(capacity_ks=(2, 3, 5), capacity_alpha=0.01, capacity_n_perm=77, capacity_score='both')
+    )
+    options = options_from_args(_args(), config)
+    assert options.capacity_ks == (2, 3, 5)
+    assert options.capacity_alpha == 0.01
+    assert options.capacity_n_perm == 77
+    assert options.capacity_score == 'both'
+
+
+def test_capacity_flags_override_the_checkpoint_decoder_config() -> None:
+    """A sweep re-reads an old checkpoint under new sizes and a new alpha without retraining it."""
+    config = ZTEConfig(decoder=DecoderConfig(capacity_ks=(2, 4), capacity_alpha=0.05, capacity_n_perm=2000))
+    options = options_from_args(
+        _args(capacity_ks='2, 4,8', capacity_alpha=0.001, capacity_n_perm=64),
+        config,
+    )
+    assert options.capacity_ks == (2, 4, 8)
+    assert options.capacity_alpha == 0.001
+    assert options.capacity_n_perm == 64
+
+
+def test_decode_parser_accepts_the_capacity_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The four capacity flags parse and reach `DecodeOptions` intact."""
+    monkeypatch.setattr(
+        'sys.argv',
+        [
+            'zte-decode',
+            '--ckpt',
+            'best.pt',
+            '--synthetic',
+            '--capacity',
+            '--capacity-ks',
+            '2,4,8,16',
+            '--capacity-alpha',
+            '0.01',
+            '--capacity-n-perm',
+            '500',
+        ],
+    )
+    options = options_from_args(parse_arguments(), ZTEConfig())
+    assert options.capacity is True
+    assert options.capacity_ks == (2, 4, 8, 16)
+    assert (options.capacity_alpha, options.capacity_n_perm) == (0.01, 500)
+
+
+def test_decode_parser_can_switch_the_capacity_audit_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--no-capacity` beats a config that asked for the audit, so a smoke run can skip its cost."""
+    monkeypatch.setattr('sys.argv', ['zte-decode', '--ckpt', 'best.pt', '--synthetic', '--no-capacity'])
+    config = ZTEConfig(objective=ObjectiveConfig(eval_capacity=True))
+    assert options_from_args(parse_arguments(), config).capacity is False
+
+
+# --------------------------------------------------------------------------- #
+# the shared gallery pass
+# --------------------------------------------------------------------------- #
+
+_Z_DIM: Final[int] = 32
+"""Width of the conditioning vectors the tiny bridge reads."""
+
+_CAPACITY_OPTIONS: Final[dict[str, Any]] = {
+    'controls': (),
+    'oracle': False,
+    'batch_size': 4,
+    'n_perm': 8,
+    'n_boot': 32,
+    'capacity_ks': (2, 4, 8),
+    'capacity_n_perm': 32,
+}
+"""Decode options small enough to run offline, with generation's own machinery turned down to nothing."""
+
+
+def _capacity_config(dataset: ZuCoDataset, *, rescore_pmi: bool = False) -> ZTEConfig:
+    """A held-out-subject-and-stimulus decoder run over the synthetic tree, with the offline tiny LM."""
+    return ZTEConfig(
+        dataset=dataset.config,
+        model=ModelConfig(embed_dim=_Z_DIM, hidden_dim=_Z_DIM, n_layers=1, n_heads=2, projection_hidden=_Z_DIM),
+        objective=ObjectiveConfig(name='decode'),
+        train=TrainConfig(
+            split='by_subject_and_stimulus',
+            val_fraction=0.15,
+            test_fraction=0.2,
+            loso_holdout_subject='ZDM',
+            seed=42,
+            mode='decoder',
+        ),
+        decoder=DecoderConfig(
+            lm_source='tiny',
+            tokenizer_source='tiny',
+            max_target_tokens=24,
+            max_new_tokens=4,
+            prefix_slots=2,
+            bottleneck=8,
+            rescore_chunk=4,
+            rescore_pmi=rescore_pmi,
+        ),
+    )
+
+
+def _tiny_decoder(dataset: ZuCoDataset, config: ZTEConfig) -> ZTEDecoder:
+    """An untrained decoder over the offline tiny LM: the wiring under test needs shapes, not learned weights."""
+    assert dataset.features is not None
+    torch.manual_seed(0)
+    model = build_model(config.model, in_dim=int(dataset.features.shape[1]))
+    lm = build_lm(config.decoder, encoder=model)
+    bridge, _ = build_bridge(config.decoder, _Z_DIM, _Z_DIM, lm.hidden_dim)
+
+    return ZTEDecoder(
+        model=model,
+        config=config,
+        decoder_config=config.decoder,
+        bridge=bridge,
+        lm=lm,
+        gap=GapCorrector(_Z_DIM, mode='none'),
+        device=resolve_device('cpu'),
+    )
+
+
+def _decode(dataset: ZuCoDataset, config: ZTEConfig, out_dir: Path | None, **overrides: Any) -> dict[str, Any]:
+    """Runs one whole decode evaluation on the held-out cell."""
+    return decode_evaluation(
+        _tiny_decoder(dataset, config),
+        dataset,
+        split_indices(dataset, config, 'test'),
+        split='test',
+        config=config,
+        options=DecodeOptions(**(_CAPACITY_OPTIONS | overrides)),
+        out_dir=out_dir,
+    )
+
+
+def test_the_shared_gallery_pass_reproduces_the_rescoring_scores(small_dataset: ZuCoDataset) -> None:
+    """Retrieval and the capacity audit read one LM pass, so that pass has to equal the rescoring call it replaced.
+
+    Note:
+        This is the whole cost argument for the audit -- a menu is a column slice of the rescoring matrix, not a
+        rescoring run of its own -- and it is also what keeps the published retrieval numbers from moving.
+    """
+    config = _capacity_config(small_dataset)
+    decoder = _tiny_decoder(small_dataset, config)
+    indices = split_indices(small_dataset, config, 'test')
+    readings = decoder.conditioning(small_dataset, indices, 4)
+    gallery = ZuCoTorchDataset(small_dataset, subject_vocab=build_subject_vocab(small_dataset))
+    texts = gallery.ordered_texts()
+
+    bundle = gallery_scores(decoder, readings, texts, gallery_n_words=np.ones(len(texts)), batch_size=4)
+
+    assert np.array_equal(bundle.raw, decoder.rescore(readings, texts, batch_size=4, pmi=False))
+    assert np.array_equal(bundle.pmi, bundle.raw - decoder.null_rescore(texts)[None, :])
+
+
+def test_retrieval_still_ranks_with_the_family_the_checkpoint_asked_for(small_dataset: ZuCoDataset) -> None:
+    """The shared pass carries both families, so retrieval has to keep picking the one `rescore_pmi` names."""
+    raw = _decode(small_dataset, _capacity_config(small_dataset), None)['rescoring']
+    pmi = _decode(small_dataset, _capacity_config(small_dataset, rescore_pmi=True), None)['rescoring']
+
+    assert raw.get('score') != 'pmi'
+    assert 'pmi_vs_raw' not in raw
+    assert pmi['score'] == 'pmi'
+
+    # Ranking with the raw matrix under both labels would make this comparison a comparison of a matrix with
+    # itself, so a zero delta is exactly the failure mode this pins.
+    comparison = pmi['pmi_vs_raw']
+    assert comparison['pmi_rank_percentile'] != comparison['raw_rank_percentile']
+    assert comparison['rank_percentile_delta']['point'] != 0.0
+
+
+def test_the_capacity_audit_does_not_move_the_retrieval_numbers(small_dataset: ZuCoDataset) -> None:
+    """Turning the audit on must change no published number, or the two readouts are not reading one pass."""
+    config = _capacity_config(small_dataset)
+    without = _decode(small_dataset, config, None, capacity=False)
+    with_audit = _decode(small_dataset, config, None, capacity=True)
+
+    assert without['capacity'] is None
+    assert with_audit['capacity'] is not None
+    assert json.dumps(without['rescoring'], sort_keys=True, default=str) == json.dumps(
+        with_audit['rescoring'], sort_keys=True, default=str
+    )
+
+
+def test_a_capacity_run_writes_its_block_and_its_artifact(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """The audit returns a report the run can embed and drops `capacity.json` beside the generation artifacts."""
+    config = _capacity_config(small_dataset)
+    out_dir = tmp_path / 'evaluation'
+
+    result = _decode(small_dataset, config, out_dir, capacity=True)
+
+    capacity = result['capacity']
+    assert capacity['readout'] == 'menu selection'
+    assert capacity['tie_policy'] == 'ties lose'
+    assert (capacity['split_strategy'], capacity['split_cell']) == ('by_subject_and_stimulus', 'test')
+
+    written = json.loads((out_dir / 'capacity.json').read_text(encoding='utf-8'))
+    assert written['capacity'] == json.loads(json.dumps(capacity, default=str))
+    assert written['provenance']['split'] == 'test'
+
+
+def test_a_capacity_run_without_it_writes_no_artifact(small_dataset: ZuCoDataset, tmp_path: Path) -> None:
+    """No audit means no `capacity.json`, so a stale file can never be read as this run's certification."""
+    out_dir = tmp_path / 'evaluation'
+
+    _decode(small_dataset, _capacity_config(small_dataset), out_dir, capacity=False)
+
+    assert (out_dir / 'generation.json').exists()
+    assert not (out_dir / 'capacity.json').exists()
+
+
+def test_the_capacity_audit_builds_the_length_control_from_the_training_split(small_dataset: ZuCoDataset) -> None:
+    """`length_only` is the arm the 5.14-bit length confound demands; without it nothing may certify."""
+    config = _capacity_config(small_dataset)
+
+    capacity = _decode(small_dataset, config, None, capacity=True)['capacity']
+
+    assert 'length_only' in capacity['provenance']['arms_present']
+    assert {'model', 'shuffled_eeg', 'mismatch'} <= set(capacity['provenance']['arms_present'])
+
+
+def test_an_uncertified_capacity_names_the_clauses_it_failed(small_dataset: ZuCoDataset) -> None:
+    """An untrained bridge certifies nothing, and the report has to say so with the failing clauses named."""
+    config = _capacity_config(small_dataset)
+
+    capacity = _decode(small_dataset, config, None, capacity=True)['capacity']
+
+    assert capacity['certified_k'] is None
+    assert capacity['verdict']['capacity_certified'] is False
+    assert capacity['verdict']['capacity_bits'] is None
+    assert capacity['verdict']['reason']
+
+
+def test_the_capacity_report_names_the_menu_sizes_the_gallery_cannot_fill(small_dataset: ZuCoDataset) -> None:
+    """Exact word-count pools run out of candidates long before K = 64, and a dropped size would read as a pass."""
+    config = _capacity_config(small_dataset)
+
+    capacity = _decode(small_dataset, config, None, capacity=True, capacity_ks=(2, 4, 8, 16, 32, 64))['capacity']
+
+    headline = capacity['headline']
+    block = capacity['scores'][headline['score']][headline['flavor']]
+    assert sorted(block['ks_feasible'] + block['ks_unreachable']) == [2, 4, 8, 16, 32, 64]
+    assert block['ks_unreachable'], 'a 12-stimulus gallery cannot fill a 64-way exact-length menu'
 
 
 # --------------------------------------------------------------------------- #

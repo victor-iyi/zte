@@ -8,22 +8,26 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from zte.cli.colab import (
     ARM_TIERS,
+    CAPACITY_ARTIFACT,
     DEFAULT_MIN_PREFIX_KL,
     _arms,
     _evenly_spaced,
     _mirror,
     _panels,
     main,
+    read_capacity_artifact,
     read_decode_artifacts,
 )
 from zte.cli.decode import _provenance
 from zte.data.schema import SUBJECTS_V1
 from zte.device import device_plan
 from zte.evaluation.analysis import Study, panel_builders
+from zte.evaluation.audit.capacity import CLAUSE_NAMES, capacity_report
 from zte.logging_utils import configure_logging
 from zte.utils.env import env_defaults, machine_resources, set_env
 
@@ -123,7 +127,8 @@ def _experiments(root: Path) -> Path:
         (root / tier).mkdir(parents=True)
 
     (root / 'flagship' / 'decode_v2.yaml').write_text(
-        '# decode_v2 -- the decoder, on a metered leash.\nrun_name: exp15_decode_v2\ntrain:\n  mode: decoder\n',
+        '# decode_v2 -- the decoder, on a metered leash.\nrun_name: exp15_decode_v2\ntrain:\n  mode: decoder\n'
+        '  split: by_subject_and_stimulus\n  loso_holdout_subject: ZAB\n',
         encoding='utf-8',
     )
     (root / 'decoder' / 'decode_joint.yaml').write_text(
@@ -434,6 +439,16 @@ def test_kind_filters_the_offered_arms(kind: str, expected: list[str], tmp_path:
     assert [arm['stem'] for arm in arms] == expected
 
 
+def test_a_decoder_arm_carries_the_split_and_held_out_subject_its_config_names(tmp_path: Path) -> None:
+    """A decoder run's holdout lives in the config, not on a flag, so the notebook names its run directory from it."""
+    payload = _arms(_arm_args(_experiments(tmp_path), kind='decoder'))
+    arms = {arm['stem']: arm for arm in payload['arms']}
+
+    assert (arms['decode_v2']['split'], arms['decode_v2']['holdout']) == ('by_subject_and_stimulus', 'ZAB')
+    # A config that names no holdout reports None rather than a subject it never asked for.
+    assert arms['decode_joint']['holdout'] is None
+
+
 def test_the_archive_is_never_offered_as_a_trainable_arm(tmp_path: Path) -> None:
     """`experiments/archive/` is the record of what failed, so no notebook can start a run from it."""
     payload = _arms(_arm_args(_experiments(tmp_path / 'experiments')))
@@ -442,6 +457,137 @@ def test_the_archive_is_never_offered_as_a_trainable_arm(tmp_path: Path) -> None
     assert [arm['stem'] for arm in payload['arms']] == ['decode_v2', 'decode_joint', 'raw_vs_band', 'static_glove']
     assert all(Path(arm['path']).parent.name != 'archive' for arm in payload['arms'])
     assert payload['holdouts'] == list(SUBJECTS_V1)
+
+
+# ---- The certified menu capacity ---- #
+
+CAPACITY_GALLERY: int = 12
+"""Stimuli in the synthetic capacity gallery -- large enough that K = 8 fills and K = 16 cannot."""
+
+CAPACITY_KS: tuple[int, ...] = (2, 4, 8, 16)
+"""Menu sizes the fixtures sweep, the last of which no pool on this gallery can fill."""
+
+
+def _capacity_dir(directory: Path, *, wins: bool, tasks: bool = True) -> Path:
+    """Writes a real `capacity_report` artifact, so the reader is exercised on the shapes `zte-decode` emits."""
+    n = CAPACITY_GALLERY
+    model = np.eye(n) if wins else np.zeros((n, n))
+    arms = {
+        'model': model,
+        'length_only': np.zeros((n, n)),
+        'shuffled_eeg': np.zeros((n, n)),
+        'mismatch': np.zeros((n, n)),
+    }
+    report = capacity_report(
+        arms,
+        np.concatenate([np.arange(n), np.arange(n)]),
+        np.array(['A'] * n + ['B'] * n),
+        'B',
+        np.full(2 * n, 9.0),
+        tasks=np.array(['NR'] * (2 * n)) if tasks else None,
+        ks=CAPACITY_KS,
+        n_perm=200,
+        n_boot=200,
+        honest_split=True,
+        split_strategy='by_subject_and_stimulus',
+        split_cell='test',
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {'capacity': report, 'provenance': {'run_name': directory.name, 'seed': 42}}
+    (directory / CAPACITY_ARTIFACT).write_text(json.dumps(payload, default=str), encoding='utf-8')
+
+    return directory
+
+
+def test_a_capacity_that_certified_nothing_comes_back_as_none_with_its_failing_clauses(tmp_path: Path) -> None:
+    """A dead decoder is the expected first real result; rendered as a blank or a zero it would read as a number."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'dead', wins=False))
+
+    assert payload['certified_k'] is None
+    assert payload['bits']['bits_certified'] is None
+    assert set(payload['clauses']) == set(CLAUSE_NAMES)
+    assert payload['clauses']['above_chance'] is False
+    assert 'above_chance' in payload['per_k'][0]['failed_clauses']
+
+
+def test_a_certified_capacity_carries_the_size_the_run_verdict_recorded(tmp_path: Path) -> None:
+    """The payload restates `zte-decode`'s certification rather than re-running one the verdict never saw."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'strong', wins=True))
+
+    assert payload['certified_k'] == payload['verdict']['capacity_k'] == 8
+    assert payload['bits']['bits_certified'] == payload['verdict']['capacity_bits']
+    assert all(payload['clauses'].values())
+    assert payload['readout'] == 'menu selection'
+    assert payload['tie_policy'] == 'ties lose'
+
+
+def test_a_menu_size_no_pool_can_fill_is_named_unreachable_rather_than_failed(tmp_path: Path) -> None:
+    """Exact word-count pools hold ~8 candidates, so K = 16 is a pool that cannot be built, not a decoder that lost."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'strong', wins=True))
+
+    assert payload['ks']['swept'] == list(CAPACITY_KS)
+    assert payload['ks']['unreachable'] == [16]
+    assert [row['reachable'] for row in payload['per_k']] == [True, True, True, False]
+    assert next(row for row in payload['per_k'] if row['k'] == 16)['n_queries'] == 0
+
+
+def test_every_menu_size_reports_the_queries_it_was_scored_on(tmp_path: Path) -> None:
+    """Pools shrink as K grows, so an accuracy without its query count is unreadable."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'strong', wins=True))
+
+    assert [row['n_queries'] for row in payload['per_k'] if row['reachable']] == [12, 12, 12]
+    assert all('n_queries' in row for row in payload['common_subset'])
+    assert all(row['chance'] == 1.0 / row['k'] for row in payload['per_k'])
+
+
+def test_every_control_comparison_travels_paired_with_both_win_counts(tmp_path: Path) -> None:
+    """A delta without its win counts hides whether the model beat the control or merely averaged above it."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'strong', wins=True))
+
+    rows = [row for row in payload['paired'] if row['k'] == 2]
+
+    assert {row['control'] for row in rows} == {'length_only', 'shuffled_eeg', 'mismatch'}
+    assert all(row['n_pairs'] == row['model_wins'] + row['control_wins'] + row['ties'] for row in rows)
+    assert all(row['ci_lo'] is not None and row['sign_test_p'] is not None for row in rows)
+
+    # Each control's own accuracy travels too, so the gap is plotted against a visible floor, not an implied one.
+    arms = {row['arm'] for row in payload['arms'] if row['k'] == 2}
+    assert arms == {'model', 'length_only', 'shuffled_eeg', 'mismatch'}
+    assert next(row for row in payload['arms'] if row['k'] == 2 and row['arm'] == 'length_only')['accuracy'] == 0.0
+
+
+def test_a_pool_the_run_never_swept_is_substituted_out_loud(tmp_path: Path) -> None:
+    """An `open` pool standing in silently for a length-matched one would read as a certification it is not."""
+    payload = read_capacity_artifact(_capacity_dir(tmp_path / 'no_tasks', wins=True, tasks=False))
+
+    assert payload['selected']['requested_flavor'] == 'length_task_matched'
+    assert payload['selected']['flavor'] == 'length_matched'
+    assert payload['selected']['substituted'] is True
+    assert payload['selected']['is_headline'] is True
+
+
+def test_pooling_seeds_takes_the_smallest_and_sinks_on_a_seed_that_certified_nothing(tmp_path: Path) -> None:
+    """A pooled capacity is a promise every seed keeps, so one failing run must sink it rather than be averaged away."""
+    strong = _capacity_dir(tmp_path / 's42', wins=True)
+    dead = _capacity_dir(tmp_path / 's43', wins=False)
+
+    both = read_capacity_artifact(strong, seeds=[dead])
+    alone = read_capacity_artifact(strong, seeds=[strong])
+
+    assert both['pooled']['n_reports'] == 2
+    assert both['pooled']['certified_k'] is None
+    assert both['pooled']['capacity_certified'] is False
+    # The primary directory is one of the seeds, so naming it twice must not count it twice.
+    assert alone['pooled']['n_reports'] == 1
+    assert alone['pooled']['certified_k'] == 8
+
+
+def test_a_decode_that_never_ran_the_audit_says_so_instead_of_reporting_no_capacity(tmp_path: Path) -> None:
+    """`capacity.json` is absent when `--capacity` was never passed, which is not the same as certifying nothing."""
+    (tmp_path / 'decode').mkdir()
+
+    with pytest.raises(FileNotFoundError, match='--capacity'):
+        read_capacity_artifact(tmp_path / 'decode')
 
 
 # ---- Mirroring ---- #
@@ -598,7 +744,7 @@ def test_the_device_plan_names_what_a_batch_will_actually_do() -> None:
 # ---- One JSON object on stdout ---- #
 
 
-@pytest.mark.parametrize('command', ['env', 'session', 'runs', 'arms', 'readings', 'panels', 'mirror'])
+@pytest.mark.parametrize('command', ['env', 'session', 'runs', 'arms', 'readings', 'capacity', 'panels', 'mirror'])
 def test_every_subcommand_prints_one_json_object_even_at_debug(
     command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -608,6 +754,7 @@ def test_every_subcommand_prints_one_json_object_even_at_debug(
     run.mkdir(parents=True)
     (run / 'config.yaml').write_text('run_name: exp16_lo_ZAB_s42\n', encoding='utf-8')
     _decode_dir(tmp_path / 'decode')
+    _capacity_dir(tmp_path / 'decode', wins=True)
     _experiments(tmp_path / 'experiments')
 
     # `mirror` is given a source with a file in it, because a mirror that copies is the one that logs.
@@ -617,6 +764,7 @@ def test_every_subcommand_prints_one_json_object_even_at_debug(
         'runs': ['--drive', str(drive), '--experiments', str(local)],
         'arms': ['--experiments', str(tmp_path / 'experiments')],
         'readings': ['--from', str(tmp_path / 'decode')],
+        'capacity': ['--from', str(tmp_path / 'decode')],
         'panels': ['--experiments', str(local), '--out', str(tmp_path / 'panels'), '--only', 'scalp_3d'],
         'mirror': ['--drive', str(drive), '--local', str(local)],
     }[command]
