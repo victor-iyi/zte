@@ -269,6 +269,98 @@ All seven decode through the **identical** path — same weights, same greedy lo
 
 Plus one positive control, `oracle`: the true sentence embedding through the identical bridge and LM. It bounds the achievable score. It will look good (expect BLEU-4 15–45) and it says **nothing** about EEG.
 
+### Menu capacity — the readout that can be proved
+
+Rescoring retrieval and free generation sit at the two ends of what this decoder can be asked. Between them is the readout a clinical AAC device actually performs: **given the held-out reading and $K$ candidate sentences — the one that was read plus $K-1$ distractors — does the decoder score the truth above every distractor?** `objective.eval_capacity` turns it on, `zte-decode --capacity` runs it, `zte.evaluation.audit.capacity.capacity_report` computes it, and it lands in `metrics['decoder_capacity']` with a sibling `evaluation/capacity.json`.
+
+Scoring is per-(query, candidate) — nothing in the rescoring path normalises across candidates or across queries — so every $K$-way menu at every $K$ is a **column slice** of the matrix rescoring already built, and the whole sweep is arithmetic on it. The only extra frozen-LM work is the `length_only` arm, and that is one pass per *distinct word count* rather than per query, because a length-matched prefix is a function of the count alone.
+
+**The three readouts, and what each may claim.**
+
+| Readout | Metric | May be quoted as | May never be quoted as |
+| --- | --- | --- | --- |
+| Rescoring retrieval | `scoreboard.decoder_rescoring_retrieval` — rank of the truth in the whole gallery | **retrieval** over a 700-sentence gallery, with its post-processing and length stratification stated | decoding, generation |
+| Menu capacity | `decoder_capacity` — certified $K$, and $\log_2 K$ bits | **menu selection** at a named $K$, pool and score family | retrieval over the gallery, decoding, generation |
+| Free generation | `metrics['generation']` | nothing at all unless `verdict['generation_above_controls']` is `True` | anything, when that gate is `False` |
+
+`capacity_certified` never enters `generation_above_controls`. A forced choice among $K$ candidates cannot license a free-generation headline, so the two verdicts are namespaced apart and merged additively.
+
+#### The pool rule
+
+The headline pool is `length_task_matched`: every distractor shares the query's **task** and its **exact stimulus-level word count**, where the stimulus-level count is the median over the reference readings of that sentence, so no single reading's omitted words move a candidate between strata. `length_matched` drops the task constraint and is still certifiable. `open` draws from the whole gallery and is **never** certifiable — using length is legitimate in a deployed menu, so an open number is a deployment estimate and not evidence about the brain.
+
+The tolerance is exactly 0, and widening it destroys the guarantee rather than relaxing it. At tolerance $\pm 1$ the true candidate is systematically the *unique best* length match inside its own pool: a decoder that reads nothing but the word count then beats chance, and a certified capacity would be certifying the 5.14 bits ZuCo hands over for free. There is no tolerance knob on the certified flavours for this reason.
+
+#### The estimator is an exact expectation, not a sample
+
+For a query whose true sentence strictly beats $b$ of the $m$ pool candidates ($m$ is the pool size less the truth itself), the probability that a uniformly drawn menu of $K-1$ distractors contains only sentences the truth already beats is
+
+$$
+P(\text{win at } K) \;=\; \frac{\binom{b}{K-1}}{\binom{m}{K-1}}
+$$
+
+so chance is **exactly** $1/K$, there is no distractor-sampling seed, and every query contributes its full information rather than one lucky draw. At $K = 2$ this reduces to $b/m$ — the rank percentile inside the pool.
+
+**Ties lose.** $b$ counts *strict* wins, so a collapsed decoder that scores every candidate identically scores $0.0$, not $1/K$. That is deliberate: a constant scorer must fail loudly, and a tie-splitting convention would hand it chance-level accuracy and let it look merely uninformative.
+
+Each cell carries a permutation $p$ over `capacity_n_perm` relabellings (default 2000) in which the pseudo-truth is drawn uniformly from the query's own candidate set, so every artefact of the data survives into the null and only the identity of the true sentence is destroyed. The attainable floor is $1/(n_\text{perm}+1)$ and travels in every cell as `perm_p_floor`; a $p$ at the floor is rendered `< 5.00e-04` and must be quoted that way, never as a value.
+
+#### The five arms
+
+Every arm reaches the frozen LM through the **identical** bridge, scaffold and length normalisation. Only the conditioning changes, so a paired difference isolates the EEG prefix and nothing else.
+
+| Arm | What it substitutes | What it rules out |
+| --- | --- | --- |
+| `model` | nothing — the real EEG prefix | — |
+| `length_only` | a training prefix matched on word count alone, at tolerance 0, constant within a count | the 5.14-bit length shortcut. **The certifying length control**, and the one that makes the whole readout worth reporting |
+| `shuffled_eeg` | a derangement of the score rows, so no query keeps its own EEG | the bridge and the LM working without the encoder |
+| `mismatch` | a different-stimulus, length-matched partner reading | dependence on *which* brain, with length held fixed |
+| `null_prefix` | no prefix at all | the frozen LM's own priors. **Identically zero under PMI**, so it is reported under `raw` alone and never appears in the headline family |
+
+Three of them certify: `length_only`, `shuffled_eeg`, `mismatch`. Each comparison is **paired on identical query indices** — the per-query difference, a bootstrap CI on it, and an exact sign test — never a two-proportion test between arms that only faced the same pools on average.
+
+An arm whose ingredients are missing is **omitted, not approximated**, and its clause then fails. `length_only` is the one to watch: it needs a training split to average a length-matched prefix from, and `capacity_report` receives no training split when `zte-decode` is run without one. The arm is then absent, `beats_length_only_paired` fails, and nothing certifies. That is fail-safe by design — the alternative is a capacity certified without ever testing the largest confound on the board.
+
+The model arm must not keep an evidence path the controls cannot have. `gallery_scores` is called with `evidence_content = not decoder.uses_evidence`: when the checkpoint decodes word-synchronously, the per-word tensors are stripped from **every** arm including the model's, because a control built from a bare conditioning vector has no words to run that path on and would lose for that reason alone. The choice travels in the bundle and in `provenance.evidence_content`.
+
+#### The certification rule
+
+Quoted verbatim from `CERTIFICATION_RULE`, which has exactly one implementation:
+
+> A menu size K is certified when, at K and at every smaller size swept, the split is by_subject_and_stimulus/test, the pool is length-matched (never open), the bootstrap CI lower bound of accuracy exceeds 1/K, the model beats length_only, shuffled_eeg and mismatch on both a paired bootstrap CI lower bound above zero and an exact sign test below alpha, and the permutation p falls below alpha.
+
+Seven clauses, reported by name in `failed_clauses` and in `verdict['capacity_clauses']`: `honest_split`, `flavor_certifiable`, `above_chance`, `beats_length_only_paired`, `beats_shuffled_paired`, `beats_mismatch_paired`, `permutation_significant`.
+
+Certification is **contiguous** — $K$ counts only if every smaller swept size also passed — and it must hold a second time on the **common subset**, the queries scoreable at every size. Pools shrink as $K$ grows, so an accuracy that rises with $K$ can be a surviving subpopulation rather than a capacity; the common subset is what tells those two apart.
+
+**`certified_k: None` is the expected first result, and it is a finding.** Every surface renders it as an em dash with the failing clause named — never as a blank, never as a zero that a reader could mistake for a measured accuracy.
+
+#### Why the tol-0 distance oracle certifies nothing
+
+`length_oracle_2way_distance` is emitted beside every flavour and is **identically 0.0 on the certified pools, by construction**. The oracle ranks candidates by word-count proximity to the query; on a tolerance-0 pool every candidate carries the query's exact word count, so every distance ties, and ties lose. The number can only ever be zero there.
+
+That makes it a **tripwire, not a gate**. It is informative on `open`, where the pool spans the whole gallery and a non-zero oracle says the pool is winnable on length alone (`gamed: true`). On `length_task_matched` and `length_matched` it says nothing, and no clause reads it. The real length control is the decoder-side `length_only` arm, which goes through the LM and can actually lose.
+
+#### The bits ledger
+
+The estimator is $\log_2 K$ — one honest bit per doubling of the menu. What it is priced against is the part of the sentence-identity entropy the brain still has to supply:
+
+$$
+I(\text{identity};\, n_\text{words}) \;=\; H(\text{identity}) - H(\text{identity} \mid n_\text{words}) \;=\; 9.4512 - 4.3090 \;=\; 5.1422 \text{ bits}
+$$
+
+**4.3090, not 9.4512, is the denominator.** Word count is free — ZuCo segments words by eye tracking, so the `pad_mask` width *is* the word count — and crediting the decoder with bits it was handed would inflate every fraction on the page by more than a factor of two. `bits_unrecovered` and `fraction_of_residual` are both computed against 4.3090; `bits_from_length` and `entropy_identity` are carried alongside so the arithmetic is checkable in the artifact.
+
+A confusion-channel cross-check (`bits_mi_confusion`) is reported beside the headline, under the stated assumption of a uniform prior over $K$ alternatives with errors spread symmetrically over the $K-1$ wrong ones. It is a cross-check. The headline estimator is $\log_2 K$, which assumes nothing.
+
+#### Unreachable menu sizes are unreachable, not failed
+
+Exact word-count pools are small: a median of **8 candidates on a 300-sentence gallery** and about 18 on a 700-sentence one. $K = 32$ and $K = 64$ therefore cannot be filled at all on the certified flavours — there is no menu of that size to score, at any decoder quality.
+
+Every flavour block carries `ks_feasible` and `ks_unreachable`, and the report names the unreachable sizes rather than dropping them or scoring them as failures. Reading "K = 64 failed" off a pool that never held 64 candidates would be a false negative about the decoder; silently omitting the row would be a false claim about what was swept.
+
+**A menu number is menu selection.** It is never quoted as generation, never as retrieval over the full gallery, and never without its pool, its score family and its seed count.
+
 ### The verdict gate
 
 `_verdict['generation_above_controls']` is an AND over five clauses, each reported with its numbers and an explicit `False` when it fails:
@@ -341,6 +433,11 @@ almost the same thing as the hypothesis. Provenance (git SHA, resolved device, w
 | `decoder.cache_embeddings`                                                | Cache the frozen encoder's sentence vectors by `reading_id`. Must be `false` in `joint`.          |
 | `decoder.generation_controls`                                             | The brain-independent controls decoded through the identical path.                                |
 | `decoder.rescore_gallery` / `length_tol`                                  | The primary retrieval readout, and the word-count tolerance for strata.                           |
+| `decoder.capacity_ks`                                                     | Menu sizes the certification sweeps, smallest first. Certification is contiguous.                 |
+| `decoder.capacity_alpha`                                                  | One significance level for every clause — the CIs, the sign tests and the permutation null.       |
+| `decoder.capacity_n_perm`                                                 | Permutations behind each per-K p; the attainable floor is $1/(n+1)$ and is reported with it.      |
+| `decoder.capacity_score`                                                  | `pmi` (headline) \| `raw` \| `both`. `both` costs a second length-matched gallery pass.           |
+| `objective.eval_capacity`                                                 | Certify the K-way menu. Default `false`, so an existing run is byte-identical.                    |
 | `objective.eval_generation` / `eval_rescoring` / `eval_length_stratified` | Which evaluations `zte-run` performs.                                                             |
 
 `objective.text_source`, `text_backend` and `text_query_prefix` must match the source encoder run exactly: the bridge reads a space that run's `clip_head` was fitted to, and rebuilding the target with a different text encoder silently moves it.

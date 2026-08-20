@@ -301,6 +301,61 @@ The headline is the **certified capacity**: the largest $K$ with CI lower bound 
 decoding; an open capacity is a deployment estimate. Growing the certified matched capacity — each doubling of $K$
 costs one more honest bit — is the project's tracked path to a decoder that is right 80% of the time.
 
+Everything in this section is the **encoder's** menu, scored by cosine against training-subject prototypes. The
+decoder has its own, scored by the frozen LM under the reading's prefix and certified against a different set of
+controls — `metrics['decoder_capacity']`, registered below. The two never share a table.
+
+## Decoder menu capacity — `metrics['decoder_capacity']`
+
+The section above is the **encoder's** menu audit: cosine similarity between a held-out sentence embedding and a
+gallery of training-subject prototypes. `decoder_capacity` asks the same question of a different machine — the frozen
+LM scoring each candidate *text* under the reading's prefix — and certifies it against the decoder's own conditioning
+arms. Written by `zte-decode --capacity` / `objective.eval_capacity` into `metrics['decoder_capacity']` and the sibling
+`evaluation/capacity.json`. Method, pool rule and the seven clauses: [`DECODER.md`](DECODER.md).
+
+**These two blocks are different measurements on different scorers and must never share a table, a figure or a
+sentence.** They agree on the estimator and on the pool rule and on nothing else: different inputs, different score,
+different controls, different certification. A row that mixes them is an error even when both numbers are correct.
+
+| Path under `decoder_capacity` | What it is | Status |
+| --- | --- | --- |
+| `certified_k`, `verdict.capacity_k` | the largest certified menu size, or `None` | **headline-eligible** |
+| `bits.bits_certified`, `verdict.capacity_bits` | $\log_2 K$ — the headline estimator | **headline-eligible** |
+| `bits.fraction_of_residual`, `bits.bits_unrecovered` | the same, priced against the 4.3090-bit residual | **headline-eligible**, with the denominator stated |
+| `scores.pmi.length_task_matched.per_k.<K>` — `accuracy`, `ci`, `chance`, `perm_p`, `n_queries` | the headline family and pool | **headline-eligible** at a certified $K$ |
+| `scores.pmi.length_task_matched.common_subset.<K>` | the same on queries scoreable at every $K$ | **required companion** — a `per_k` number quoted without it is not quotable |
+| `...per_k.<K>.paired.<arm>` | paired delta, CI, exact sign test against each control | **evidence** — quote as the control comparison, never as an accuracy |
+| `scores.*.length_matched.*` | the task-blind certifiable pool | headline-eligible only when named as such |
+| `scores.*.open.*` | full-gallery pool, `certifiable: false` | **diagnostic** — a deployment estimate, never evidence about the brain |
+| `scores.raw.*` | the raw family, with no null-prefix subtraction | **diagnostic** — the headline is always `pmi` |
+| `length_oracle_2way_distance` | word-count-proximity oracle inside the pool | **diagnostic tripwire**, identically `0.0` on certified pools |
+| `gamed` | the oracle escaped chance in this pool | **disqualifier** on `open`; meaningless on a tolerance-0 pool |
+| `ks_feasible` / `ks_unreachable` | which sizes the pools could fill | **must be surfaced** — see below |
+| `bits.bits_mi_confusion`, `bits.bits_mi_assumption` | confusion-channel cross-check and its assumption | **diagnostic** cross-check |
+| `verdict.capacity_clauses`, `per_k.<K>.failed_clauses` | which of the seven clauses held | **required** whenever `certified_k` is `None` |
+| `provenance.*`, `tie_policy`, `honest_split`, `split_strategy`, `split_cell` | what produced the number | **required** — travels with every quote |
+
+The rules that make a capacity number quotable:
+
+- **Never quote a $K$ without its pool, its score family and its seed count.** "Certified K = 8" is not a result;
+  "certified K = 8 on `pmi` / `length_task_matched`, one seed" is. `pooled_capacity` is what turns a set of seeds
+  into one number: it takes the **smallest** certified size across runs and returns `None` if any run certified
+  nothing, so a capacity claimed over seeds is a promise every seed kept.
+- **A `perm_p` at its floor is reported as `< floor`, never as a value.** The attainable floor is
+  $1/(n_\text{perm}+1)$ and travels in every cell as `perm_p_floor`; at the default 2000 permutations that is
+  `< 5.00e-04`. Writing `0.0005` implies a resolution the null never had, and writing `0.0` implies one that
+  does not exist.
+- **`certified_k: None` is a result and is rendered as an em dash with the failing clause named.** Never a blank,
+  never a zero. It is the expected first outcome on real ZuCo: `length_only` alone needs a training split to build
+  its prefix from, and a run without one omits the arm, fails `beats_length_only_paired`, and certifies nothing —
+  fail-safe, and reported as such.
+- **Unreachable sizes are reported unreachable, not failed.** Exact word-count pools hold a median of 8 candidates
+  on a 300-sentence gallery and about 18 on a 700-sentence one, so $K = 32$ and $K = 64$ cannot be filled at any
+  decoder quality. `ks_unreachable` names them; a report that instead showed them as failures would understate the
+  decoder, and one that dropped them silently would misstate what was swept.
+- **A capacity is menu selection.** It is never quoted as generation, and never as retrieval over the full gallery.
+  `capacity_certified` is namespaced apart from `generation_above_controls` and can never enter it.
+
 ## Reading a LOSO sweep honestly (`zte-loso-summary`)
 
 In a leave-one-subject-out sweep, a single fold's `sentence_retrieval.top1` is **pooled** over all subjects — every reading queries against every other, and most positives are the same sentence read by one of the 11 subjects the model *trained on*. That number is dominated by in-sample subjects and reads far higher than the model's generalisation. The honest metric is `scoreboard.held_out_retrieval`: retrieval among the never-seen subject's own readings alone.
@@ -444,7 +499,10 @@ relationship saturates.
 
 **It is fitted on the training split only**, exactly like the modality-gap correction and for the same reason:
 fitting on the rows about to be scored is transductive and cannot be reproduced by a decoder that sees one sentence
-at a time. The numbers travel with the metric in `metrics['length_projection']`:
+at a time. It is fitted **in the same frame it is applied in** — on the post-processed (whitened, all-but-the-top)
+training rows, because a basis fitted before post-processing does not describe the space it is subtracted from; the
+signature of getting that wrong is `length_leakage_after` coming back *above* `length_leakage_before`. The numbers
+travel with the metric in `metrics['length_projection']`:
 
 | field | meaning |
 | --- | --- |

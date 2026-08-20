@@ -29,12 +29,20 @@
 # says so at startup. `cache_embeddings` is false because the evidence path needs the per-word hiddens every
 # step; expect roughly an encoder run's cost plus the frozen LM.
 #
+# `objective.eval_capacity: true` adds the third readout: the largest K-way menu this decoder is certified to
+# serve, against its own length_only / shuffled_eeg / mismatch conditioning arms on exact-word-count pools. Every
+# menu is a column slice of the gallery pass rescoring already runs; only the length_only arm costs an extra pass,
+# and that is one per distinct word count rather than one per query. Expect
+# `certified_k: null` on the first real run -- that is a reported outcome with its failing clause named, not a
+# blank. K=32 and K=64 come back unreachable, because an exact word-count pool holds ~8 candidates on a
+# 300-sentence gallery. A capacity is MENU SELECTION and is never quoted as generation.
+#
 # Pin decoder.lm_revision to the SHA the run log reports before any number leaves the repo.
 #
 #   uv run zte-run --config experiments/flagship/decode_zte_v2.yaml --root res/data/zuco_extracted \
 #       --encoder-ckpt res/experiments/exp14_zte_lexical_raw_loZAB/checkpoints/best.pt --resume
 #   uv run zte-decode --ckpt res/experiments/exp15_decode_zte_v2/checkpoints/best.pt \
-#       --root res/data/zuco_extracted --split test --rescore
+#       --root res/data/zuco_extracted --split test --rescore --capacity
 dataset:
   root: res/data/zuco_extracted
   tasks:
@@ -157,6 +165,7 @@ objective:
   eval_freq_matched: true
   eval_generation: true
   eval_rescoring: true
+  eval_capacity: true
   eval_length_stratified: true
   text_source: intfloat/e5-base-v2
   text_backend: sentence-transformers

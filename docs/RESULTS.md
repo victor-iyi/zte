@@ -127,6 +127,9 @@ The repair family is `ablation/exp17_*` (residual off + gallery off as the base,
 task-pure negatives, and the deployable alignment fit as matched pairs). The best-measured encoder arm today is
 `exp16_residual_off` at one seed; seeds 43/44 are the first item on the run matrix.
 
+**Stale pending re-measurement.** Every arm in this table except `exp16_length_projection_off` ran with
+`length_projection: true`, which was fitted in the wrong frame — see [Measurement corrections](#measurement-corrections).
+
 ## The parallax transfer matrix (2026-08-16/17, held out on `ZAB`, seeds 42/43/44)
 
 The per-task encoders (`experiments/parallax/`, the exp17 recipe on one task each) measured on real ZuCo. Full design
@@ -154,6 +157,43 @@ The two findings behind the qualifiers, stated as measured:
   The open menu's 0.707 (*p* = 0.002) is stamped `gamed: true` by its own 0.971 length oracle and self-disqualifies.
   The discriminative signal lives in individual readings, not centroids — the enrolled menu flavor exists to score
   exactly that.
+
+**Stale pending re-measurement.** All three parallax encoders ran with `length_projection: true`, which was fitted
+in the wrong frame — see [Measurement corrections](#measurement-corrections).
+
+## Measurement corrections
+
+Corrections to the *measuring instrument*, not to the numbers. Nothing in the tables above has been edited; what
+changes is which of them may still be quoted.
+
+### The length projector was fitted in the wrong frame
+
+`objective.length_projection` regresses each sentence embedding on a basis of its word count and subtracts the
+fitted component. The projector was **fitted on the raw training rows and applied to the whitened, all-but-the-top
+rows** — two different frames. A basis fitted before post-processing does not describe the space it is subtracted
+from, so the subtraction removed a direction the scored rows did not have and left the one they did.
+
+The real-data signature is that the de-confounder made the confound **worse**, not merely weaker than hoped. In
+`exp16_residual_off`, word count explained 0.0206 of sentence-embedding variance before the projection and 0.3619
+after it — leakage rising by more than an order of magnitude, in the one metric whose entire job is to fall. A
+projection that increases length leakage is not a partially effective projection; it is a mis-specified one, and
+its retrieval numbers were measured on a space with *more* length in it than the unprojected space had.
+
+The projector is now fitted on the same post-processed training rows it is applied to.
+
+**Every retrieval number measured with `length_projection: true` predates this fix and must be re-measured before
+it is quoted again.** That is:
+
+| Section above | Status |
+| --- | --- |
+| [The exp16 sweep on real ZuCo](#the-exp16-sweep-on-real-zuco-2026-08-15-held-out-on-zab-700-queries) | **Re-measure.** Every arm except `exp16_length_projection_off` ran with the knob on |
+| [The parallax transfer matrix](#the-parallax-transfer-matrix-2026-08-1617-held-out-on-zab-seeds-424344) | **Re-measure.** `parallax_{nr,sr,tsr}` all ran with the knob on |
+| `ablation/exp17_*` | Configs only; no number from them has ever been quoted |
+| The held-out board, the thirteen-arm sweep, and every decoder section | Unaffected — none of those configs sets `length_projection` |
+
+The direction of the correction is not predictable from the sign of the bug: the affected numbers may rise, fall or
+hold. Until they are re-measured on Drive they are neither confirmed nor retracted — they are **stale**, and a
+stale number is not a result.
 
 ## Not yet measured
 

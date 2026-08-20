@@ -125,6 +125,7 @@ objective:
   eval_freq_matched: true
   eval_generation: true
   eval_rescoring: true
+  eval_capacity: true
   eval_length_stratified: true
   text_source: intfloat/e5-base-v2
   text_backend: sentence-transformers

@@ -165,8 +165,9 @@ claim rather than a matter of trust: 700 ZuCo sentences cannot be stored in weig
 
 ```sh
 # The decoder needs a trained encoder; --encoder-ckpt overrides the path in the YAML. Do NOT add
-# --loso-holdout: these configs name train.loso_holdout_subject inside by_subject_and_stimulus, and the
-# flag would swap in by_subject_loso, which shares every stimulus between train and val. zte-run warns.
+# --loso-holdout: every config here names train.loso_holdout_subject inside by_subject_and_stimulus, and the
+# flag would swap in by_subject_loso, which shares every stimulus between train and val. zte-run refuses it
+# on a decoder or joint run; --allow-closed-set runs it deliberately as a closed-set control.
 uv run zte-run --config experiments/decoder/decode_frozen_e5raw.yaml --root res/data/zuco_extracted \
     --encoder-ckpt res/experiments/exp8_clip_e5_raw_loZAB/checkpoints/best.pt --resume
 uv run zte-decode --ckpt res/experiments/exp13_decode_frozen_e5raw/checkpoints/best.pt \
@@ -185,6 +186,38 @@ set, against five brain-independent controls (`mean_prefix`, `null_prefix`, `pha
 `mismatch` derangement) plus a true-text-embedding oracle. The **primary** readout is decoder-rescoring retrieval over
 the 700-sentence gallery, which is ~9.5 bits of forced choice at 700 queries and is labelled retrieval, never
 generation. Full method, verdict gate and the pre-registered expectations: [`../docs/DECODER.md`](../docs/DECODER.md).
+
+### The capacity readout — `objective.eval_capacity`
+
+The third readout, and the one that can actually be certified: **the largest $K$-way menu the decoder is proved to
+serve.** Given the held-out reading and $K$ candidate sentences — the one that was read plus $K-1$ distractors sharing
+its task and its *exact* word count — does the decoder score the truth above every distractor? Accuracy is the exact
+expectation over uniformly drawn distractors, so chance is exactly $1/K$ and ties lose. `objective.eval_capacity: true`
+turns it on; `decoder.capacity_ks`, `capacity_alpha`, `capacity_n_perm` and `capacity_score` tune it; `zte-decode
+--capacity` runs it against a checkpoint. Every menu at every $K$ is a column slice of the gallery pass rescoring
+already performs; the only extra frozen-LM work is the `length_only` arm, one pass per distinct word count. On today's
+board it is on for `flagship/decode_zte_v2`, `decoder/decode_v2_pmi` and `decoder/decode_parallax_nr`.
+
+Certification needs seven clauses to hold at $K$, at every smaller swept size, and on the common subset of queries
+scoreable at every size: an honest `by_subject_and_stimulus`/`test` split, a length-matched (never `open`) pool, a
+bootstrap CI lower bound above $1/K$, and paired wins over `length_only`, `shuffled_eeg` and `mismatch` on both a
+bootstrap CI and an exact sign test, plus a permutation $p$ below alpha. All three controls run through the identical
+bridge, LM and length normalisation — only the conditioning changes.
+
+Three things to expect on a first real run, none of which is a bug:
+
+- **`certified_k: null` is the likely outcome, and it is a reported result.** It renders as an em dash with the
+  failing clause named, never as a blank or a zero. `length_only` in particular needs a training split to build its
+  prefix from; without one the arm is omitted and its clause fails, which is fail-safe by design.
+- **$K = 32$ and $K = 64$ come back unreachable, not failed.** An exact word-count pool holds a median of 8 candidates
+  on a 300-sentence gallery and about 18 on a 700-sentence one, so those menus cannot be filled at any decoder
+  quality. `ks_feasible` and `ks_unreachable` name them.
+- **`length_oracle_2way_distance` is identically 0.0 on the certified pools.** Every candidate carries the query's
+  exact word count, so the distance oracle ties everywhere. It is a tripwire on the `open` pool, never a gate.
+
+A capacity is **menu selection**, priced in $\log_2 K$ bits against the 4.3090 bits of sentence identity that survive
+knowing the word count — not against the full 9.4512. It is never quoted as generation, and `capacity_certified` can
+never enter `generation_above_controls`.
 
 ## `benchmark/` — the controls
 
