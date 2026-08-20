@@ -1,6 +1,6 @@
 [project]
 name = 'zte'
-version = "0.3.0"
+version = "0.4.0"
 description = 'ZuCo Thought Embedding (ZTE): a tunable ZuCo dataset toolkit and a state-of-the-art self-supervised EEG embedding pipeline for the Cross-Modal Transfer Learning project.'
 readme = 'README.md'
 requires-python = '>=3.14'
@@ -11,14 +11,14 @@ keywords = ['eeg', 'zuco', 'bci', 'self-supervised', 'embeddings', 'pytorch', 'n
 dependencies = [
   'h5py>=3.16.0',
   'matplotlib>=3.11.1',
-  'numpy>=2.5.1',
+  'numpy>=2.5.2',
   'pandas>=3.0.5',
   'pyyaml>=6.0.3',
   'rich>=15.0.0',
   'scikit-learn>=1.9.0',
   'scipy>=1.18.0',
   'torch>=2.13.0',
-  'tqdm>=4.69.0',
+  'tqdm>=4.70.0',
 ]
 
 [dependency-groups]
@@ -32,26 +32,21 @@ viz = [
   'seaborn>=0.13.2',
   'plotly>=6.9.0',
 ]
-# Optional real-data provisioning for the MOSAIC levers (docs/METHODS.md):
-#   * `mne` fetches real electrode coordinates for spherical-harmonic spatial encoding
-#     (ScalpGeometry.from_mne / scripts/export_montage.py --zuco105).
+# Optional: use `mne` to fetch real electrode coordinates for spatial encoding.
 spatial = [
   'mne>=1.12.1',
 ]
-# Optional contextual meaning target (Report B): a frozen HuggingFace encoder (e.g. BERT middle # layer)
-# supplies a per-occurrence distillation target via `data.meaning.build_meaning_matrix_hf`.
-# Opt-in — `transformers` is heavy and the static GloVe/fastText path needs nothing extra;
-# enable with `uv sync --group meaning` or, per-cell, `uv run --with transformers …`.
+# Optional HuggingFace (e.g. BERT) encoder for contextual meaning targets.
+# Enable with `uv sync --group meaning` if needed; otherwise, no extra dependencies required.
 meaning = [
-  # >=4.56 for `from_pretrained(dtype=...)`: earlier releases only accept the since-removed `torch_dtype`,
-  # and the frozen decoder LM must be loaded at a pinned precision rather than the checkpoint's.
-  'transformers>=4.56.0',
-  'sentence-transformers>=5.6.1',
+  # Requires transformers >=4.56 for correct dtype loading.
+  'transformers>=5.15.1',
+  'sentence-transformers>=6.0.0',
 ]
 dev = [
-  'ruff>=0.16.0',
+  'ruff>=0.16.4',
   'pytest>=9.1.1',
-  'mypy>=2.3.0',
+  'mypy>=2.3.1',
 ]
 
 all = [

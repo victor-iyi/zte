@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Decoder menu capacity — the readout that can be proved.** `zte.evaluation.audit.capacity` certifies the largest
+  $K$-way menu a decoder serves: given the held-out reading and $K$ candidate sentences, does it score the one
+  actually read above every distractor? Accuracy is the exact expectation over uniformly drawn distractors
+  ($\binom{b}{K-1} / \binom{m}{K-1}$), so chance is exactly $1/K$, there is no sampling seed, and ties lose — a
+  constant scorer gets 0.0, not chance. Seven clauses must hold at $K$ *and* at every smaller swept size *and* on
+  the common subset of queries scoreable at every size: an honest `by_subject_and_stimulus`/`test` split, a
+  length-matched (never `open`) pool, a bootstrap CI lower bound above $1/K$, paired wins over `length_only`,
+  `shuffled_eeg` and `mismatch` on both a bootstrap CI and an exact sign test, and a permutation $p$ below alpha.
+  Turned on by `objective.eval_capacity` (default `false`) or `zte-decode --capacity`; tuned by
+  `decoder.capacity_ks` / `capacity_alpha` / `capacity_n_perm` / `capacity_score` and their CLI overrides
+  `--capacity-ks` / `--capacity-alpha` / `--capacity-n-perm`. Written to `metrics['decoder_capacity']`, the sibling
+  `evaluation/capacity.json`, and a Markdown block in `report.md`.
+- **The conditioning arms it certifies against** (`zte.inference.capacity`): `gallery_scores` scores the whole
+  gallery under every reading in one pass, and `capacity_arms` builds `model`, `length_only` (a word-count-matched
+  training prefix at tolerance 0), `shuffled_eeg` (a derangement), `mismatch` (a different-stimulus, length-matched
+  partner) and `null_prefix` — every one of them through the identical bridge, LM, scaffold and length
+  normalisation, so only the conditioning differs. `null_prefix` is identically zero under PMI and is therefore
+  reported under `raw` alone. An arm whose ingredients are missing is omitted rather than approximated, and its
+  clause then fails.
+- **`pooled_capacity`** turns a set of seeds or holdouts into one number: the smallest certified size across runs,
+  and `None` if any run certified nothing.
+- **`zte-colab capacity`** renders a decode run's certification as one JSON payload — per-K rows with the
+  unreachable sizes named, the paired control comparisons, and the clause flags.
+- **Capacity figures** in `zte.evaluation.plots`: `capacity_curve`, `capacity_bits_ledger`, `capacity_seed_strip`
+  and `capacity_vs_length_oracle`. Each renders an honest placeholder, never an empty axis, when nothing certified.
+- **`dataset.raw_align_amplitude`** (default `false`) divides each subject's own RMS voltage out along with their
+  covariance shape. Euclidean alignment trace-normalises each trial when fitting the reference but applies the
+  whitener to un-normalised windows, so it equalises covariance *shape* and leaves per-subject *gain* untouched:
+  two subjects differing only by a 10× gain get whiteners identical to round-off and a post-transform power ratio
+  of exactly 100.00. Excluded from the dataset cache key, so flipping it never invalidates a prepared bundle.
+- **`--allow-closed-set`** on `zte-run`, the named opt-out of the refusal below.
+
+### Changed
+
+- **`--loso-holdout` is refused on a decoder or joint run whose config named a different split**, rather than
+  warned about. `by_subject_loso` shares all 700 stimuli between train and val, so every gallery sentence is also a
+  training sentence and the generation verdict fails its `honest_split` clause — the run costs hours and can never
+  produce a headline, which is too expensive for a warning that scrolls past in a Colab log. The remedy the message
+  names is `train.loso_holdout_subject` in the config; `--allow-closed-set` runs it deliberately as a closed-set
+  control.
+- **`zte.evaluation.audit.menu` gained a public seam** — `MenuPool`, `menu_pools`, `beaten_in_pool`, `win_prob` and
+  `score_menu_flavor` (renamed from `_win_prob` / `_score_flavor`) — so the decoder capacity builds its pools with
+  the embedding-side audit's implementation instead of a second copy. Bodies and RNG consumption order are
+  unchanged and every existing menu number is byte-identical.
+- **One gallery LM pass now feeds both decoder readouts.** Scoring is per-(query, candidate), so every $K$-way menu
+  at every $K$ is a column slice of the matrix rescoring already built. The only extra frozen-LM work the capacity
+  audit adds is the `length_only` arm, and that is one pass per distinct word count, not per query.
+- **The run verdict carries `capacity_certified`, `capacity_k`, `capacity_bits`, `capacity_clauses`,
+  `capacity_readout` and `capacity_reason`**, merged additively. `capacity_certified` can never enter
+  `generation_above_controls`: a forced choice among $K$ candidates does not license a free-generation headline.
+- **`flagship/decode_zte_v2.yaml`, `decoder/decode_v2_pmi.yaml` and `decoder/decode_parallax_nr.yaml` set
+  `objective.eval_capacity: true`**, so the three arms that should be certified are.
+- Documentation: the capacity method, pool rule, arms and bits ledger in `docs/DECODER.md`; the
+  `decoder_capacity.*` path registry and its quoting rules in `docs/EVALUATION.md`; the gain measurement and the
+  new knob in `docs/SUBJECT_ALIGNMENT.md`; the capacity readout in `experiments/README.md`.
+
+### Fixed
+
+- **The length projector was fitted in the wrong frame.** `objective.length_projection` fitted its word-count basis
+  on the *raw* training rows and subtracted it from the *post-processed* (whitened, all-but-the-top) rows, so the
+  basis did not describe the space it was removed from. The real-data signature was length leakage **rising**:
+  0.0206 before the projection and 0.3619 after it in `exp16_residual_off`, in the one metric whose entire job is
+  to fall. The projector is now fitted on the same post-processed training rows it is applied to. **Every retrieval
+  number measured with `length_projection: true` predates this fix and must be re-measured before it is quoted
+  again** — the exp16 sweep and the parallax transfer matrix in `docs/RESULTS.md` are marked stale accordingly.
+
 ## Parallax phase 3: the reading-level menu, the INDEX merge, and the decoder arms
 
 The 2026-08-16/17 sessions measured real cross-task transfer (NR↔SR rank percentile 0.95–0.97 at every seed,
