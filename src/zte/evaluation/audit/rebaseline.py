@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+
+type PieceSignature = Literal['profile', 'total', 'multiset', 'words']
+"""Which sub-word statistic a piece oracle is allowed to resolve a sentence by."""
 
 from zte.evaluation.audit.scoreboard import _binom_tail_p, _bootstrap_ci
 
@@ -134,6 +139,160 @@ def length_oracle(lengths: np.ndarray, *, tol: int = 0, ks: tuple[int, ...] = (1
     out['min_stratum'] = float(strata.min())
     out['max_stratum'] = float(strata.max())
     return out
+
+
+def signature_oracle(
+    signatures: Sequence[Hashable], *, name: str = 'signature', ks: tuple[int, ...] = (1, 5, 10)
+) -> dict[str, float]:
+    """Retrieval scores achievable from a discrete per-sentence signature alone, and the bits it gives away.
+
+    The oracle resolves each query to the set of gallery items carrying an identical signature, ranks that stratum
+    uniformly at random and everything else behind it. Scores are exact expectations over that ordering, so there is
+    no seed and no Monte Carlo error -- the same construction `length_oracle` uses for word count.
+
+    Note:
+        This is the generalisation `length_oracle` could not express. Word count is one integer per sentence; a
+        sub-word piece profile is a vector of them, and on a 700-sentence gallery it resolves nearly every sentence
+        uniquely. Any representation that is handed such a signature is not being measured on the brain, so a
+        headline computed beside a signature it had access to has to be read against this floor first.
+
+    Args:
+        signatures (Sequence[Hashable]): One hashable signature per gallery sentence.
+        name (str, optional): Label carried into the returned block. Defaults to 'signature'.
+        ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
+
+    Returns:
+        dict[str, float]: `top{k}`, `mrr`, `rank_percentile`, `chance_top1`, `mean_stratum`, `median_stratum`,
+            `unique_fraction`, `entropy_bits`, `conditional_entropy_bits`, `information_bits`, `n` and `signature`.
+    """
+    counts = Counter(signatures)
+    n = len(list(signatures))
+    out: dict[str, Any] = {'signature': name, 'n': float(n)}
+    if n == 0:
+        return out | {f'top{k}': float('nan') for k in ks}
+
+    strata = np.array([counts[s] for s in signatures], dtype=np.float64)
+    for k in ks:
+        out[f'top{k}'] = float(np.mean(np.minimum(k, strata) / strata))
+
+    max_m = int(strata.max())
+    harmonic = np.concatenate(([0.0], np.cumsum(1.0 / np.arange(1, max_m + 1))))
+    out['mrr'] = float(np.mean(harmonic[strata.astype(int)] / strata))
+
+    expected_rank = (strata + 1.0) / 2.0
+    out['rank_percentile'] = float(np.mean(1.0 - (expected_rank - 1.0) / max(n - 1, 1)))
+    out['mean_rank'] = float(np.mean(expected_rank))
+    out['chance_top1'] = float(1.0 / n)
+    out['mean_stratum'] = float(strata.mean())
+    out['median_stratum'] = float(np.median(strata))
+    out['unique_fraction'] = float(np.mean(strata == 1.0))
+
+    # H(identity) - H(identity | signature): what the signature alone tells you about which sentence this is.
+    identity_bits = float(np.log2(n))
+    conditional = float(np.mean(np.log2(strata)))
+    out['entropy_bits'] = identity_bits
+    out['conditional_entropy_bits'] = conditional
+    out['information_bits'] = identity_bits - conditional
+    return out
+
+
+def piece_signatures(word_pieces: np.ndarray, kind: PieceSignature = 'profile') -> list[Hashable]:
+    """Turns a `(n_text, max_words)` sub-word-count table into one hashable signature per sentence.
+
+    Args:
+        word_pieces (np.ndarray): `TokenAlignment.word_pieces`; `0` past the end of a sentence.
+        kind (PieceSignature, optional): `'profile'` is the ordered per-word vector, `'total'` the summed piece
+            count, `'multiset'` the counts with their order destroyed, `'words'` the word count alone.
+            Defaults to 'profile'.
+
+    Returns:
+        list[Hashable]: One signature per row.
+
+    Raises:
+        ValueError: If `kind` is not one of the four supported signatures.
+    """
+    table = np.asarray(word_pieces, dtype=np.int64)
+    rows = [row[row > 0] for row in table]
+    match kind:
+        case 'profile':
+            return [tuple(int(v) for v in row) for row in rows]
+        case 'total':
+            return [int(row.sum()) for row in rows]
+        case 'multiset':
+            return [tuple(sorted(int(v) for v in row)) for row in rows]
+        case 'words':
+            return [int(row.size) for row in rows]
+        case unknown:
+            raise ValueError(f'Unknown piece signature {unknown!r}; expected profile, total, multiset or words.')
+
+
+def piece_profile_report(
+    word_pieces: np.ndarray,
+    *,
+    observed_top1: float | None = None,
+    gate_signature: PieceSignature = 'total',
+    ks: tuple[int, ...] = (1, 5, 10),
+) -> dict[str, Any]:
+    """Scores every sub-word piece signature as a retrieval oracle, and says whether a number clears them.
+
+    Note:
+        A token-level objective that gives a word as many EEG sub-tokens as the reference spells it word-pieces
+        hands the model this signature. On a 700-sentence gallery the ordered profile resolves almost every
+        sentence uniquely, so it is a larger channel than the sentence's own identity entropy leaves room for --
+        which makes it the floor a token-level headline is measured against, exactly as word count is for the
+        sentence level.
+
+    Note:
+        The **ordered profile is the ceiling, not the gate**. It is what a design would give away that sized a
+        word's EEG by how many pieces its reference spells it in, and on a real gallery it resolves 99.6% of
+        sentences -- so gating on it would print `below the floor` whatever the encoder did, which is a column
+        carrying no information rather than a check. This encoder is fixed-K, so what it can actually reach is
+        the *total* piece count, through the length channel; that is the default gate, and every signature's
+        verdict is reported beside it so the choice is visible rather than assumed.
+
+    Args:
+        word_pieces (np.ndarray): `TokenAlignment.word_pieces`, `(n_text, max_words)`.
+        observed_top1 (float | None, optional): A run's held-out Top-1, compared against every oracle.
+            Defaults to None.
+        gate_signature (PieceSignature, optional): Which oracle decides `beats_oracles`. Defaults to 'total'.
+        ks (tuple[int, ...], optional): Top-K cut-offs. Defaults to (1, 5, 10).
+
+    Returns:
+        dict[str, Any]: `oracles` and `clears` per signature, the `gate_*` and `ceiling_*` blocks,
+            `observed_top1`, `beats_oracles` and `verdict`.
+    """
+    kinds: tuple[PieceSignature, ...] = ('words', 'total', 'multiset', 'profile')
+    oracles = {kind: signature_oracle(piece_signatures(word_pieces, kind), name=kind, ks=ks) for kind in kinds}
+    observed = None if observed_top1 is None else float(observed_top1)
+    clears = {
+        kind: None if observed is None else bool(observed > float(block['top1'])) for kind, block in oracles.items()
+    }
+
+    gate = oracles[gate_signature]
+    beats = clears[gate_signature]
+    verdict = (
+        'not measured'
+        if beats is None
+        else (
+            f'clears the {gate_signature} piece oracle'
+            if beats
+            else f'BELOW the {gate_signature} piece oracle -- not evidence of decoding'
+        )
+    )
+    return {
+        'oracles': oracles,
+        'clears': clears,
+        'gate_signature': gate_signature,
+        'gate_top1': float(gate['top1']),
+        'gate_bits': float(gate['information_bits']),
+        'ceiling_signature': 'profile',
+        'ceiling_top1': float(oracles['profile']['top1']),
+        'worst_case_top1': max(float(block['top1']) for block in oracles.values()),
+        'worst_case_signature': max(oracles, key=lambda k: float(oracles[k]['top1'])),
+        'observed_top1': observed,
+        'beats_oracles': beats,
+        'verdict': verdict,
+    }
 
 
 def bit_budget(

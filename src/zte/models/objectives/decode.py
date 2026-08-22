@@ -134,6 +134,8 @@ class PrefixDecodeObjective(_ObjectiveBase):
         self.gap = GapCorrector(self.z_dim, mode=decoder_config.gap_correction)
         self.ladder = build_rate_ladder(decoder_config, self.z_dim, max_words=decoder_config.max_target_tokens)
         self.evidence = build_evidence(decoder_config, self.z_dim, self.lm.hidden_dim)
+        self.evidence_rate_fit: str = 'none'
+        """How the pointer's walking rate was fitted: `none`, `train split` or `transductive`."""
 
     # ---- Attachment ---- #
 
@@ -192,15 +194,26 @@ class PrefixDecodeObjective(_ObjectiveBase):
             )
 
     def attach_tokens(
-        self, token_ids: torch.Tensor, token_mask: torch.Tensor, n_words: torch.Tensor | None = None
+        self,
+        token_ids: torch.Tensor,
+        token_mask: torch.Tensor,
+        n_words: torch.Tensor | None = None,
+        rate_text_ids: Sequence[int] | None = None,
     ) -> None:
         """Attaches the tokenised reference sentences, indexed by `batch['sentence_text_id']`.
+
+        Note:
+            `rate_text_ids` names the gallery rows the pointer's walking rate may be measured over. The gallery is
+            whole-dataset by construction, so without it the rate is averaged across the held-out stimuli as well
+            -- a transductive fit that a decoder facing one sentence could not reproduce.
 
         Args:
             token_ids (torch.Tensor): `(n_sentences, n_target)` long target ids.
             token_mask (torch.Tensor): `(n_sentences, n_target)` bool, `True` at real target tokens.
             n_words (torch.Tensor | None, optional): Whitespace word count per sentence, which sets the evidence
                 pointer's walking rate and length-matches the grounding negatives. Defaults to None.
+            rate_text_ids (Sequence[int] | None, optional): Gallery rows the rate is measured over. Defaults to
+                None, which measures it over every row and records the fit as transductive.
         """
         self.target_ids = token_ids.long()
         self.target_mask = token_mask.bool()
@@ -208,10 +221,21 @@ class PrefixDecodeObjective(_ObjectiveBase):
             return
 
         self.target_words = n_words.long()
-        if self.evidence is not None and not self.decoder_config.evidence_tokens_per_word:
-            rate = measure_tokens_per_word(self.target_mask, self.target_words)
-            self.evidence.pointer.tokens_per_word = rate
-            _LOG.info('Evidence pointer measured at %.3f LM tokens per word from the training corpus.', rate)
+        if self.evidence is None or self.decoder_config.evidence_tokens_per_word:
+            return
+
+        rows = torch.as_tensor(list(rate_text_ids), dtype=torch.long) if rate_text_ids else None
+        mask = self.target_mask if rows is None else self.target_mask[rows]
+        words = self.target_words if rows is None else self.target_words[rows]
+        rate = measure_tokens_per_word(mask, words)
+        self.evidence.pointer.tokens_per_word = rate
+        self.evidence_rate_fit = 'transductive' if rows is None else 'train split'
+        _LOG.info(
+            'Evidence pointer measured at %.3f LM tokens per word over %d gallery sentences (%s).',
+            rate,
+            int(mask.shape[0]),
+            self.evidence_rate_fit,
+        )
 
     def attach_cache(self, n_readings: int, mode: TrainMode = 'decoder') -> None:
         """Allocates the frozen-encoder sentence-vector cache, keyed by `batch['reading_id']`.
@@ -499,6 +523,13 @@ class PrefixDecodeObjective(_ObjectiveBase):
         rate_loss, rate_metrics = self._rate_terms(cond, batch, encoded.token_mask)
         loss = loss + rate_loss
         metrics.update(rate_metrics)
+
+        # A joint run trains the encoder, so the sub-word level applies here too; a frozen-encoder run reaches it
+        # with nothing to update and the term stays at zero rather than silently disappearing from the loss.
+        if joint and self.token is not None:
+            tok_loss, tok_metrics = self.token_alignment(model, batch, encoded.token_mask)
+            loss = loss + tok_loss
+            metrics.update(tok_metrics)
 
         if self.evidence is not None:
             metrics['evidence_gate'] = float(self.evidence.gate.detach())

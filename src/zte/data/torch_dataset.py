@@ -321,6 +321,56 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             ordered[tid] = by_key.get(key, key)
         return ordered
 
+    def ordered_words(self) -> list[list[str]]:
+        """Returns each sentence text's ZuCo word list in `word_idx` order, so row `i` is the text of `text_id == i`.
+
+        Note:
+            The word axis of the token-level alignment table is this order, and `content_id` is built from the same
+            `(stimulus_key, word_idx)` pair -- which is what lets a batch join to that table without carrying it.
+
+        Returns:
+            list[list[str]]: `len(text_vocab)` word lists.
+        """
+        words = self._ds.words
+        ordered: list[list[str]] = [[] for _ in range(len(self._text_vocab))]
+        if 'word' not in words.columns:
+            return ordered
+
+        skey, widx = _content_key_arrays(self._ds)
+        surface = words['word'].fillna('').astype(str).to_numpy()
+        seen: dict[tuple[int, int], str] = {}
+        for key, index, text in zip(skey, widx, surface, strict=True):
+            tid = self._text_vocab.get(str(key), -1)
+            if tid >= 0:
+                seen.setdefault((tid, int(index)), str(text))
+        for (tid, index), text in seen.items():
+            row = ordered[tid]
+            if len(row) <= index:
+                row.extend([''] * (index + 1 - len(row)))
+            row[index] = text
+
+        return ordered
+
+    @property
+    def content_vocab(self) -> dict[tuple[str, int], int]:
+        """The whole-dataset `{(stimulus_key, word_idx): content_id}` map every batch's `content_id` is drawn from."""
+        return self._content_vocab
+
+    def content_rows(self) -> tuple[np.ndarray, np.ndarray]:
+        """Returns `(text_id, word_idx)` per `content_id`, so a per-word table can be gathered by an id in the batch.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: Two `(n_content,)` int64 arrays; `text_id` is `-1` for a stimulus this
+                dataset carries no text for.
+        """
+        text_ids = np.full(len(self._content_vocab), -1, dtype=np.int64)
+        word_idx = np.full(len(self._content_vocab), -1, dtype=np.int64)
+        for (key, index), cid in self._content_vocab.items():
+            text_ids[cid] = self._text_vocab.get(str(key), -1)
+            word_idx[cid] = int(index)
+
+        return text_ids, word_idx
+
     @property
     def sequences(self) -> list[np.ndarray]:
         """Per-sentence arrays of original word-row indices, in dataset order.

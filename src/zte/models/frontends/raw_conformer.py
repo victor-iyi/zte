@@ -67,15 +67,8 @@ class RawConformer(nn.Module):
         self.head = nn.Linear(filters, config.hidden_dim)
         self.out_dim = config.hidden_dim
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Encodes raw EEG tokens.
-
-        Args:
-            x (torch.Tensor): Tensor `(..., n_channels, time_steps)` with arbitrary leading dims.
-
-        Returns:
-            torch.Tensor: `(..., hidden_dim)`.
-        """
+    def _contextualise(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Size]:
+        """Runs the convolutional bank and the intra-word transformer, before the time axis is collapsed."""
         if self.spatial_mixer is not None:
             x = self.spatial_mixer(x)
         lead = x.shape[:-2]
@@ -93,6 +86,18 @@ class RawConformer(nn.Module):
             h = checkpoint(self.transformer, h, use_reentrant=False)
         else:
             h = self.transformer(h)  # (n_tokens, time_steps, filters)
+        return h, lead
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encodes raw EEG tokens.
+
+        Args:
+            x (torch.Tensor): Tensor `(..., n_channels, time_steps)` with arbitrary leading dims.
+
+        Returns:
+            torch.Tensor: `(..., hidden_dim)`.
+        """
+        h, lead = self._contextualise(x)
         if self.attn_pool is not None:
             # Softmax in float32 so the attention weights stay stable under fp16/bf16 autocast.
             weights = torch.softmax(self.attn_pool(h).float(), dim=1).to(h.dtype)  # (n_tokens, time_steps, 1)
@@ -101,6 +106,34 @@ class RawConformer(nn.Module):
             pooled = h.mean(dim=1)  # temporal average pool -> (n_tokens, filters)
         out = self.head(pooled)  # (n_tokens, hidden_dim)
         return out.reshape(*lead, self.out_dim)
+
+    def sub_tokens(self, x: torch.Tensor, n_sub: int) -> torch.Tensor:
+        """Encodes each raw EEG window into `n_sub` intra-word sub-tokens instead of one pooled token.
+
+        Note:
+            `n_sub` is a fixed constant, never a per-word count derived from how many word-pieces the reference
+            spells that word in. A word's EEG must be encoded identically whatever its text says, or the sentence
+            vector retrieval is scored on would depend on the answer -- so the sub-word count enters only the loss's
+            target mask, never this computation.
+
+        Args:
+            x (torch.Tensor): Tensor `(..., n_channels, time_steps)` with arbitrary leading dims.
+            n_sub (int): Sub-tokens per word; the time axis is split into this many contiguous spans.
+
+        Returns:
+            torch.Tensor: `(..., n_sub, hidden_dim)`.
+
+        Raises:
+            ValueError: If `n_sub` is not positive.
+        """
+        if n_sub <= 0:
+            raise ValueError(f'n_sub must be positive, got {n_sub}.')
+
+        h, lead = self._contextualise(x)  # (n_tokens, time_steps, filters)
+        edges = torch.linspace(0, h.shape[1], n_sub + 1, device=h.device).round().long().tolist()
+        spans = [h[:, lo : max(hi, lo + 1)].mean(dim=1) for lo, hi in zip(edges[:-1], edges[1:], strict=True)]
+        out = self.head(torch.stack(spans, dim=1))  # (n_tokens, n_sub, hidden_dim)
+        return out.reshape(*lead, n_sub, self.out_dim)
 
 
 def _largest_divisor(value: int, target: int) -> int:

@@ -15,6 +15,7 @@ from zte.models.encoder.consensus import ConsensusDistiller, build_consensus
 from zte.models.heads import SubjectAdversary
 from zte.models.objectives.lexical import LexicalAligner, build_lexical_aligner
 from zte.models.objectives.losses import identity_orthogonality, vicreg_terms
+from zte.models.objectives.token import TokenAligner, build_token_aligner
 
 _LOG = get_logger('models.objectives.base')
 
@@ -80,6 +81,7 @@ class _ObjectiveBase(nn.Module):
         # Token-level lexical alignment, sized in `attach_lexical` once the frozen word target's width is known.
         self._hidden_dim: int = cast('int', model.hidden_dim)
         self.lexical: LexicalAligner | None = None
+        self.token: TokenAligner | None = None
 
         # Cross-reader consensus, sized in `attach_consensus` once the stimulus and word-slot counts are known.
         self.consensus_sentence: ConsensusDistiller | None = None
@@ -176,6 +178,58 @@ class _ObjectiveBase(nn.Module):
         aligner = self.lexical
         if aligner is not None:
             aligner.attach(matrix)
+
+    def attach_subwords(self, subword_matrix: torch.Tensor, piece_target: torch.Tensor) -> None:
+        """Attaches the frozen sub-word target and sizes the sub-word aligner to it.
+
+        Note:
+            The aligner is built here rather than in `__init__` so a run with the level off constructs no parameter
+            at all, and every checkpoint written before the level existed still loads under `strict=True`.
+
+        Args:
+            subword_matrix (torch.Tensor): `(n_types, text_dim)` L2-normalised frozen sub-word embeddings.
+            piece_target (torch.Tensor): Long `(n_content, n_sub)` row of `subword_matrix` per word-piece slot,
+                `-1` where the word has fewer pieces than the slot.
+        """
+        if self.token is None:
+            self.token = build_token_aligner(self.config, self._hidden_dim, int(subword_matrix.shape[1]))
+        aligner = self.token
+        if aligner is not None:
+            aligner.attach(subword_matrix, piece_target)
+
+    def token_alignment(
+        self, model: ZTEModel, batch: dict[str, Any], usable: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Scores the batch's intra-word EEG sub-tokens against the word-pieces they read.
+
+        Note:
+            This runs the frontend a second time, at sub-token resolution. Deriving the word hidden from the slices
+            instead would be cheaper, but the spans do not divide 350 samples evenly, so the pooled vector would no
+            longer be bit-identical to the sentence-level arm's -- and the level comparison would stop being a
+            matched pair, which is the one thing it exists to be.
+
+        Args:
+            model (ZTEModel): The encoder.
+            batch (dict[str, Any]): The collated batch.
+            usable (torch.Tensor): Boolean `(batch_size, seq_len)` mask of real, fixated words.
+
+        Returns:
+            tuple[torch.Tensor, dict[str, float]]: `(loss, metrics)`; zero and empty when the level is off.
+        """
+        aligner = self.token
+        if aligner is None:
+            return torch.zeros((), device=usable.device), {}
+
+        sub_hidden = model.sub_token_hidden(batch, aligner.n_sub)
+        return aligner.compute(
+            sub_hidden,
+            batch,
+            usable,
+            type_weight=self.config.token_weight,
+            reader_weight=self.config.token_reader_weight,
+            max_tokens=self.config.token_max_tokens,
+            same_subject_negatives=self.config.token_same_subject_negatives,
+        )
 
     def attach_consensus(self, n_sentences: int, n_content: int, text_tasks: torch.Tensor | None = None) -> None:
         """Builds the cross-reader prototype banks once the stimulus and word-slot counts are known.

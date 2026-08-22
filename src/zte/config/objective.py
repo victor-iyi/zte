@@ -246,6 +246,38 @@ class ObjectiveConfig:
     """Restrict the cross-reader direction's negatives to the anchor's own subject, so separating anchor from negative
     cannot be done on subject identity -- the shortcut that makes an easy contrastive loss meaningless here."""
 
+    # -- Sub-word token-level alignment (the token level) ------------------------------------ #
+    token_weight: float = 0.0
+    """Weight of the EEG-sub-token-to-frozen-sub-word-embedding direction (0 disables the whole token level).
+    Sentence InfoNCE pulls at the pooled vector and the word term at whole words; neither ever asks a slice of one
+    word's EEG to mean the word-piece it spells, which is the gap `docs/EVALUATION.md` records as unattempted."""
+
+    token_reader_weight: float = 0.0
+    """Weight of the same-piece-different-reader direction: is this the same word-piece, whoever read it."""
+
+    token_sub_tokens: int = 4
+    """Intra-word sub-tokens the frontend emits per word. A fixed constant for every word, never the count of
+    word-pieces the reference spells that word in -- on the 700-sentence gallery the per-word piece profile is a
+    9.4-bit brain-free channel that retrieves 697/700 on its own, so it may enter the target mask and nothing else."""
+
+    token_temperature: float = 0.07
+    """Initial softmax temperature for both token directions; the log-scale is learnable and clamped."""
+
+    token_source: str | None = None
+    """Model whose input embedding table supplies the frozen sub-word target. Defaults to the decoder's own LM, so
+    a token vector lands in the space the bridge already writes into."""
+
+    token_max_tokens: int = 4096
+    """Cap on sub-tokens scored per step. The reader direction is quadratic in them, and 4096 keeps its similarity
+    matrix at 67 MB where an uncapped batch would ask for gigabytes."""
+
+    token_same_subject_negatives: bool = True
+    """Restrict the reader direction's negatives to the anchor's own subject, so telling anchor from negative can
+    never be done on subject identity."""
+
+    token_max_length: int = 96
+    """Sub-word width the alignment table is built to, matching the decoder's own target width."""
+
     # -- Cross-reader consensus distillation ------------------------------------------------ #
     consensus_weight: float = 0.0
     """Weight of the sentence-level denoising term (0 disables): pull each reading toward the running average of every

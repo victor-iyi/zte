@@ -141,6 +141,10 @@ class SentenceClipObjective(_ObjectiveBase):
         cons_loss, cons_metrics = self.sentence_consensus(z_sent, batch)
         reg_loss, reg_metrics = reg_loss + cons_loss, {**reg_metrics, **cons_metrics}
 
+        # The sub-word level: nothing above this line ever asks a slice of one word's EEG to mean the piece it spells.
+        tok_loss, tok_metrics = self.token_alignment(model, batch, usable)
+        reg_loss, reg_metrics = reg_loss + tok_loss, {**reg_metrics, **tok_metrics}
+
         # Anti-collapse on the tensor retrieval actually scores: the token-level guard never sees the pooled vector.
         if self.config.sentence_variance_weight > 0.0 or self.config.sentence_covariance_weight > 0.0:
             sent_loss, sent_metrics = self.sentence_regularize(z_sent)

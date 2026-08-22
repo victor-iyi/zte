@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -158,6 +159,10 @@ def run_training(
     # One word type -> one frozen embedding, so the token-level loss has something true to pull each word toward.
     if obj.lexical_weight > 0.0 or obj.lexical_reader_weight > 0.0:
         _attach_lexical(config, objective, train_td, device)
+
+    # One word-piece -> one frozen embedding, so the sub-word loss has something true to pull each slice toward.
+    if obj.token_weight > 0.0 or obj.token_reader_weight > 0.0:
+        _attach_tokens(config, objective, train_td, device)
 
     # Built only when the knob is on, so a run without it never trips the one-text-one-task assertion.
     text_tasks = train_td.text_task_ids() if obj.within_task_negatives else None
@@ -413,6 +418,70 @@ def _attach_lexical(
     _LOG.info('Lexical alignment target attached: %d word types x %d dims.', len(matrix), dim)
 
 
+def _attach_tokens(
+    config: ZTEConfig, objective: _ObjectiveBase, train_td: ZuCoTorchDataset, device: DeviceSpec
+) -> None:
+    """Builds and attaches the frozen sub-word target for the token level, keyed by `content_id`.
+
+    Note:
+        The target is indexed by `content_id`, which is `(stimulus_key, word_idx)` -- not by a word's position in
+        the batch, which a per-word split or a dropped omitted row can shift. That is also why the level needs no
+        collate change and cannot invalidate the prepared bundle cache.
+    """
+    from zte.data.targets.tokens import build_subword_matrix, build_target_tokens, build_token_alignment
+
+    obj = config.objective
+    source = obj.token_source or config.decoder.lm_source
+    texts, words = train_td.ordered_texts(), train_td.ordered_words()
+    if not texts:
+        _LOG.warning('No gallery texts: the sub-word level has nothing to align against and stays off.')
+        return
+
+    alignment = build_token_alignment(
+        texts,
+        words,
+        source,
+        max_length=obj.token_max_length,
+        cache_dir=str(Path(config.dataset.cache_dir) / 'tokens'),
+    )
+    cache = str(Path(config.dataset.cache_dir) / 'tokens')
+    targets = build_target_tokens(texts, source, max_length=obj.token_max_length, cache_dir=cache)
+    subword = build_subword_matrix(targets.ids, source)
+
+    # (n_content, n_sub): the row of the frozen matrix for slot k of each word, -1 where the word is shorter.
+    text_ids, word_idx = train_td.content_rows()
+    n_sub = obj.token_sub_tokens
+    piece_target = np.full((len(text_ids), n_sub), -1, dtype=np.int64)
+    ok = (text_ids >= 0) & (word_idx >= 0) & (word_idx < alignment.max_words)
+    rows = np.nonzero(ok)[0]
+    for content_id in rows:
+        tid, widx = int(text_ids[content_id]), int(word_idx[content_id])
+        slots = np.nonzero((alignment.token_word[tid] == widx) & (alignment.piece_index[tid] >= 0))[0]
+        for slot in slots[:n_sub]:
+            piece = int(alignment.piece_index[tid, slot])
+            if piece < n_sub:
+                piece_target[content_id, piece] = subword.rows.get(int(targets.ids[tid, slot]), -1)
+
+    covered = float((piece_target >= 0).any(axis=1).mean())
+    matrix = torch.from_numpy(subword.matrix).to(device.device)
+    objective.attach_subwords(matrix, torch.from_numpy(piece_target).to(device.device))
+    if subword.source.endswith('#hash'):
+        _LOG.warning(
+            'Sub-word target unavailable for %r; using a hash target (dim %d, NO semantics). The level trains the '
+            'encoder to predict an arbitrary code per word-piece, so every sub-word number from this run is a '
+            'wiring check, not a result.',
+            source,
+            subword.matrix.shape[1],
+        )
+    _LOG.info(
+        'Sub-word target attached: %d types x %d dims from %s; %.1f%% of word slots carry at least one piece.',
+        subword.matrix.shape[0],
+        subword.matrix.shape[1],
+        subword.source,
+        100.0 * covered,
+    )
+
+
 def _head_width(head: Any) -> int | None:
     """Returns an attached projection's output width, or `None` when there is none to match."""
     return int(head.out_features) if head is not None and hasattr(head, 'out_features') else None
@@ -491,7 +560,13 @@ def _wire_decoder(
     # Word counts per gallery sentence: they set the evidence pointer's walking rate and length-match the grounding
     # negatives, and they come from the reference text rather than from the reading, so no split sees the other's.
     n_words = torch.tensor([max(len(text.split()), 1) for text in texts], dtype=torch.long)
-    objective.attach_tokens(torch.from_numpy(targets.ids), torch.from_numpy(targets.mask), n_words)
+
+    # The gallery is whole-dataset by construction, so the rows this split actually reads have to be named or the
+    # pointer's walking rate is averaged over the held-out stimuli too.
+    train_ids = sorted({train_td.text_vocab[k] for k in train_td.stimulus_keys if k in train_td.text_vocab})
+    objective.attach_tokens(
+        torch.from_numpy(targets.ids), torch.from_numpy(targets.mask), n_words, rate_text_ids=train_ids
+    )
     objective.attach_cache(train_td.n_readings, mode=config.train.mode)
     model.to(device.device)
     objective.to(device.device)
@@ -506,7 +581,6 @@ def _wire_decoder(
     )
     n_fit = objective.fit_gap(model, warm_loader, device.device)
 
-    train_ids = sorted({train_td.text_vocab[k] for k in train_td.stimulus_keys if k in train_td.text_vocab})
     holdout_ids = sorted(set(train_td.text_vocab.values()) - set(train_ids))
     metrics = objective.pretrain_text(
         train_ids,

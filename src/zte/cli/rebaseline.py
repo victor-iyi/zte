@@ -69,6 +69,14 @@ def parse_arguments() -> argparse.Namespace:
         dest='n_boot',
         help='Bootstrap resamples behind the rank-percentile confidence interval.',
     )
+    parser.add_argument(
+        '--piece-oracle',
+        action='store_true',
+        dest='piece_oracle',
+        help='Also score the sub-word piece-profile oracles this run must clear. On a 700-sentence gallery the '
+        'per-word piece profile is a brain-free channel worth 9.4 bits, so a token-level number below it is not '
+        'evidence of decoding. Requires the tokeniser the run aligned against.',
+    )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
@@ -117,6 +125,7 @@ def run_rebaseline(
     n_boot: int = 2000,
     seed: int = 0,
     device: DeviceKind | Literal['auto'] = 'auto',
+    piece_oracle: bool = False,
 ) -> dict[str, Any]:
     """Embeds a checkpoint's sentences and writes the length-confound audit beside them.
 
@@ -168,12 +177,58 @@ def run_rebaseline(
         n_boot=n_boot,
         seed=seed,
     )
+    if piece_oracle:
+        report['piece_oracle'] = _piece_oracle(embedder.config, dataset, report)
     report['provenance'] = _provenance(ckpt, embedder.config, n_boot, seed, device)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / 'rebaseline.json', report, default=str)
     (out_dir / 'rebaseline.md').write_text(render_markdown(report), encoding='utf-8')
     return report
+
+
+def observed_held_out_top1(report: dict[str, Any]) -> float | None:
+    """The run's own held-out Top-1 out of a `rebaseline_report`, or `None` when the report carries none.
+
+    Note:
+        `train_fitted` is the honest post-processing condition and `full` its unstratified gallery -- the same cell
+        `_floor_comparison` reads for the length oracle, so both floors are compared against one number. There is no
+        `held_out` block in this report; that shape belongs to a parallax transfer cell, and reading it would leave
+        every oracle verdict at `not measured` for ever.
+    """
+    cell = ((report.get('grid') or {}).get('train_fitted') or {}).get('full')
+    top1 = cell.get('top1') if isinstance(cell, dict) else None
+
+    return None if top1 is None else float(top1)
+
+
+def _piece_oracle(config: ZTEConfig, dataset: ZuCoDataset, report: dict[str, Any]) -> dict[str, Any]:
+    """Scores the sub-word piece signatures this run's gallery gives away, and whether the run clears them.
+
+    Note:
+        This is to a token-level number what `length_oracle` is to a sentence-level one, and it is the larger of
+        the two: word count carries 5.14 bits on ZuCo, the per-word piece profile carries 9.4 of the 9.45 a
+        700-sentence gallery has to give.
+    """
+    from zte.data.targets.tokens import build_token_alignment
+    from zte.data.torch_dataset import ZuCoTorchDataset
+    from zte.evaluation.audit.rebaseline import piece_profile_report
+
+    torch_ds = ZuCoTorchDataset(dataset)
+    source = config.objective.token_source or config.decoder.lm_source
+    alignment = build_token_alignment(
+        torch_ds.ordered_texts(),
+        torch_ds.ordered_words(),
+        source,
+        max_length=config.objective.token_max_length,
+        cache_dir=str(Path(config.dataset.cache_dir) / 'tokens'),
+    )
+    observed_top1 = observed_held_out_top1(report)
+    block = piece_profile_report(alignment.word_pieces, observed_top1=observed_top1)
+    block['tokenizer'] = source
+    block['alignment_coverage'] = alignment.coverage
+
+    return block
 
 
 def _provenance(ckpt: str | Path, config: ZTEConfig, n_boot: int, seed: int, device: str) -> dict[str, Any]:
@@ -221,7 +276,17 @@ def main() -> None:
         n_boot=args.n_boot,
         seed=args.seed,
         device=args.device,
+        piece_oracle=args.piece_oracle,
     )
+
+    if piece := report.get('piece_oracle'):
+        _LOG.info(
+            'Sub-word piece oracle: worst case %s at Top-1 %.4f against this run %s -- %s.',
+            piece['worst_case_signature'],
+            piece['worst_case_top1'],
+            'unmeasured' if piece['observed_top1'] is None else f'{piece["observed_top1"]:.4f}',
+            piece['verdict'],
+        )
 
     floor = report.get('floor_comparison') or {}
     budget = report.get('bit_budget') or {}

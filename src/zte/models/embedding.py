@@ -203,6 +203,53 @@ class ZTEModel(nn.Module):
             self._residual_metrics = metrics
         return hidden
 
+    def sub_token_hidden(self, batch: dict[str, Any], n_sub: int) -> torch.Tensor:
+        """Runs the frontend to `n_sub` intra-word hiddens per word, for the sub-word alignment level.
+
+        Note:
+            Residual coding is deliberately not applied here. It predicts a word from its neighbours, so running it
+            across a word's own slices would have them predict each other, and its loss is already accumulated once
+            per batch by `token_hidden`.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+            n_sub (int): Sub-tokens per word, a fixed constant for every word.
+
+        Returns:
+            torch.Tensor: `(batch_size, seq_len, n_sub, hidden_dim)`.
+
+        Raises:
+            NotImplementedError: If the configured frontend has no intra-word path.
+        """
+        frontend_sub = getattr(self.frontend, 'sub_tokens', None)
+        if not callable(frontend_sub):
+            raise NotImplementedError(
+                f'Frontend {self.config.frontend!r} exposes no intra-word sub-token path; the sub-word alignment '
+                "level needs a raw-window frontend ('raw_conformer')."
+            )
+
+        x = self.select_input(batch)
+        signature = batch.get('subject_signature')
+        adapter_params = None
+        if self.subject_adapter is not None and signature is not None:
+            adapter_params = self.subject_adapter(signature)
+            if self.uses_raw:
+                x = self.subject_adapter.apply_spatial(x, adapter_params[0])
+
+        hidden = frontend_sub(x, n_sub)  # (batch_size, seq_len, n_sub, hidden_dim)
+        if adapter_params is not None:
+            # Broadcast over both the word and the sub-token axis explicitly: `SubjectAdapter.apply_film` unsqueezes
+            # for a rank-3 hidden, which against a rank-4 one silently aligns the batch axis with the word axis.
+            _, gamma, beta = adapter_params
+            hidden = (1.0 + gamma)[:, None, None, :] * hidden + beta[:, None, None, :]
+        if self.subject_emb is not None:
+            hidden = hidden + self.subject_emb(batch['subject'])[:, None, None, :]
+        if self.subject_film is not None:
+            gamma, beta = self.subject_film(batch['subject']).chunk(2, dim=-1)
+            hidden = (1.0 + gamma)[:, None, None, :] * hidden + beta[:, None, None, :]
+
+        return hidden
+
     def take_residual_loss(self) -> tuple[torch.Tensor | None, dict[str, float]]:
         """Returns and clears the expectation head's regression loss accumulated since the last call.
 
