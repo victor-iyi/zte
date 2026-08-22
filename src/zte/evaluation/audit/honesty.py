@@ -163,8 +163,10 @@ def _fit_score(xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarra
     import warnings
 
     from sklearn.exceptions import ConvergenceWarning
-    from sklearn.linear_model import LogisticRegression, Ridge
+    from sklearn.linear_model import LogisticRegression, RidgeCV
     from sklearn.preprocessing import StandardScaler
+
+    from zte.training.metrics import RIDGE_ALPHAS
 
     try:
         from scipy.linalg import LinAlgWarning
@@ -179,7 +181,8 @@ def _fit_score(xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarra
         warnings.simplefilter('ignore', ConvergenceWarning)
         warnings.simplefilter('ignore', LinAlgWarning)
         if task == 'regression':
-            model: object = Ridge(alpha=1.0).fit(xtr_s, ytr)
+            # The searched penalty, so this probe and `linear_probe` cannot disagree about the same representation.
+            model: object = RidgeCV(alphas=RIDGE_ALPHAS).fit(xtr_s, ytr)
             # R^2 on the held-out subject.
             pred = model.predict(xte_s)  # type: ignore[attr-defined]
             ss_res = float(np.sum((yte - pred) ** 2))

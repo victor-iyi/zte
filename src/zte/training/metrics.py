@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import warnings
+from typing import Final
 
 import numpy as np
 
 # Ridge penalties the inner search picks from. A fixed alpha=1.0 is effectively unregularised on a wide, correlated
 # design, so a target with no signal scores -p/n rather than 0 -- which reads as "the representation is worse than
 # useless" when the truth is "the probe cannot fit here". Searching the grid puts the no-signal floor back at 0.
-_RIDGE_ALPHAS: tuple[float, ...] = tuple(float(a) for a in np.logspace(-2.0, 6.0, 17))
+RIDGE_ALPHAS: Final[tuple[float, ...]] = tuple(float(a) for a in np.logspace(-2.0, 6.0, 17))
+"""Penalty grid every ridge probe in the project searches, so two probes never disagree on the estimator."""
 
 
 def residualise(values: np.ndarray, groups: np.ndarray) -> np.ndarray:
@@ -91,7 +93,14 @@ def linear_probe(
     try:
         from sklearn.exceptions import ConvergenceWarning
         from sklearn.linear_model import LogisticRegression, RidgeCV
-        from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, cross_val_score, cross_validate
+        from sklearn.model_selection import (
+            GroupKFold,
+            KFold,
+            StratifiedGroupKFold,
+            StratifiedKFold,
+            cross_val_score,
+            cross_validate,
+        )
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
     except ImportError:  # pragma: no cover
@@ -116,9 +125,16 @@ def linear_probe(
             # Stratified folds need at least `n_splits` members in the rarest class.
             min_class = int(np.unique(targets, return_counts=True)[1].min())
             n_eff = min(n_splits, min_class)
+            if groups is not None:
+                n_eff = min(n_eff, len(np.unique(groups)))
             if n_eff < 2:
                 return {**nan_out, 'baseline': 1.0}
-            splitter: object = StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
+            # A stratified splitter silently ignores `groups`, answering an easier question than the caller asked.
+            splitter: object = (
+                StratifiedGroupKFold(n_splits=n_eff, shuffle=True, random_state=seed)
+                if groups is not None
+                else StratifiedKFold(n_splits=n_eff, shuffle=True, random_state=seed)
+            )
             model: object = Pipeline([('scale', StandardScaler()), ('clf', LogisticRegression(max_iter=2000))])
             scores = cross_val_score(model, embeddings, targets, cv=splitter, scoring='accuracy', groups=groups)
             baseline = float(max(np.mean(targets == c) for c in np.unique(targets)))
@@ -131,7 +147,7 @@ def linear_probe(
                 if groups is not None
                 else KFold(n_splits=n_eff, shuffle=True, random_state=seed)
             )
-            model = Pipeline([('scale', StandardScaler()), ('ridge', RidgeCV(alphas=_RIDGE_ALPHAS))])
+            model = Pipeline([('scale', StandardScaler()), ('ridge', RidgeCV(alphas=RIDGE_ALPHAS))])
             fitted = cross_validate(
                 model, embeddings, targets, cv=splitter, scoring='r2', groups=groups, return_estimator=True
             )

@@ -38,7 +38,12 @@ HEADLINES: Final[dict[str, tuple[str, ...]]] = {
     'uniformity': ('embedding_health', 'uniformity'),
     'who_vs_what': ('neurons', 'who_vs_what_ratio'),
     'content_probe_r2': ('scoreboard', 'lift_over_raw', 'content_probe', 'raw_content_r2_best'),
+    'content_probe_within_r2': ('scoreboard', 'lift_over_raw', 'content_probe', 'raw_content_r2_within_best'),
     'content_probe_passes': ('scoreboard', 'lift_over_raw', 'content_probe', 'passes'),
+    # The floor at which a planted signal becomes visible in this run's own features: what separates
+    # "the representation carries no word length" from "less than this probe can resolve".
+    'content_probe_floor_r2': ('scoreboard', 'lift_over_raw', 'content_probe', 'detectability', 'floor_r2'),
+    'content_probe_verdict': ('scoreboard', 'lift_over_raw', 'content_probe', 'detectability_verdict'),
     'probe_machinery_r2': ('scoreboard', 'lift_over_raw', 'content_probe', 'machinery', 'word_len_r2'),
     'probe_machinery_passes': ('scoreboard', 'lift_over_raw', 'content_probe', 'machinery', 'passes'),
     'rescoring_top1': ('rescoring', 'top1'),

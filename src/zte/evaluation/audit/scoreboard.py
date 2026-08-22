@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
 from zte.evaluation import metrics as M
+from zte.evaluation.audit.probe import detectability_curve, detectability_verdict
 from zte.evaluation.neurons import neuron_report
 from zte.training.metrics import residualise
 
@@ -92,105 +93,275 @@ def lift_over_raw(comparison: list[dict[str, Any]]) -> dict[str, Any]:
 # correlation ratio with word length at 0.24-0.39, so a probe that cannot read word length from these is broken.
 _MACHINERY_FEATURES: tuple[str, ...] = ('TRT', 'GD', 'FFD', 'GPT', 'n_fixations', 'regression_time')
 
+# The empirical zero needs enough draws for its own spread to be readable; 20 also puts the smallest p at 1/21.
+_N_PERMUTATIONS: Final[int] = 20
+"""Target permutations behind the probe's empirical zero."""
+
+# Every probe here is O(n p^2) per fold and runs inside every evaluation, so the rows it sees are bounded.
+_MAX_PROBE_ROWS: Final[int] = 20_000
+"""Rows the raw-content probe fits on, deterministically subsampled when the run has more."""
+
+# One stimulus is read by every subject, so ungrouped folds train and score on the same sentence, best column first.
+_PROBE_GROUP_COLUMNS: Final[tuple[str, ...]] = ('stimulus_key', 'sentence_uid', 'subject')
+"""Columns the content probe groups its folds on."""
+
 
 def raw_content_positive_control(
-    word_band_power: np.ndarray | None, word_meta: 'pd.DataFrame'
+    word_band_power: np.ndarray | None,
+    word_meta: 'pd.DataFrame',
+    *,
+    n_perm: int = _N_PERMUTATIONS,
+    max_rows: int = _MAX_PROBE_ROWS,
+    calibrate: bool = True,
+    seed: int = 0,
 ) -> dict[str, Any] | None:
     """Probes genuinely-raw band power for lexical content -- the honest positive control.
 
     Note:
-        Two questions are asked, and confusing them is what made "the probe is broken" and "band power carries no
-        lexical content" indistinguishable. `machinery` probes word length from eye-tracking features that are known
-        to carry it, so a failure there is a fault in the probe. `pooled` and `within_subject` probe band power, and
-        a failure there -- with the machinery passing -- is a result about the signal. The within-subject column is
-        the one to read: subject identity is linearly readable from raw band power at 0.81 while word length is not,
-        so a probe fitted across subjects spends its capacity on who is reading.
+        Three questions are asked, and conflating them is what made "the probe is broken" and "band power carries no
+        lexical content" indistinguishable. `machinery` probes word length from eye-tracking features that carry it
+        by construction, so a failure there is a fault in the probe. `detectability` plants a known signal in this
+        run's own band-power matrix and reports the R2 at which the probe starts to see it, which is what separates
+        "absent" from "below the floor". `per_target_r2` and `within_subject_r2` probe band power itself, and a
+        failure there with the other two passing is a result about the signal, not a broken probe. Read the
+        within-subject number: subject identity is linearly readable from raw band power at 0.81 while word length is
+        not, so a probe fitted across subjects spends its capacity on who is reading. Every fold is grouped on a
+        stimulus column, because one sentence is read by every subject and ungrouped folds score what they trained on.
 
     Args:
         word_band_power (np.ndarray | None): Raw band power `(n, bands, channels)`, or `None` for a
             raw-signal frontend (the control is then not applicable).
-        word_meta (pd.DataFrame): Per-word metadata carrying `word_len`, `log_freq`, `subject` and, when eye
-            tracking is present, the fixation columns the machinery check reads.
+        word_meta (pd.DataFrame): Per-word metadata carrying `word_len`, `log_freq`, `subject`, a grouping column
+            and, when eye tracking is present, the fixation columns the machinery check reads.
+        n_perm (int, optional): Target permutations behind the empirical zero. Defaults to 20.
+        max_rows (int, optional): Cap on the rows every probe here fits on. Defaults to 20000.
+        calibrate (bool, optional): Whether to run the detectability calibration. Defaults to True.
+        seed (int, optional): Seed for the subsample, the permutations and the planted signals. Defaults to 0.
 
     Returns:
         dict | None: The positive-control block, or `None` when there is nothing to probe.
     """
-    machinery = _probe_machinery_control(word_meta)
+    groups, group_column = _probe_groups(word_meta)
+    machinery = _probe_machinery_control(word_meta, groups, group_column, max_rows=max_rows, seed=seed)
+
     pooled: dict[str, float] = {}
     within: dict[str, float] = {}
-    shuffled: dict[str, float] = {}
+    nulls: dict[str, dict[str, Any]] = {}
+    detectability: dict[str, Any] | None = None
+    n_probed: int | None = None
 
     if word_band_power is not None:
-        flat = np.asarray(word_band_power, dtype=np.float32).reshape(len(word_band_power), -1)
-        # Omitted words carry NaN band power; impute to the column mean so the probe sees every row.
-        col_mean = np.nanmean(np.where(np.isfinite(flat), flat, np.nan), axis=0)
-        col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
-        flat = np.where(np.isfinite(flat), flat, col_mean)
+        flat = _flat_band_power(word_band_power)
         subjects = word_meta['subject'].to_numpy() if 'subject' in word_meta.columns else None
 
         for target in ('word_len', 'log_freq'):
             if target not in word_meta.columns:
                 continue
+
             y = np.asarray(word_meta[target].to_numpy(), dtype=np.float64)
-            keep = np.isfinite(y)
-            if keep.sum() < 32:
+            rows = _probe_rows(np.isfinite(y), max_rows, seed)
+            if rows is None:
                 continue
-            x, y_keep = flat[keep], y[keep]
-            pooled[target] = _r2(M.linear_probe(x, y_keep, task='regression'))
+
+            x, y_keep = flat[rows], y[rows]
+            group = groups[rows] if groups is not None else None
+            # Reported from the first target, which is also the matrix the detectability floor is calibrated on.
+            n_probed = int(rows.size) if n_probed is None else n_probed
+
+            pooled[target] = _r2(M.linear_probe(x, y_keep, task='regression', groups=group))
             if subjects is not None:
-                group = np.asarray(subjects)[keep]
+                # Centring both sides is only half of the within-subject question: the folds have to stay grouped too.
+                reader = np.asarray(subjects)[rows]
                 within[target] = _r2(
-                    M.linear_probe(residualise(x, group), residualise(y_keep, group), task='regression')
+                    M.linear_probe(residualise(x, reader), residualise(y_keep, reader), task='regression', groups=group)
                 )
-            # The empirical zero: the identical estimator on a target that carries no information at all.
-            shuffled[target] = _r2(M.linear_probe(x, np.random.default_rng(0).permutation(y_keep), task='regression'))
+            nulls[target] = _permutation_null(x, y_keep, group, n_perm=n_perm, observed=pooled[target], seed=seed)
+
+            # One calibration per run: the two targets share a matrix, so the floor they are read against is one number.
+            if calibrate and detectability is None:
+                detectability = detectability_curve(x, groups=group, seed=seed)
 
     if not pooled and machinery is None:
         return None
 
-    band_power_best = max([*pooled.values(), *within.values()]) if (pooled or within) else float('nan')
-    # `passes` answers "may a content number in this report be believed", so the machinery check decides it
-    # whenever there is one. A raw-signal run has no band power to probe, and that is not a broken probe.
-    trustworthy = machinery['passes'] if machinery else bool(band_power_best >= _CONTENT_PROBE_FLOOR)
+    pooled_best = max(pooled.values()) if pooled else float('nan')
+    within_best = max(within.values()) if within else float('nan')
+    # A pooled probe can score on who is reading rather than what, so the honest within-subject number is the headline.
+    best = within_best if np.isfinite(within_best) else pooled_best
+    calibration = detectability_verdict(float(best) if np.isfinite(best) else None, detectability)
+
+    clauses = {
+        'band_power_probed': bool(pooled),
+        'machinery_reads_word_length': machinery['passes'] if machinery else None,
+        'estimator_recovers_planted_signal': detectability['established'] if detectability else None,
+        'band_power_above_floor': bool(np.isfinite(best) and best >= _CONTENT_PROBE_FLOOR),
+    }
+    evidence = [
+        name
+        for name, holds in (
+            ('eye-tracking machinery check', clauses['machinery_reads_word_length']),
+            ('planted-signal detectability', clauses['estimator_recovers_planted_signal']),
+            ('raw band power above floor', clauses['band_power_above_floor']),
+        )
+        if holds
+    ]
+    # Neither clause decides alone: an estimator that reads content where it exists, and band power actually probed.
+    passes = bool(clauses['band_power_probed'] and evidence)
+
     return {
-        'raw_content_r2_best': round(band_power_best, 4) if np.isfinite(band_power_best) else None,
+        'raw_content_r2_best': round(float(best), 4) if np.isfinite(best) else None,
+        'raw_content_r2_pooled_best': round(float(pooled_best), 4) if np.isfinite(pooled_best) else None,
+        'raw_content_r2_within_best': round(float(within_best), 4) if np.isfinite(within_best) else None,
+        'best_is': 'within-subject' if np.isfinite(within_best) else ('pooled' if np.isfinite(pooled_best) else None),
         'per_target_r2': {k: round(v, 4) for k, v in pooled.items()},
         'within_subject_r2': {k: round(v, 4) for k, v in within.items()},
-        'shuffled_target_r2': {k: round(v, 4) for k, v in shuffled.items()},
+        'shuffled_target_r2': {k: v['mean'] for k, v in nulls.items()},
+        'permutation_null': nulls,
+        'detectability': detectability,
+        'detectability_verdict': calibration,
         'machinery': machinery,
         'band_power_applicable': word_band_power is not None,
+        'n_probed': n_probed,
+        'cv_groups': group_column,
+        'within_subject_centring': 'transductive (subject means over every row)' if within else None,
         'floor': _CONTENT_PROBE_FLOOR,
-        'passes': bool(trustworthy),
-        'decided_by': 'eye-tracking machinery check' if machinery else 'raw band-power',
+        'passes': passes,
+        'passes_clauses': clauses,
+        'decided_by': ' + '.join(evidence) if evidence else 'nothing established the estimator',
+        'finding': _content_finding(machinery, pooled_best, within_best, best, calibration, bool(pooled)),
         'source': 'raw band-power' if word_band_power is not None else 'raw signal (no band power to probe)',
     }
 
 
-def _probe_machinery_control(word_meta: 'pd.DataFrame') -> dict[str, Any] | None:
-    """Probes word length from eye-tracking features, which is the check that the probe itself works.
+def _probe_groups(word_meta: 'pd.DataFrame') -> tuple[np.ndarray | None, str | None]:
+    """The first grouping column with two or more levels, so no stimulus is both trained on and scored."""
+    for column in _PROBE_GROUP_COLUMNS:
+        if column not in word_meta.columns:
+            continue
 
-    Note:
-        Reading time tracks word length by construction, so this must clear the floor. If it does and band power does
-        not, the honest reading is "the probe works and band power carries no linear lexical content" -- a result.
-        If this fails too, no content number from the run means anything and the scoreboard says so.
-    """
+        values = word_meta[column].astype(str).to_numpy()
+        if len(np.unique(values)) >= 2:
+            return values, column
+
+    return None, None
+
+
+def _probe_rows(keep: np.ndarray, max_rows: int, seed: int) -> np.ndarray | None:
+    """Rows the probe fits on: the finite ones, capped by a deterministic subsample, or `None` when too few."""
+    rows = np.flatnonzero(keep)
+    if rows.size < 32:
+        return None
+
+    if rows.size > max_rows:
+        rows = np.sort(np.random.default_rng(seed).choice(rows, size=max_rows, replace=False))
+
+    return rows
+
+
+def _flat_band_power(word_band_power: np.ndarray) -> np.ndarray:
+    """Flattens band power to `(n, bands * channels)`, imputing an omitted word to the column mean."""
+    flat = np.asarray(word_band_power, dtype=np.float32).reshape(len(word_band_power), -1)
+    col_mean = np.nanmean(np.where(np.isfinite(flat), flat, np.nan), axis=0)
+    col_mean = np.where(np.isfinite(col_mean), col_mean, 0.0)
+
+    return np.where(np.isfinite(flat), flat, col_mean)
+
+
+def _permutation_null(
+    x: np.ndarray, y: np.ndarray, groups: np.ndarray | None, *, n_perm: int, observed: float, seed: int
+) -> dict[str, Any]:
+    """The empirical zero: the identical estimator on `n_perm` permuted copies of the same target."""
+    rng = np.random.default_rng(seed)
+    draws = np.asarray(
+        [_r2(M.linear_probe(x, rng.permutation(y), task='regression', groups=groups)) for _ in range(max(1, n_perm))],
+        dtype=np.float64,
+    )
+    beaten = int(np.sum(draws >= observed)) if np.isfinite(observed) else draws.size
+
+    return {
+        'mean': round(float(np.mean(draws)), 4),
+        'std': round(float(np.std(draws)), 4),
+        'interval': [round(float(np.quantile(draws, 0.025)), 4), round(float(np.quantile(draws, 0.975)), 4)],
+        'p_value': round((1.0 + beaten) / (draws.size + 1.0), 4),
+        'p_floor': round(1.0 / (draws.size + 1.0), 4),
+        'n_perm': int(draws.size),
+        'scores': [round(float(s), 4) for s in draws],
+    }
+
+
+def _content_finding(
+    machinery: dict[str, Any] | None,
+    pooled_best: float,
+    within_best: float,
+    best: float,
+    calibration: dict[str, Any],
+    probed: bool,
+) -> str:
+    """One honest sentence per clause: what the estimator can read, what it recovers, and what band power gave."""
+    if not probed:
+        return (
+            'No band power was probed, so nothing here establishes the content probe on the features the model reads.'
+        )
+
+    parts: list[str] = []
+    if machinery:
+        verb = 'reads' if machinery['passes'] else 'cannot read'
+        parts.append(
+            f'The estimator {verb} word length off {len(machinery["features"])} eye-tracking features at '
+            f'R2={machinery["word_len_r2"]:.4f}.'
+        )
+    parts.append(str(calibration['statement']))
+
+    if np.isfinite(pooled_best) and np.isfinite(within_best):
+        parts.append(
+            f'Pooled over subjects band power scores R2={pooled_best:.4f} and within a subject R2={within_best:.4f}; '
+            'the within-subject number is the one quoted, because the pooled probe can score on who is reading.'
+        )
+
+    established = bool((machinery and machinery['passes']) or calibration['established'])
+    if not established:
+        parts.append('Nothing establishes the estimator here, so no content number in this report is readable yet.')
+    elif np.isfinite(best) and best < _CONTENT_PROBE_FLOOR:
+        parts.append(
+            'Raw band power carries no word length this probe can decode linearly. With the estimator established, '
+            'that is a result about the signal rather than a broken probe.'
+        )
+    else:
+        parts.append('Raw band power carries lexical content, so a content budget measured against it is readable.')
+
+    return ' '.join(parts)
+
+
+def _probe_machinery_control(
+    word_meta: 'pd.DataFrame',
+    groups: np.ndarray | None,
+    group_column: str | None,
+    *,
+    max_rows: int = _MAX_PROBE_ROWS,
+    seed: int = 0,
+) -> dict[str, Any] | None:
+    """Probes word length from eye-tracking features, which is the check that the estimator itself works."""
     columns = [c for c in _MACHINERY_FEATURES if c in word_meta.columns]
     if not columns or 'word_len' not in word_meta.columns:
         return None
 
     x = np.asarray(word_meta[columns].to_numpy(), dtype=np.float64)
     y = np.asarray(word_meta['word_len'].to_numpy(), dtype=np.float64)
-    keep = np.isfinite(y) & np.isfinite(x).all(axis=1)
-    if int(keep.sum()) < 32:
+    # Capped and grouped exactly like the band-power probe, or the two numbers answer questions of different difficulty.
+    rows = _probe_rows(np.isfinite(y) & np.isfinite(x).all(axis=1), max_rows, seed)
+    if rows is None:
         return None
 
-    score = _r2(M.linear_probe(x[keep], y[keep], task='regression'))
+    group = groups[rows] if groups is not None else None
+    score = _r2(M.linear_probe(x[rows], y[rows], task='regression', groups=group))
+
     return {
         'features': columns,
         'word_len_r2': round(score, 4),
         'floor': _CONTENT_PROBE_FLOOR,
         'passes': bool(np.isfinite(score) and score >= _CONTENT_PROBE_FLOOR),
-        'n': int(keep.sum()),
+        'n': int(rows.size),
+        'cv_groups': group_column,
     }
 
 
@@ -764,42 +935,7 @@ def _sentence_lengths(sent_n_words: np.ndarray | None, sent_meta: 'pd.DataFrame 
 def render_markdown(board: dict[str, Any]) -> str:
     """Renders the scoreboard as a compact Markdown block for the top of the report."""
     lines = ['## Scoreboard — the honest headline', '']
-    cp = board['lift_over_raw'].get('content_probe', {})
-    ok = '✅ PASS' if cp.get('passes') else '❌ FAIL'
-    best = cp.get('raw_content_r2_best')
-    reading = f'raw band-power reads lexical content at R²={best:.3f}' if best is not None else str(cp.get('source'))
-    lines.append(f'**Content-probe positive control:** {ok} ({reading}, floor {cp.get("floor")}).')
-    machinery = cp.get('machinery') or {}
-    if machinery:
-        works = '✅ works' if machinery.get('passes') else '❌ BROKEN'
-        lines.append('')
-        lines.append(
-            f'**Probe machinery check:** {works} — word length off {len(machinery.get("features", []))} '
-            f'eye-tracking features at R²={machinery.get("word_len_r2", float("nan")):.3f} '
-            f'(n={machinery.get("n")}). '
-            + (
-                'The estimator can read lexical content when it is there, so a band-power failure above is a '
-                'result about the signal, not a broken probe.'
-                if machinery.get('passes')
-                else 'The estimator cannot read word length even from reading times, so no content number in this '
-                'report means anything until it is fixed.'
-            )
-        )
-    within = cp.get('within_subject_r2') or {}
-    shuffled = cp.get('shuffled_target_r2') or {}
-    if within or shuffled:
-        lines.append('')
-        lines.append('| band-power probe | word_len | log_freq |')
-        lines.append('| --- | --- | --- |')
-        for label, cell in (
-            ('pooled over subjects', cp.get('per_target_r2') or {}),
-            ('within subject', within),
-            ('shuffled target (empirical zero)', shuffled),
-        ):
-            lines.append(
-                f'| {label} | {cell.get("word_len", float("nan")):.4f} | {cell.get("log_freq", float("nan")):.4f} |'
-            )
-    lines.append('')
+    lines += _content_probe_lines(board['lift_over_raw'].get('content_probe', {}))
 
     if board['is_loso']:
         g = board.get('held_out_geometry') or {}
@@ -858,6 +994,98 @@ def render_markdown(board: dict[str, Any]) -> str:
         )
     lines.append('')
     return '\n'.join(lines)
+
+
+def _content_probe_lines(cp: dict[str, Any]) -> list[str]:
+    """Markdown for the positive control: both clauses of `passes`, the empirical zero and the detectability floor."""
+    ok = '✅ PASS' if cp.get('passes') else '❌ FAIL'
+    best = cp.get('raw_content_r2_best')
+    reading = (
+        f'the {cp.get("best_is", "raw")} band-power probe scores R²={best:.4f}'
+        if best is not None
+        else str(cp.get('source'))
+    )
+    lines = [f'**Content-probe positive control:** {ok} ({reading}, floor {cp.get("floor")}).']
+
+    clauses = cp.get('passes_clauses') or {}
+    if clauses:
+        stated = ', '.join(f'`{name}` {_clause(value)}' for name, value in clauses.items())
+        lines += [
+            '',
+            f'Clauses (a pass needs a probed measurement *and* an established estimator): {stated} — '
+            f'established by {cp.get("decided_by")}.',
+        ]
+
+    machinery = cp.get('machinery') or {}
+    if machinery:
+        works = '✅ works' if machinery.get('passes') else '❌ BROKEN'
+        lines += [
+            '',
+            f'**Probe machinery check:** {works} — word length off {len(machinery.get("features", []))} '
+            f'eye-tracking features at R²={machinery.get("word_len_r2", float("nan")):.3f} '
+            f'(n={machinery.get("n")}, folds grouped on `{machinery.get("cv_groups")}`).',
+        ]
+
+    within = cp.get('within_subject_r2') or {}
+    nulls = cp.get('permutation_null') or {}
+    if within or nulls or cp.get('per_target_r2'):
+        n_perm = next((block['n_perm'] for block in nulls.values()), 0)
+        lines += [
+            '',
+            f'Folds grouped on `{cp.get("cv_groups")}` over {cp.get("n_probed")} rows, so no stimulus is both '
+            'trained on and scored.',
+            '',
+            '| band-power probe | word_len | log_freq |',
+            '| --- | --- | --- |',
+        ]
+        for label, cell in (
+            ('pooled over subjects', cp.get('per_target_r2') or {}),
+            ('within subject (the honest one)', within),
+            (f'permuted target (empirical zero, {n_perm} draws)', cp.get('shuffled_target_r2') or {}),
+        ):
+            lines.append(
+                f'| {label} | {cell.get("word_len", float("nan")):.4f} | {cell.get("log_freq", float("nan")):.4f} |'
+            )
+        if nulls:
+            lines.append(
+                f'| empirical zero, 95% interval | {_interval(nulls, "word_len")} | {_interval(nulls, "log_freq")} |'
+            )
+
+    verdict = cp.get('detectability_verdict') or {}
+    if verdict:
+        detect = cp.get('detectability') or {}
+        floor_r2 = detect.get('floor_r2')
+        planted = (
+            f'R²={floor_r2:.4f}, reached by a signal planted at SNR {detect.get("floor_snr")}'
+            if floor_r2 is not None
+            else 'not established'
+        )
+        lines += [
+            '',
+            f'**Detectability floor:** {planted} — calibrated on the same {detect.get("n_features")} features over '
+            f'{detect.get("n")} rows with the same folds. {verdict.get("statement")}',
+        ]
+
+    if cp.get('finding'):
+        lines += ['', f'**Reading:** {cp["finding"]}']
+
+    lines.append('')
+    return lines
+
+
+def _clause(value: bool | None) -> str:
+    """A `passes` clause as a mark, with `None` reading as `not applicable` rather than as a failure."""
+    return '—' if value is None else ('✅' if value else '❌')
+
+
+def _interval(nulls: dict[str, Any], target: str) -> str:
+    """The permutation null's 95% interval for one target, or a dash when it was not probed."""
+    block = nulls.get(target)
+    if not block:
+        return '—'
+
+    lo, hi = block['interval']
+    return f'[{lo:.4f}, {hi:.4f}]'
 
 
 def _length_stratified_lines(block: dict[str, Any] | None) -> list[str]:
