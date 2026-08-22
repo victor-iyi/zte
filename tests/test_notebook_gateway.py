@@ -23,8 +23,14 @@ NOTEBOOKS: Final[tuple[Path, ...]] = (
     GATEWAY,
     REPO / 'notebooks' / 'zte_colab.ipynb',
     REPO / 'notebooks' / 'zte_parallax.ipynb',
+    REPO / 'notebooks' / 'alignments' / 'zte_token.ipynb',
+    REPO / 'notebooks' / 'alignments' / 'zte_word.ipynb',
+    REPO / 'notebooks' / 'alignments' / 'zte_sentence.ipynb',
 )
 """Every shipped notebook, each of which Colab opens with an interpreter older than the venv."""
+
+ALIGNMENT: Final[tuple[Path, ...]] = NOTEBOOKS[3:]
+"""The three level notebooks, which differ only in which unit their contrastive term pulls at."""
 
 # The kernel renders payloads that `zte-colab` printed; it never computes with ZTE. `pandas` and `plotly` are
 # Colab's own copies, reading CSV and figure JSON, and `ipywidgets` is Colab's behind an ImportError fallback.
@@ -237,3 +243,84 @@ def test_the_shell_guard_catches_every_way_of_naming_an_interpreter(line: str) -
 def test_the_shell_guard_lets_provisioning_through(line: str) -> None:
     """Provisioning the interpreter is the one thing a pre-venv shell cell is for."""
     assert not PYTHON_IN_SHELL.search(line), f'{line!r} only installs an interpreter and must not be flagged'
+
+
+# ---- The three alignment notebooks ---- #
+
+
+@pytest.mark.parametrize('notebook', ALIGNMENT, ids=lambda p: p.name)
+def test_every_arm_the_level_notebook_trains_has_a_config_on_disk(notebook: Path) -> None:
+    """The level's config paths are interpolated from a variable, so the literal-path guard above cannot see them."""
+    level = notebook.stem.removeprefix('zte_')
+    missing = [
+        arm
+        for arm in ('combined', 'nr', 'sr', 'tsr')
+        if not (REPO / 'experiments' / 'alignment' / level / f'{arm}.yaml').is_file()
+    ]
+
+    assert not missing, f'{notebook.name} trains {missing} but those configs are not on disk'
+
+
+@pytest.mark.parametrize('notebook', ALIGNMENT, ids=lambda p: p.name)
+def test_the_level_notebook_trains_only_its_own_level(notebook: Path) -> None:
+    """A notebook that trains a sibling's arm makes two levels write one run directory and each overwrite the other."""
+    level = notebook.stem.removeprefix('zte_')
+    others = {'token', 'word', 'sentence'} - {level}
+    trained = [
+        (cell, other)
+        for cell, source in _code_cells(notebook)
+        for command in _shell_commands(source)
+        if 'zte-run' in command
+        for other in others
+        if f'experiments/alignment/{other}/' in command
+    ]
+
+    assert not trained, f'{notebook.name} is the {level} level but trains {trained}'
+
+
+@pytest.mark.parametrize('notebook', ALIGNMENT, ids=lambda p: p.name)
+def test_every_training_cell_resumes(notebook: Path) -> None:
+    """Without `--resume` a re-run reseeds `best.pt` on Drive at epoch 1, destroying the run it meant to continue."""
+    offenders = [
+        (cell, command[:70])
+        for cell, source in _code_cells(notebook)
+        for command in _shell_commands(source)
+        if 'zte-run' in command and '--resume' not in command
+    ]
+
+    assert not offenders, f'{notebook.name} has zte-run cells without --resume: {offenders}'
+
+
+def test_the_token_notebook_gates_its_headline_on_the_piece_oracle() -> None:
+    """On a 700-sentence gallery the per-word sub-word piece profile retrieves 697/700 with no brain involved.
+
+    Note:
+        That is a larger channel than sentence length, which this project already refuses to quote a number
+        without. A token-level notebook that never runs the oracle cannot tell a result from the floor under it.
+    """
+    sources = [source for _, source in _code_cells(REPO / 'notebooks' / 'alignments' / 'zte_token.ipynb')]
+
+    assert any('--piece-oracle' in source for source in sources), 'the token notebook never scores the piece oracle'
+    assert any('zte-rebaseline' in source for source in sources), 'the token notebook never runs the audit at all'
+
+
+@pytest.mark.parametrize('notebook', NOTEBOOKS, ids=lambda p: p.name)
+def test_no_code_cell_needs_syntax_newer_than_the_kernel_that_compiles_it(notebook: Path) -> None:
+    """Colab's kernel is older than the venv, and `ast.parse` here runs under the venv's own 3.14.
+
+    Note:
+        So a cell using 3.14-only syntax -- PEP 758's unparenthesised `except A, B:` is the easy one to reach for --
+        parses green in this suite and is a `SyntaxError` in the notebook. `feature_version` pins the grammar to the
+        oldest interpreter Colab is likely to open these with.
+    """
+    offenders: list[tuple[int, str]] = []
+    for cell, source in _code_cells(notebook):
+        if source.startswith('%%'):
+            continue
+
+        try:
+            ast.parse(_as_python(source), feature_version=(3, 10))
+        except SyntaxError as exc:
+            offenders.append((cell, str(exc)))
+
+    assert not offenders, f'{notebook.name} has cells the Colab kernel cannot compile: {offenders}'

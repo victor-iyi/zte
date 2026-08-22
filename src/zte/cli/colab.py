@@ -9,6 +9,18 @@ from typing import Any, Final
 
 import yaml
 
+from zte.cli.support.sweep import (
+    LEVELS,
+    REGIMES,
+    TIER_ALIASES,
+    TIERS,
+    hours,
+    next_run,
+    plan,
+    progress,
+    resolve_tiers,
+    status,
+)
 from zte.config import DecoderConfig
 from zte.data.schema import SUBJECTS_V1
 from zte.device import device_plan
@@ -557,6 +569,57 @@ def _panels(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _sweep(args: argparse.Namespace) -> dict[str, Any]:
+    """Plans the campaign, reads which of its runs already landed, and names the one to train next."""
+    tiers = resolve_tiers(args.tiers)
+    runs = plan(tiers, levels=args.levels, regimes=args.regimes)
+
+    payload: dict[str, Any] = {
+        'verb': args.verb,
+        'tiers': list(tiers),
+        'levels': list(args.levels),
+        'regimes': list(args.regimes),
+        'planned': len(runs),
+        # Tiers share run directories, so the number of trainings is below the number of plan rows.
+        'distinct': len({run.run_name for run in runs}),
+        'hours': hours(runs),
+    }
+
+    # `plan` answers what the campaign is, and answers it on a machine with no Drive mounted and nothing trained.
+    if args.verb == 'plan':
+        payload['runs'] = [run.as_dict() for run in runs]
+        return payload
+
+    sessions, roots = _run_roots(args.drive, args.experiments)
+    out_root = Path(args.out_root)
+    search = roots if out_root in roots else [*roots, out_root]
+
+    statuses = status(runs, search)
+    upcoming = next_run(statuses)
+    summary = progress(statuses)
+
+    payload |= {
+        'drive_root': str(args.drive) if args.drive else None,
+        'sessions': [str(path) for path in sessions],
+        'roots': [str(path) for path in search],
+        'out_root': str(out_root),
+        'progress': summary.as_dict(),
+        'next': None if upcoming is None else {**upcoming.as_dict(), 'out_dir': str(out_root / upcoming.run_name)},
+    }
+    if args.verb == 'status':
+        payload['runs'] = [state.as_dict() for state in statuses]
+
+    _LOG.info(
+        'Campaign: %d/%d runs done, %.1f h remaining; next is %s.',
+        summary.done,
+        summary.total,
+        summary.hours_remaining,
+        upcoming.run_name if upcoming else 'nothing -- the campaign is complete',
+    )
+
+    return payload
+
+
 def _mirror(args: argparse.Namespace) -> dict[str, Any]:
     """Copies a session between the VM's disk and Drive, skipping what is rebuildable."""
     session = DriveSession.create(args.drive, run_date=args.date, write_mode=args.write_mode, make_dirs=False)
@@ -653,6 +716,26 @@ def parse_arguments() -> argparse.Namespace:
     panels.add_argument('--only', default=None, help='Panel names to draw, comma-separated.')
     panels.add_argument('--montage', default=None, help='Montage CSV for the electrode map.')
 
+    sweep = sub.add_parser('sweep', parents=[common, drive], help='Plan the campaign and see what still owes hours.')
+    sweep.add_argument('verb', choices=('plan', 'next', 'status'), help='List the plan, name the next run, or both.')
+    sweep.add_argument(
+        '--tiers',
+        nargs='*',
+        default=list(TIERS),
+        choices=sorted(TIER_ALIASES),
+        help='Tiers to plan, by name or campaign number.',
+    )
+    sweep.add_argument('--levels', nargs='*', default=list(LEVELS), choices=list(LEVELS))
+    sweep.add_argument('--regimes', nargs='*', default=list(REGIMES), choices=list(REGIMES))
+    sweep.add_argument('--experiments', nargs='*', type=Path, default=None, help='Extra local run roots to read.')
+    sweep.add_argument(
+        '--out-root',
+        type=Path,
+        default=Path('res/experiments'),
+        dest='out_root',
+        help='Where the next run writes; also searched for runs this VM finished but has not mirrored yet.',
+    )
+
     mirror = sub.add_parser('mirror', parents=[common, drive], help='Copy this session between the VM and Drive.')
     mirror.add_argument('--direction', default='up', choices=('up', 'down'))
     mirror.add_argument('--date', default=None, help='Session date; defaults to today.')
@@ -695,6 +778,8 @@ def main() -> None:
             )
         case 'panels':
             payload = _panels(args)
+        case 'sweep':
+            payload = _sweep(args)
         case 'mirror':
             payload = _mirror(args)
         case unknown:  # pragma: no cover -- argparse rejects any verb that has no subparser
