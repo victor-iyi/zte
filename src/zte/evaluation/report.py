@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import pandas as pd
@@ -25,6 +28,23 @@ HONEST_SPLIT: tuple[str, str] = ('by_subject_and_stimulus', 'test')
 
 # Stands in for the control stack of a block that never recorded which controls it pre-registered.
 UNRECORDED_CONTROLS: str = '<no controls_requested ledger>'
+
+# Evaluation costs roughly twice what training does, in one call with a single write at the very end, so a VM
+# reclaimed at minute 60 of it repeats all 60 minutes unless each block records itself as it lands.
+PARTIAL_FILE: Final[str] = '_partial.json'
+"""Per-block progress file written beside `metrics.json` and deleted once that file lands."""
+
+# Named once, because a sweep-profile `metrics.json` whose absent blocks are not declared reads as a full one.
+SWEEP_SKIPPED: Final[tuple[str, ...]] = (
+    'analogy',
+    'neurons',
+    'emergence',
+    'word_retrieval_by_novelty',
+    'word_retrieval_freq_matched',
+    'figures',
+    'interactive',
+)
+"""Metrics blocks the `sweep` profile does not compute."""
 
 
 def _encode(values: np.ndarray) -> np.ndarray:
@@ -68,6 +88,144 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
     return head + body
 
 
+def _eval_profile(config: Any | None) -> str:
+    """Reads `train.eval_profile`, falling back to the full suite for a config written before the knob existed."""
+    profile = getattr(getattr(config, 'train', None), 'eval_profile', None) or 'full'
+    if profile not in {'full', 'sweep'}:
+        _LOG.warning('Unknown train.eval_profile %r -- running the full evaluation suite.', profile)
+        return 'full'
+
+    return str(profile)
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerces numpy scalars and arrays into JSON types, raising on anything a block cannot round-trip."""
+    match value:
+        case np.generic():
+            return value.item()
+        case np.ndarray():
+            return value.tolist()
+        case None | bool() | int() | float() | str():
+            return value
+        case dict():
+            # A non-string key would come back as a string and quietly change the block's shape.
+            if any(not isinstance(k, str) for k in value):
+                raise TypeError('block keys must be strings')
+            return {k: _jsonable(v) for k, v in value.items()}
+        case list() | tuple():
+            return [_jsonable(v) for v in value]
+        case Path():
+            return str(value)
+        case _:
+            raise TypeError(f'{type(value).__name__} is not JSON-serialisable')
+
+
+def _eval_fingerprint(
+    word_emb: np.ndarray,
+    raw_word_feats: np.ndarray,
+    sent_emb: np.ndarray,
+    sent_content_ids: np.ndarray,
+    decoder_blocks: tuple[dict[str, Any] | None, ...],
+) -> str:
+    """Digest of everything a recorded block was computed from, so a re-entry can never reuse a stale number."""
+    from zte.evaluation.audit.scoreboard import embedding_checksum
+
+    digest = hashlib.sha256()
+    for array in (word_emb, raw_word_feats, sent_emb, np.asarray(sent_content_ids, dtype=np.float64)):
+        digest.update(embedding_checksum(array).encode())
+    digest.update(json.dumps(decoder_blocks, sort_keys=True, default=str).encode())
+
+    return digest.hexdigest()[:16]
+
+
+class _EvalStages:
+    """Block-level progress for one evaluation directory, so a reclaim costs the block in flight and not the hour."""
+
+    def __init__(self, path: Path, fingerprint: str, profile: str, mirror: Path | None = None) -> None:
+        self.path = path
+        self.fingerprint = fingerprint
+        self.profile = profile
+        # Without a mirror the file dies with the VM it protects, which on Colab is the only failure it was
+        # built for -- the run directory is mirrored at stage boundaries, and evaluation is one whole stage.
+        self.mirror = mirror
+        self.blocks: dict[str, Any] = self._read()
+
+    def _read(self) -> dict[str, Any]:
+        """Recorded blocks from a previous entry; empty when the file is absent, torn or from other embeddings."""
+        source = self.path if self.path.is_file() else self.mirror
+        if source is None or not source.is_file():
+            return {}
+
+        try:
+            stored = json.loads(source.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            _LOG.warning('Partial evaluation %s unreadable (%r); every block is recomputed.', self.path.name, exc)
+            return {}
+
+        if not isinstance(stored, dict) or stored.get('fingerprint') != self.fingerprint:
+            _LOG.info('Partial evaluation %s measures other embeddings; every block is recomputed.', self.path.name)
+            return {}
+
+        blocks = dict(stored.get('blocks') or {})
+        _LOG.info('Partial evaluation %s carries %d completed block(s).', self.path.name, len(blocks))
+
+        return blocks
+
+    def run[T](self, name: str, compute: Callable[[], T]) -> T:
+        """Returns the block recorded by an earlier entry, else computes it and records it before returning."""
+        if name in self.blocks:
+            _LOG.info('Evaluation block %r read from %s.', name, self.path.name)
+            # A copy: callers pop the per-query vectors out of a block, and must not empty what was recorded.
+            return _jsonable(self.blocks[name])
+
+        value = compute()
+        self._record(name, value)
+
+        return value
+
+    def _record(self, name: str, value: Any) -> None:
+        """Writes the block out atomically; a value JSON cannot carry is returned but never checkpointed."""
+        try:
+            self.blocks[name] = _jsonable(value)
+        except TypeError as exc:
+            _LOG.debug('Evaluation block %r is not checkpointable: %r', name, exc)
+            return
+
+        payload = {'fingerprint': self.fingerprint, 'eval_profile': self.profile, 'blocks': self.blocks}
+        tmp = self.path.with_name(f'{self.path.name}.tmp')
+        try:
+            tmp.write_text(json.dumps(payload), encoding='utf-8')
+            tmp.replace(self.path)
+        except (OSError, ValueError) as exc:  # pragma: no cover - defensive
+            _LOG.warning('Could not record evaluation block %r: %r', name, exc)
+            return
+
+        self._to_drive()
+
+    def _to_drive(self) -> None:
+        """Copies the partial file to its mirror, so a reclaimed VM resumes rather than repeating the hour."""
+        if self.mirror is None:
+            return
+
+        try:
+            self.mirror.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.path, self.mirror)
+        except OSError as exc:  # pragma: no cover -- an unmounted Drive is a normal off-Colab state
+            _LOG.debug('Could not mirror %s: %r', self.path.name, exc)
+
+    def clear(self) -> None:
+        """Deletes the partial file, which has nothing left to protect once `metrics.json` is on disk."""
+        self.blocks.clear()
+        self.path.unlink(missing_ok=True)
+        if self.mirror is not None:
+            self.mirror.unlink(missing_ok=True)
+
+
+def _relative(paths: list[Path], out: Path) -> list[str]:
+    """Figure paths relative to the evaluation directory, which is how `metrics.json` names them."""
+    return [str(p.relative_to(out)) for p in paths]
+
+
 def evaluate_representation(
     word_emb: np.ndarray,
     word_meta: pd.DataFrame,
@@ -92,12 +250,22 @@ def evaluate_representation(
     rescoring: dict[str, Any] | None = None,
     decoder_capacity: dict[str, Any] | None = None,
     min_prefix_kl: float = 0.05,
+    partial_mirror: str | Path | None = None,
 ) -> dict[str, Any]:
     """Runs the full evaluation and writes metrics, tables, figures and a report.
 
     Beyond the global probes/retrieval/health this adds per-subject / per-task / per-category
     breakdowns, vector-arithmetic transfer analogies and (given band power) scalp-region importance,
     then emits the interactive HTML explorers and a TensorBoard log.
+
+    Note:
+        `config.train.eval_profile` decides how much of that runs: `sweep` keeps only the blocks a headline may
+        be read from and stamps `eval_profile` plus `eval_skipped` into the metrics. `partial_mirror` names a
+        durable directory the block-progress file is copied to as it grows, because evaluation is two thirds of a
+        run and the run directory is only mirrored once evaluation has already returned. Every block records itself
+        into `_partial.json` as it lands, so re-entering after a reclaimed machine resumes at the interrupted
+        block instead of repeating the hour before it; the file is deleted once `metrics.json` is written, and
+        deleting it by hand forces a full recompute.
 
     Args:
         word_emb (np.ndarray): Word-level ZTE embeddings `(n_words, embed_dim)`.
@@ -143,6 +311,8 @@ def evaluate_representation(
     out = Path(out_dir)
     fig_dir = out / 'figures'
     fig_dir.mkdir(parents=True, exist_ok=True)
+    profile = _eval_profile(config)
+    sweep = profile == 'sweep'
 
     # 0) Label-free geometry post-processing; order matters: whiten, THEN all-but-the-top.
     obj_cfg = getattr(config, 'objective', None)
@@ -202,6 +372,17 @@ def evaluate_representation(
             csls_k,
         )
 
+    # Every block below records itself as it lands, keyed by what it was computed from, so re-entering this
+    # function after a reclaim resumes at the block that was interrupted.
+    stages = _EvalStages(
+        out / PARTIAL_FILE,
+        _eval_fingerprint(
+            word_emb, raw_word_feats, sent_emb, sent_content_ids, (generation, rescoring, decoder_capacity)
+        ),
+        profile,
+        Path(partial_mirror) / PARTIAL_FILE if partial_mirror else None,
+    )
+
     # 1) Transfer probes: ZTE vs raw band-power vs noise-matched control vs phase-shuffled ZTE.
     representations = {
         'ZTE': np.asarray(word_emb, dtype=np.float32),
@@ -213,20 +394,22 @@ def evaluate_representation(
         phase_word_emb = _postprocess(phase_word_emb, None, do_whiten, n_top)
         representations['phase-shuffled ZTE'] = phase_word_emb
     targets = _word_targets(word_meta)
-    comparison = M.representation_comparison(representations, targets)
+    comparison = stages.run('probe_comparison', lambda: M.representation_comparison(representations, targets))
 
     # 2) Geometry / health (with adjacency positives for alignment).
-    pairs = _adjacency_pairs(word_meta)
-    health = M.embedding_health(word_emb, pairs=pairs)
+    health = stages.run('embedding_health', lambda: M.embedding_health(word_emb, pairs=_adjacency_pairs(word_meta)))
 
     # 3) Content retrieval (sentence-level across subjects, and word-level by token).
-    sent_ret = M.content_retrieval(
-        sent_emb,
-        np.asarray(sent_content_ids),
-        return_hits=True,
-        return_ranks=True,
-        csls=use_csls,
-        csls_k=csls_k,
+    sent_ret = stages.run(
+        'sentence_retrieval',
+        lambda: M.content_retrieval(
+            sent_emb,
+            np.asarray(sent_content_ids),
+            return_hits=True,
+            return_ranks=True,
+            csls=use_csls,
+            csls_k=csls_k,
+        ),
     )
     # Popped, not kept: the per-query vectors feed the CI verdict but would bloat metrics.json.
     sent_top1_hits = sent_ret.pop('top1_hits', [])  # type: ignore[arg-type]
@@ -235,35 +418,49 @@ def evaluate_representation(
     # 3.1) The phase-scrambled control and the transductive counterpart, both through the identical path.
     phase_ret: dict[str, Any] | None = None
     phase_top1_hits: list[float] = []
+    phase_sent_post: np.ndarray | None = None
     if phase_sent_emb is not None:
-        phase_ret = M.content_retrieval(
-            _postprocess(phase_sent_emb, None, do_whiten, n_top),
-            np.asarray(sent_content_ids),
-            return_hits=True,
-            csls=use_csls,
-            csls_k=csls_k,
+        phase_sent_post = _postprocess(phase_sent_emb, None, do_whiten, n_top)
+        phase_ret = stages.run(
+            'sentence_retrieval_phase_control',
+            lambda: M.content_retrieval(
+                phase_sent_post,
+                np.asarray(sent_content_ids),
+                return_hits=True,
+                csls=use_csls,
+                csls_k=csls_k,
+            ),
         )
         raw_hits: Any = phase_ret.pop('top1_hits', [])
         phase_top1_hits = [float(h) for h in raw_hits] if isinstance(raw_hits, list) else []
     sent_ret_transductive: dict[str, float] | None = None
     if train_sent_emb is not None and sent_emb_transductive is not None:
-        sent_ret_transductive = M.content_retrieval(
-            sent_emb_transductive, np.asarray(sent_content_ids), csls=use_csls, csls_k=csls_k
+        sent_ret_transductive = stages.run(
+            'sentence_retrieval_transductive',
+            lambda: M.content_retrieval(
+                sent_emb_transductive, np.asarray(sent_content_ids), csls=use_csls, csls_k=csls_k
+            ),
         )
-    word_ret = M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k)
-    eval_seen_novel = bool(getattr(obj_cfg, 'eval_seen_novel', False)) if obj_cfg else False
-    eval_freq_matched = bool(getattr(obj_cfg, 'eval_freq_matched', False)) if obj_cfg else False
+    word_ret = stages.run(
+        'word_retrieval',
+        lambda: M.content_retrieval(word_emb, _encode(word_meta['word'].to_numpy()), csls=use_csls, csls_k=csls_k),
+    )
+    eval_seen_novel = not sweep and bool(getattr(obj_cfg, 'eval_seen_novel', False))
+    eval_freq_matched = not sweep and bool(getattr(obj_cfg, 'eval_freq_matched', False))
     # 3.2c) Seen vs novel word types: does retrieval hold for types absent from the training split?
     word_ret_by_novelty: dict[str, Any] = {}
     if eval_seen_novel and train_vocab is not None and 'word' in word_meta.columns:
         words_arr = word_meta['word'].astype(str).to_numpy()
         seen_mask = np.array([w in train_vocab for w in words_arr])
         word_codes = _encode(word_meta['word'].to_numpy())
-        for label, mask in (('seen', seen_mask), ('novel', ~seen_mask)):
-            if int(mask.sum()) >= 4:
-                word_ret_by_novelty[label] = M.content_retrieval(
-                    word_emb[mask], word_codes[mask], csls=use_csls, csls_k=csls_k
-                )
+        word_ret_by_novelty = stages.run(
+            'word_retrieval_by_novelty',
+            lambda: {
+                label: M.content_retrieval(word_emb[mask], word_codes[mask], csls=use_csls, csls_k=csls_k)
+                for label, mask in (('seen', seen_mask), ('novel', ~seen_mask))
+                if int(mask.sum()) >= 4
+            },
+        )
     # 3.2d) Frequency-matched distractors, so a hit cannot be a lexical-frequency shortcut.
     word_ret_freq_matched: dict[str, float] | None = None
     if eval_freq_matched:
@@ -273,38 +470,48 @@ def evaluate_representation(
             nbin = min(5, max(1, int(np.unique(lf[np.isfinite(lf)]).size)))
             if nbin >= 2:
                 fbin = pd.qcut(pd.Series(lf), q=nbin, labels=False, duplicates='drop').to_numpy()
-                word_ret_freq_matched = M.matched_content_retrieval(
-                    word_emb,
-                    _encode(word_meta['word'].to_numpy()),
-                    fbin,
-                    csls=use_csls,
-                    csls_k=csls_k,
+                word_ret_freq_matched = stages.run(
+                    'word_retrieval_freq_matched',
+                    lambda: M.matched_content_retrieval(
+                        word_emb,
+                        _encode(word_meta['word'].to_numpy()),
+                        fbin,
+                        csls=use_csls,
+                        csls_k=csls_k,
+                    ),
                 )
 
     # 4) Stratified breakdowns, vector arithmetic, and scalp-region importance.
-    breakdown_words = stratified_report(word_emb, word_meta)
-    breakdown_categories = (
-        stratified_retrieval(sent_emb, sent_meta, np.asarray(sent_content_ids), 'category')
-        if sent_meta is not None
-        else []
-    )
-    analogy = analogy_report(word_emb, word_meta, raw_word_feats, return_hits=True)
+    breakdown_words = stages.run('breakdown_words', lambda: stratified_report(word_emb, word_meta))
+    breakdown_categories: list[dict[str, Any]] = []
+    if sent_meta is not None:
+        breakdown_categories = stages.run(
+            'retrieval_by_category',
+            lambda: stratified_retrieval(sent_emb, sent_meta, np.asarray(sent_content_ids), 'category'),
+        )
+    analogy: dict[str, Any] = {}
+    if not sweep:
+        analogy = stages.run('analogy', lambda: analogy_report(word_emb, word_meta, raw_word_feats, return_hits=True))
     st = analogy.get('subject_transfer', {})
     subj_top1_hits = st.pop('top1_hits', []) if isinstance(st, dict) else []
     subj_chances = st.pop('chances', []) if isinstance(st, dict) else []
     region_map = _load_region_map(config)
-    region_rows = _region_importance(word_band_power, word_meta, region_map)
+    region_rows = stages.run('region_importance', lambda: _region_importance(word_band_power, word_meta, region_map))
     region_approximate = region_map is None or region_map.approximate
 
-    # 4b) Neuron-level interpretability: which dimensions fire, what they encode, who-vs-what budget.
-    neurons = _neuron_report(word_emb, word_meta, word_band_power, region_map, config)
-
-    # 4c) Emergent properties: do the same / related thoughts cluster ACROSS subjects (the north star)?
-    emergence = _emergence_report(word_emb, word_meta, analogy)
+    # 4b/4c) What the dimensions encode, and whether related thoughts cluster ACROSS subjects (the north star).
+    neurons: dict[str, Any] = {}
+    emergence: dict[str, Any] = {}
+    if not sweep:
+        neurons = stages.run(
+            'neurons', lambda: _neuron_report(word_emb, word_meta, word_band_power, region_map, config)
+        )
+        emergence = stages.run('emergence', lambda: _emergence_report(word_emb, word_meta, analogy))
 
     fit_label = _postprocess_fit(do_whiten or n_top > 0, train_sent_emb is not None)
     metrics: dict[str, Any] = {
         'run_name': run_name,
+        'eval_profile': profile,
         'n_word_embeddings': int(len(word_emb)),
         'n_sentence_embeddings': int(len(sent_emb)),
         'embedding_health': health,
@@ -323,7 +530,7 @@ def evaluate_representation(
         'analogy': analogy,
         'region_importance': region_rows,
         'region_map_approximate': region_approximate,
-        'neurons': _neuron_summary(neurons),
+        'neurons': {} if sweep else _neuron_summary(neurons),
         'emergence': emergence,
         'verdict': _verdict(
             comparison,
@@ -338,6 +545,9 @@ def evaluate_representation(
             min_prefix_kl=min_prefix_kl,
         ),
     }
+    # An empty block and an uncomputed one are indistinguishable, so a sweep names what it did not measure.
+    if sweep:
+        metrics['eval_skipped'] = list(SWEEP_SKIPPED)
     if generation is not None:
         metrics['generation'] = generation
     if rescoring is not None:
@@ -350,7 +560,7 @@ def evaluate_representation(
         metrics['verdict'].update(capacity_verdict(decoder_capacity))
 
     # 4b) Honesty add-ons: permutation null, held-out cross-subject decode, anchor calibration.
-    honesty = _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config)
+    honesty = stages.run('honesty', lambda: _honesty_block(word_emb, word_meta, sent_emb, sent_content_ids, config))
     metrics['honesty'] = honesty
 
     # 4d) The honest scoreboard: every headline metric stated as a lift over the raw control.
@@ -359,20 +569,23 @@ def evaluate_representation(
     # Guarded like every other block here: the scoreboard materialises a large similarity matrix, and
     # losing it must not discard an evaluation whose numbers are already computed.
     try:
-        metrics['scoreboard'] = build_scoreboard(
-            word_emb,
-            word_meta,
-            comparison,
-            sent_emb,
-            sent_content_ids,
-            sent_meta,
-            config,
-            word_band_power=word_band_power,
-            sent_n_words=sent_n_words,
-            phase_sent_emb=(None if phase_sent_emb is None else _postprocess(phase_sent_emb, None, do_whiten, n_top)),
-            generation=generation,
-            rescoring=rescoring,
-            postprocess_fit=fit_label,
+        metrics['scoreboard'] = stages.run(
+            'scoreboard',
+            lambda: build_scoreboard(
+                word_emb,
+                word_meta,
+                comparison,
+                sent_emb,
+                sent_content_ids,
+                sent_meta,
+                config,
+                word_band_power=word_band_power,
+                sent_n_words=sent_n_words,
+                phase_sent_emb=phase_sent_post,
+                generation=generation,
+                rescoring=rescoring,
+                postprocess_fit=fit_label,
+            ),
         )
     except (ValueError, KeyError, IndexError, MemoryError) as exc:  # pragma: no cover - defensive
         _LOG.warning('Scoreboard skipped: %r', exc)
@@ -407,37 +620,64 @@ def evaluate_representation(
         )
 
     # 5) Figures (each guarded so tiny inputs never abort the run).
-    figures = _render_figures(word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir)
-    figures += _render_extended_figures(analogy, breakdown_words, region_rows, fig_dir)
-    montage_csv = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
-    figures += _render_sota_figures(
-        word_emb_raw,
-        np.asarray(word_emb, dtype=np.float32),
-        word_meta,
-        sent_ranks,
-        sent_ret,
-        len(sent_emb),
-        neurons,
-        word_band_power,
-        montage_csv,
-        fig_dir,
-    )
-    metrics['figures'] = [str(p.relative_to(out)) for p in figures]
+    figure_names: list[str] = []
+    if not sweep:
+        montage_csv = getattr(getattr(config, 'dataset', None), 'montage_csv', None)
+        figure_names += stages.run(
+            'figures_core',
+            lambda: _relative(
+                _render_figures(word_emb, word_meta, sent_emb, sent_content_ids, comparison, sent_ret, fig_dir), out
+            ),
+        )
+        figure_names += stages.run(
+            'figures_extended',
+            lambda: _relative(_render_extended_figures(analogy, breakdown_words, region_rows, fig_dir), out),
+        )
+        figure_names += stages.run(
+            'figures_sota',
+            lambda: _relative(
+                _render_sota_figures(
+                    word_emb_raw,
+                    np.asarray(word_emb, dtype=np.float32),
+                    word_meta,
+                    sent_ranks,
+                    sent_ret,
+                    len(sent_emb),
+                    neurons,
+                    word_band_power,
+                    montage_csv,
+                    fig_dir,
+                ),
+                out,
+            ),
+        )
+    figures = [out / name for name in figure_names]
+    metrics['figures'] = figure_names
 
     # 6) Interactive HTML explorers (self-contained; static PNG fallback).
-    if interactive:
-        metrics['interactive'] = _write_interactive(word_emb, word_meta, out, emergence)
-        metrics['neuron_atlas'] = _write_neuron_atlas(neurons, out)
-        metrics['scoreboard_html'] = _write_scoreboard_html(metrics.get('scoreboard'), out, run_name)
-        metrics['generation_html'] = _write_generation_html(generation, out, run_name, min_prefix_kl)
+    if interactive and not sweep:
+        metrics.update(
+            stages.run(
+                'interactive',
+                lambda: {
+                    'interactive': _write_interactive(word_emb, word_meta, out, emergence),
+                    'neuron_atlas': _write_neuron_atlas(neurons, out),
+                    'scoreboard_html': _write_scoreboard_html(metrics.get('scoreboard'), out, run_name),
+                    'generation_html': _write_generation_html(generation, out, run_name, min_prefix_kl),
+                },
+            )
+        )
 
     # 6b) Per-dimension arrays are large, so metrics.json keeps only the compact summary. `default=str`
     # never raises, where `default=float` would crash on the last write of a multi-hour run.
-    (out / 'neurons.json').write_text(json.dumps(neurons, indent=2, default=str), encoding='utf-8')
+    if not sweep:
+        (out / 'neurons.json').write_text(json.dumps(neurons, indent=2, default=str), encoding='utf-8')
 
     # 7) Persist the results BEFORE the optional extras below, so nothing optional can cost the run
     # an evaluation that is already computed.
     (out / 'metrics.json').write_text(json.dumps(metrics, indent=2, default=str), encoding='utf-8')
+    # The partial file only ever guarded an evaluation in flight, and this write supersedes it.
+    stages.clear()
 
     # 8) TensorBoard (projector + hparams + scalars + histograms + figures + text). Best-effort: a full
     # Drive mount or an odd figure must not discard the evaluation.
@@ -1424,6 +1664,14 @@ def _render_report(
         f'sentence embeddings: **{metrics["n_sentence_embeddings"]}**',
         '',
     ]
+    if metrics.get('eval_profile') == 'sweep':
+        lines += [
+            '_Sweep evaluation profile: '
+            + ', '.join(f'`{block}`' for block in metrics.get('eval_skipped', SWEEP_SKIPPED))
+            + ' were not computed, so their absence below is by configuration and not a measurement. Every '
+            'number that is here is the one the full profile would have produced._',
+            '',
+        ]
     if metrics.get('scoreboard'):
         from zte.evaluation.audit.scoreboard import render_markdown as _render_scoreboard
 

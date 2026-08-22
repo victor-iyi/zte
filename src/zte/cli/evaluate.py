@@ -59,6 +59,16 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Skip the self-contained interactive HTML embedding explorer.',
     )
+    parser.add_argument(
+        '--eval-profile',
+        choices=['full', 'sweep'],
+        default=None,
+        dest='eval_profile',
+        help='How much of the suite runs (overrides the checkpoint config.train.eval_profile). sweep keeps '
+        'embedding health, sentence retrieval, the held-out scoreboard and the permutation null -- the only '
+        'numbers a headline may quote -- and drops the neuron, emergence and analogy blocks, the figures and '
+        'the interactive explorers. The profile is recorded in metrics.json.',
+    )
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
@@ -280,6 +290,8 @@ def main() -> None:
     # A CLI montage overrides the checkpoint's, so exact scalp regions can be requested at eval time.
     if args.montage_csv is not None and getattr(embedder.config, 'dataset', None) is not None:
         embedder.config.dataset.montage_csv = args.montage_csv
+    if args.eval_profile is not None:
+        embedder.config.train.eval_profile = args.eval_profile
 
     word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, dataset)
 

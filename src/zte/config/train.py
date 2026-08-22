@@ -10,6 +10,9 @@ from zte.config.types import (
     TrainMode,
 )
 
+type EvalProfile = Literal['full', 'sweep']
+"""How much of the evaluation suite runs: everything, or only the blocks a headline may be read from."""
+
 
 @dataclass
 class TrainConfig(PathFields):
@@ -94,6 +97,12 @@ class TrainConfig(PathFields):
 
     compile_model: bool = False
     """Apply `torch.compile` (skipped on MPS/CPU)."""
+
+    eval_profile: EvalProfile = 'full'
+    """Which evaluation blocks run after training. `sweep` keeps embedding health, sentence retrieval, the held-out
+    scoreboard and the permutation null -- the only numbers allowed to be a headline -- and drops the neuron,
+    emergence, analogy, seen-vs-novel and frequency-matched blocks, every figure and the interactive explorers.
+    The profile that produced a run is stamped into its `metrics.json`."""
 
     # -- Staged decoder training -------------------------------------------- #
     mode: TrainMode = 'encoder'

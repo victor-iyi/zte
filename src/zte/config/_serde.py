@@ -5,12 +5,24 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, get_args, get_type_hints
 
+from zte.logging_utils import get_logger
+
+_LOG = get_logger('config.serde')
+
 
 def _build(cls: type, data: dict[str, Any]) -> Any:
     """Reconstructs a (possibly nested) dataclass, coercing lists back to tuples."""
     if not dataclasses.is_dataclass(cls):
         return data
     hints = get_type_hints(cls)
+    known = {f.name for f in dataclasses.fields(cls)}
+
+    # A misspelled knob is otherwise a run that looks configured and trains with the lever off, with nothing in the
+    # log to say so. On a sweep measured in days that is the most expensive kind of silence.
+    if unknown := sorted(k for k in data if k not in known):
+        _LOG.warning(
+            '%s ignores unknown config key(s) %s -- check the spelling against the dataclass.', cls.__name__, unknown
+        )
     kwargs: dict[str, Any] = {}
     for f in dataclasses.fields(cls):
         if f.name not in data:

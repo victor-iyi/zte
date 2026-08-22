@@ -171,6 +171,16 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='With --resume, redo already-completed stages instead of skipping them.',
     )
+    parser.add_argument(
+        '--eval-profile',
+        choices=['full', 'sweep'],
+        default=None,
+        dest='eval_profile',
+        help='How much of the evaluation suite runs (overrides config.train.eval_profile). sweep keeps '
+        'embedding health, sentence retrieval, the held-out scoreboard and the permutation null -- the only '
+        'numbers a headline may quote -- and drops the neuron, emergence and analogy blocks, the figures and '
+        'the interactive explorers -- most of the evaluation wall clock. The profile is recorded in metrics.json.',
+    )
     parser.add_argument('--skip-eval', action='store_true')
     parser.add_argument('--skip-explore', action='store_true')
     parser.add_argument('--no-tensorboard', action='store_true')
@@ -344,6 +354,8 @@ def _run(args: argparse.Namespace) -> None:
         config.decoder.stage0_epochs = args.stage0_epochs
     if args.decode_eval:
         config.objective.eval_generation = True
+    if args.eval_profile is not None:
+        config.train.eval_profile = args.eval_profile
 
     # Both read `train.mode`, so they wait until --mode has landed.
     guard_split_override(config, requested_split, allow_closed_set=args.allow_closed_set)
@@ -483,6 +495,25 @@ def _run(args: argparse.Namespace) -> None:
     _catalogue(Path(args.out_root), config.run_name, manifest, remote_index=_remote_index_path(args))
     _mirror_to_drive(run_dir, args, 'catalogue', index=Path(args.out_root) / 'INDEX.md')
     _LOG.info('Done. Everything catalogued under %s', run_dir.resolve())
+
+
+def _partial_mirror(run_dir: Path, args: argparse.Namespace) -> Path | None:
+    """Durable directory the evaluation's block-progress file is copied into as it grows.
+
+    Note:
+        `_mirror_to_drive` fires only once evaluation has returned, and evaluation is two thirds of a run on this
+        project's measured timings -- so without this the one stage long enough to be interrupted is the one stage
+        whose progress dies with the machine.
+    """
+    backup = getattr(args, 'drive_backup', None)
+    if not backup:
+        return None
+    from zte.data.io.remote import is_mounted_path
+
+    if not is_mounted_path(backup):
+        return None
+
+    return Path(backup) / run_dir.name / 'evaluation'
 
 
 def _mirror_to_drive(run_dir: Path, args: argparse.Namespace, stage: str, index: Path | None = None) -> None:
@@ -666,6 +697,7 @@ def _evaluate(config: ZTEConfig, dataset: ZuCoDataset, run_dir: Path, args: argp
         rescoring=rescoring,
         decoder_capacity=decoder_capacity,
         min_prefix_kl=config.decoder.min_prefix_kl,
+        partial_mirror=_partial_mirror(run_dir, args),
     )
 
     return _eval_summary(metrics)
