@@ -38,10 +38,8 @@ def _content_key_arrays(ds: ZuCoDataset) -> tuple[np.ndarray, np.ndarray]:
     """Returns positional `(stimulus_key, word_idx)` arrays aligned with `ds.words` rows.
 
     The normalised sentence text plus the within-sentence index identifies the same word of the same sentence
-    regardless of who read it, which is what cross-subject positives are built from.
 
-    Args:
-        ds (ZuCoDataset): A built dataset.
+    regardless of who read it, which is what cross-subject positives are built from.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: `(stimulus_key[str], word_idx[int])`, each `(n_words,)`.
@@ -62,13 +60,8 @@ def _build_content_vocab(ds: ZuCoDataset) -> dict[tuple[str, int], int]:
     """Builds a stable `{(stimulus_key, word_idx): int}` id map over the whole dataset.
 
     Ids are shared across splits, and different subjects reading the same word share one, which is what lets an
+
     objective treat same-word-across-subjects as a positive.
-
-    Args:
-        ds (ZuCoDataset): A built dataset.
-
-    Returns:
-        dict[tuple[str, int], int]: The stimulus-id vocabulary.
     """
     skey, widx = _content_key_arrays(ds)
     vocab: dict[tuple[str, int], int] = {}
@@ -77,6 +70,36 @@ def _build_content_vocab(ds: ZuCoDataset) -> dict[tuple[str, int], int]:
         if key not in vocab:
             vocab[key] = len(vocab)
     return vocab
+
+
+def join_text_tasks(text_ids: list[int], task_ids: list[int], n_texts: int) -> torch.Tensor:
+    """Joins aligned per-sentence `(sentence_text_id, task_id)` pairs into a per-text `(n_texts,)` task buffer.
+
+    Args:
+        text_ids (list[int]): Per-sentence text id (`-1` entries are skipped).
+        task_ids (list[int]): Per-sentence task id, aligned with `text_ids`.
+        n_texts (int): Size of the text vocabulary.
+
+    Returns:
+        torch.Tensor: Long `(n_texts,)` task id per text, `-1` for texts no sentence here reads.
+
+    Raises:
+        ValueError: If one text id appears under two different tasks, which would make a same-task denominator
+            ill-defined for it.
+    """
+    tasks = torch.full((n_texts,), -1, dtype=torch.long)
+    for text_id, task_id in zip(text_ids, task_ids, strict=True):
+        if text_id < 0 or text_id >= n_texts:
+            continue
+        seen = int(tasks[text_id])
+        if seen >= 0 and seen != task_id:
+            raise ValueError(
+                f'Sentence text id {text_id} appears under two tasks ({seen} and {task_id}); within-task negatives '
+                'need every sentence text to belong to exactly one task.'
+            )
+        tasks[text_id] = task_id
+
+    return tasks
 
 
 @dataclass(slots=True)
@@ -91,6 +114,8 @@ class SentenceSample:
         length (int): Number of word tokens (`seq_len`).
         content (torch.Tensor | None): `(seq_len,)` long subject-agnostic stimulus id per token, `-1` for omitted
             tokens. `None` when not provided, which collates to all `-1`.
+        reading_id (int): Position of this reading in the full dataset's sentence order, stable across splits, so a
+            frozen encoder's sentence vectors can be cached once and looked up by it.
     """
 
     features: torch.Tensor | None
@@ -102,13 +127,10 @@ class SentenceSample:
     word_id: torch.Tensor | None = None
     task_id: int = 0
     behaviour: torch.Tensor | None = None  # (seq_len, n_behaviour) or None
-    meaning: torch.Tensor | None = (
-        None  # (seq_len, hidden) per-occurrence contextual target or None
-    )
+    meaning: torch.Tensor | None = None  # (seq_len, hidden) per-occurrence contextual target or None
     text_id: int = -1  # subject-agnostic sentence-text id (CLIP alignment target), or -1
-    signature: torch.Tensor | None = (
-        None  # (signature_dim,) covariance-geometry descriptor, or None
-    )
+    signature: torch.Tensor | None = None  # (signature_dim,) covariance-geometry descriptor, or None
+    reading_id: int = -1  # dataset-wide sentence position, the key of the frozen-encoder cache
 
 
 class ZuCoTorchDataset(Dataset[SentenceSample]):
@@ -117,6 +139,8 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
     Attributes:
         representation (str): Which tensors to emit; defaults to the dataset's own setting.
         subject_vocab (dict[str, int]): The `{subject: id}` mapping in use.
+        n_readings (int): Sentences in the whole dataset, which is the extent of the `reading_id` space and so the
+            row count a frozen-encoder embedding cache must allocate.
     """
 
     def __init__(
@@ -155,20 +179,12 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         presence = dataset.presence
 
         # One id per unique sentence text, so any subject's reading maps to the same CLIP text target.
-        self._text_vocab: dict[str, int] = {
-            key: i for i, key in enumerate(sorted({str(s) for s in skey_arr}))
-        }
+        self._text_vocab: dict[str, int] = {key: i for i, key in enumerate(sorted({str(s) for s in skey_arr}))}
 
         # Word identity drives meaning positives; the per-sentence task id drives the passage adversary.
-        word_arr = (
-            dataset.words['word'].fillna('').astype(str).to_numpy()
-            if 'word' in dataset.words.columns
-            else None
-        )
+        word_arr = dataset.words['word'].fillna('').astype(str).to_numpy() if 'word' in dataset.words.columns else None
         self._word_vocab: dict[str, int] = (
-            {w: i for i, w in enumerate(sorted(set(word_arr.tolist())))}
-            if word_arr is not None
-            else {}
+            {w: i for i, w in enumerate(sorted(set(word_arr.tolist())))} if word_arr is not None else {}
         )
         self._task_vocab: dict[str, int] = (
             {t: i for i, t in enumerate(sorted(set(dataset.words['task'].astype(str).tolist())))}
@@ -212,10 +228,13 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
         self._word_id: list[np.ndarray] = []
         self._task_id: list[int] = []
         self._stimulus_keys: list[str] = []
-        for (subject, task, _s_idx), rows in dataset.groups:
+        self._reading_ids: list[int] = []
+        self.n_readings = len(dataset.groups)
+        for reading, ((subject, task, _s_idx), rows) in enumerate(dataset.groups):
             kept = rows if allowed is None else np.array([r for r in rows if r in allowed])
             if len(kept) < min_length:
                 continue
+            self._reading_ids.append(reading)
             self._sequences.append(kept)
             self._subjects.append(self.subject_vocab.get(subject, 0))
             content = np.full(len(kept), -1, dtype=np.int64)
@@ -230,14 +249,77 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             self._task_id.append(self._task_vocab.get(str(task), 0))
             self._stimulus_keys.append(str(skey_arr[kept[0]]) if len(kept) else '')
 
-        self._sentence_text_id: list[int] = [
-            self._text_vocab.get(k, -1) for k in self._stimulus_keys
-        ]
+        self._sentence_text_id: list[int] = [self._text_vocab.get(k, -1) for k in self._stimulus_keys]
 
     @property
     def text_vocab(self) -> dict[str, int]:
         """`{normalised-sentence-text: id}` map for the CLIP alignment target (whole-dataset, stable)."""
         return self._text_vocab
+
+    @property
+    def n_content(self) -> int:
+        """Number of distinct `(stimulus, word index)` slots, which is the key space of `batch['content_id']`."""
+        return len(self._content_vocab)
+
+    @property
+    def split_text_ids(self) -> list[int]:
+        """The text ids actually read in *this* split, which is not the same set as `text_vocab`.
+
+        `text_vocab` is deliberately whole-dataset so an id means the same sentence in every split. A loss whose
+        denominator ranges over texts must therefore be told which of those ids it is allowed to see, or a
+        stimulus-holding-out split leaks its held-out sentences in as negatives.
+        """
+        return sorted({int(t) for t in self._sentence_text_id if t >= 0})
+
+    def text_task_ids(self) -> torch.Tensor:
+        """Task id per `text_vocab` row, joined from this split's sentences; `-1` marks texts this split never reads.
+
+        Note:
+            The vocab key is the normalised sentence text itself, so parsing keys can never recover a task; the only
+            honest signal is the join over each sentence's own `(sentence_text_id, task_id)` pair.
+
+        Returns:
+            torch.Tensor: Long `(n_texts,)` task id per text.
+
+        Raises:
+            ValueError: If one sentence text appears under two different tasks.
+        """
+        return join_text_tasks(self._sentence_text_id, self._task_id, len(self._text_vocab))
+
+    @property
+    def reading_ids(self) -> list[int]:
+        """Dataset-wide sentence position per sentence of this split, aligned with `sequences`."""
+        return self._reading_ids
+
+    @property
+    def stimulus_texts(self) -> dict[str, str]:
+        """`{stimulus_key: sentence text}` over the whole dataset, keeping the punctuation and case a decoder targets.
+
+        `stimulus_key` is the lowercased, punctuation-stripped normalisation used for grouping, so it is the wrong
+        string to generate or score; the readable text lives on `ZuCoDataset.sentences` and is joined back here.
+        """
+        sentences = self._ds.sentences
+        if 'stimulus_key' not in sentences.columns or 'text' not in sentences.columns:
+            return {}
+        return dict(
+            zip(
+                sentences['stimulus_key'].astype(str),
+                sentences['text'].astype(str),
+                strict=False,
+            )
+        )
+
+    def ordered_texts(self) -> list[str]:
+        """Returns the reference sentence per `text_vocab` id, so row `i` is the target text of `text_id == i`.
+
+        Returns:
+            list[str]: `len(text_vocab)` strings, falling back to the normalised key when no readable text is joined.
+        """
+        by_key = self.stimulus_texts
+        ordered = [''] * len(self._text_vocab)
+        for key, tid in self._text_vocab.items():
+            ordered[tid] = by_key.get(key, key)
+        return ordered
 
     @property
     def sequences(self) -> list[np.ndarray]:
@@ -313,6 +395,7 @@ class ZuCoTorchDataset(Dataset[SentenceSample]):
             behaviour=behaviour,
             meaning=meaning,
             text_id=self._sentence_text_id[idx],
+            reading_id=self._reading_ids[idx],
         )
 
 
@@ -334,6 +417,10 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         - `lengths`: `(batch_size,)` long.
         - `content_id`: `(batch_size, max_seq_len)` long stimulus id per token, `-1` at padding/omitted positions;
           tokens sharing one are the same word of the same sentence text, so cross-subject positives use it.
+        - `word_id`, `task_id`, `subject`, `subject_signature`, `behaviour_target`, `meaning_target`: the per-token
+          and per-sentence auxiliary targets, `None` where the dataset carries none.
+        - `sentence_text_id`: `(batch_size,)` long id of the sentence text (the CLIP/decoder target index).
+        - `reading_id`: `(batch_size,)` long dataset-wide sentence position, the key of a frozen-encoder cache.
     """
     lengths = torch.tensor([s.length for s in batch], dtype=torch.long)
     max_len = max(int(lengths.max().item()), pad_to or 0)
@@ -401,6 +488,7 @@ def collate_sentences(batch: list[SentenceSample], pad_to: int | None = None) ->
         'behaviour_target': behaviour,
         'meaning_target': meaning,
         'sentence_text_id': torch.tensor([s.text_id for s in batch], dtype=torch.long),
+        'reading_id': torch.tensor([s.reading_id for s in batch], dtype=torch.long),
     }
 
 
@@ -626,6 +714,4 @@ def make_dataloader(
     if batch_sampler is not None:
         return DataLoader(torch_dataset, batch_sampler=batch_sampler, **common)
 
-    return DataLoader(
-        torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common
-    )
+    return DataLoader(torch_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **common)

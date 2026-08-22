@@ -76,9 +76,7 @@ def is_synthetic_run(run_dir: Path) -> bool:
 
 def _run_is_complete(run_dir: Path) -> bool:
     """Heuristic: a run is 'complete' if it has a best/last checkpoint and an evaluation."""
-    ckpt = (run_dir / 'checkpoints' / 'best.pt').exists() or (
-        run_dir / 'checkpoints' / 'last.pt'
-    ).exists()
+    ckpt = (run_dir / 'checkpoints' / 'best.pt').exists() or (run_dir / 'checkpoints' / 'last.pt').exists()
     return ckpt and (run_dir / 'evaluation' / 'metrics.json').exists()
 
 
@@ -128,9 +126,6 @@ def _iter_archive_files(
         with_cache (bool): Include the processed dataset cache.
         with_tb (bool): Include TensorBoard logs.
         best_only (bool): Keep only the best checkpoint.
-
-    Returns:
-        list[tuple[Path, str]]: `(absolute_path, arcname)` pairs to write into the archive.
     """
     skip = set(_HEAVY_DIRS)
     if with_bundle:
@@ -385,9 +380,7 @@ def unpack(archive: str | Path, dest: str | Path = 'res/experiments') -> list[st
         zf.extractall(dest_path)
 
     # Root-level files (PROVENANCE.json/md) are metadata, so only nested top-level folders count as runs.
-    tops = sorted(
-        {Path(n).parts[0] for n in names if n and not n.startswith('/') and len(Path(n).parts) > 1}
-    )
+    tops = sorted({Path(n).parts[0] for n in names if n and not n.startswith('/') and len(Path(n).parts) > 1})
     _LOG.info('Unpacked %s -> %s (%d run folder(s))', arc, dest_path, len(tops))
     return tops
 

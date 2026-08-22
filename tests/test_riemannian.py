@@ -1,4 +1,4 @@
-"""Tests for Unit E: Riemannian per-subject covariance whitening."""
+"""Tests for Riemannian per-subject covariance whitening."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _identity_gap(cov: np.ndarray) -> float:
 
 
 def test_riemannian_whitens_each_subject_toward_identity() -> None:
-    """Test that Riemannian whitening each subject toward the identity."""
+    """Riemannian whitening drives each subject's covariance toward the identity, erasing the fingerprint."""
     x, subjects = _two_subject_data()
     norm = FeatureNormalizer(mode='riemannian')
     y = norm.fit_transform(x, subjects=subjects)
@@ -39,7 +39,7 @@ def test_riemannian_whitens_each_subject_toward_identity() -> None:
 
 
 def test_riemannian_inverse_roundtrip() -> None:
-    """Test that Riemannian inverse roundtrip."""
+    """Riemannian whitening is invertible: `inverse_transform` recovers the original features."""
     x, subjects = _two_subject_data(1)
     norm = FeatureNormalizer(mode='riemannian')
     y = norm.fit_transform(x, subjects=subjects)
@@ -48,7 +48,7 @@ def test_riemannian_inverse_roundtrip() -> None:
 
 
 def test_riemannian_unknown_subject_uses_global_fallback() -> None:
-    """Test that Riemannian unknown subject uses global fallback."""
+    """An unseen subject falls back to the global whitening rather than failing."""
     x, subjects = _two_subject_data(2)
     norm = FeatureNormalizer(mode='riemannian').fit(x, subjects=subjects)
     # A never-seen subject falls back to the global map (finite, no crash).
@@ -57,7 +57,7 @@ def test_riemannian_unknown_subject_uses_global_fallback() -> None:
 
 
 def test_riemannian_state_roundtrip() -> None:
-    """Test that Riemannian state roundtrip."""
+    """A normaliser rebuilt from its serialised state transforms identically."""
     x, subjects = _two_subject_data(3)
     norm = FeatureNormalizer(mode='riemannian').fit(x, subjects=subjects)
     restored = FeatureNormalizer.from_state(norm.state)
@@ -73,18 +73,14 @@ def test_calibrate_new_subject_riemannian() -> None:
     # A genuinely new subject with its own covariance structure.
     rng = np.random.default_rng(9)
     new = (rng.normal(size=(200, 12)) @ rng.normal(size=(12, 12)) + 7.0).astype(np.float32)
-    before = _identity_gap(
-        np.cov(norm.transform(new, subjects=np.array(['NEW'] * 200)), rowvar=False)
-    )
+    before = _identity_gap(np.cov(norm.transform(new, subjects=np.array(['NEW'] * 200)), rowvar=False))
     norm.calibrate_subject(new, 'NEW')  # unlabelled baseline
-    after = _identity_gap(
-        np.cov(norm.transform(new, subjects=np.array(['NEW'] * 200)), rowvar=False)
-    )
+    after = _identity_gap(np.cov(norm.transform(new, subjects=np.array(['NEW'] * 200)), rowvar=False))
     assert after < 0.3 * before  # calibration whitens the new brain into the shared frame
 
 
 def test_calibrate_new_subject_zscore() -> None:
-    """Test that calibrate new subject zscore."""
+    """Calibrating a new subject z-scores them into the shared space from their own baseline."""
     x, subjects = _two_subject_data(5)
     norm = FeatureNormalizer(mode='zscore_subject').fit(x, subjects=subjects)
     new = (np.random.default_rng(3).normal(size=(100, 12)) * 5 + 20).astype(np.float32)
@@ -94,7 +90,7 @@ def test_calibrate_new_subject_zscore() -> None:
 
 
 def test_riemannian_falls_back_when_too_wide() -> None:
-    """Test that Riemannian falls back when too wide."""
+    """Riemannian mode falls back when a subject has too few words to estimate a covariance."""
     norm = FeatureNormalizer(mode='riemannian')
     norm._RIEMANN_MAX_DIM = 4  # force the guard
     x = np.random.default_rng(0).normal(size=(50, 8)).astype(np.float32)

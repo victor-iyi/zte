@@ -230,17 +230,7 @@ def _finite_sub(a: float, b: float) -> float:
 def _same_key_cross_subject_pairs(
     keys: np.ndarray, subject: np.ndarray, rng: np.random.Generator, cap: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Samples index pairs that share a key but differ in subject.
-
-    Args:
-        keys (np.ndarray): Grouping key per row (e.g. word or category).
-        subject (np.ndarray): Subject label per row.
-        rng (np.random.Generator): RNG.
-        cap (int): Max pairs to return.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: `(left, right)` row-index arrays.
-    """
+    """Samples index pairs that share a key but differ in subject."""
     order = np.argsort(keys, kind='stable')
     keys_sorted = keys[order]
     boundaries = np.flatnonzero(keys_sorted[1:] != keys_sorted[:-1]) + 1

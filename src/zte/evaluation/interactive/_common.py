@@ -24,9 +24,6 @@ def _pca(emb: np.ndarray, dims: int) -> np.ndarray:
 def _pca_basis(emb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Returns the `(mean, components)` PCA basis so new vectors can be projected.
 
-    Args:
-        emb (np.ndarray): Embeddings `(n_samples, embed_dim)`.
-
     Returns:
         tuple[np.ndarray, np.ndarray]: `(mean, vt)` where `mean` is `(embed_dim,)` and
             `vt` is the `(k, embed_dim)` matrix of principal directions (rows).
@@ -54,9 +51,6 @@ def _json_safe(obj: Any) -> Any:
     """Converts a report dict to strict-JSON / valid-JS-literal types.
 
     Numpy scalars become builtins and non-finite floats become `None`, so the injected payload parses in the browser.
-
-    Args:
-        obj (Any): Any nested combination of dicts, lists, numpy or builtin scalars.
 
     Returns:
         Any: The same structure using only JSON-safe Python builtins.

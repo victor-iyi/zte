@@ -51,9 +51,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--workdir', type=str, default='res/embed_demo')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
-    parser.add_argument(
-        '--epochs', type=int, default=5, help='Epochs for the fallback synthetic training.'
-    )
+    parser.add_argument('--epochs', type=int, default=5, help='Epochs for the fallback synthetic training.')
     return parser.parse_args()
 
 
@@ -118,9 +116,7 @@ def build_new_recordings(embedder: ZTEEmbedder, workdir: Path) -> ZuCoDataset:
     ).build()
 
 
-def embed_from_mat_files(
-    embedder: ZTEEmbedder, new_ds: ZuCoDataset, workdir: Path
-) -> tuple[np.ndarray, np.ndarray]:
+def embed_from_mat_files(embedder: ZTEEmbedder, new_ds: ZuCoDataset, workdir: Path) -> tuple[np.ndarray, np.ndarray]:
     """Flow 1: embed new recordings supplied as ZuCo `.mat` files.
 
     Args:
@@ -164,9 +160,7 @@ def embed_from_memory(embedder: ZTEEmbedder, new_ds: ZuCoDataset) -> np.ndarray:
         feats = flatten_band_power(new_ds.band_power_raw)  # (N, F*C), NaN at omissions
         signals = feats[new_ds.presence]  # keep present (finite) tokens
         mem_emb = embedder.embed_signals(band_power=signals)  # normaliser applied internally
-    _LOG.info(
-        'Flow 2: embedded %d in-memory signals -> shape %s', len(mem_emb), tuple(mem_emb.shape)
-    )
+    _LOG.info('Flow 2: embedded %d in-memory signals -> shape %s', len(mem_emb), tuple(mem_emb.shape))
     return mem_emb
 
 

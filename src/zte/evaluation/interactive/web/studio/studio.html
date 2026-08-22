@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__ — decode studio</title>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark"></span>
+          <div>
+            <h1 id="run"></h1>
+            <p class="sub" id="sub"></p>
+          </div>
+        </div>
+        <div class="topactions">
+          <select id="reading" aria-label="Choose a reading"></select>
+          <button class="ghost" id="themebtn" aria-label="Toggle light / dark theme">◐</button>
+        </div>
+      </header>
+
+      <div class="caveat" id="caveat"></div>
+
+      <main class="grid" id="main">
+        <section class="panel brainpanel">
+          <div class="panelhead">
+            <h2>The signal</h2>
+            <div class="segmented" id="viewtoggle">
+              <button data-view="2d" class="on">2D cap</button>
+              <button data-view="3d">3D head</button>
+            </div>
+          </div>
+          <div class="stage">
+            <canvas id="brain" width="620" height="480"></canvas>
+            <div class="stagefoot">
+              <div class="bandpick" id="bands"></div>
+              <div class="scale">
+                <span>low</span><i class="ramp"></i><span>high</span>
+                <em id="scalenote"></em>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel textpanel">
+          <div class="panelhead">
+            <h2>What was read, and what came back</h2>
+            <span class="pill" id="wordpill"></span>
+          </div>
+
+          <div class="block">
+            <h3>Target <em>— the sentence on the screen, with the pointer's window over it</em></h3>
+            <p class="target" id="target"></p>
+          </div>
+
+          <div class="block">
+            <h3>Decoded <em>— free-running, no reference and no candidate set</em></h3>
+            <p class="hypo" id="hypo"></p>
+            <div class="tokenmeta" id="tokenmeta"></div>
+          </div>
+
+          <div class="block">
+            <h3>Alternatives at this step <em>— what it nearly said</em></h3>
+            <div class="alts" id="alts"></div>
+          </div>
+        </section>
+
+        <section class="panel firingpanel">
+          <div class="panelhead">
+            <h2>The decoder firing</h2>
+            <span class="pill" id="steppill"></span>
+          </div>
+          <div class="gauges" id="gauges"></div>
+          <div class="tracewrap">
+            <canvas id="trace" width="620" height="200"></canvas>
+          </div>
+          <div class="tracewrap">
+            <canvas id="pointer" width="620" height="180"></canvas>
+          </div>
+          <div class="codes" id="codes"></div>
+        </section>
+
+        <section class="panel controlpanel">
+          <div class="panelhead">
+            <h2>Against the brain-independent controls</h2>
+          </div>
+          <div class="scroll">
+            <table id="controls"></table>
+          </div>
+          <p class="footnote" id="controlnote"></p>
+        </section>
+      </main>
+
+      <footer class="transport">
+        <button class="round" id="rewind" title="Back to the start">⏮</button>
+        <button class="round" id="prev" title="Previous step">◀</button>
+        <button class="round play" id="play" title="Play / pause">▶</button>
+        <button class="round" id="next" title="Next step">▶︎</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" />
+        <span class="clock" id="clock">0 / 0</span>
+        <select id="speed" aria-label="Playback speed">
+          <option value="600">0.5×</option>
+          <option value="300" selected>1×</option>
+          <option value="150">2×</option>
+          <option value="60">5×</option>
+        </select>
+      </footer>
+
+      <div class="empty" id="empty" hidden>
+        <h2>Nothing to decode</h2>
+        <p id="emptyreason"></p>
+      </div>
+    </div>
+
+    <script id="data" type="application/json">
+      __DATA__
+    </script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

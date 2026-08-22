@@ -31,12 +31,8 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Fabricate a small schema-faithful tree and audit it.',
     )
-    parser.add_argument(
-        '--out', type=Path, default='docs/confound_audit.md', help='Output Markdown path.'
-    )
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--out', type=Path, default='docs/confound_audit.md', help='Output Markdown path.')
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
 
     return parser.parse_args()
 
@@ -64,7 +60,6 @@ def main() -> None:
     _LOG.info('Building dataset from %s ...', cfg.root)
     dataset = ZuCoDataset(cfg).build(show_progress=False)
 
-    # Audit it, writing the Markdown report plus a JSON sidecar.
     report = confound_report(dataset.words)
     out = args.out
     out.parent.mkdir(parents=True, exist_ok=True)

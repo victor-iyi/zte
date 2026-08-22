@@ -209,24 +209,14 @@ def analogy_report(
     meta = meta.reset_index(drop=True)
     # Subject-transfer id excludes subject; task-transfer id excludes task.
     stimulus = (
-        meta['task'].astype(str)
-        + '|'
-        + meta['sentence_idx'].astype(str)
-        + '|'
-        + meta['word_idx'].astype(str)
+        meta['task'].astype(str) + '|' + meta['sentence_idx'].astype(str) + '|' + meta['word_idx'].astype(str)
     ).to_numpy()
     stimulus_task_agnostic = (
-        meta['subject'].astype(str)
-        + '|'
-        + meta['sentence_idx'].astype(str)
-        + '|'
-        + meta['word_idx'].astype(str)
+        meta['subject'].astype(str) + '|' + meta['sentence_idx'].astype(str) + '|' + meta['word_idx'].astype(str)
     ).to_numpy()
 
     report: dict[str, Any] = {}
-    report['subject_transfer'] = transfer_analogy(
-        emb, meta['subject'].to_numpy(), stimulus, return_hits=return_hits
-    )
+    report['subject_transfer'] = transfer_analogy(emb, meta['subject'].to_numpy(), stimulus, return_hits=return_hits)
     if meta['task'].nunique() > 1:
         tt = transfer_analogy(emb, meta['task'].to_numpy(), stimulus_task_agnostic)
         if tt.get('n_queries', 0.0) == 0.0:

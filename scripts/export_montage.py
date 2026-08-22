@@ -47,9 +47,7 @@ def main() -> None:
     if args.keep_file is not None:
         keep = [ln.strip() for ln in args.keep_file.read_text().splitlines() if ln.strip()]
 
-    out = build_montage_csv(
-        args.out, montage=args.montage, zuco105=args.zuco105, keep=keep, overwrite=True
-    )
+    out = build_montage_csv(args.out, montage=args.montage, zuco105=args.zuco105, keep=keep, overwrite=True)
     print(f'Wrote montage to {out}')
 
 

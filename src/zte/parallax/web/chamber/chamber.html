@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Parallax Chamber — holdout __CHAMBER_TITLE__</title>
+    <script>/*__CHAMBER_PLOTLY_JS__*/</script>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark"></span>
+          <div>
+            <h1>Parallax Chamber</h1>
+            <p class="sub" id="sub"></p>
+          </div>
+        </div>
+        <span class="pill" id="holdoutpill"></span>
+      </header>
+
+      <div class="caveat">
+        <b>How to read this page.</b> Three encoders were trained separately, one per ZuCo task, so the
+        task-vs-stimulus confound is removed structurally rather than statistically. Every number here is a
+        closed-set retrieval readout on the held-out subject; free generation is not measured on this page.
+        Off-diagonal transfer cells face a never-seen subject reading never-seen sentences — a null there is a
+        finding, reported plainly, not a failure of the page.
+      </div>
+
+      <main class="grid">
+        <section class="panel span2" id="parallaxpanel">
+          <div class="panelhead">
+            <h2>The parallax view</h2>
+            <span class="cue">hover rank pctl: higher is better &middot; axes arbitrary</span>
+            <div class="panelctl">
+              <div class="ctl"><span class="lab">sentences</span><div class="segmented" id="sentset"></div></div>
+              <div class="ctl"><span class="lab">vantage</span><div class="segmented" id="vantage"></div></div>
+              <button class="chip" id="trails">displacement trails</button>
+            </div>
+          </div>
+          __CHAMBER_MISS_PARALLAX__
+          <div class="stage3d" id="parallax3d"></div>
+          <p class="legendline" id="parallaxlegend">
+            One point per held-out sentence, coloured by semantic cluster and sized by word count; switch vantage to
+            see the <b>same sentences</b> through a different task's encoder. <b>Points that barely move between
+            vantages are the task-invariant code</b> — geometry all encoders agree on despite disjoint training
+            stimuli. Coordinates are PCA-3D, Procrustes-aligned across models; axes are arbitrary. Hover shows the
+            sentence and its per-model rank percentile.
+          </p>
+        </section>
+
+        <section class="panel" id="flowpanel">
+          <div class="panelhead">
+            <h2>Transfer flow</h2>
+            <span class="cue">wider link = more lift &middot; chance = 0.5</span>
+          </div>
+          __CHAMBER_MISS_FLOW__
+          <div class="plot" id="sankey"></div>
+          <p class="legendline">
+            Link width is the rank-percentile lift over the labelled chance level (0.5); <b>wider is better</b> and
+            a hairline is an honest null. Diagonal links (own task: new subject, familiar stimuli) wear their
+            task's colour; off-diagonal links are <b>new subject &times; new sentences</b> — the strongest
+            generalization cell this project can produce. Hover for the bootstrap CI and seed count.
+          </p>
+        </section>
+
+        <section class="panel" id="capacitypanel">
+          <div class="panelhead">
+            <h2>Capacity dials</h2>
+            <span class="cue">larger K is better &middot; chance = 1/K</span>
+          </div>
+          __CHAMBER_MISS_DIALS__
+          __CHAMBER_GAMED_NOTES__
+          <div class="dials" id="dials"></div>
+          <p class="legendline">
+            Certified menu size K per encoder on a log-2 dial, from the exact-length-pool menu audit; larger K is
+            better and chance is 1/K. <b>When no K is certified the dial still shows the measured K=2 accuracy as a
+            labelled needle</b> against the chance (0.5) and target (0.8) ticks — a number, never a void.
+            prototype = one reference per sentence; enrolled = best of the enrolled readings — when the audit
+            carries both, the solid bar is the prototype and the bright needle is the enrolled reading.
+          </p>
+        </section>
+
+        <section class="panel span2" id="rainpanel">
+          <div class="panelhead">
+            <h2>Percentile rain</h2>
+            <span class="cue">higher is better &middot; chance = 0.5</span>
+          </div>
+          __CHAMBER_MISS_RAIN__
+          <div class="plot" id="rain"></div>
+          <p class="legendline">
+            Every drop is one held-out sentence's rank percentile under one model &rarr; sentence-set cell — the
+            full distribution, not a summary. <b>Higher is better</b>; the dashed line is labelled chance (0.5);
+            rank percentile uses every query, not just the winners. Hover a drop for its sentence.
+          </p>
+        </section>
+
+        <section class="panel span2" id="decomppanel">
+          <div class="panelhead">
+            <h2>Menu decomposition</h2>
+            <span class="cue">right is better &middot; chance = 0.5</span>
+          </div>
+          <div class="plot" id="decomp"__CHAMBER_DECOMP_PLOT_HIDDEN__></div>
+          <div class="emptycell" id="decompnote"__CHAMBER_DECOMP_NOTE_HIDDEN__>
+            <span class="emptyicon">&#9676;</span>
+            <p>No menu decomposition travelled with this report &mdash; &sect;6 of notebooks/zte_parallax.ipynb
+            (zte-parallax report) writes it into PARALLAX.json.</p>
+          </div>
+          <p class="legendline">
+            Each dumbbell is one task's in-task 2-way accuracy on the held-out subject inside an exact-length pool
+            with ties losing: the hollow marker scores <b>one prototype</b> (the centroid of the enrolled readings),
+            the filled marker scores the <b>best single enrolled reading</b>. The gap between them names where the
+            sentence-level signal lives — in <b>individual readings, not centroids</b>. The dashed line is labelled
+            chance (0.5); hover a marker for its &plusmn;1-word-tolerance variant. Diagnostic only: nothing here
+            feeds a capacity or a verdict.
+          </p>
+        </section>
+
+        <section class="panel span2" id="triadpanel">
+          <div class="panelhead">
+            <h2>CKA triad</h2>
+            <span class="cue">thicker edge = closer geometry &middot; CKA 1 = identical</span>
+          </div>
+          __CHAMBER_MISS_TRIAD__
+          <div class="triadwrap"><svg id="triad" viewBox="0 0 380 330" role="img" aria-label="Pairwise CKA between the three encoders"></svg></div>
+          <p class="legendline">
+            Edge thickness is linear CKA between two models' embeddings of the same sentences — <b>thicker means
+            closer geometry</b>, on a 0 to 1 scale where 1 is identical. High CKA between encoders that never
+            shared a stimulus is convergent geometry — the parallax reading of a task-invariant code. A dashed
+            edge means that pair was not measured.
+          </p>
+        </section>
+      </main>
+
+      <footer class="prov" id="prov"></footer>
+    </div>
+
+    <script id="chamber-data" type="application/json">__CHAMBER_DATA__</script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

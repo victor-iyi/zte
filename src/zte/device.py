@@ -6,7 +6,7 @@ import contextlib
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 
@@ -31,7 +31,8 @@ class DeviceSpec:
     Attributes:
         device (torch.device): The concrete `torch.device` to place tensors/modules on.
         kind (DeviceKind): The backend family (`cpu`, `cuda` or `mps`).
-        autocast_dtype (torch.dtype | None): The dtype to use under `torch.autocast`, or `None` when mixed precision is disabled.
+        autocast_dtype (torch.dtype | None): The dtype to use under `torch.autocast`, or `None` when mixed precision is
+            disabled.
         use_amp (bool): Whether automatic mixed precision should be enabled.
         supports_pin_memory (bool): Whether `DataLoader(pin_memory=True)` helps.
         name (str): A human-readable device name for logging.
@@ -139,9 +140,7 @@ def _select_kind(prefer: DeviceKind | Literal['auto']) -> DeviceKind:
     return 'cpu'
 
 
-def _resolve_precision(
-    kind: DeviceKind, precision: PrecisionPreference
-) -> tuple[torch.dtype | None, bool]:
+def _resolve_precision(kind: DeviceKind, precision: PrecisionPreference) -> tuple[torch.dtype | None, bool]:
     """Maps a (backend, precision) request to an (autocast dtype, use_amp) pair."""
     if precision == 'fp32':
         return None, False
@@ -200,6 +199,33 @@ def auto_num_workers(spec: DeviceSpec, requested: int) -> int:
     return 0
 
 
+def device_plan(prefer: DeviceKind | Literal['auto'] = 'auto') -> dict[str, Any]:
+    """Reports what ZTE will do with this machine, so an out-of-memory kill later is predictable rather than a mystery.
+
+    Args:
+        prefer (DeviceKind | Literal['auto'], optional): Backend to plan for. Defaults to `'auto'`.
+
+    Returns:
+        dict[str, Any]: The resolved backend beside the four settings that decide whether a run fits -- precision,
+        pinned memory, worker count and static shapes.
+
+    Raises:
+        RuntimeError: If a named backend is unavailable on this machine.
+    """
+    spec = resolve_device(prefer)
+
+    return {
+        'backend': spec.kind,
+        'device': spec.name,
+        'autocast_dtype': str(spec.autocast_dtype).removeprefix('torch.') if spec.autocast_dtype else 'fp32',
+        'mixed_precision': spec.use_amp,
+        'pin_memory': spec.supports_pin_memory,
+        'dataloader_workers_auto': auto_num_workers(spec, -1),
+        'tf32_matmul': spec.kind == 'cuda',
+        'static_shapes': spec.kind == 'xla',
+    }
+
+
 def _device_name(kind: DeviceKind, device: torch.device) -> str:
     """Builds a readable device name for logs."""
     if kind == 'cuda':
@@ -253,7 +279,6 @@ def autocast(spec: DeviceSpec) -> Iterator[None]:
         yield
 
 
-# pylint: disable=import-outside-toplevel
 def seed_everything(seed: int, deterministic: bool = False) -> None:
     """Seeds Python, NumPy and Torch RNGs for reproducible runs.
 

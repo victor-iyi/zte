@@ -3,7 +3,8 @@
 - `zte.models.frontends.band_power` - flat and band-family-routed MLPs over band-power vectors.
 - `zte.models.frontends.raw_conformer` - Conformer encoder over raw EEG windows.
 
-`build_frontend` selects the frontend named by `config.frontend` and wires in the electrode positional-encoding mixer when enabled.
+`build_frontend` selects the frontend named by `config.frontend` and wires in the electrode positional-encoding mixer
+when enabled.
 """
 
 from __future__ import annotations
@@ -37,12 +38,13 @@ def build_spatial_mixer(
     """Constructs the electrode spatial-encoding mixer if enabled and applicable.
 
     `spherical_harmonics` (a `SpatialChannelMixer`) and `spatial_attention` (a `SpatialAttention`) share the
-    `(..., n_channels, feat_dim) -> same shape` contract. Both need electrode geometry, so both benefit from a real `montage_csv`;
-    without one the approximate coordinate-free fallback is used.
+    `(..., n_channels, feat_dim) -> same shape` contract. Both need electrode geometry, so both benefit from a real
+    `montage_csv`; without one the approximate coordinate-free fallback is used.
 
     Args:
         config (ModelConfig): Model configuration (reads the `spatial_*` fields).
-        feat_dim (int): Per-electrode feature width the mixer will operate on (raw `time_steps`, or band-power features per channel).
+        feat_dim (int): Per-electrode feature width the mixer will operate on (raw `time_steps`, or band-power features
+            per channel).
         n_channels (int | None): EEG channel count; `None` disables spatial encoding (geometry cannot be built).
         montage_csv (str | None): Optional electrode-coordinate CSV for exact geometry.
 
@@ -53,16 +55,13 @@ def build_spatial_mixer(
         return None
     if not n_channels or n_channels <= 0:
         _LOG.warning(
-            'spatial_encoding=%r requested but the channel count is unknown; '
-            'disabling electrode positional encoding.',
+            'spatial_encoding=%r requested but the channel count is unknown; disabling electrode positional encoding.',
             config.spatial_encoding,
         )
         return None
     geometry = resolve_geometry(n_channels, montage_csv)
     if config.spatial_encoding == 'spatial_attention':
-        return SpatialAttention(
-            geometry, feat_dim=feat_dim, n_freqs=config.spatial_attn_freqs, dropout=config.dropout
-        )
+        return SpatialAttention(geometry, feat_dim=feat_dim, n_freqs=config.spatial_attn_freqs, dropout=config.dropout)
     return SpatialChannelMixer(
         feat_dim=feat_dim,
         geometry=geometry,
@@ -90,9 +89,11 @@ def build_frontend(
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (required for `band_power_mlp`).
         raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (required for `raw_conformer`).
-        n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`. For `raw_conformer` this defaults to
-            `raw_shape[0]`; for `band_power_mlp` it must be supplied (with `bp_features_per_channel`) for spatial encoding to activate.
-        bp_features_per_channel (int | None): Band-power features per channel (the electrode-token width) for `band_power_mlp` spatial encoding.
+        n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`. For
+            `raw_conformer` this defaults to `raw_shape[0]`; for `band_power_mlp` it must be supplied (with
+            `bp_features_per_channel`) for spatial encoding to activate.
+        bp_features_per_channel (int | None): Band-power features per channel (the electrode-token width) for
+            `band_power_mlp` spatial encoding.
         montage_csv (str | None): Optional electrode-coordinate CSV (`channel,x,y,z`) for exact scalp geometry.
 
     Returns:
@@ -103,9 +104,7 @@ def build_frontend(
     """
     if config.frontend == 'band_power_mlp':
         if in_dim is None:
-            raise ValueError(
-                'band_power_mlp frontend requires in_dim (n_bp_features * n_channels).'
-            )
+            raise ValueError('band_power_mlp frontend requires in_dim (n_bp_features * n_channels).')
         # Band-family routing needs the (n_bp, n_channels) layout and a whole number of bands.
         if getattr(config, 'band_routing', False):
             from zte.data.schema import BANDS

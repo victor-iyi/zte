@@ -44,9 +44,7 @@ class SubjectAdapter(nn.Module):
         nn.init.zeros_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 
-    def forward(
-        self, signature: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
+    def forward(self, signature: torch.Tensor) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """Emits `(channel_gain, film_gamma, film_beta)` for a batch of signatures `(B, signature_dim)`."""
         params = self.head(self.trunk(signature))
         gamma, beta = (

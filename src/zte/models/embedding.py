@@ -1,18 +1,19 @@
 """The ZTE encoder: tokens -> (optionally contextual) word/sentence embeddings.
 
-`ZTEModel` is the trainable backbone shared by every objective: a per-token frontend, optional subject conditioning, an optional transformer
-(bidirectional for masked modelling, causal for CPC), and a projection to `embed_dim`. Skipping the transformer gives the word2vec analogue
-used by skip-gram/CBOW, where a word's embedding depends only on its own EEG.
+`ZTEModel` is the trainable backbone shared by every objective: a per-token frontend, optional subject conditioning, an
+optional transformer (bidirectional for masked modelling, causal for CPC), and a projection to `embed_dim`. Skipping the
+transformer gives the word2vec analogue used by skip-gram/CBOW, where a word's embedding depends only on its own EEG.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import nn
 
 from zte.config import ModelConfig, ObjectiveName
+from zte.models.encoder.residual import PredictiveResidual, build_predictive_residual
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
 from zte.models.subject import SubjectAdapter
@@ -78,7 +79,8 @@ class ZTEModel(nn.Module):
             in_dim (int | None): Flattened band-power size `n_features` (band-power frontend).
             raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (raw frontend).
             n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`.
-            bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power spatial encoding.
+            bp_features_per_channel (int | None): Band-power features per channel (electrode-token width) for band-power
+                spatial encoding.
             montage_csv (str | None): Optional electrode-coordinate CSV (`channel,x,y,z`) for exact scalp geometry.
             signature_dim (int): Width of the subject signature; 0 disables the subject adapter.
         """
@@ -96,28 +98,20 @@ class ZTEModel(nn.Module):
         self.hidden_dim = self.frontend.out_dim  # type: ignore[attr-defined]
         self.embed_dim = config.embed_dim
 
-        self.subject_emb = (
-            nn.Embedding(config.n_subjects, self.hidden_dim)
-            if config.subject_conditioning
-            else None
-        )
+        self.subject_emb = nn.Embedding(config.n_subjects, self.hidden_dim) if config.subject_conditioning else None
         # Per-subject FiLM affine, zero-initialised so an unseen (held-out LOSO) subject id stays the identity.
-        self.subject_film = (
-            nn.Embedding(config.n_subjects, 2 * self.hidden_dim) if config.subject_film else None  # type: ignore[operator]
-        )
+        film_dim = 2 * self.hidden_dim  # type: ignore[operator]
+        self.subject_film = nn.Embedding(config.n_subjects, film_dim) if config.subject_film else None
         if self.subject_film is not None:
             nn.init.zeros_(self.subject_film.weight)
 
-        # The id-free replacement for the two tables above: adapter weights are a function of the person's own
-        # statistics, so a subject absent from training is adapted rather than left at the identity map.
+        # Id-free replacement for the two tables above: an unseen subject is adapted from its own statistics.
         self.subject_adapter: SubjectAdapter | None = None
         if config.subject_adapter and signature_dim:
             self.subject_adapter = SubjectAdapter(
                 signature_dim,
                 self.hidden_dim,
-                n_channels=n_channels
-                if (self.uses_raw and config.subject_adapter_spatial)
-                else None,
+                n_channels=n_channels if (self.uses_raw and config.subject_adapter_spatial) else None,
                 width=config.subject_adapter_width,
                 dropout=config.dropout,
             )
@@ -143,10 +137,14 @@ class ZTEModel(nn.Module):
             dropout=config.dropout,
             pos=attn_pos,
         )
-        self.projection = ProjectionHead(
-            self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout
-        )
+        self.projection = ProjectionHead(self.hidden_dim, config.projection_hidden, config.embed_dim, config.dropout)
         self.pool = AttentionPool(self.hidden_dim) if config.pool == 'attention' else None
+
+        # De-trends each token against what its left context predicted; the loss its head needs is collected here and
+        # read by the objective, because `token_hidden` has nowhere to return a second value to.
+        self.residual: PredictiveResidual | None = build_predictive_residual(config, cast('int', self.hidden_dim))
+        self._residual_loss: torch.Tensor | None = None
+        self._residual_metrics: dict[str, float] = {}
 
     def select_input(self, batch: dict[str, Any]) -> torch.Tensor:
         """Picks the frontend's input tensor from a collated batch.
@@ -155,7 +153,8 @@ class ZTEModel(nn.Module):
             batch (dict[str, Any]): A batch dict from `collate_sentences`.
 
         Returns:
-            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len, n_features)` band-power tensor.
+            torch.Tensor: `(batch_size, seq_len, n_channels, time_steps)` raw tensor or `(batch_size, seq_len,
+                n_features)` band-power tensor.
 
         Raises:
             ValueError: If the required representation is missing from `batch`.
@@ -197,11 +196,25 @@ class ZTEModel(nn.Module):
             # Feature-wise affine broadcast over the token axis; zero-init makes an unseen subject a no-op.
             gamma, beta = self.subject_film(batch['subject']).chunk(2, dim=-1)
             hidden = (1.0 + gamma).unsqueeze(1) * hidden + beta.unsqueeze(1)
+
+        if self.residual is not None:
+            hidden, predict_loss, metrics = self.residual(hidden, batch['pad_mask'])
+            self._residual_loss = predict_loss if self._residual_loss is None else self._residual_loss + predict_loss
+            self._residual_metrics = metrics
         return hidden
 
-    def contextualize(
-        self, hidden: torch.Tensor, pad_mask: torch.Tensor, causal: bool = False
-    ) -> torch.Tensor:
+    def take_residual_loss(self) -> tuple[torch.Tensor | None, dict[str, float]]:
+        """Returns and clears the expectation head's regression loss accumulated since the last call.
+
+        Returns:
+            tuple[torch.Tensor | None, dict[str, float]]: The loss (`None` when residual coding is off or no forward
+                pass has happened) and the metrics from the most recent pass.
+        """
+        loss, metrics = self._residual_loss, self._residual_metrics
+        self._residual_loss, self._residual_metrics = None, {}
+        return loss, metrics
+
+    def contextualize(self, hidden: torch.Tensor, pad_mask: torch.Tensor, causal: bool = False) -> torch.Tensor:
         """Applies the transformer over the token sequence.
 
         Args:
@@ -238,9 +251,7 @@ class ZTEModel(nn.Module):
         """
         return self.projection(hidden)
 
-    def forward(
-        self, batch: dict[str, Any], contextual: bool = False, causal: bool = False
-    ) -> torch.Tensor:
+    def forward(self, batch: dict[str, Any], contextual: bool = False, causal: bool = False) -> torch.Tensor:
         """Computes token embeddings, optionally contextualised.
 
         Args:
@@ -259,10 +270,6 @@ class ZTEModel(nn.Module):
     def _pool_tokens(self, hidden: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """Pools per-token hiddens to one vector per sequence over `valid` positions.
 
-        Args:
-            hidden (torch.Tensor): Token hiddens `(batch_size, seq_len, hidden_dim)`.
-            valid (torch.Tensor): Boolean `(batch_size, seq_len)`; `True` at poolable positions.
-
         Returns:
             torch.Tensor: Pooled `(batch_size, hidden_dim)` via attention pooling when configured, else a masked mean.
         """
@@ -271,10 +278,47 @@ class ZTEModel(nn.Module):
         mask = valid.unsqueeze(-1).float()
         return (hidden * mask).sum(1) / mask.sum(1).clamp_min(1.0)
 
+    def pooling_mask(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Returns the `(batch_size, seq_len)` mask of positions a sentence may attend to and pool over.
+
+        Omitted words are non-tokens for attention and pooling; a sentence with none left falls back to its padding
+        mask, because `AttentionPool` returns NaN for a fully masked row.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+
+        Returns:
+            torch.Tensor: Boolean `(batch_size, seq_len)`; `True` at usable positions.
+        """
+        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
+        empty = ~valid.any(dim=1)
+        if bool(empty.any()):
+            valid = valid.clone()
+            valid[empty] = batch['pad_mask'][empty]
+        return valid
+
+    def sentence_hidden(self, batch: dict[str, Any], contextual: bool = True, causal: bool = False) -> torch.Tensor:
+        """Pools a sentence's word-EEG tokens into one hidden vector, keeping the gradient.
+
+        This is the differentiable half of `embed_sentence`, which a decoder loss needs and cannot get from that
+        `@torch.no_grad()` method.
+
+        Args:
+            batch (dict[str, Any]): A collated batch dict.
+            contextual (bool, optional): Run the transformer before pooling. Defaults to True.
+            causal (bool, optional): Use a causal mask when `contextual`. Defaults to False.
+
+        Returns:
+            torch.Tensor: Pooled sentence hiddens `(batch_size, hidden_dim)`, before the projection head.
+        """
+        valid = self.pooling_mask(batch)
+        hidden = self.token_hidden(batch)
+        if contextual:
+            hidden = self.contextualize(hidden, valid, causal=causal)
+        return self._pool_tokens(hidden, valid)
+
     @torch.no_grad()
-    def embed_sentence(
-        self, batch: dict[str, Any], objective: ObjectiveName | None = None
-    ) -> torch.Tensor:
+    def embed_sentence(self, batch: dict[str, Any], objective: ObjectiveName | None = None) -> torch.Tensor:
         """Produces one pooled embedding per sentence (for retrieval/inference).
 
         Routing is objective-aware so the exported sentence embedding matches the path the objective actually trained:
@@ -285,27 +329,14 @@ class ZTEModel(nn.Module):
 
         Args:
             batch (dict[str, Any]): A collated batch dict.
-            objective (ObjectiveName | None): Trained objective name; `None` defaults to the bidirectional-contextual path.
+            objective (ObjectiveName | None): Trained objective name; `None` defaults to the bidirectional-contextual
+                path.
 
         Returns:
             torch.Tensor: Sentence embeddings `(batch_size, embed_dim)`.
         """
-        # Omitted words are non-tokens for attention and pooling; fall back so no sentence is fully masked.
-        valid = batch['pad_mask'] & batch.get('presence', batch['pad_mask'])
-        empty = ~valid.any(dim=1)
-        if bool(empty.any()):
-            valid = valid.clone()
-            valid[empty] = batch['pad_mask'][empty]
-
-        hidden = self.token_hidden(batch)
-        if objective in {'skipgram', 'cbow'}:
-            pooled = self._pool_tokens(hidden, valid)
-        elif objective == 'cpc':
-            hidden = self.contextualize(hidden, valid, causal=True)
-            pooled = self._pool_tokens(hidden, valid)
-        else:
-            hidden = self.contextualize(hidden, valid, causal=False)
-            pooled = self._pool_tokens(hidden, valid)
+        contextual = objective not in {'skipgram', 'cbow'}
+        pooled = self.sentence_hidden(batch, contextual=contextual, causal=objective == 'cpc')
         return self.project(pooled)
 
 

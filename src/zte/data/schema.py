@@ -69,10 +69,10 @@ WORD_SCALAR_FIELDS: Final[tuple[str, ...]] = ('nFixations', 'meanPupilSize')
 
 type Task = Literal['SR', 'NR', 'TSR']
 
-#: A subject code such as `'ZAB'`. Left open rather than a `Literal` so ZuCo 1.0, 2.0 and synthetic cohorts share one type.
+#: A subject code such as `'ZAB'`. Left open rather than a `Literal` so v1, v2 and synthetic cohorts share one type.
 type Subject = str
 
-#: ZuCo reading tasks. `SR` = sentiment reading (task 1), `NR` = normal reading (task 2), `TSR` = task-specific reading (task 3).
+#: ZuCo reading tasks: `SR` sentiment (task 1), `NR` normal (task 2), `TSR` task-specific (task 3).
 TASKS: Final[tuple[Task, ...]] = ('SR', 'NR', 'TSR')
 
 TASK_NAMES: Final[dict[Task, str]] = {

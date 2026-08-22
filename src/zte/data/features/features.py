@@ -1,6 +1,5 @@
 """Reshape the `(n_words, n_bp_features, n_channels)` band-power tensor and rank its channel x band dimensions."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -172,9 +171,7 @@ class FeatureSelector:
         if self.task == 'regression':
             from sklearn.ensemble import RandomForestRegressor
 
-            model: object = RandomForestRegressor(
-                n_estimators=64, max_depth=8, n_jobs=-1, random_state=0
-            )
+            model: object = RandomForestRegressor(n_estimators=64, max_depth=8, n_jobs=-1, random_state=0)
         else:
             from sklearn.ensemble import RandomForestClassifier
 

@@ -137,7 +137,9 @@ The EEG band-power is always kept; the toggle only governs the extra gaze dimens
 
 Per set of words the band-power tensor is $X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}$, where $n_{bp} = n_{\text{measures}} \times n_{\text{bands}}$ band-power features are laid over $C = 105$ channels. Each token flattens the $(n_{bp} \times C)$ grid into a band-major, channel-minor vector, optionally with appended eye-tracking scalars:
 
-$$X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}, \qquad x_{\text{token}} \in \mathbb{R}^{n_{bp}\cdot C}\ (\text{e.g. } 8 \times 105 = 840)$$
+$$
+X \in \mathbb{R}^{n_{\text{words}} \times n_{bp} \times C}, \qquad x_{\text{token}} \in \mathbb{R}^{n_{bp}\cdot C}\ (\text{e.g. } 8 \times 105 = 840)
+$$
 
 The `raw` representation instead keeps $C \times T$ samples per token, with $C = 105$ and $T =$ `raw_window`.
 
@@ -150,7 +152,9 @@ The `raw` representation instead keeps $C \times T$ samples per token, with $C =
 - `minmax` — rescale to $[0,1]$: $\tilde x = \dfrac{x - \min x}{\max x - \min x}$.
 - `none` — leave features unscaled.
 
-$$\tilde x_c = \frac{x_c - \mu_c}{\sigma_c}, \qquad \tilde x = \frac{x - \min x}{\max x - \min x}$$
+$$
+\tilde x_c = \frac{x_c - \mu_c}{\sigma_c}, \qquad \tilde x = \frac{x - \min x}{\max x - \min x}
+$$
 
 ## Missing-value strategies (`MissingConfig.method`)
 
@@ -169,7 +173,9 @@ Omitted (skipped) words carry **no** EEG. Every strategy returns a **presence ma
 
 The statistical fills average over the observed entries only. For `col_mean` / `global_mean`, the missing entry $x_{ij}$ is filled from the observed set $\Omega_j$ of column $j$ (a single global column for `global_mean`); `row_mean` averages a token's own present features instead:
 
-$$\hat x_{ij} = \frac{1}{\lvert \Omega_j \rvert}\sum_{i' \in \Omega_j} x_{i'j}$$
+$$
+\hat x_{ij} = \frac{1}{\lvert \Omega_j \rvert}\sum_{i' \in \Omega_j} x_{i'j}
+$$
 
 ```mermaid
 flowchart TD
@@ -256,6 +262,8 @@ A saved bundle is the unit of reuse: build once with `zte-prepare`, then train, 
 ### The layered cache — prepare once, across machines and sessions
 
 `--cache-dir` is a fast local cache; `--cache-remote` (or `$ZTE_CACHE_REMOTE`, which every `zte-*` command honours) is a persistent one, typically a mounted Drive folder. Lookups read local first, then the persistent store, staging a hit down once; a freshly built bundle is published upward immediately, so an interrupted run never costs a rebuild.
+
+**A cache entry exists only when it is complete.** Copies between layers walk files alphabetically, so an interrupted copy can land `meta.json` on a store before the pickles it describes — and a mere existence check would then freeze that torn entry in place forever, crashing every later session that stages it. Every layer therefore counts an entry as present only when *all* of its required files (`meta.json`, `words.pkl`, `sentences.pkl`, `arrays.npz`) exist: a torn local copy is cleared and treated as a miss, a torn persistent entry is reported loudly, ignored, and *repaired* by the next publish, and an entry that is complete but unreadable is discarded and rebuilt rather than crashing the run — the same fall-back-past-a-torn-file discipline the checkpoint layer uses.
 
 ```sh
 export ZTE_CACHE_REMOTE="/content/drive/MyDrive/Sharables/ZTE/prepared"

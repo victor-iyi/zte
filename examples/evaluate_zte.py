@@ -58,9 +58,7 @@ def build_dataset(workdir: Path) -> ZuCoDataset:
     """
     root = workdir / 'zuco'
     # Several subjects + both tasks so probes and cross-subject retrieval are meaningful.
-    generate_synthetic_zuco(
-        root, subjects=('ZAB', 'ZDM', 'ZJN', 'ZKH'), tasks=('SR', 'NR'), n_sentences=14
-    )
+    generate_synthetic_zuco(root, subjects=('ZAB', 'ZDM', 'ZJN', 'ZKH'), tasks=('SR', 'NR'), n_sentences=14)
     return ZuCoDataset(
         DatasetConfig(
             root=str(root),
@@ -108,9 +106,7 @@ def main() -> None:
     ckpt = Path(args.ckpt) if args.ckpt else train_quick(dataset, work, args.device, args.epochs)
 
     embedder = ZTEEmbedder.from_checkpoint(ckpt, dataset, device=resolve_device(args.device))
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
-        embedder, dataset
-    )
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, dataset)
     metrics = evaluate_representation(
         word_emb,
         word_meta,

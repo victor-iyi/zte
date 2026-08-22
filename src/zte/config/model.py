@@ -57,7 +57,7 @@ class ModelConfig:
     to a sphere. Needs coordinates: exact from `dataset.montage_csv`, else an approximate fallback that is flagged."""
 
     spatial_harmonic_degree: int = 6
-    """Maximum harmonic degree `l_max` for `spherical_harmonics`; `(l_max + 1) ** 2` harmonics resolve finer patterns."""
+    """Maximum harmonic degree `l_max` for `spherical_harmonics`; `(l_max + 1) ** 2` harmonics resolve finer detail."""
 
     spatial_mix: bool = True
     """Follow the additive electrode encoding with one self-attention layer over the channel axis (electrodes as
@@ -114,6 +114,27 @@ class ModelConfig:
 
     content_dim: int = 384
     """Width of the content subspace when `factored`; the remaining `embed_dim - content_dim` dims are nuisance."""
+
+    # -- Predictive residual coding ------------------------------------------ #
+    residual_coding: bool = False
+    """Subtract each token's context-predicted expectation before the token is used, keeping only the part the
+    preceding words did not already account for. Reading is predictive and the large language-related EEG deflections
+    are surprisal responses, so the reader's tonic state and 1/f background -- all predictable from the last few
+    seconds -- cancel in the residual while the word-specific response survives. The expectation head trains on its
+    own detached regression, so the encoder cannot cut that loss by making itself predictable."""
+
+    residual_layers: int = 1
+    """Depth of the causal expectation head. One layer is usually enough: it is predicting a smooth drift, not
+    modelling language."""
+
+    residual_gate: float = 1.0
+    """Initial value of the learnable scalar that scales the subtraction. `0.0` makes the coder the identity at step 0
+    and lets training decide how much context to remove; `1.0` subtracts the whole expectation from the start."""
+
+    residual_predict_weight: float = 1.0
+    """Weight of the expectation head's own regression loss. It reaches the head and nothing else, so this trades how
+    fast the de-trender converges against how much of the step budget it takes -- it never competes with the
+    objective for the encoder's parameters."""
 
     # -- Band-family routing ------------------------------------------------- #
     band_routing: bool = False

@@ -1,9 +1,8 @@
-"""Regression tests for the performance-review improvements.
+"""Regression tests for the levers that make a null result actionable.
 
-These cover the fixes that turned the honest negative result into a set of actionable levers:
-anti-collapse (VICReg), subject invariance (adversary, cross-subject positives, per-subject
-normalisation), the masked-objective repair (the exported head is now trained), leakage-aware
-splitting/normalisation, and objective-aware inference routing.
+Covers anti-collapse (VICReg), subject invariance (adversary, cross-subject positives, per-subject
+normalisation), the masked objective training its exported head, leakage-aware splitting and
+normalisation, and objective-aware inference routing.
 """
 
 from __future__ import annotations
@@ -92,9 +91,7 @@ def test_subject_adversary_shapes() -> None:
 def test_adversary_built_only_when_enabled(three_subject_dir: Path, tmp_path: Path) -> None:
     """The subject adversary is present iff its weight is positive."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     off = build_objective(ObjectiveConfig(name='skipgram'), model)
     on = build_objective(ObjectiveConfig(name='skipgram', subject_adversary_weight=0.5), model)
     assert off.subject_adversary is None
@@ -104,9 +101,7 @@ def test_adversary_built_only_when_enabled(three_subject_dir: Path, tmp_path: Pa
 def test_cross_subject_positives_run(three_subject_dir: Path, tmp_path: Path) -> None:
     """Skip-gram with cross-subject positives produces a finite loss over a stimulus-grouped batch."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     obj = build_objective(ObjectiveConfig(name='skipgram', cross_subject_positives=True), model)
     sp = ds.split('by_sentence', val_fraction=0.1, test_fraction=0.1, seed=0)
     loader = make_dataloader(ds.to_torch(split=sp['train']), batch_size=8, group_by_stimulus=True)
@@ -123,9 +118,7 @@ def test_cross_subject_positives_run(three_subject_dir: Path, tmp_path: Path) ->
 def test_masked_latent_trains_projection_head(three_subject_dir: Path, tmp_path: Path) -> None:
     """The exported 768-d projection head now receives a gradient under masked/latent training."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     obj = build_objective(
         ObjectiveConfig(name='masked', masked_target='latent'),
         model,
@@ -135,9 +128,7 @@ def test_masked_latent_trains_projection_head(three_subject_dir: Path, tmp_path:
     loader = make_dataloader(ds.to_torch(split=sp['train']), batch_size=8)
     loss, _ = obj.compute(model, next(iter(loader)))
     loss.backward()
-    grad = sum(
-        float(p.grad.abs().sum()) for p in model.projection.parameters() if p.grad is not None
-    )
+    grad = sum(float(p.grad.abs().sum()) for p in model.projection.parameters() if p.grad is not None)
     assert grad > 0.0
 
 
@@ -223,9 +214,7 @@ def test_per_subject_normalizer_state_roundtrip() -> None:
 def test_embed_sentence_routes_per_objective(three_subject_dir: Path, tmp_path: Path) -> None:
     """skip-gram sentence embedding skips the transformer; masked/cpc route through it."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     loader = make_dataloader(ds.to_torch(), batch_size=6, shuffle=False)
     batch = next(iter(loader))
     sg = model.embed_sentence(batch, objective='skipgram')
@@ -243,9 +232,7 @@ def test_full_run_with_all_improvements(three_subject_dir: Path, tmp_path: Path)
             cache_dir=str(tmp_path / 'cache'),
             normalize='zscore_subject',
         ),
-        model=ModelConfig(
-            embed_dim=48, hidden_dim=32, n_layers=2, projection_hidden=32, n_subjects=3
-        ),
+        model=ModelConfig(embed_dim=48, hidden_dim=32, n_layers=2, projection_hidden=32, n_subjects=3),
         objective=ObjectiveConfig(
             name='skipgram',
             variance_weight=1.0,
@@ -253,9 +240,7 @@ def test_full_run_with_all_improvements(three_subject_dir: Path, tmp_path: Path)
             subject_adversary_weight=0.3,
             cross_subject_positives=True,
         ),
-        train=TrainConfig(
-            epochs=1, batch_size=8, device='cpu', precision='fp32', tensorboard=False
-        ),
+        train=TrainConfig(epochs=1, batch_size=8, device='cpu', precision='fp32', tensorboard=False),
     )
     from zte.training.pipeline import run_training
 

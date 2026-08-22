@@ -1,4 +1,4 @@
-"""Tests for Unit A (meaning distillation + hard negatives) and Unit B (behaviour)."""
+"""Tests for meaning distillation, confound-matched hard negatives and behaviour supervision."""
 
 from __future__ import annotations
 
@@ -30,16 +30,14 @@ def three_subject_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _dataset(root: Path, tmp: Path) -> ZuCoDataset:
-    return ZuCoDataset(DatasetConfig(root=str(root), cache_dir=str(tmp / 'cache'))).build(
-        show_progress=False
-    )
+    return ZuCoDataset(DatasetConfig(root=str(root), cache_dir=str(tmp / 'cache'))).build(show_progress=False)
 
 
 # --- meaning teacher ------------------------------------------------------- #
 
 
 def test_meaning_matrix_hash_is_deterministic_and_normalised() -> None:
-    """Test that the meaning matrix is deterministic and normalised."""
+    """The meaning matrix is deterministic and normalised."""
     vocab = {'the': 0, 'brain': 1, 'reads': 2}
     a = build_meaning_matrix(vocab, source='hash', dim=32)
     b = build_meaning_matrix(vocab, source=None, dim=32)
@@ -49,7 +47,7 @@ def test_meaning_matrix_hash_is_deterministic_and_normalised() -> None:
 
 
 def test_meaning_matrix_from_glove_file(tmp_path: Path) -> None:
-    """Test that the meaning matrix is built from a GloVe file."""
+    """The meaning matrix is built from a GloVe file."""
     f = tmp_path / 'vecs.txt'
     f.write_text('brain 1 0 0\nreads 0 1 0\n', encoding='utf-8')
     mat = build_meaning_matrix({'brain': 0, 'reads': 1, 'oov': 2}, source=str(f), dim=3)
@@ -61,10 +59,8 @@ def test_meaning_matrix_from_glove_file(tmp_path: Path) -> None:
 # --- behaviour targets ----------------------------------------------------- #
 
 
-def test_behaviour_matrix_regression_time_and_binary(
-    three_subject_dir: Path, tmp_path: Path
-) -> None:
-    """Test that the behaviour matrix is built correctly."""
+def test_behaviour_matrix_regression_time_and_binary(three_subject_dir: Path, tmp_path: Path) -> None:
+    """The behaviour matrix is built correctly."""
     ds = _dataset(three_subject_dir, tmp_path)
     mat, names, binary = build_behaviour_matrix(ds.words, ('TRT', 'regression_time', 'is_omitted'))
     assert mat.shape == (len(ds.words), len(names))  # type: ignore[index]
@@ -78,14 +74,10 @@ def test_behaviour_matrix_regression_time_and_binary(
 
 
 def test_meaning_distillation_trains(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that meaning distillation trains."""
+    """Meaning distillation contributes a finite loss and trains end-to-end."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
-    obj = build_objective(
-        ObjectiveConfig(name='skipgram', meaning_distill_weight=1.0, meaning_dim=16), model
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
+    obj = build_objective(ObjectiveConfig(name='skipgram', meaning_distill_weight=1.0, meaning_dim=16), model)
     td = ds.to_torch()
     mat = build_meaning_matrix(td.word_vocab, source='hash', dim=16)
     obj.attach_auxiliary(meaning_matrix=torch.from_numpy(mat))
@@ -93,22 +85,16 @@ def test_meaning_distillation_trains(three_subject_dir: Path, tmp_path: Path) ->
     assert torch.isfinite(loss)
     assert 'meaning_loss' in metrics and metrics['meaning_loss'] >= 0.0
     loss.backward()
-    grad = sum(
-        float(p.grad.abs().sum()) for p in obj.meaning_head.parameters() if p.grad is not None
-    )
+    grad = sum(float(p.grad.abs().sum()) for p in obj.meaning_head.parameters() if p.grad is not None)
     assert grad > 0.0  # the meaning head actually trains
 
 
 def test_behaviour_supervision_trains(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that behaviour supervision trains."""
+    """Behaviour supervision contributes a finite loss and trains end-to-end."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     targets = ('TRT', 'regression_time', 'is_omitted')
-    obj = build_objective(
-        ObjectiveConfig(name='skipgram', behaviour_weight=1.0, behaviour_targets=targets), model
-    )
+    obj = build_objective(ObjectiveConfig(name='skipgram', behaviour_weight=1.0, behaviour_targets=targets), model)
     td = ds.to_torch(behaviour_targets=targets)
     obj.attach_auxiliary(behaviour_binary=torch.from_numpy(td.behaviour_binary))
     batch = next(iter(make_dataloader(td, batch_size=8)))
@@ -117,35 +103,29 @@ def test_behaviour_supervision_trains(three_subject_dir: Path, tmp_path: Path) -
     assert torch.isfinite(loss)
     assert 'behaviour_loss' in metrics
     loss.backward()
-    grad = sum(
-        float(p.grad.abs().sum()) for p in obj.behaviour_head.parameters() if p.grad is not None
-    )
+    grad = sum(float(p.grad.abs().sum()) for p in obj.behaviour_head.parameters() if p.grad is not None)
     assert grad > 0.0
 
 
 def test_hard_negatives_run(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that hard negatives run."""
+    """Confound-matched hard negatives restrict the denominator without breaking the loss."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     obj = build_objective(ObjectiveConfig(name='skipgram', hard_negatives=True), model)
     loss, _ = obj.compute(model, next(iter(make_dataloader(ds.to_torch(), batch_size=8))))
     assert torch.isfinite(loss)
 
 
 def test_aux_heads_absent_when_disabled(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that auxiliary heads are absent when disabled."""
+    """Auxiliary heads are absent when disabled."""
     ds = _dataset(three_subject_dir, tmp_path)
-    model = build_model(
-        ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1]
-    )
+    model = build_model(ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3), in_dim=ds.features.shape[1])
     obj = build_objective(ObjectiveConfig(name='skipgram'), model)
     assert obj.meaning_head is None and obj.behaviour_head is None
 
 
 def test_band_routing_frontend_selected_and_trains(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that band routing selects the split-pathway frontend and trains end-to-end."""
+    """Band routing selects the split-pathway frontend and trains end-to-end."""
     ds = _dataset(three_subject_dir, tmp_path)
     in_dim = ds.features.shape[1]
     bp = (in_dim - 6) // 105  # 6 trailing eye-tracking columns, 105 channels
@@ -163,7 +143,7 @@ def test_band_routing_frontend_selected_and_trains(three_subject_dir: Path, tmp_
 
 
 def test_factored_routes_heads_to_content_slice(three_subject_dir: Path, tmp_path: Path) -> None:
-    """Test that when factored, meaning + subject-adversary heads act on the content subspace."""
+    """When factored, meaning + subject-adversary heads act on the content subspace."""
     ds = _dataset(three_subject_dir, tmp_path)
     model = build_model(
         ModelConfig(embed_dim=48, hidden_dim=32, n_subjects=3, factored=True, content_dim=24),
@@ -181,9 +161,7 @@ def test_factored_routes_heads_to_content_slice(three_subject_dir: Path, tmp_pat
     assert obj._content_dim == 24 and obj._factored
     mat = build_meaning_matrix(ds.to_torch().word_vocab, 'hash', 16)
     obj.attach_auxiliary(meaning_matrix=torch.from_numpy(mat))
-    assert (
-        obj.meaning_head.in_features == 24 and obj.meaning_head.out_features == 16
-    )  # content slice; matrix width
+    assert obj.meaning_head.in_features == 24 and obj.meaning_head.out_features == 16  # content slice; matrix width
     loss, metrics = obj.compute(model, next(iter(make_dataloader(ds.to_torch(), batch_size=8))))
     assert torch.isfinite(loss) and 'meaning_loss' in metrics and 'adv_loss' in metrics
     loss.backward()  # content-slice adversary + meaning head both differentiate cleanly

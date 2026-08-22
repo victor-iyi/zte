@@ -7,15 +7,7 @@ from typing import Any, get_args, get_type_hints
 
 
 def _build(cls: type, data: dict[str, Any]) -> Any:
-    """Reconstructs a (possibly nested) dataclass, coercing lists back to tuples.
-
-    Args:
-        cls (type): The dataclass type to instantiate.
-        data (dict[str, Any]): Field values, typically parsed from YAML where tuples became lists.
-
-    Returns:
-        Any: An instance of `cls` with type-appropriate field values.
-    """
+    """Reconstructs a (possibly nested) dataclass, coercing lists back to tuples."""
     if not dataclasses.is_dataclass(cls):
         return data
     hints = get_type_hints(cls)
@@ -25,6 +17,8 @@ def _build(cls: type, data: dict[str, Any]) -> Any:
             continue
         value = data[f.name]
         hint = hints.get(f.name)
+        if value is None and dataclasses.is_dataclass(_strip_optional(hint)):
+            continue  # a YAML section written with no keys parses as None; keep that section's defaults
         if dataclasses.is_dataclass(_strip_optional(hint)) and isinstance(value, dict):
             kwargs[f.name] = _build(_strip_optional(hint), value)
         elif _is_tuple_hint(hint) and isinstance(value, list):

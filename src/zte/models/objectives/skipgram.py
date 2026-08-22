@@ -25,17 +25,14 @@ class SkipGramObjective(_ObjectiveBase):
         """Initialises the skip-gram objective.
 
         Args:
-            config (ObjectiveConfig): Objective configuration (uses `context_window`, `temperature`, `cross_subject_positives`).
+            config (ObjectiveConfig): Objective configuration (uses `context_window`, `temperature`,
+                `cross_subject_positives`).
             model (ZTEModel): The encoder, used to size the context head.
         """
         super().__init__(config, model)
-        self.context_head = ProjectionHead(
-            model.hidden_dim, model.config.projection_hidden, model.embed_dim
-        )
+        self.context_head = ProjectionHead(model.hidden_dim, model.config.projection_hidden, model.embed_dim)
 
-    def compute(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the skip-gram InfoNCE loss for a batch.
 
         Positives are either same-sentence neighbours (default) or the same stimulus read by another
@@ -77,7 +74,7 @@ class SkipGramObjective(_ObjectiveBase):
             within = (pos[:, None] - pos[None, :]).abs() <= self.config.context_window
             pos_mask = same_sent & within & not_self & valid_pair
 
-        # Meaning positives: also pull together the same content word across sentences, so clusters follow meaning, not passage.
+        # Meaning positives: the same content word across sentences, so clusters follow meaning rather than passage.
         if self.config.meaning_positives and batch.get('word_id') is not None:
             wid = batch['word_id'].reshape(-1)
             has_w = wid >= 0
@@ -90,7 +87,7 @@ class SkipGramObjective(_ObjectiveBase):
         logits = center_flat @ context_flat.t() / self.config.temperature
         neg_inf = torch.finfo(logits.dtype).min
         cand_mask = usable_flat[None, :] & not_self
-        # Confound-matched hard negatives: keep only negatives sharing the anchor's subject/task, so identity cannot win the softmax.
+        # Hard negatives share the anchor's subject/task, so subject identity cannot win the softmax.
         if self.config.hard_negatives:
             match = torch.ones(b * length, b * length, dtype=torch.bool, device=center.device)
             for key in self.config.hard_negative_keys:

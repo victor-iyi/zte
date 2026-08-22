@@ -15,7 +15,7 @@ $$
 Where sinusoidal encoding lays a geometric‑frequency ladder along the one‑dimensional token line,
 
 $$
-PE_{p,2i} = \sin\!\left(\frac{p}{10000^{2i/d}}\right),
+PE_{p,2i} = \sin\!\Big(\frac{p}{10000^{2i/d}}\Big),
 $$
 
 spherical harmonics lay the analogous frequency ladder over the scalp sphere. They are to the sphere what sines are to the line:

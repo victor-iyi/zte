@@ -1,6 +1,5 @@
 """Logging and progress-bar helpers, routed through `rich`/`tqdm` when installed."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import logging
@@ -14,12 +13,16 @@ _LOGGER_NAME: str = 'zte'
 def configure_logging(
     level: int | str = logging.INFO,
     log_file: str | Path | None = None,
+    *,
+    stderr: bool = False,
 ) -> None:
     """Configures the root `zte` logger exactly once.
 
     Args:
         level (int | str): Logging level (e.g. `logging.INFO` or `'DEBUG'`).
         log_file (str | Path | None): Optional path; when given, logs are also appended there with a verbose formatter.
+        stderr (bool, optional): Route console logs to stderr, so a command whose stdout is a machine-read payload
+            stays parsable at any log level. Defaults to False.
     """
     logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(level)
@@ -27,17 +30,18 @@ def configure_logging(
     logger.propagate = False
 
     try:
+        from rich.console import Console
         from rich.logging import RichHandler
 
+        # `rich` writes to stdout by default; the plain fallback below is already on stderr.
+        console = Console(stderr=True) if stderr else None
         console_handler: logging.Handler = RichHandler(
-            rich_tracebacks=True, show_path=False, markup=True
+            console=console, rich_tracebacks=True, show_path=False, markup=True
         )
         console_handler.setFormatter(logging.Formatter('%(message)s', datefmt='[%X]'))
     except ImportError:
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(
-            logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s | %(message)s')
-        )
+        console_handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)-7s | %(name)s | %(message)s'))
     logger.addHandler(console_handler)
 
     if log_file is not None:

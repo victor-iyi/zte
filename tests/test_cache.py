@@ -12,12 +12,20 @@ import pandas as pd
 import pytest
 
 from zte.config import DatasetConfig, MissingConfig
-from zte.data.cache import REMOTE_ENV_VAR, BundleStore
+from zte.data.cache import REMOTE_ENV_VAR, REQUIRED_ENTRY_FILES, BundleStore
 from zte.data.dataset import ZuCoDataset
 
 
 def _entry(directory: Path, payload: str = '{}') -> Path:
-    """Creates a minimal cache entry (a directory carrying a `meta.json`)."""
+    """Creates a minimal COMPLETE cache entry: every required file present, `meta.json` carrying the payload."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_ENTRY_FILES:
+        (directory / name).write_text(payload if name == 'meta.json' else 'x', encoding='utf-8')
+    return directory
+
+
+def _torn_entry(directory: Path, payload: str = '{}') -> Path:
+    """Creates a torn cache entry: `meta.json` landed, the pickles it describes did not."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'meta.json').write_text(payload, encoding='utf-8')
     return directory
@@ -37,7 +45,7 @@ def _prepare_args(tmp_path: Path, config: str, check: bool = False) -> argparse.
 
 
 def test_has_reports_the_layer_without_staging(tmp_path: Path) -> None:
-    """Test that presence checks never copy, so gating a session on them is free."""
+    """Presence checks never copy, so gating a session on them is free."""
     store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
     _entry(tmp_path / 'drive' / 'k')
 
@@ -78,7 +86,7 @@ def test_prepare_skips_everything_when_the_persistent_store_is_warm(
 
 
 def test_prepare_check_never_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that `--check` reports a cold cache without building or resolving anything."""
+    """`--check` reports a cold cache without building or resolving anything."""
     from zte.cli import prepare as prepare_cli
 
     def _boom(*_args: object, **_kwargs: object) -> str:
@@ -87,15 +95,11 @@ def test_prepare_check_never_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(prepare_cli, '_resolve_build_root', _boom)
     monkeypatch.setattr(prepare_cli.ZuCoDataset, 'build', _boom)
 
-    prepare_cli._prepare_configs(
-        _prepare_args(tmp_path, 'experiments/flagship/zte_raw_aligned.yaml', check=True)
-    )
+    prepare_cli._prepare_configs(_prepare_args(tmp_path, 'experiments/flagship/zte_raw_aligned.yaml', check=True))
 
 
-def test_artifacts_survive_a_wiped_local_disk(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Test that frozen encoder matrices layer onto the persistent store like bundles do.
+def test_artifacts_survive_a_wiped_local_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Frozen encoder matrices layer onto the persistent store like bundles do.
 
     The BERT meaning matrix and the E5 sentence embeddings cost minutes to build; cached only on the
     Colab VM's disk they were rebuilt every session.
@@ -116,7 +120,7 @@ def test_artifacts_survive_a_wiped_local_disk(
 
 
 def test_artifacts_are_a_no_op_without_a_persistent_store(tmp_path: Path) -> None:
-    """Test that artifact layering stays inert when no remote is configured."""
+    """Artifact layering stays inert when no remote is configured."""
     from zte.data.cache import fetch_artifact, publish_artifact
 
     missing = tmp_path / 'text_x.npy'
@@ -146,7 +150,7 @@ def test_prepare_keys_are_independent_of_the_data_root(tmp_path: Path) -> None:
 
 
 def test_store_prefers_local_then_falls_back_to_remote(tmp_path: Path) -> None:
-    """Test that lookups hit the fast local copy first and the persistent store second."""
+    """Lookups hit the fast local copy first and the persistent store second."""
     store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
     assert store.find('k') is None
 
@@ -160,7 +164,7 @@ def test_store_prefers_local_then_falls_back_to_remote(tmp_path: Path) -> None:
 
 
 def test_store_publishes_immediately_and_treats_entries_as_immutable(tmp_path: Path) -> None:
-    """Test that a built entry reaches the persistent store, and an existing one is left alone."""
+    """A built entry reaches the persistent store, and an existing one is left alone."""
     store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
     _entry(store.reserve('k'), '{"v": 1}')
     store.publish('k')
@@ -173,17 +177,15 @@ def test_store_publishes_immediately_and_treats_entries_as_immutable(tmp_path: P
 
 
 def test_store_without_a_remote_is_a_plain_local_cache(tmp_path: Path) -> None:
-    """Test that omitting the persistent store degrades to local-only behaviour."""
+    """Omitting the persistent store degrades to local-only behaviour."""
     store = BundleStore(local=tmp_path / 'local', remote=None)
     _entry(store.reserve('k'))
     store.publish('k')  # must not raise
     assert store.find('k') == tmp_path / 'local' / 'k'
 
 
-def test_store_reads_the_remote_from_the_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Test that `ZTE_CACHE_REMOTE` configures the persistent store for every command."""
+def test_store_reads_the_remote_from_the_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ZTE_CACHE_REMOTE` configures the persistent store for every command."""
     monkeypatch.setenv(REMOTE_ENV_VAR, str(tmp_path / 'drive'))
     assert BundleStore.create(tmp_path / 'local').remote == tmp_path / 'drive'
 
@@ -195,7 +197,7 @@ def test_store_reads_the_remote_from_the_environment(
 
 
 def test_extract_key_ignores_processing_settings() -> None:
-    """Test that the `.mat` extraction is shared by configs that differ only in processing.
+    """The `.mat` extraction is shared by configs that differ only in processing.
 
     This is what makes a new dataset config cheap: normalisation, imputation, eye-tracking and length
     filters all re-derive from a cached extraction instead of re-parsing every `.mat` file.
@@ -215,7 +217,7 @@ def test_extract_key_ignores_processing_settings() -> None:
 
 
 def test_extract_key_separates_genuinely_different_extractions() -> None:
-    """Test that settings the `.mat` parse depends on do produce distinct extractions."""
+    """Settings the `.mat` parse depends on do produce distinct extractions."""
     base = DatasetConfig(representation='band_power')
     for variant in (
         dataclasses.replace(base, representation='raw'),
@@ -229,7 +231,7 @@ def test_extract_key_separates_genuinely_different_extractions() -> None:
 
 
 def test_cache_location_settings_never_change_the_key(tmp_path: Path) -> None:
-    """Test that where (and whether) we cache cannot invalidate an existing bundle.
+    """Where (and whether) we cache cannot invalidate an existing bundle.
 
     Adding these fields must not orphan the bundles already built on Drive.
     """
@@ -245,7 +247,7 @@ def test_cache_location_settings_never_change_the_key(tmp_path: Path) -> None:
 
 
 def test_extract_round_trip_keeps_the_requested_config(tmp_path: Path) -> None:
-    """Test that loading an extraction does not adopt the config that happened to build it.
+    """Loading an extraction does not adopt the config that happened to build it.
 
     An extraction exists to serve a *different* config, so `_load_extract` must leave `config` alone
     (unlike `load`, which restores a bundle wholesale).
@@ -268,3 +270,66 @@ def test_extract_round_trip_keeps_the_requested_config(tmp_path: Path) -> None:
     assert restored.features is None
     assert restored.presence is None
     assert restored.normalizer is None
+
+
+# --------------------------------------------------------------------------- #
+# torn entries: an interrupted copy must cost a rebuild, never the run
+# --------------------------------------------------------------------------- #
+def test_a_torn_local_entry_is_a_miss_and_is_cleared(tmp_path: Path) -> None:
+    """A local directory with `meta.json` but no pickles is a torn copy: refused and removed, never loaded."""
+    store = BundleStore(local=tmp_path / 'local', remote=None)
+    torn = _torn_entry(tmp_path / 'local' / 'k')
+
+    assert store.find('k') is None
+    assert not torn.exists()
+    assert store.has('k') is None
+
+
+def test_a_torn_persistent_entry_is_refused_and_never_staged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A torn entry on the persistent store is reported loudly and treated as a miss, not copied down."""
+    import logging
+
+    store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
+    _torn_entry(tmp_path / 'drive' / 'k')
+
+    with caplog.at_level(logging.WARNING, logger='zte.data.cache'):
+        assert store.find('k') is None
+
+    assert not (tmp_path / 'local' / 'k').exists()
+    assert any('torn publish' in record.message for record in caplog.records)
+    assert store.has('k') is None
+
+
+def test_publish_repairs_an_incomplete_persistent_entry(tmp_path: Path) -> None:
+    """A torn remote entry is completed by the next publish rather than frozen forever behind `meta.json`."""
+    store = BundleStore(local=tmp_path / 'local', remote=tmp_path / 'drive')
+    _entry(tmp_path / 'local' / 'k', payload='{"v": 1}')
+    _torn_entry(tmp_path / 'drive' / 'k', payload='{"v": 1}')
+
+    store.publish('k')
+
+    for name in REQUIRED_ENTRY_FILES:
+        assert (tmp_path / 'drive' / 'k' / name).is_file(), name
+    assert store.has('k') == 'local'
+
+
+def test_build_falls_back_past_an_unreadable_bundle(synthetic_dir: Path, tmp_path: Path) -> None:
+    """A complete-but-corrupt cache entry is discarded and rebuilt, checkpoint-style, instead of crashing."""
+    config = DatasetConfig(
+        root=str(synthetic_dir),
+        tasks=('SR',),
+        representation='band_power',
+        cache_dir=str(tmp_path / 'cache'),
+    )
+    first = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+    n_sentences = len(first.sentences)
+
+    entries = [p for p in (tmp_path / 'cache').iterdir() if p.is_dir() and not p.name.startswith('_')]
+    assert len(entries) == 1
+    (entries[0] / 'sentences.pkl').write_bytes(b'not a pickle')
+
+    rebuilt = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+
+    assert len(rebuilt.sentences) == n_sentences
+    reread = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
+    assert len(reread.sentences) == n_sentences

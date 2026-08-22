@@ -1,4 +1,4 @@
-"""Tests for the "road to SOTA" moves (docs/METHODS.md).
+"""Tests for the method levers in docs/METHODS.md.
 
 Covers the geometry fix (all-but-the-top + CSLS), rank-percentile / frequency-matched retrieval,
 the sharpened contrastive terms (alignment, debiased InfoNCE), the collapse-proof data2vec auxiliary,
@@ -19,9 +19,7 @@ from zte.models.objectives import alignment_penalty, build_objective, debiased_i
 from zte.models.spatial import ScalpGeometry, SpatialAttention
 
 
-def _hubby_clusters(
-    n_groups: int = 6, per: int = 20, dim: int = 32, seed: int = 0
-) -> tuple[np.ndarray, np.ndarray]:
+def _hubby_clusters(n_groups: int = 6, per: int = 20, dim: int = 32, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """A clustered embedding set with a strong shared 'hub' axis (high anisotropy)."""
     rng = np.random.default_rng(seed)
     centers = rng.standard_normal((n_groups, dim))

@@ -1,0 +1,236 @@
+# decode_frozen_aligned -- decode_frozen_e5raw with one knob moved: the encoder underneath it.
+#
+# This is the matched pair to decode_frozen_e5raw. That arm reads exp8_clip_e5_raw; this one reads
+# exp12_zte_raw_aligned. On the held-out ZAB scoreboard the two encoders are statistically tied -- rank percentile
+# 0.9635 [0.9599, 0.9673] against 0.9672 [0.9635, 0.9708], overlapping intervals -- and the tie could not be broken
+# on encoder retrieval alone, so it is broken here, on the readout that actually matters to a decoder: rescoring the
+# 700-sentence gallery. Run both; quote decoder_rescoring_retrieval, never a generation number.
+#
+# Three dataset/model levers move with the encoder, and all three must move together. exp12 whitens each subject by
+# their own mean channel covariance (dataset.raw_align: euclidean), feeds the covariance signature to a
+# hypernetwork-driven adapter (dataset.subject_signature + model.subject_adapter), and a frozen encoder handed
+# features built under a different recipe silently sees a scale it never trained on. Nothing warns about that, which
+# is why they are named here rather than left to the defaults.
+#
+# The language model is Qwen2.5-0.5B and is never updated; the only trainable tensors are the bridge's 226,560
+# parameters. That is the design's entire defence against the field's retracted EEG-to-text results: with the LM
+# frozen there is no mechanism by which 700 ZuCo sentences can be memorised into the weights that produce text.
+#
+# The run inherits the source checkpoint's clip_head, so the frozen text target must be rebuilt with exactly the same
+# text encoder, backend and query prefix -- otherwise the bridge reads a space the inherited projection was never
+# fitted to. The normaliser and the aligner are restored from the source checkpoint rather than refitted, so the
+# frozen encoder sees the scale it was trained on. model.grad_checkpoint is left as the source config had it and is
+# reported as inert at startup: a frozen encoder produces no activations to recompute.
+#
+# train.split: by_subject_and_stimulus is the honest four-cell split. `test` is an unseen subject reading unseen
+# sentences and is the only cell a headline may quote; `test_seen_stim` (unseen subject, training sentences) is a
+# diagnostic and is reported as one. Model selection uses `val` (seen subject, unseen sentences), which generalises
+# over language only.
+#
+# Before any number leaves the repo, pin decoder.lm_revision to the commit SHA the run log reports for
+# Qwen/Qwen2.5-0.5B: HuggingFace repos are mutable and `null` resolves to whatever `main` is that day.
+#
+#   uv run zte-run --config experiments/decoder/decode_frozen_e5raw.yaml --root res/data/zuco_extracted \
+#       --encoder-ckpt res/experiments/exp8_clip_e5_raw_loZAB/checkpoints/best.pt --resume
+#   uv run zte-decode --ckpt res/experiments/exp13_decode_frozen_e5raw/checkpoints/best.pt \
+#       --root res/data/zuco_extracted --split test
+dataset:
+  root: res/data/zuco_extracted
+  tasks:
+  - SR
+  - NR
+  subjects: null
+  granularity: word
+  representation: raw
+  band_power_measures:
+  - TRT
+  include_eye_tracking: false
+  eye_tracking_measures:
+  - FFD
+  - GD
+  - GPT
+  - TRT
+  - n_fixations
+  - mean_pupil
+  bands:
+  - t1
+  - t2
+  - a1
+  - a2
+  - b1
+  - b2
+  - g1
+  - g2
+  raw_field: rawEEG
+  raw_window: 350
+  time_bins: 1
+  normalize: riemannian
+  normalizer_fit: train
+  montage_csv: res/montage_gsn105.csv
+  bandpass: null
+  raw_align: euclidean
+  raw_align_fit: all
+  subject_signature: true
+  missing:
+    method: mask_only
+    knn_neighbors: 5
+    iterative_max_iter: 10
+    interpolate_method: linear
+    add_missing_indicator: true
+  include_omitted: true
+  min_words: 1
+  max_words: null
+  cache_dir: res/cache
+  cache_remote: null
+  cache_extracts: true
+  cache_format: npz
+model:
+  frontend: raw_conformer
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  conformer_filters: 40
+  conformer_temporal_kernel: 25
+  conformer_multiscale_kernels: []
+  conformer_temporal_pool: mean
+  pos_encoding: rope
+  max_positions: 512
+  spatial_encoding: spherical_harmonics
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
+  pool: attention
+  subject_conditioning: false
+  subject_film: false
+  subject_adapter: true
+  subject_adapter_width: 128
+  subject_adapter_spatial: true
+  n_subjects: 12
+  n_tasks: 3
+  grad_checkpoint: true
+  projection_hidden: 512
+  factored: true
+  content_dim: 384
+  band_routing: false
+objective:
+  name: decode
+  temperature: 0.07
+  context_window: 2
+  mask_ratio: 0.5
+  masked_target: latent
+  ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
+  cpc_steps: 4
+  variance_weight: 1.0
+  covariance_weight: 1.0
+  variance_target: 1.0
+  anisotropy_weight: 1.0
+  whiten: true
+  cross_subject_positives: true
+  meaning_positives: true
+  subject_adversary_weight: 0.1
+  identity_orthogonality_weight: 0.0
+  stimulus_adversary_weight: 0.3
+  meaning_distill_weight: 0.0
+  meaning_source: res/vectors/glove.300d.txt
+  meaning_dim: 300
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.5
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 1
+  csls_neighbors: 10
+  subject_adversary_warmup_ratio: 0.3
+  alignment_weight: 0.1
+  tau_plus: 0.1
+  data2vec_aux_weight: 0.5
+  meaning_contextual: null
+  meaning_context_layer: -1
+  eval_phase_shuffle: false
+  eval_seen_novel: true
+  eval_freq_matched: true
+  eval_generation: true
+  eval_rescoring: true
+  eval_length_stratified: true
+  text_source: intfloat/e5-base-v2
+  text_backend: sentence-transformers
+  text_query_prefix: 'query: '
+  clip_temperature: 0.07
+  semantic_hard_negatives: true
+  hard_negative_pool: 8
+train:
+  epochs: 20
+  batch_size: 16
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_accum_steps: 1
+  grad_clip: 1.0
+  device: auto
+  precision: auto
+  num_workers: -1
+  static_shapes: auto
+  split: by_subject_and_stimulus
+  val_fraction: 0.1
+  test_fraction: 0.15
+  loso_holdout_subject: ZAB
+  seed: 42
+  deterministic: true
+  log_every: 10
+  eval_every: 1
+  ckpt_dir: res/checkpoints
+  ckpt_keep_last: 1
+  tensorboard: true
+  drive_backup_dir: null
+  compile_model: false
+  mode: decoder
+  encoder_ckpt: res/experiments/exp12_zte_raw_aligned_loZAB/checkpoints/best.pt
+  freeze_encoder: true
+  bridge_lr: 0.001
+  encoder_lr_scale: 0.1
+  stage_a_epochs: 3
+  early_stop_patience: 5
+decoder:
+  lm_source: Qwen/Qwen2.5-0.5B
+  lm_revision: null
+  tokenizer_source: null
+  lm_cache_dir: null
+  conditioning: pooled
+  prefix_slots: 8
+  word_slots: 8
+  bottleneck: 128
+  gap_correction: mean_scale
+  null_prefix_prob: 0.1
+  cfg_weight: 1.0
+  ground_weight: 0.5
+  ground_negatives: 3
+  max_target_tokens: 96
+  max_new_tokens: 96
+  beams: 1
+  stage0_epochs: 20
+  min_prefix_kl: 0.05
+  clip_aux_weight: 1.0
+  cache_embeddings: true
+  prompt_template: '
+
+    Sentence: '
+  generation_controls:
+  - mean_prefix
+  - null_prefix
+  - phase
+  - noise
+  - mismatch
+  n_permutations: 1000
+  rescore_gallery: true
+  length_tol: 1
+run_name: exp13_decode_frozen_aligned

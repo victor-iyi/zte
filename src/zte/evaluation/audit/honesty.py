@@ -84,9 +84,81 @@ def retrieval_permutation_test(
     }
 
 
-def _fit_score(
-    xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str
-) -> float | None:
+def generation_permutation_test(
+    hypotheses: list[str],
+    references: list[str],
+    *,
+    metric: str = 'content_f1',
+    n_perm: int = 1000,
+    seed: int = 0,
+    max_n: int = 1500,
+) -> dict[str, Any]:
+    """Empirical permutation p-value for free-running generation: is this hypothesis about THIS sentence?
+
+    The hypotheses are held fixed and only the hypothesis-to-reference pairing is permuted, so nothing
+    is regenerated and the null asks exactly the right question -- whether the text tracks the reading
+    it came from, or merely the corpus. Generation has no analytic chance rate, which is why this null
+    exists at all.
+
+    Args:
+        hypotheses (list[str]): Free-running decodes.
+        references (list[str]): The true sentences, aligned with `hypotheses`.
+        metric (str, optional): Per-sentence metric from `evaluation.generation`. Defaults to 'content_f1'.
+        n_perm (int, optional): Number of pairing permutations. Defaults to 1000.
+        seed (int, optional): RNG seed. Defaults to 0.
+        max_n (int, optional): If `n > max_n` a deterministic random subsample is scored, since the
+            pairwise score matrix is quadratic in `n`. Defaults to 1500.
+
+    Returns:
+        dict: `{'applicable', 'metric', 'observed', 'null_mean', 'null_std', 'p_value', 'n_perm',
+        'n_queries', 'above_chance'}`. `p_value` is `(1 + #{null >= observed}) / (n_perm + 1)`.
+    """
+    from zte.evaluation.generation import _HIGHER_IS_BETTER, pairwise_metric
+
+    if len(hypotheses) != len(references):
+        return {'applicable': False, 'reason': 'hypotheses and references differ in length'}
+    n = len(hypotheses)
+    if n < 4:
+        return {'applicable': False, 'reason': 'need >= 4 items'}
+    rng = np.random.default_rng(seed)
+
+    if n > max_n:
+        keep = np.sort(rng.choice(n, size=max_n, replace=False))
+        hypotheses = [hypotheses[i] for i in keep]
+        references = [references[i] for i in keep]
+        n = max_n
+
+    try:
+        scores = pairwise_metric(hypotheses, references, metric=metric)
+    except ValueError as exc:
+        return {'applicable': False, 'reason': str(exc)}
+
+    observed = float(np.mean(np.diag(scores)))
+    rows = np.arange(n)
+    null = np.empty(n_perm, dtype=np.float64)
+    for i in range(n_perm):
+        null[i] = float(np.mean(scores[rows, rng.permutation(n)]))
+
+    # The tail has to follow the metric: on WER a true pairing beats the null by scoring LOWER, and counting the
+    # upper tail there returns p = 1.0 for a perfect decode while the paired delta calls the same evidence a win.
+    higher_is_better = _HIGHER_IS_BETTER.get(metric, True)
+    beaten = null >= observed if higher_is_better else null <= observed
+    p = (1.0 + int(np.sum(beaten))) / (n_perm + 1.0)
+
+    return {
+        'applicable': True,
+        'metric': metric,
+        'observed': observed,
+        'null_mean': float(null.mean()),
+        'null_std': float(null.std()),
+        'p_value': float(p),
+        'n_perm': int(n_perm),
+        'n_queries': int(n),
+        'above_chance': bool(p < 0.05),
+    }
+
+
+def _fit_score(xtr: np.ndarray, ytr: np.ndarray, xte: np.ndarray, yte: np.ndarray, task: str) -> float | None:
     """Fits a standardised linear probe on `(xtr, ytr)` and scores it on the held-out fold."""
     import warnings
 
@@ -199,7 +271,6 @@ def cross_subject_decode(
         if len(scores) < 2:
             continue
 
-        # Aggregate the folds into a point estimate with a bootstrap CI over chance.
         arr = np.asarray(scores, dtype=float)
         point, lo, hi = bootstrap_ci(arr, seed=seed)
         chance = float(np.mean(chances)) if chances else 0.0

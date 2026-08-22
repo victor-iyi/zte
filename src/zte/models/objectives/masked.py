@@ -11,14 +11,15 @@ from torch import nn
 from zte.config import ObjectiveConfig
 from zte.models.embedding import ZTEModel
 from zte.models.heads import EMATeacher, Predictor
-from zte.models.objectives.base import _context_key_mask, _ObjectiveBase, _usable_mask
+from zte.models.objectives.base import _ObjectiveBase, _usable_mask
 
 
 class MaskedObjective(_ObjectiveBase):
     """Masked word-EEG modelling: data2vec latent prediction or reconstruction.
 
-    Both variants predict through the exported projection head so it receives gradient. The data2vec teacher target is normalised across
-    tokens with a variance floor, which stops teacher and student co-collapsing onto a constant, and the EMA decay is ramped.
+    Both variants predict through the exported projection head so it receives gradient. The data2vec teacher target is
+    normalised across tokens with a variance floor, which stops teacher and student co-collapsing onto a constant, and
+    the EMA decay is ramped.
 
     Attributes:
         teacher (EMATeacher | None): EMA teacher (latent target) or `None` (reconstruction).
@@ -33,8 +34,9 @@ class MaskedObjective(_ObjectiveBase):
             config (ObjectiveConfig): Objective configuration (uses `mask_ratio`, `masked_target`, `ema_decay`,
                 `ema_decay_end`, `teacher_variance_floor`).
             model (ZTEModel): The encoder (also cloned into the EMA teacher).
-            feature_dim (int | None): Reconstruct-target dimension -- `n_features` (flattened band power) for the band-power frontend or
-                `n_channels * time_steps` for the raw frontend. Only used when `masked_target='reconstruct'`.
+            feature_dim (int | None): Reconstruct-target dimension -- `n_features` (flattened band power) for the
+                band-power frontend or `n_channels * time_steps` for the raw frontend. Only used when
+                `masked_target='reconstruct'`.
         """
         super().__init__(config, model)
         self.mask_token = nn.Parameter(torch.zeros(model.hidden_dim))
@@ -50,9 +52,7 @@ class MaskedObjective(_ObjectiveBase):
             dim = feature_dim if feature_dim is not None else model.embed_dim
             self.recon_head = nn.Linear(model.embed_dim, dim)
 
-    def compute(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the masked-modelling loss for a batch.
 
         Args:
@@ -75,12 +75,10 @@ class MaskedObjective(_ObjectiveBase):
             mask.view(-1)[flat[0]] = True
 
         # Encode the corrupted sequence through the exported projection.
-        key_mask = _context_key_mask(batch)  # exclude omitted tokens from attention
+        key_mask = model.pooling_mask(batch)  # exclude omitted tokens from attention
         student_in = torch.where(mask.unsqueeze(-1), self.mask_token.to(hidden.dtype), hidden)
         student_ctx = model.contextualize(student_in, key_mask)
-        student_emb = model.project(
-            student_ctx
-        )  # (batch_size, seq_len, embed_dim) -- trains project
+        student_emb = model.project(student_ctx)  # (batch_size, seq_len, embed_dim) -- trains project
 
         # Score the masked positions against the teacher latent or the token's own input.
         if self.config.masked_target == 'latent' and self.teacher is not None:
@@ -107,28 +105,21 @@ class MaskedObjective(_ObjectiveBase):
     def _normalize_across_tokens(self, target: torch.Tensor) -> torch.Tensor:
         """Normalises a data2vec target across the token batch, flooring the per-dim std.
 
-        A per-token LayerNorm would leave between-token variance unconstrained, letting teacher and student co-collapse onto a constant.
+        A per-token LayerNorm would leave between-token variance unconstrained, letting teacher and student co-collapse
 
-        Args:
-            target (torch.Tensor): Teacher latents `(n_masked, embed_dim)`.
-
-        Returns:
-            torch.Tensor: The across-token-normalised target (same shape).
+        onto a constant.
         """
         if target.shape[0] < 2:
             return target
         mean = target.mean(dim=0, keepdim=True)
-        std = target.std(dim=0, unbiased=False, keepdim=True).clamp_min(
-            self.config.teacher_variance_floor
-        )
+        std = target.std(dim=0, unbiased=False, keepdim=True).clamp_min(self.config.teacher_variance_floor)
         return (target - mean) / std
 
-    def post_step(
-        self, model: ZTEModel, step: int | None = None, total_steps: int | None = None
-    ) -> None:
+    def post_step(self, model: ZTEModel, step: int | None = None, total_steps: int | None = None) -> None:
         """Updates the EMA teacher after each optimiser step (latent target only).
 
-        The decay ramps linearly from `config.ema_decay` to `config.ema_decay_end`: a fast teacher early gives signal, a slow one stabilises late.
+        The decay ramps linearly from `config.ema_decay` to `config.ema_decay_end`: a fast teacher early gives signal, a
+        slow one stabilises late.
 
         Args:
             model (ZTEModel): The student encoder.
@@ -145,7 +136,5 @@ class MaskedObjective(_ObjectiveBase):
             and self.config.ema_decay_end != self.config.ema_decay
         ):
             frac = min(1.0, step / (total_steps - 1))
-            decay = (
-                self.config.ema_decay + (self.config.ema_decay_end - self.config.ema_decay) * frac
-            )
+            decay = self.config.ema_decay + (self.config.ema_decay_end - self.config.ema_decay) * frac
         self.teacher.update(model, decay=decay)

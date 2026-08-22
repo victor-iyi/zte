@@ -73,6 +73,8 @@ uv run zte-encodability  --experiments res/experiments/loso   # per-subject enco
 
 Open **[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)** in Colab (there's an *Open in Colab* badge at the top). Pick a **GPU runtime** (`Runtime -> Change runtime type -> GPU`) and run the cells top to bottom. The notebook: installs `uv` + Python 3.14, confirms the GPU, runs a synthetic smoke test, runs the LOSO sweep (synthetic by default; switch to real Drive data in one cell), and renders the comparison view inline. Because every step is resumable, a disconnect just means re-running the last cell.
 
+**Section 8 is the decoder stage.** It runs `zte-rebaseline` against the source encoder first (the length-confound audit, which trains nothing), then `zte-run` over the frozen encoder with `--encoder-ckpt`, then tabulates the verdict, the decoder-rescoring retrieval and the generation delta against the five controls. Its configs already name `train.loso_holdout_subject` inside `by_subject_and_stimulus`, so **`--loso-holdout` must not be passed to them** — it forces `by_subject_loso`, which shares every stimulus between train and val, and `zte-run` warns when it does. See [`DECODER.md`](DECODER.md).
+
 ### Surviving a lost Colab runtime (continuous Drive backup + resume)
 
 Colab runtimes are ephemeral, so a long real run needs its checkpoints on Drive. Two options, both fully `--resume`-safe (a completed run is skipped instantly; an interrupted one continues from its last checkpoint):
@@ -97,7 +99,7 @@ uv run zte-compare --experiments res/experiments/loso # just the LOSO sweep
 
 Beyond bootstrap CIs against analytic chance, every run's `metrics.json` (and `report.md`) now includes a `honesty` block, computed whenever ≥ 2 subjects are present:
 
-- **Permutation null** — cross-subject retrieval Top-1 vs a *label-shuffled* empirical null -> a p-value, not just an analytic chance line. Over $B$ shuffles with scores $s^{\ast}_b$ against the observed $s$, the p-value is $p=\dfrac{1+\lvert\{b : s^{\ast}_b\ge s\}\rvert}{1+B}$.
+- **Permutation null** — cross-subject retrieval Top-1 vs a *label-shuffled* empirical null -> a p-value, not just an analytic chance line. Over $B$ shuffles with scores $s^{\ast}_b$ against the observed $s$, the p-value is $p=\dfrac{1+\lvert \lbrace b : s^{\ast}_b \ge s \rbrace \rvert}{1+B}$.
 
 - **Held-out cross-subject decoding** — train a linear probe on N−1 subjects, score it on the held-out subject (one fold per subject); the honest test of whether content transfers to a new brain.
 - **Anchor calibration lift** — fit an orthogonal Procrustes map from a few shared *anchor* words that aligns a held-out subject into the shared frame, then measure whether same-word cross-subject cohesion improves on held-out words. A metrics-side preview of “can we snap a new brain in without retraining?”.
@@ -135,6 +137,79 @@ uv run zte-pack clean experiments cache --yes          # wipe res/ subtrees to f
 
 `--device auto` (the default) selects **CUDA -> Cloud TPU (`torch_xla`) -> Apple MPS -> CPU**. Colab **GPU** is the primary, tested path (bf16/fp16 AMP on CUDA). **TPU** is best-effort: install `torch_xla` on a TPU runtime and `auto` will pick it (the trainer calls `xm.mark_step()` per step); without `torch_xla` a TPU runtime falls back to CPU rather than erroring.
 
-## Colab environment bootstrap
+## `zte-colab` — the notebook's bridge
 
-Colab leaves some env vars unset and starts in the wrong directory. `zte.utils.bootstrap()` sets the missing vars (headless matplotlib, a writable config/cache dir, quiet tokenizers), resolves the project root, and creates the `res/` output directories — so the CLIs never error on a fresh runtime. The notebook calls it in Section 2; it is idempotent and a no-op on a laptop.
+Colab's kernel is an **older interpreter than the `>=3.14` ZTE requires**, so `import zte` in a notebook cell is a `SyntaxError`. It never needs to. `zte-colab` exposes every capability a notebook wants as a subcommand that prints **one JSON object on stdout**, with its logs routed to stderr so the whole stream parses with the standard library:
+
+```sh
+uv run zte-colab env                                        # interpreter, accelerator, device plan, machine limits
+uv run zte-colab session --drive "/gdrive/My Drive/Sharables/ZTE"
+uv run zte-colab runs    --drive <root> --experiments res/experiments --headline
+uv run zte-colab arms    --kind encoder                     # trainable configs, read live off experiments/
+uv run zte-colab readings --from <zte-decode --out dir>     # the scored readings and the verdict that gates them
+uv run zte-colab panels  --experiments <roots> --out <dir>  # the study charts as plotly figure JSON
+uv run zte-colab mirror  --drive <root> --direction up      # move a session between the VM and Drive
+```
+
+| subcommand | answers | the notebook uses it for |
+| --- | --- | --- |
+| `env` | which interpreter, accelerator and machine, and the environment every run wants | §2 wiring the kernel, §3 the hardware report |
+| `session` | where this dated session reads and writes on Drive | §4, and the env vars every later `!uv run` inherits |
+| `runs` | every run on Drive and locally, its checkpoints and its held-out headline | `find_runs()`, `resolve_ckpt()`, §10c |
+| `arms` | which configs are trainable, labelled by their own header comment | the §7a and §8 dropdowns |
+| `readings` | one decode's readings, scored, beside the five-clause verdict | §8d |
+| `panels` | the study's charts, drawn once, as figure JSON | §10b |
+| `mirror` | what moved between the VM and Drive, and what was deliberately left | §11, `mirror_to_drive()` / `restore_from_drive()` |
+
+`env` returns the environment as **data** rather than applying it: a notebook kernel's `!` subprocesses inherit the kernel's environment, so the kernel is where those defaults have to land. Each one fixes a failure that is silent rather than loud — a `module://` matplotlib backend that crashes a headless subprocess, a block-buffered stdout that makes a multi-hour run look hung, a CUDA allocator that fragments on the few very large blocks a raw-EEG batch asks for.
+
+`tests/test_notebook_gateway.py` enforces the boundary: no code cell imports `zte`, no `%%bash` cell runs an interpreter it may not have yet, every `zte-*` command named is a declared entry point, and every `experiments/*.yaml` path named exists on disk.
+
+Outside a notebook, `zte.utils.bootstrap()` remains the in-process equivalent — it applies the same defaults, resolves the project root and creates the `res/` output directories.
+
+## Analysing a study
+
+```sh
+# Everything under one or more trees -> one offline page, its CSV tables and a Markdown summary.
+uv run zte-analyze --experiments res/experiments --out res/experiments/analysis \
+    --montage res/montage_gsn105.csv
+
+# A Drive mirror and the local tree together; a run present in both is read once.
+uv run zte-analyze --experiments "/gdrive/My Drive/Sharables/ZTE/2026-08-14/experiments" res/experiments
+```
+
+`ANALYSIS.html` inlines plotly, so it opens on a machine with no network — which is the point, since it is meant
+to be read from a Drive mirror. `tables/*.csv` carries every frame behind it. Section 9c of
+`notebooks/zte_colab.ipynb` runs the same thing and renders the panels inline.
+
+## The Colab notebooks
+
+Two notebooks, and they are not versions of each other.
+
+**[`notebooks/zte_colab_v2.ipynb`](../notebooks/zte_colab_v2.ipynb)**
+([open in Colab](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/zte_colab_v2.ipynb))
+is the current front door: written around the exp16 encoder and the v2 decoder, Drive-first, with `ipywidgets`
+pickers for the arm, the held-out subject and the seed. Everything durable is written to Drive — evaluation,
+generation, the analysis dashboard, the studio page and the archives go straight there, while training checkpoints
+go to the VM's fast disk and are mirrored after every stage, because a Drive FUSE stall mid-`torch.save` is a torn
+checkpoint. Set `WRITE_MODE = 'drive'` to put checkpoints on Drive too. Set `RESUME_DATE` to an existing session
+folder and every cell resumes that session instead of starting a new one.
+
+Its `resolve_ckpt()` searches this session's Drive folder, then every earlier session newest-first, then the local
+disk, so a fresh runtime can evaluate, decode or open the studio on a run trained in a previous session with no
+manual restore. `durable()` returns the right root for wherever it is running — the Drive session folder on Colab,
+`res/` locally.
+
+**No cell imports `zte`.** Every capability arrives through the `colab()` helper defined in §2, which runs one
+`zte-colab` subcommand and returns its JSON. A code cell may import only the standard library, `IPython.display`,
+`google.colab`, and Colab's own `pandas` / `plotly` — enough to render a payload and nothing more. That keeps the
+search order, the mirror exclusions and the verdict arithmetic inside the package, where they are tested, rather
+than drifting in a notebook where they are not.
+
+**[`notebooks/zte_colab.ipynb`](../notebooks/zte_colab.ipynb)**
+([open in Colab](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/zte_colab.ipynb))
+is the original, kept for the sections v2 does not carry: the benchmark suite, `zte-ablate` grid generation, the
+per-run explorer views and the housekeeping cells.
+
+Both need a GPU runtime (`Runtime → Change runtime type → GPU`) and both provision Python 3.14 through `uv` in their
+first cell, because Colab's system interpreter is older than ZTE requires.

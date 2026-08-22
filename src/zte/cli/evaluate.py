@@ -59,17 +59,13 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Skip the self-contained interactive HTML embedding explorer.',
     )
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
 def collect_embeddings(
     embedder: ZTEEmbedder, dataset: ZuCoDataset, indices: np.ndarray | None = None
-) -> tuple[
-    np.ndarray, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, pd.DataFrame, np.ndarray | None
-]:
+) -> tuple[np.ndarray, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, pd.DataFrame, np.ndarray | None]:
     """Produces aligned word/sentence embeddings + a raw-feature baseline.
 
     Word-level arrays are built in dataset row order over the present tokens so the embeddings, the
@@ -88,11 +84,7 @@ def collect_embeddings(
             no band power is available.
     """
     # Restrict to present tokens, intersected with the requested split.
-    present = (
-        np.ones(len(dataset.words), dtype=bool)
-        if dataset.presence is None
-        else dataset.presence.copy()
-    )
+    present = np.ones(len(dataset.words), dtype=bool) if dataset.presence is None else dataset.presence.copy()
     if indices is not None:
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
@@ -122,15 +114,11 @@ def collect_embeddings(
     for extra in ('category', 'length_band'):
         if extra in dataset.sentences:
             sent_cols.append(extra)
-    merged = sent_meta.merge(
-        dataset.sentences[sent_cols], on=['subject', 'task', 'sentence_idx'], how='left'
-    )
+    merged = sent_meta.merge(dataset.sentences[sent_cols], on=['subject', 'task', 'sentence_idx'], how='left')
     sent_content_ids = pd.factorize(merged['text'])[0]
     # Per-word band power (present rows), aligned to word_emb, for region analysis.
     word_band_power = (
-        None
-        if embedder.model.uses_raw or dataset.band_power_raw is None
-        else dataset.band_power_raw[present]
+        None if embedder.model.uses_raw or dataset.band_power_raw is None else dataset.band_power_raw[present]
     )
     return word_emb, word_meta, raw_word_feats, sent_emb, sent_content_ids, merged, word_band_power
 
@@ -155,11 +143,7 @@ def phase_shuffled_word_emb(
         return None
     from zte.data.features.transforms import phase_scramble
 
-    present = (
-        np.ones(len(dataset.words), dtype=bool)
-        if dataset.presence is None
-        else dataset.presence.copy()
-    )
+    present = np.ones(len(dataset.words), dtype=bool) if dataset.presence is None else dataset.presence.copy()
     if indices is not None:
         in_split = np.zeros(len(dataset.words), dtype=bool)
         in_split[np.asarray(indices, dtype=int)] = True
@@ -170,14 +154,89 @@ def phase_shuffled_word_emb(
     parts = [
         np.asarray(
             embedder.embed_signals(
-                raw=phase_scramble(
-                    np.asarray(dataset.raw_eeg[rows[start : start + _EVAL_BLOCK]]), axis=-1
-                )
+                raw=phase_scramble(np.asarray(dataset.raw_eeg[rows[start : start + _EVAL_BLOCK]]), axis=-1)
             )
         )
         for start in range(0, len(rows), _EVAL_BLOCK)
     ]
     return np.concatenate(parts, axis=0)
+
+
+def phase_shuffled_sent_emb(
+    embedder: ZTEEmbedder,
+    dataset: ZuCoDataset,
+    indices: np.ndarray | None = None,
+    batch_size: int = 64,
+) -> np.ndarray | None:
+    """Embeds phase-scrambled EEG at sentence level, row-aligned with `collect_embeddings`.
+
+    The scramble is applied to the collated batch, so the control reaches retrieval, the scoreboard and the
+    verdict through the identical encoder, pooling and projection rather than a parallel path.
+
+    Args:
+        embedder (ZTEEmbedder): The restored embedder.
+        dataset (ZuCoDataset): A built dataset.
+        indices (np.ndarray | None): Optional word-row restriction, matching the real embedding's.
+        batch_size (int, optional): Sentences per forward pass. Defaults to 64.
+
+    Returns:
+        np.ndarray | None: Sentence embeddings `(n_sentences, d)`, or `None` for band-power models.
+    """
+    if not embedder.model.uses_raw or dataset.raw_eeg is None:
+        return None
+    import torch
+
+    from zte.cli.decode import phase_transform
+    from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, make_dataloader
+    from zte.logging_utils import progress
+
+    scramble = phase_transform()
+    torch_ds = ZuCoTorchDataset(dataset, indices=indices, subject_vocab=build_subject_vocab(dataset))
+    loader = make_dataloader(torch_ds, batch_size=batch_size, shuffle=False, drop_last=False)
+    objective = embedder.config.objective.name
+    parts: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch in progress(loader, description='embedding (phase-scrambled sentence)'):
+            moved = {k: (v.to(embedder.device.device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+            parts.append(embedder.model.embed_sentence(scramble(moved), objective=objective).cpu().numpy())
+    if not parts:
+        return None
+    return np.concatenate(parts, axis=0).astype(np.float32)
+
+
+def train_split_sent_emb(
+    embedder: ZTEEmbedder, dataset: ZuCoDataset, config: Any, batch_size: int = 64
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Embeds the training split at sentence level: the only rows retrieval post-processing may be fitted on.
+
+    Whitening, all-but-the-top and the length projection fitted on the scored rows are transductive, and a decoder
+    scoring one sentence at a time cannot reproduce them; fitted here they are reproducible one sentence at a time.
+
+    Args:
+        embedder (ZTEEmbedder): The restored embedder.
+        dataset (ZuCoDataset): A built dataset.
+        config (ZTEConfig): The run config, whose `train` split settings are reused verbatim.
+        batch_size (int, optional): Sentences per forward pass. Defaults to 64.
+
+    Returns:
+        tuple[np.ndarray | None, np.ndarray | None]: `(n_train_sentences, d)` embeddings and the matching word counts,
+            both `None` when the run has no train cell.
+    """
+    from zte.cli.decode import split_indices
+
+    try:
+        train_idx = split_indices(dataset, config, 'train')
+    except ValueError, KeyError:  # pragma: no cover - defensive
+        return None, None
+    if train_idx is None:
+        return None, None
+
+    emb, meta = embedder.embed(dataset, level='sentence', indices=train_idx, batch_size=batch_size)
+    if not len(emb):
+        return None, None
+
+    n_words = meta['n_words'].to_numpy() if 'n_words' in meta else None
+    return emb, n_words
 
 
 def training_vocab(dataset: ZuCoDataset, config: Any) -> set[str] | None:
@@ -222,20 +281,30 @@ def main() -> None:
     if args.montage_csv is not None and getattr(embedder.config, 'dataset', None) is not None:
         embedder.config.dataset.montage_csv = args.montage_csv
 
-    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(
-        embedder, dataset
-    )
+    word_emb, word_meta, raw_feats, sent_emb, sent_ids, sent_meta, word_bp = collect_embeddings(embedder, dataset)
 
     # Opt-in hardening controls, config-gated so default runs stay fast.
     obj_cfg = getattr(embedder.config, 'objective', None)
-    phase_emb = (
-        phase_shuffled_word_emb(embedder, dataset)
-        if getattr(obj_cfg, 'eval_phase_shuffle', False)
-        else None
+    phase_shuffle = bool(getattr(obj_cfg, 'eval_phase_shuffle', False))
+    phase_emb = phase_shuffled_word_emb(embedder, dataset) if phase_shuffle else None
+    phase_sent = phase_shuffled_sent_emb(embedder, dataset) if phase_shuffle else None
+    train_sent, train_sent_n_words = train_split_sent_emb(embedder, dataset, embedder.config)
+    train_vocab = training_vocab(dataset, embedder.config) if getattr(obj_cfg, 'eval_seen_novel', False) else None
+
+    # A decoder checkpoint decodes its held-out cell here; an encoder checkpoint returns all `None`.
+    from zte.cli.decode import decoder_blocks
+
+    generation, rescoring, decoder_capacity = decoder_blocks(
+        args.ckpt,
+        dataset,
+        embedder.config,
+        out_dir=Path(args.out),
+        device=args.device,
+        run_name=args.run_name,
     )
-    train_vocab = (
-        training_vocab(dataset, embedder.config)
-        if getattr(obj_cfg, 'eval_seen_novel', False)
+    n_words = (
+        sent_meta['n_words'].to_numpy()
+        if getattr(obj_cfg, 'eval_length_stratified', False) and 'n_words' in sent_meta
         else None
     )
 
@@ -254,6 +323,14 @@ def main() -> None:
         interactive=not args.no_interactive,
         phase_word_emb=phase_emb,
         train_vocab=train_vocab,
+        phase_sent_emb=phase_sent,
+        train_sent_emb=train_sent,
+        train_sent_n_words=train_sent_n_words,
+        sent_n_words=n_words,
+        generation=generation,
+        rescoring=rescoring,
+        decoder_capacity=decoder_capacity,
+        min_prefix_kl=embedder.config.decoder.min_prefix_kl,
     )
     _LOG.info('Verdict: %s', json.dumps(metrics['verdict']))
     _LOG.info('Report + figures written to %s', args.out)

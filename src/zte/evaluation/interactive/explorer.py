@@ -41,15 +41,6 @@ def _word_cross_subject_stats(
     """Per-word mean pairwise cosine of its per-subject centroids.
 
     This is the core "does this word mean the same thing in different brains?" statistic.
-
-    Args:
-        emb (np.ndarray): Embeddings `(n, d)`.
-        words (np.ndarray): Surface word per row `(n,)`.
-        subjects (np.ndarray): Subject id per row `(n,)`.
-        min_subjects (int): Minimum distinct subjects for a word to qualify.
-
-    Returns:
-        dict[str, dict[str, float]]: `word -> {mean_cos, n_subj}`.
     """
     stats: dict[str, dict[str, float]] = {}
     words = np.asarray(words).astype(str)
@@ -84,23 +75,18 @@ def _random_baseline_cos(emb: np.ndarray, n_pairs: int = 4000, seed: int = 0) ->
     return round(float(np.mean(np.sum(u[a[keep]] * u[b[keep]], axis=1))), 4)
 
 
-def _analogy_candidates(
-    words: np.ndarray, subjects: np.ndarray, *, cap: int = 300, seed: int = 0
-) -> list[dict]:
+def _analogy_candidates(words: np.ndarray, subjects: np.ndarray, *, cap: int = 300, seed: int = 0) -> list[dict]:
     """Enumerates subject-transfer analogy candidates the browser scores as hit/miss.
 
     A candidate is a word `t` read by two subjects `A` and `B`; the browser scores `emb(t, A) - centroid(A) +
+
     centroid(B)` a hit when its nearest neighbour is `t` as read by `B`. Pre-listing every viable analogy is what
+
     lets the leaderboard rank them instead of the user guessing which word and person to try.
 
-    Args:
-        words (np.ndarray): Surface word per row `(n,)` (already subsampled).
-        subjects (np.ndarray): Subject id per row `(n,)`.
-        cap (int): Maximum number of candidates, keeping the in-browser scan fast and the file small.
-        seed (int): Sampling seed.
-
     Returns:
-        list[dict]: `{t, A, B, ai, bi}` rows, where `ai`/`bi` are the first-occurrence row indices of `(t, A)` and `(t, B)`.
+        list[dict]: `{t, A, B, ai, bi}` rows, where `ai`/`bi` are the first-occurrence row indices of `(t, A)` and `(t,
+        B)`.
     """
     words = np.asarray(words).astype(str)
     subjects = np.asarray(subjects).astype(str)
@@ -165,11 +151,8 @@ def _sentence_index(meta: pd.DataFrame, max_sentences: int = 160) -> list[dict]:
     """Per-sentence, per-subject ordered token positions for the sentence view.
 
     Readings are keyed by sentence *text*, not index, so the explorer can draw one path per reader through a single
-    shared sentence and show whether different people traverse it the same way.
 
-    Args:
-        meta (pd.DataFrame): Aligned token metadata (row order matches the embedding).
-        max_sentences (int): Cap on returned sentences (multi-subject, longer ones preferred).
+    shared sentence and show whether different people traverse it the same way.
 
     Returns:
         list[dict]: `[{id, label, n_subj, by_subj: {subject: [row positions in reading order]}}]`.
@@ -201,9 +184,7 @@ def _sentence_index(meta: pd.DataFrame, max_sentences: int = 160) -> list[dict]:
 
     # Prefer the most-read, longest sentences and label them for the picker.
     out = list(by_text.values())
-    out.sort(
-        key=lambda r: (len(r['by_subj']), sum(len(v) for v in r['by_subj'].values())), reverse=True
-    )
+    out.sort(key=lambda r: (len(r['by_subj']), sum(len(v) for v in r['by_subj'].values())), reverse=True)
     out = out[:max_sentences]
     for j, rec in enumerate(out):
         rec['id'] = j
@@ -245,14 +226,10 @@ def _build_payload(
     for c in ('sentence_idx', 'word_idx'):
         meta_block[c] = meta[c].fillna(-1).astype(int).tolist() if c in meta.columns else [-1] * n
     meta_block['word_len'] = (
-        meta['word_len'].fillna(0).astype(int).tolist()
-        if 'word_len' in meta.columns
-        else [len(w) for w in words]
+        meta['word_len'].fillna(0).astype(int).tolist() if 'word_len' in meta.columns else [len(w) for w in words]
     )
     meta_block['log_freq'] = (
-        _round(np.nan_to_num(meta['log_freq'].to_numpy(dtype=float)), 4)
-        if 'log_freq' in meta.columns
-        else [0.0] * n
+        _round(np.nan_to_num(meta['log_freq'].to_numpy(dtype=float)), 4) if 'log_freq' in meta.columns else [0.0] * n
     )
     if 'word_len' not in nums:
         nums.insert(0, 'word_len')
@@ -319,8 +296,10 @@ def thought_space_explorer_html(
         meta (pd.DataFrame): Aligned metadata; recognises `subject, task, word, sentence_idx, word_idx, category,
             length_band` and optional `word_len, log_freq`. Missing columns degrade gracefully.
         out_path (str | Path): Output path (`.html`, or `.png` on fallback).
-        eeg_only_emb (np.ndarray | None): Optional EEG-only embeddings aligned row-for-row with `emb`, enabling the view-4 toggle.
-        centroids (dict | None): Optional `{subject: vector}` full-dim centroid override for the arithmetic offset (else computed from `emb`).
+        eeg_only_emb (np.ndarray | None): Optional EEG-only embeddings aligned row-for-row with `emb`, enabling the
+            view-4 toggle.
+        centroids (dict | None): Optional `{subject: vector}` full-dim centroid override for the arithmetic offset (else
+            computed from `emb`).
         probe_scores (dict | None): Optional `word_len` linear-probe scores rendered as a small bar.
         dims (int): Default projection (3 for 3-D, 2 for 2-D).
         max_points (int): Subsample cap for responsiveness.

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>__TITLE__ — generation side-by-side</title>
+    <style>
+      /*__CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div>
+          <h1 id="run"></h1>
+          <div class="verdict" id="verdict"></div>
+        </div>
+        <button
+          class="themebtn"
+          id="themebtn"
+          aria-label="Toggle light / dark theme"
+        >
+          ◐ Theme
+        </button>
+      </header>
+
+      <div class="warn" id="warn"></div>
+
+      <div class="section" id="deltaSection">
+        <h2>Paired delta against every brain-independent control</h2>
+        <div class="card">
+          <div class="deltas" id="deltas"></div>
+          <div class="legend" id="deltaLegend"></div>
+        </div>
+      </div>
+
+      <div class="section" id="absSection">
+        <h2>Absolute scores — readable only next to their controls</h2>
+        <div class="card scroll">
+          <table id="absTable"></table>
+        </div>
+      </div>
+
+      <div class="section" id="rowSection">
+        <h2>Reference · hypothesis · controls, sentence by sentence</h2>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Filter by text…" />
+          <select id="sortby"></select>
+          <label class="check"
+            ><input type="checkbox" id="showControls" checked /> show
+            controls</label
+          >
+          <span class="count" id="count"></span>
+        </div>
+        <div id="rows"></div>
+      </div>
+
+      <div class="section" id="emptySection" style="display: none">
+        <div class="card empty">No generation data was available for this run.</div>
+      </div>
+    </div>
+
+    <script id="data" type="application/json">
+      __DATA__
+    </script>
+    <script>
+      /*__JS__*/
+    </script>
+  </body>
+</html>

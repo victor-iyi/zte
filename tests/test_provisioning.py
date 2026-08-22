@@ -108,9 +108,7 @@ def test_apply_meaning_static_builds_and_wires(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr('zte.data.targets.glove.provision_glove', fake_provision)
     cfg = ZTEConfig()
-    provision.apply_meaning(
-        cfg, 'static', meaning_out='res/v/g.txt', weight=0.5, vocab={'apple', 'brain'}
-    )
+    provision.apply_meaning(cfg, 'static', meaning_out='res/v/g.txt', weight=0.5, vocab={'apple', 'brain'})
     assert cfg.objective.meaning_source == 'res/v/g.txt'
     assert cfg.objective.meaning_dim == 300
     assert cfg.objective.meaning_contextual is None
@@ -136,18 +134,14 @@ def test_build_montage_csv_reuses_existing_file(tmp_path: Path) -> None:
     assert build_montage_csv(f) == f  # returns immediately, no ScalpGeometry.from_mne
 
 
-def test_contextual_meaning_matrix_uses_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_contextual_meaning_matrix_uses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A pre-seeded contextual-meaning cache is loaded without importing `transformers`."""
     import numpy as np
     import pandas as pd
 
     from zte.data.targets import meaning
 
-    words = pd.DataFrame(
-        {'word': ['the', 'brain'], 'word_idx': [0, 1], 'stimulus_key': ['s1', 's1']}
-    )
+    words = pd.DataFrame({'word': ['the', 'brain'], 'word_idx': [0, 1], 'stimulus_key': ['s1', 's1']})
     # Reproduce the exact key the function computes, then seed a matrix there.
     skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
     widx = words['word_idx'].to_numpy().astype(int)
@@ -168,9 +162,7 @@ def test_contextual_meaning_matrix_uses_cache(
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, '__import__', guard)
-    out, dim = meaning.build_meaning_matrix_hf(
-        words, 'bert-base-uncased', layer=8, cache_dir=str(tmp_path)
-    )
+    out, dim = meaning.build_meaning_matrix_hf(words, 'bert-base-uncased', layer=8, cache_dir=str(tmp_path))
     assert dim == 5 and out.shape == (2, 5) and np.allclose(out, mat)
 
 

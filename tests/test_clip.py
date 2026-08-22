@@ -109,9 +109,7 @@ def test_clip_objective_symmetric_multipositive() -> None:
         assert k in m and np.isfinite(m[k])
     assert m['n_valid'] == 6.0
     loss.backward()
-    assert torch.isfinite(
-        next(p.grad for p in o.clip_head.parameters() if p.grad is not None)
-    ).all()
+    assert torch.isfinite(next(p.grad for p in o.clip_head.parameters() if p.grad is not None)).all()
     assert o.logit_scale.grad is not None and torch.isfinite(o.logit_scale.grad)
 
 
@@ -138,17 +136,13 @@ def test_clip_objective_graceful_without_text() -> None:
 def synth_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A small synthetic ZuCo tree with several subjects reading the same sentences."""
     out = tmp_path_factory.mktemp('zuco_clip')
-    generate_synthetic_zuco(
-        out, subjects=('ZAB', 'ZDM', 'ZPH'), tasks=('SR', 'NR'), n_sentences=8, show_progress=False
-    )
+    generate_synthetic_zuco(out, subjects=('ZAB', 'ZDM', 'ZPH'), tasks=('SR', 'NR'), n_sentences=8, show_progress=False)
     return out
 
 
 def test_sentence_text_id_flows_through_collate(synth_dir: Path, tmp_path: Path) -> None:
     """`sentence_text_id` is carried per sentence and the hard-negative loader yields valid batches."""
-    ds = ZuCoDataset(DatasetConfig(root=str(synth_dir), cache_dir=str(tmp_path / 'c'))).build(
-        show_progress=False
-    )
+    ds = ZuCoDataset(DatasetConfig(root=str(synth_dir), cache_dir=str(tmp_path / 'c'))).build(show_progress=False)
     td = ds.to_torch()
     assert len(td.text_vocab) > 0
     # every sentence has a text id in range
@@ -156,8 +150,5 @@ def test_sentence_text_id_flows_through_collate(synth_dir: Path, tmp_path: Path)
     hn = np.full((len(td.text_vocab), 2), -1, dtype=np.int64)  # (empty hard-neg table is valid)
     loader = make_dataloader(td, batch_size=8, hard_negatives=hn, seed=0)
     batch = next(iter(loader))
-    assert (
-        'sentence_text_id' in batch
-        and batch['sentence_text_id'].shape[0] == batch['features'].shape[0]
-    )
+    assert 'sentence_text_id' in batch and batch['sentence_text_id'].shape[0] == batch['features'].shape[0]
     assert (batch['sentence_text_id'] >= 0).all()

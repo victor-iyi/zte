@@ -1,6 +1,5 @@
 """End-to-end integration: train a tiny model, checkpoint, and extract embeddings."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 from pathlib import Path

@@ -19,9 +19,7 @@ def _fold(directory: Path, holdout: str, rank_pct: float, aniso: float, calib: f
         'honesty': {
             'loso_holdout': holdout,
             'calibration': {'mean_lift': calib},
-            'cross_subject_decode': {
-                'targets': {'category': {'mean': 0.66, 'chance': 0.54, 'above_chance': True}}
-            },
+            'cross_subject_decode': {'targets': {'category': {'mean': 0.66, 'chance': 0.54, 'above_chance': True}}},
         },
         'neurons': {'who_variance': aniso},  # correlated with anisotropy, as in the real sweep
         'scoreboard': {
@@ -45,7 +43,7 @@ def test_spearman_matches_known_values() -> None:
 
 
 def test_calibration_rescues_the_most_collapsed_brains(tmp_path: Path) -> None:
-    """Test that the analysis recovers "calibration helps most where anisotropy is worst".
+    """The analysis recovers "calibration helps most where anisotropy is worst".
 
     This is the real 2026-07-24 finding (rho +0.84): a held-out brain whose embeddings collapse into a
     cone benefits most from anchor calibration.
@@ -61,7 +59,7 @@ def test_calibration_rescues_the_most_collapsed_brains(tmp_path: Path) -> None:
 
 
 def test_seeds_are_averaged_per_subject(tmp_path: Path) -> None:
-    """Test that multiple seeds of one held-out subject collapse to a single averaged row."""
+    """Multiple seeds of one held-out subject collapse to a single averaged row."""
     _fold(tmp_path / 's42', 'ZAB', rank_pct=0.90, aniso=0.10, calib=0.05)
     _fold(tmp_path / 's43', 'ZAB', rank_pct=0.80, aniso=0.20, calib=0.15)
     # Same subject across two seed dirs -> collect from the common parent.

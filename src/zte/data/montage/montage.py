@@ -98,9 +98,7 @@ def build_montage_csv(
         writer = csv.writer(fh)
         writer.writerow(['channel', 'x', 'y', 'z', 'label', 'region'])
         for c, (xyz, label) in enumerate(zip(geo.xyz, labels)):
-            writer.writerow(
-                [c, f'{xyz[0]:.6f}', f'{xyz[1]:.6f}', f'{xyz[2]:.6f}', label, regions[c]]
-            )
+            writer.writerow([c, f'{xyz[0]:.6f}', f'{xyz[1]:.6f}', f'{xyz[2]:.6f}', label, regions[c]])
     if keep is None:
         note = ' (WARNING: unaligned full montage)'
     elif zuco105:

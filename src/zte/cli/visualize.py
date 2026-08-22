@@ -1,6 +1,5 @@
 """`zte-visualize` -- build the offline interactive Thought-Space Explorer and Neuron Atlas HTML."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import argparse
@@ -31,9 +30,7 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Fabricate a tiny dataset and train two quick models.',
     )
-    parser.add_argument(
-        '--out', type=Path, default=Path('res/explorer/thought_space_explorer.html')
-    )
+    parser.add_argument('--out', type=Path, default=Path('res/explorer/thought_space_explorer.html'))
     parser.add_argument(
         '--kind',
         choices=['explorer', 'atlas', 'both'],
@@ -49,9 +46,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--max-points', type=int, default=6000)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
 
@@ -62,9 +57,6 @@ def _add_categories(meta: pd.DataFrame, sentences: pd.DataFrame, root: str | Non
         meta (pd.DataFrame): Word metadata with `subject`, `task`, `sentence_idx`.
         sentences (pd.DataFrame): The dataset's sentence table.
         root (str | None): Optional dataset root for real category labels.
-
-    Returns:
-        pd.DataFrame: `meta` with `category` and `length_band` columns added.
     """
     from zte.data.targets.categories import sentence_categories
 
@@ -74,9 +66,7 @@ def _add_categories(meta: pd.DataFrame, sentences: pd.DataFrame, root: str | Non
     keep = [c for c in ('subject', 'task', 'sentence_idx', 'category', 'length_band') if c in cats]
     merged = meta.merge(cats[keep], on=['subject', 'task', 'sentence_idx'], how='left')
     merged['category'] = merged.get('category', pd.Series(merged['task'])).fillna(merged['task'])
-    merged['length_band'] = merged.get('length_band', pd.Series('', index=merged.index)).fillna(
-        'na'
-    )
+    merged['length_band'] = merged.get('length_band', pd.Series('', index=merged.index)).fillna('na')
     return merged
 
 
@@ -86,9 +76,7 @@ def _probe_word_len(emb: np.ndarray, meta: pd.DataFrame) -> float | None:
 
     if 'word_len' not in meta.columns or len(emb) < 12:
         return None
-    return round(
-        float(linear_probe(emb, meta['word_len'].to_numpy(), task='regression')['score']), 4
-    )
+    return round(float(linear_probe(emb, meta['word_len'].to_numpy(), task='regression')['score']), 4)
 
 
 def _emergence(emb: np.ndarray, meta: pd.DataFrame, raw_feats: np.ndarray | None) -> dict | None:
@@ -157,9 +145,7 @@ def _quick_config(include_eye_tracking: bool, root: str) -> object:
     cfg.dataset.tasks = ('SR', 'NR')
     cfg.dataset.representation = 'band_power'
     cfg.dataset.include_eye_tracking = include_eye_tracking
-    cfg.dataset.cache_dir = str(
-        Path(root).parent / f'cache_{"et" if include_eye_tracking else "eeg"}'
-    )
+    cfg.dataset.cache_dir = str(Path(root).parent / f'cache_{"et" if include_eye_tracking else "eeg"}')
     cfg.model.frontend = 'band_power_mlp'
     cfg.model.embed_dim = 48
     cfg.model.hidden_dim = 64
@@ -174,9 +160,7 @@ def _quick_config(include_eye_tracking: bool, root: str) -> object:
     return cfg
 
 
-def _embed_quick(
-    cfg: object, ckpt_root: Path
-) -> tuple[np.ndarray, pd.DataFrame, np.ndarray | None, object]:
+def _embed_quick(cfg: object, ckpt_root: Path) -> tuple[np.ndarray, pd.DataFrame, np.ndarray | None, object]:
     """Builds a dataset, trains 2 epochs, and returns aligned word embeddings + meta.
 
     Returns:
@@ -258,9 +242,7 @@ def _build_atlas(inputs: dict, out: Path, kind: str) -> Path:
         band_names=BANDS if band_power is not None else None,
     )
     out_path = _atlas_out_path(out, kind)
-    written = neuron_atlas_html(
-        report, out_path, title=inputs.get('atlas_title', 'ZTE Neuron Atlas')
-    )
+    written = neuron_atlas_html(report, out_path, title=inputs.get('atlas_title', 'ZTE Neuron Atlas'))
     size_kb = written.stat().st_size / 1024
     _LOG.info(
         'Wrote %s (%.0f KB). Open it in any browser -- no server needed.',

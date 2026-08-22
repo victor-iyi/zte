@@ -34,7 +34,7 @@ class FileExtract:
     word_rows: list[dict[str, Any]]
     """One metadata/scalar dict per word (sentence order preserved)."""
     band_power: np.ndarray | None
-    """Array `(n_words, n_bp_features, n_channels)` with `NaN` for omitted words / rejected epochs, or `None` if not requested."""
+    """`(n_words, n_bp_features, n_channels)`; `NaN` for omitted words / rejected epochs, `None` if not requested."""
     bp_feature_names: list[str]
     """Names (`'<measure>_<band>'`) for the band-power axis."""
     raw_eeg: np.ndarray | None
@@ -88,12 +88,9 @@ def feature_present(value: object) -> bool:
 def _channel_vector(value: object, n_channels: int = N_CHANNELS) -> np.ndarray:
     """Coerces a word band feature into a length-`n_channels` float vector.
 
-    Args:
-        value (object): A scipy-loaded band feature (ideally a 105-vector).
-        n_channels (int): Expected channel count.
-
     Returns:
-        A `(n_channels,)` float32 array; all-`NaN` when the source is empty, truncated/zero-padded when the length is unexpected.
+        A `(n_channels,)` float32 array; all-`NaN` when the source is empty, truncated/zero-padded when the length is
+        unexpected.
     """
     arr = np.asarray(value, dtype=np.float32).ravel()
     if arr.size == 0:
@@ -109,11 +106,11 @@ def _coerce_raw_2d(value: object) -> np.ndarray:
     """Coerces a raw-EEG value to a numeric 2-D array, tolerating a ragged cell of segments.
 
     Note:
-        ZuCo's per-word `rawEEG` is usually a `(channels, time)` matrix, but a word with several fixations can arrive as a
-        **cell array of per-fixation segments** of different lengths — which `scipy.io.loadmat` returns as an object ndarray.
-        A plain `np.asarray(..., dtype=float32)` then raises "setting an array element with a sequence". This picks the largest
-        convertible segment (the most raw signal), which the caller pads/truncates to the fixed window, so extraction never
-        crashes on ragged raw EEG.
+        ZuCo's per-word `rawEEG` is usually a `(channels, time)` matrix, but a word with several fixations can arrive as
+        a **cell array of per-fixation segments** of different lengths — which `scipy.io.loadmat` returns as an object
+        ndarray. A plain `np.asarray(..., dtype=float32)` then raises "setting an array element with a sequence". This
+        picks the largest convertible segment (the most raw signal), which the caller pads/truncates to the fixed
+        window, so extraction never crashes on ragged raw EEG.
 
     Args:
         value (object): A scipy-loaded raw-EEG field (a matrix, a cell of segments, or empty).
@@ -142,13 +139,9 @@ def _coerce_raw_2d(value: object) -> np.ndarray:
 def _raw_window(value: object, n_channels: int, window: int) -> np.ndarray:
     """Pads/truncates a raw EEG segment to `(n_channels, window)`.
 
-    Args:
-        value (object): Raw EEG array, ideally `(channels, time)`.
-        n_channels (int): Target channel count.
-        window (int): Target time length in samples.
-
     Returns:
-        A `(n_channels, window)` float32 array; all-zero when the source is empty (an omitted word), so callers must consult the presence mask.
+        A `(n_channels, window)` float32 array; all-zero when the source is empty (an omitted word), so callers must
+        consult the presence mask.
     """
     arr = _coerce_raw_2d(value)
     if arr.size == 0 or arr.ndim == 0:  # empty (omitted word) or a stray scalar
@@ -183,7 +176,7 @@ def load_mat(path: str | Path) -> dict[str, Any]:
         return loadmat(path, squeeze_me=True, struct_as_record=False)
     except NotImplementedError:
         # v7.3 files are HDF5; expose the raw handle for callers that need it.
-        import h5py  # pylint: disable=import-outside-toplevel
+        import h5py
 
         return {'__h5__': h5py.File(path, 'r')}
 
@@ -200,7 +193,8 @@ def extract_file(
 ) -> FileExtract:
     """Flattens one ZuCo `.mat` file into aligned rows and tensors.
 
-    The whole file (raw EEG included) is loaded eagerly by scipy, so callers should process one file at a time and let it be garbage-collected.
+    The whole file (raw EEG included) is loaded eagerly by scipy, so callers should process one file at a time and let
+    it be garbage-collected.
 
     Args:
         path (str | Path): Path to a v5/v6 ZuCo `.mat` file.
@@ -220,8 +214,7 @@ def extract_file(
     if '__h5__' in mat:  # pragma: no cover - depends on having a v7.3 file
         mat['__h5__'].close()
         raise NotImplementedError(
-            'v7.3 ZuCo files are not yet flattened; re-export as v6 or extend '
-            'extract_file() with an h5py reader.'
+            'v7.3 ZuCo files are not yet flattened; re-export as v6 or extend extract_file() with an h5py reader.'
         )
 
     sentences = np.atleast_1d(mat['sentenceData'])
@@ -265,11 +258,7 @@ def extract_file(
             word_rows.append(row)
 
             if load_band_power and bp_names:
-                vecs = [
-                    _channel_vector(getattr(word, band_feature_name(m, b), []))
-                    for m in measures
-                    for b in bands
-                ]
+                vecs = [_channel_vector(getattr(word, band_feature_name(m, b), [])) for m in measures for b in bands]
                 bp_chunks.append(np.stack(vecs, axis=0))  # (n_bp_features, channels)
             if load_raw:
                 raw_chunks.append(_raw_window(getattr(word, raw_field, []), N_CHANNELS, raw_window))

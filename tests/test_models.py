@@ -48,9 +48,7 @@ def test_band_power_model_forward(small_dataset: ZuCoDataset) -> None:
     """Band-power model returns (B, L, embed_dim) for both context modes."""
     batch = _band_batch(small_dataset)
     in_dim = small_dataset.features.shape[1]
-    model = build_model(
-        ModelConfig(frontend='band_power_mlp', embed_dim=64, hidden_dim=48), in_dim=in_dim
-    )
+    model = build_model(ModelConfig(frontend='band_power_mlp', embed_dim=64, hidden_dim=48), in_dim=in_dim)
     tok = model(batch, contextual=False)
     ctx = model(batch, contextual=True)
     b, length = batch['pad_mask'].shape
@@ -77,12 +75,8 @@ def test_objective_forward_and_backward(small_dataset: ZuCoDataset, name: str) -
     torch.manual_seed(0)
     batch = _band_batch(small_dataset, n=6)
     in_dim = small_dataset.features.shape[1]
-    model = build_model(
-        ModelConfig(frontend='band_power_mlp', embed_dim=48, hidden_dim=40), in_dim=in_dim
-    )
-    objective = build_objective(
-        ObjectiveConfig(name=name, mask_ratio=0.5, cpc_steps=2), model, feature_dim=in_dim
-    )
+    model = build_model(ModelConfig(frontend='band_power_mlp', embed_dim=48, hidden_dim=40), in_dim=in_dim)
+    objective = build_objective(ObjectiveConfig(name=name, mask_ratio=0.5, cpc_steps=2), model, feature_dim=in_dim)
 
     loss, metrics = objective.compute(model, batch)
     assert torch.isfinite(loss), f'{name} produced non-finite loss'
@@ -95,12 +89,8 @@ def test_objective_forward_and_backward(small_dataset: ZuCoDataset, name: str) -
 def test_masked_latent_teacher_updates(small_dataset: ZuCoDataset) -> None:
     """The data2vec EMA teacher tracks the student after a post_step."""
     in_dim = small_dataset.features.shape[1]
-    model = build_model(
-        ModelConfig(frontend='band_power_mlp', embed_dim=32, hidden_dim=32), in_dim=in_dim
-    )
-    objective = build_objective(
-        ObjectiveConfig(name='masked', masked_target='latent'), model, feature_dim=in_dim
-    )
+    model = build_model(ModelConfig(frontend='band_power_mlp', embed_dim=32, hidden_dim=32), in_dim=in_dim)
+    objective = build_objective(ObjectiveConfig(name='masked', masked_target='latent'), model, feature_dim=in_dim)
     before = next(objective.teacher.module.parameters()).clone()
     # Perturb the student then update the teacher.
     with torch.no_grad():
@@ -122,15 +112,11 @@ def test_masked_reconstruct_both_frontends(small_dataset: ZuCoDataset, frontend:
     in_dim = small_dataset.features.shape[1]
     channels, time = small_dataset.raw_eeg.shape[1], small_dataset.raw_eeg.shape[2]
     if frontend == 'band_power_mlp':
-        model = build_model(
-            ModelConfig(frontend=frontend, embed_dim=32, hidden_dim=32, n_layers=2), in_dim=in_dim
-        )
+        model = build_model(ModelConfig(frontend=frontend, embed_dim=32, hidden_dim=32, n_layers=2), in_dim=in_dim)
         recon_dim = in_dim
     else:
         model = build_model(
-            ModelConfig(
-                frontend=frontend, embed_dim=32, hidden_dim=32, n_layers=2, conformer_filters=16
-            ),
+            ModelConfig(frontend=frontend, embed_dim=32, hidden_dim=32, n_layers=2, conformer_filters=16),
             raw_shape=(channels, time),
         )
         recon_dim = channels * time

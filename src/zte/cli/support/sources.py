@@ -9,27 +9,21 @@ from zte.logging_utils import get_logger
 
 if TYPE_CHECKING:
     from zte.config import DatasetConfig
+    from zte.data.dataset import ZuCoDataset
 
 _LOG = get_logger('cli.sources')
 
 DEFAULT_EXTRACT_DIR: Final[Path] = Path('res/data/zuco_extracted')
 DEFAULT_DOWNLOAD_DIR: Final[Path] = Path('res/data/_downloads')
 
-# Stands in for the data root while a cache key is computed. Cache keys exclude the root, so this lets a
-# command ask "is the bundle already built?" before paying to resolve the raw source. Must not contain
-# 'synthetic' -- that substring is the one part of the root the key does look at.
+# Stands in for the data root while a cache key is computed, so a command can ask "is the bundle built?"
+# before resolving the raw source. Must not contain 'synthetic' -- the key does look at that substring.
 PENDING_ROOT: Final[str] = '<unresolved>'
 SYNTHETIC_ROOT: Final[str] = 'res/data/synthetic_zuco'
 
-_ROOT_HELP: Final[str] = (
-    'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
-)
-_DRIVE_HELP: Final[str] = (
-    'Google Drive folder id or shareable URL (downloads + extracts task archives).'
-)
-_EXTRACT_HELP: Final[str] = (
-    'Where Drive/zips are extracted to (idempotent; default: res/data/zuco_extracted).'
-)
+_ROOT_HELP: Final[str] = 'Local extracted `.mat` dir, a `.zip` archive, or a folder of task `.zip` archives.'
+_DRIVE_HELP: Final[str] = 'Google Drive folder id or shareable URL (downloads + extracts task archives).'
+_EXTRACT_HELP: Final[str] = 'Where Drive/zips are extracted to (idempotent; default: res/data/zuco_extracted).'
 
 
 def add_data_source_args(
@@ -85,7 +79,7 @@ def resolve_data_root(
     Returns:
         Path: The resolved root directory.
     """
-    from zte.data.io.sources import resolve_source  # pylint: disable=import-outside-toplevel
+    from zte.data.io.sources import resolve_source
 
     spec = getattr(args, 'drive', None) or getattr(args, 'root', None) or default
     if spec is None:
@@ -111,6 +105,29 @@ def resolve_data_root(
         subjects=subjects,  # type: ignore[arg-type]
         overwrite=bool(getattr(args, 'overwrite', False)),
     )
+
+
+def dataset_for_config(args: argparse.Namespace, dataset: DatasetConfig) -> ZuCoDataset:
+    """Builds the dataset a checkpoint was trained on, from `--bundle`, `--synthetic`, `--root` or `--drive`.
+
+    The checkpoint's own `DatasetConfig` supplies every processing option, so a raw-frontend run finds raw
+    tensors and a band-power run finds the exact feature width it was trained at.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments carrying the data-source flags.
+        dataset (DatasetConfig): The checkpoint's dataset configuration.
+
+    Returns:
+        ZuCoDataset: A built dataset.
+    """
+    from zte.data.dataset import ZuCoDataset
+
+    bundle = getattr(args, 'bundle', None)
+    if bundle:
+        return ZuCoDataset.load(bundle)
+    config = dataclasses.replace(dataset, root=PENDING_ROOT)
+    config.root = resolve_root_if_needed(args, config)
+    return ZuCoDataset(config).build()
 
 
 def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | None:
@@ -159,9 +176,7 @@ def resolve_root_if_needed(
     where = bundle_is_cached(dataset, synthetic=synthetic)
     if where is not None:
         spec = (
-            synth_out
-            if synthetic
-            else str(getattr(args, 'drive', None) or getattr(args, 'root', None) or dataset.root)
+            synth_out if synthetic else str(getattr(args, 'drive', None) or getattr(args, 'root', None) or dataset.root)
         )
         _LOG.info('Processed bundle already %s; skipping raw-data extraction.', where)
         return spec
