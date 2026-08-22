@@ -2,7 +2,7 @@
 
 A rigorous, **bias-controlled** set of studies you can run end-to-end on the real ZuCo data, plus a "how to read every output" guide so a newcomer can peek into what ZTE actually learns. Each study is an **A/B (or a sweep) with everything else held identical**, so any metric delta is attributable to the one lever under test — not a confound.
 
-> Related: [EVALUATION.md](./EVALUATION.md) (what every metric means and how the verdict is computed) · [ARCHITECTURE.md](./ARCHITECTURE.md) · the tiered presets under [`experiments/`](../experiments/README.md) (`flagship/` · `benchmark/` · `ablation/` · `archive/`).
+> Related: [EVALUATION.md](./EVALUATION.md) (what every metric means and how the verdict is computed) · [ARCHITECTURE.md](./ARCHITECTURE.md) · the tiered presets under [`experiments/`](../experiments/README.md) (`flagship/` · `benchmark/` · `ablation/` · `alignment/` · `archive/`).
 >
 > **Design vs result.** Everything in the *Expected / interesting* column below is a **hypothesis**, not a measured result. The suite is designed and verified on synthetic data; the real-data numbers are what you produce by running it. Tiny synthetic runs will *legitimately fail* several verdict checks (there is little real cross-subject signal to find) — that is the point of running it at scale.
 
@@ -152,6 +152,81 @@ For a **full** leave-one-subject-out sweep, rotate `train.loso_holdout_subject` 
 # The flagship interactive Thought-Space Explorer over a run's real embeddings:
 .venv/bin/zte-visualize --run res/experiments/study_vicreg_on --out res/explorer/study_vicreg_on.html
 ```
+
+## The three-level alignment study
+
+Studies 1–5 above vary a lever inside one recipe. The alignment study varies something more basic: **which unit the
+contrastive term pulls at**. Three encoders, otherwise identical, align a token, a word or a whole sentence to a
+frozen linguistic target — and the question is which granularity a brain signal can actually be tied to.
+
+| Level | The unit it aligns | Frozen target | Lever | Configs |
+| --- | --- | --- | --- | --- |
+| `sentence` | the pooled sentence vector | an E5 sentence embedding | all `lexical_*` and `token_*` weights at 0 | `experiments/alignment/sentence/` |
+| `word` | one fixated word = one EEG token | a frozen word vector | `objective.lexical_weight` / `lexical_reader_weight` = 1 | `experiments/alignment/word/` |
+| `token` | four fixed intra-word slices of one word | the LM's frozen sub-word embeddings | `objective.token_weight` / `token_reader_weight` = 1 | `experiments/alignment/token/` |
+
+Each level ships four arms — `combined.yaml` trains SR+NR together, and `nr.yaml` / `sr.yaml` / `tsr.yaml` train one
+reading task alone so the parallax transfer matrix can ask whether the effect survives a passage set the encoder has
+never seen. Twelve arms in all, every one of them byte-identical to `experiments/ablation/exp16_residual_off.yaml`
+except the weights named above. `word/combined.yaml` **is** the published champion recipe, the one that measured
+26 of 700 (3.714%) on a subject no parameter had seen — stale pending the length-projection re-measurement, which
+this level's own combined arm supplies; it is included as a level rather than referenced so all three
+are a matched triple scored under one evaluation profile.
+
+### How to read the ladder
+
+**The levels are exclusive, not cumulative.** Each is the sentence-level CLIP objective plus at most one extra term,
+so `sentence → word` and `sentence → token` each flip exactly one lever and a difference between them is
+attributable to it. A cumulative arm — all three terms at once — is a natural follow-up and is deliberately not one
+of these twelve, because it would answer a different question with no matched pair behind it.
+
+Read the configuration diff rather than the run names. The whole knob set is written out in every arm, so the diff
+between two files names exactly the levers that move:
+
+```sh
+diff <(grep -E 'lexical_weight|token_weight' experiments/alignment/sentence/combined.yaml) \
+     <(grep -E 'lexical_weight|token_weight' experiments/alignment/token/combined.yaml)
+```
+
+**A token-level number is unreadable without its floor.** The sub-word piece profile is a brain-free channel worth
+9.4 of the gallery's 9.4512 bits, and the total piece count alone — one integer — retrieves 62 of 700 where the best
+encoder on this board retrieves 26. `objective.token_sub_tokens` is therefore a fixed 4 for every word rather than
+the count of pieces its reference spells it in, and every token headline is gated on the piece-profile oracle. The
+oracle table, the construction behind it and the refusal rule are in
+[EVALUATION.md](./EVALUATION.md) — read that section before quoting anything from the `token/` arms.
+
+### The campaign, and why a partial one is still a complete table
+
+`uv run zte-colab sweep plan` emits the whole thing as JSON; `sweep next` names the run to start, and `sweep status`
+reports what has landed against what it owes. Fifty-four planned runs, about 109 GPU-hours, in three tiers:
+
+| Tier | The question it answers | Runs |
+| --- | --- | ---: |
+| `mechanism` | 3 levels × 2 regimes — one combined arm and three single-task ones per level — at holdout ZAB and seed 42, so the fold is directly comparable to the published table | 12 |
+| `power` | 3 levels × combined × all 12 folds — does it survive the cohort, with a real CI behind the held-out lift | 36 |
+| `spread` | 3 levels × combined × ZAB × seeds 42/43/44 — is the gap larger than run-to-run noise | 6 |
+
+The plan's *order* is what makes an interrupted campaign reportable. Tiers run in sequence, so an interruption
+leaves the earlier tiers finished outright; and within a tier the alignment level varies fastest, so whatever has
+landed is a matched comparison across all three levels rather than one level finished and two untouched. Every
+stopping point is therefore a complete table — a smaller one, never a biased one.
+
+Doneness is keyed on the run's `evaluation/metrics.json` existing on Drive, never on the session `INDEX.md`: a run
+that died between writing its metrics and its catalogue row is finished, and keying on the catalogue would spend its
+hours a second time. A reclaimed VM re-plans and skips what already landed.
+
+Two arithmetic notes that make 54 rows cost 109 hours rather than more. `power`'s ZAB fold *is* `mechanism`'s
+combined run — same config, same holdout, same seed, therefore the same run directory — and is charged once.
+`spread` adds seeds 43 and 44 only, for the same reason. The parallax regime stays at a single fold on purpose: the
+transfer matrix is a mechanism demonstration, not a powered estimate, and twelve folds of it would be 324 further
+runs that buy no CI. (The planner takes either spelling of a tier, `mechanism` or `0`, since the campaign is
+discussed by number and planned by name.)
+
+Every arm carries `train.eval_profile: sweep`, which keeps the numbers that may be a headline and drops the figures,
+the explorers and the interpretability blocks — see [EVALUATION.md](./EVALUATION.md). Run the full profile on a
+winning arm. The three levels are then read against each other through `zte.alignment.compare`, whose table leads on
+rank percentile, reports Top-k as hit counts with exact binomial tails, and refuses a token row that arrives without
+its oracle floor.
 
 ## How to read the outputs
 

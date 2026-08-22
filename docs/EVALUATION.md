@@ -266,6 +266,175 @@ gates nothing; it tells you which column of your own result is length. The trans
 published number and is contaminated by construction (the whitening is fitted over the held-out subject too); the
 train-fitted column is the one a decoder inherits.
 
+## The sub-word piece confound (`zte-rebaseline --piece-oracle`)
+
+Word count is one integer per sentence. The moment an objective works at the sub-word level, the gallery also gives
+away a *vector* of them — how many word-pieces the reference tokeniser spells each word in — and that channel is
+larger than the identity it would be used to recover.
+
+Measured with the real `Qwen/Qwen2.5-0.5B` tokeniser over a 700-sentence corpus matched to ZuCo's statistics
+(1.463 pieces per word against ZuCo's measured 1.4), and priced against the same $H(\text{identity}) = 9.4512$ bits
+the length audit above is:
+
+| What the oracle is told, and nothing else                 | Bits |  Top-1 | hits / 700 |
+| --------------------------------------------------------- | ---: | -----: | ---------: |
+| `n_words` — the documented length confound                | 4.96 |  4.71% |         33 |
+| the total sub-word piece count — one integer per sentence | 5.58 |  8.86% |         62 |
+| `n_words` and the total piece count together              | 8.18 | 51.29% |        359 |
+| the per-word piece profile                                | 9.44 | 99.57% |        697 |
+| the same profile after ZuCo's 33% word omission           | 9.37 | 96.14% |        673 |
+
+Read the second row against this programme's best measured held-out retrieval, 26 of 700 (stale pending the length-projection re-measurement): **a single brain-free
+integer retrieves 62**. The ordered profile leaves 0.01 of the gallery's 9.4512 bits unresolved, and still resolves
+673 of 700 once a third of the words are dropped, so eye-tracking omission does not close the channel.
+
+### The four signatures
+
+`piece_signatures` turns `TokenAlignment.word_pieces` — the `(n_text, max_words)` table of per-word piece counts,
+built from real character offsets and keyed by `content_id` — into one hashable key per sentence, in four flavours
+ordered by how much they know:
+
+- `words` — the word count alone, which is the length oracle re-expressed as an exact match rather than a tolerance.
+- `total` — the summed piece count, one integer.
+- `multiset` — the per-word counts with their order destroyed.
+- `profile` — the ordered per-word vector.
+
+`multiset` is bounded on both sides by the rows in the table: its length is the word count and its sum is the total,
+so it carries at least the 8.18 bits of the pair, and the profile determines it, so it carries at most 9.44.
+
+### The construction, shared with the length oracle
+
+`signature_oracle` scores each signature exactly the way `length_oracle` scores word count. An oracle told signature
+$X$ and nothing else resolves a query to the stratum of gallery items carrying an identical key, ranks that stratum
+uniformly at random, and puts everything else behind it. Writing $n$ for the gallery size and $m_i$ for the size of
+query $i$'s stratum:
+
+$$
+\text{Top-}k = \frac{1}{n}\sum_{i=1}^{n} \frac{\min(k,\ m_i)}{m_i}, \qquad
+\text{MRR} = \frac{1}{n}\sum_{i=1}^{n} \frac{1}{m_i}\sum_{r=1}^{m_i} \frac{1}{r}, \qquad
+\mathbb{E}[\text{rank}_i] = \frac{m_i + 1}{2}
+$$
+
+These are exact expectations over the within-stratum ordering, not an average over sampled draws, so **there is no
+seed and no Monte Carlo error**: the floor is a property of the gallery, and re-running it returns the same number.
+The one difference from `length_oracle` is the matching rule — word count admits a tolerance (`±tol`, which is why
+that oracle is reported at 0, 1, 2 and 4), where a signature is discrete and its stratum is exact equality.
+
+The information column is the quantity the length confound is already quoted in. Identity is uniform inside a
+stratum, so $H(\text{identity} \mid X)$ is the mean log stratum size:
+
+$$
+I(\text{identity};\, X) \;=\; H(\text{identity}) - H(\text{identity} \mid X) \;=\; \log_2 n - \frac{1}{n}\sum_{i=1}^{n} \log_2 m_i
+$$
+
+Under this estimator `words` reproduces the 5.14-bit length confound on the real gallery, and reading down the
+column is reading how much of the sentence's 9.4512 bits each signature hands over for free.
+
+### The rule
+
+**A token-level Top-k below the oracle it is gated on is not evidence of decoding**, exactly as an unstratified
+Top-k is not evidence of decoding for sentence length. `piece_profile_report` scores all four signatures and
+returns a `clears` verdict for each, plus `beats_oracles` — `True`, `False`, or `None` when no observation was
+supplied — decided by one of them.
+
+**The gate is `total`; the ordered profile is the ceiling.** The profile resolves 99.6% of a real gallery, so a
+verdict against it would read *below the floor* whatever the encoder did — a column carrying no information rather
+than a check. The profile is the floor for a design that sized a word's EEG by how many pieces its reference
+spells it in; this encoder uses a **fixed** sub-token count, so what it can actually reach is the total piece
+count, through the padding-boundary length channel described below. `gate_signature` defaults to `'total'`, is
+reported as `gate_signature` / `gate_top1` / `gate_bits`, and the profile travels beside it as `ceiling_signature`
+/ `ceiling_top1`. Every signature's own verdict is in `clears`, so the choice of gate is visible rather than
+assumed.
+
+**The second channel, in the substrate rather than the level.** ZuCo's per-word window is a variable-length
+fixation zero-padded to `raw_window` samples and then z-scored across the whole padded width, so its tail is an
+*exactly constant* per-channel value beginning at sample $L$ — the fixation length. Measured: $L = 120$ gives a
+tail constant from sample 120, $L = 305$ from sample 305. Fixation length is an eye-tracking quantity that word
+length is linearly readable from, so the padding boundary hands every raw-representation encoder a per-word length
+estimate for free. It is a property of every raw run on the board, and the token level adds an incentive to use it
+because slot $k$ is supervised only for words with more than $k$ pieces. No structural guard distinguishes it from
+decoding, because neither route carries a reference tensor — only the oracle above, a piece-count-stratified
+gallery, and a padding-tail ablation do.
+
+Two consequences are enforced in code rather than left to a reviewer:
+
+- **`objective.token_sub_tokens` is a fixed 4 for every word**, never the number of pieces its reference spells it
+  in. The piece count enters the loss's target mask and nothing the encoder computes, so a reading is encoded
+  identically whatever sentence it turns out to be.
+- **Every token-level headline is gated on the report.** `zte-rebaseline --ckpt <ckpt> --piece-oracle` rebuilds the
+  run's own token alignment with the tokeniser that run trained against, scores the four signatures against its
+  held-out full-gallery Top-1, and writes the block into `rebaseline.json` under `piece_oracle` with `tokenizer` and
+  `alignment_coverage` beside the verdict — a floor measured with a different tokeniser is a different floor.
+
+Like the length oracle, the piece oracle trains nothing and stops no run. What it gates is the sentence you are
+allowed to write, and the cross-level table below, which refuses a token row that does not carry it.
+
+## Comparing the three alignment levels (`zte.alignment.compare`)
+
+A token-level, a word-level and a sentence-level encoder are three different objectives scored over the same
+700-sentence gallery. Putting their numbers into one table is exactly where a level's free channel would otherwise
+disappear, so `cross_level_table` is built out of `LevelRetrieval` rows that refuse to be constructed wrong.
+
+A row carries the level, the **1-based rank of the correct item for every query**, the gallery those ranks were
+taken against, the `postprocess_fit` label (`none` / `train split` / `transductive`), and — mandatorily at the
+token level — the brain-free floor it has to clear.
+Each level is scored into hit counts at each $k$ with an exact binomial tail against $\min(k / n_\text{gallery},\, 1)$,
+a mean rank, an MRR, and the rank percentile with a percentile bootstrap CI (2000 resamples, seed 0):
+
+$$
+\text{rank percentile}_i = 1 - \frac{\text{rank}_i - 1}{n_\text{gallery} - 1}
+$$
+
+The contract the table enforces:
+
+- **Rank percentile is the only metric a cross-level claim may lead with.** It is stamped into the payload as
+  `headline_metric` and repeated inside every level's block, because it uses every query where Top-k uses only the
+  winners — and at a gallery of 700 the expected number of chance Top-1 hits is one.
+- **Top-K is a hit count out of the queries actually scored, never a bare rate**, and each one carries its exact
+  binomial tail.
+- **A token row without its floor is refused outright.** Construction raises, naming `token_oracle_floor`; it is not
+  a warning a rendered table could be read past. A floor handed in without `worst_case_top1` in it is refused the
+  same way. `beats_oracle_floor` then becomes a rendered column, and a level below its floor prints
+  `NO -- below a brain-free floor`, so the failure sits in the table rather than in a footnote.
+- **A row states what was fitted on what.** `postprocess_fit` is required; a row that does not know prints
+  `unstated` rather than sitting silently beside one that does.
+- **Ranks are validated against the row's own gallery** — non-empty, one-dimensional, and inside
+  $[1, n_\text{gallery}]$ — so ranks taken against a different gallery than the row claims cannot enter it.
+- **A level appears at most once, and the table renders token → word → sentence** whatever order the rows arrive
+  in, so two campaigns' tables are read the same way.
+
+The mandatory floor is level-specific because only the token level introduces a *new* free channel. The word and
+sentence levels sit on the length oracle documented above, and `oracle_floor` takes one for them too — it is
+optional there, not absent.
+
+## `train.eval_profile` — which blocks a run computes
+
+Evaluation, not training, is the expensive half of a run on this project's measured Colab timings: 61 to 75 minutes
+against 36 of training, so 63–67% of the wall clock goes to scoring a model that has already finished learning. A
+54-run campaign cannot afford the full suite on every arm, and cutting it silently would be worse than paying for it.
+
+`train.eval_profile` is `full` (the default, everything) or `sweep`. `sweep` keeps the blocks a headline may be read
+from — embedding health, sentence retrieval, the held-out scoreboard and the permutation null — and drops
+`analogy`, `neurons`, `emergence`, `word_retrieval_by_novelty`, `word_retrieval_freq_matched`, every figure and the
+interactive explorers, the seven names in `report.SWEEP_SKIPPED`. `neurons.json` is not written, and
+`objective.eval_seen_novel` / `objective.eval_freq_matched` are held off for the run whatever the config asks for.
+
+**A number present under `sweep` is the number the full profile would have produced.** The profile changes what is
+computed, never how.
+
+Three properties make the reduced file safe to read:
+
+- `metrics['eval_profile']` records the profile that produced the file, on every run, `full` included.
+- Under `sweep`, `metrics['eval_skipped']` lists the dropped blocks by name. An empty block and an uncomputed one
+  are otherwise indistinguishable in JSON, and a reader who cannot tell them apart reads a missing analogy block as
+  a failed one.
+- `report.md` opens on a banner naming that same list and saying in words that the absence is by configuration and
+  not a measurement.
+
+A config written before the knob existed reads as `full`, and an unrecognised value logs a warning and runs the full
+suite: failing open on a profile means measuring more, never claiming more. Run the full profile on a winning arm —
+the point of `sweep` is to buy enough runs to know which arm is worth it.
+
 ## Menu capacity — the largest closed set served at a target accuracy
 
 `rebaseline.md` ends with the constructive twin of the length audit: **K-way closed-set accuracy**. A K-way menu asks
@@ -317,23 +486,23 @@ arms. Written by `zte-decode --capacity` / `objective.eval_capacity` into `metri
 sentence.** They agree on the estimator and on the pool rule and on nothing else: different inputs, different score,
 different controls, different certification. A row that mixes them is an error even when both numbers are correct.
 
-| Path under `decoder_capacity` | What it is | Status |
-| --- | --- | --- |
-| `certified_k`, `verdict.capacity_k` | the largest certified menu size, or `None` | **headline-eligible** |
-| `bits.bits_certified`, `verdict.capacity_bits` | $\log_2 K$ — the headline estimator | **headline-eligible** |
-| `bits.fraction_of_residual`, `bits.bits_unrecovered` | the same, priced against the 4.3090-bit residual | **headline-eligible**, with the denominator stated |
-| `scores.pmi.length_task_matched.per_k.<K>` — `accuracy`, `ci`, `chance`, `perm_p`, `n_queries` | the headline family and pool | **headline-eligible** at a certified $K$ |
-| `scores.pmi.length_task_matched.common_subset.<K>` | the same on queries scoreable at every $K$ | **required companion** — a `per_k` number quoted without it is not quotable |
-| `...per_k.<K>.paired.<arm>` | paired delta, CI, exact sign test against each control | **evidence** — quote as the control comparison, never as an accuracy |
-| `scores.*.length_matched.*` | the task-blind certifiable pool | headline-eligible only when named as such |
-| `scores.*.open.*` | full-gallery pool, `certifiable: false` | **diagnostic** — a deployment estimate, never evidence about the brain |
-| `scores.raw.*` | the raw family, with no null-prefix subtraction | **diagnostic** — the headline is always `pmi` |
-| `length_oracle_2way_distance` | word-count-proximity oracle inside the pool | **diagnostic tripwire**, identically `0.0` on certified pools |
-| `gamed` | the oracle escaped chance in this pool | **disqualifier** on `open`; meaningless on a tolerance-0 pool |
-| `ks_feasible` / `ks_unreachable` | which sizes the pools could fill | **must be surfaced** — see below |
-| `bits.bits_mi_confusion`, `bits.bits_mi_assumption` | confusion-channel cross-check and its assumption | **diagnostic** cross-check |
-| `verdict.capacity_clauses`, `per_k.<K>.failed_clauses` | which of the seven clauses held | **required** whenever `certified_k` is `None` |
-| `provenance.*`, `tie_policy`, `honest_split`, `split_strategy`, `split_cell` | what produced the number | **required** — travels with every quote |
+| Path under `decoder_capacity`                                                                  | What it is                                             | Status                                                                      |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `certified_k`, `verdict.capacity_k`                                                            | the largest certified menu size, or `None`             | **headline-eligible**                                                       |
+| `bits.bits_certified`, `verdict.capacity_bits`                                                 | $\log_2 K$ — the headline estimator                    | **headline-eligible**                                                       |
+| `bits.fraction_of_residual`, `bits.bits_unrecovered`                                           | the same, priced against the 4.3090-bit residual       | **headline-eligible**, with the denominator stated                          |
+| `scores.pmi.length_task_matched.per_k.<K>` — `accuracy`, `ci`, `chance`, `perm_p`, `n_queries` | the headline family and pool                           | **headline-eligible** at a certified $K$                                    |
+| `scores.pmi.length_task_matched.common_subset.<K>`                                             | the same on queries scoreable at every $K$             | **required companion** — a `per_k` number quoted without it is not quotable |
+| `...per_k.<K>.paired.<arm>`                                                                    | paired delta, CI, exact sign test against each control | **evidence** — quote as the control comparison, never as an accuracy        |
+| `scores.*.length_matched.*`                                                                    | the task-blind certifiable pool                        | headline-eligible only when named as such                                   |
+| `scores.*.open.*`                                                                              | full-gallery pool, `certifiable: false`                | **diagnostic** — a deployment estimate, never evidence about the brain      |
+| `scores.raw.*`                                                                                 | the raw family, with no null-prefix subtraction        | **diagnostic** — the headline is always `pmi`                               |
+| `length_oracle_2way_distance`                                                                  | word-count-proximity oracle inside the pool            | **diagnostic tripwire**, identically `0.0` on certified pools               |
+| `gamed`                                                                                        | the oracle escaped chance in this pool                 | **disqualifier** on `open`; meaningless on a tolerance-0 pool               |
+| `ks_feasible` / `ks_unreachable`                                                               | which sizes the pools could fill                       | **must be surfaced** — see below                                            |
+| `bits.bits_mi_confusion`, `bits.bits_mi_assumption`                                            | confusion-channel cross-check and its assumption       | **diagnostic** cross-check                                                  |
+| `verdict.capacity_clauses`, `per_k.<K>.failed_clauses`                                         | which of the seven clauses held                        | **required** whenever `certified_k` is `None`                               |
+| `provenance.*`, `tie_policy`, `honest_split`, `split_strategy`, `split_cell`                   | what produced the number                               | **required** — travels with every quote                                     |
 
 The rules that make a capacity number quotable:
 
@@ -434,18 +603,44 @@ rows, the fixed-alpha estimator returns $-0.131$ and the searched one returns $-
 mean, which matters here because subject identity is linearly readable from raw band power at 0.81 while word
 length is not — a pooled ridge spends its capacity on who is reading.
 
-**Two questions, not one.** `raw_content_positive_control` now reports:
+**Grouped folds.** The probe's folds are grouped by `stimulus_key` — the first of `stimulus_key`,
+`sentence_uid`, `subject` with more than one level — and the group is reported as `cv_groups`. On ZuCo every
+stimulus is read by all twelve participants, so shuffled folds put the *same sentence* on both sides of every
+split and the probe scores by recognising it. The cost is real and it runs the optimistic way: on a fixture where
+the only structure is sentence identity memorised across readers, word length reads $R^2 = +0.61$ under shuffled
+folds and $-1.47$ under grouped ones. Fixing this **lowers** every content number it touches. That is the point.
 
-| Block                | What it asks                                                             | What a failure means                                   |
-| -------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------ |
-| `machinery`          | word length from the eye-tracking features that carry it by construction | **the probe is broken**; no content number is readable |
-| `per_target_r2`      | word length / log-frequency from band power, pooled over subjects        | band power carries no *pooled* lexical content         |
-| `within_subject_r2`  | the same, with each subject's mean removed                               | it carries none *within* a reader either               |
-| `shuffled_target_r2` | the identical estimator on a permuted target                             | the empirical zero this run's numbers sit against      |
+**Three questions, not one.** `raw_content_positive_control` reports:
 
-`passes` is decided by the machinery check whenever there is one, because that is the question "may a content
-number in this report be believed". A raw-signal run has no band power to probe and now says so, rather than
-falling through to a proxy fitted on normalised features that a whitening normaliser has already stripped.
+| Block               | What it asks                                                                                                 | What a failure means                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| `machinery`         | word length from the eye-tracking features that carry it by construction                                     | **the probe is broken**; no content number is readable |
+| `detectability`     | the smallest planted linear signal this probe recovers **in these very features**, at matched rows and folds | there is no floor to read an observation against       |
+| `per_target_r2`     | word length / log-frequency from band power, pooled over subjects                                            | band power carries no *pooled* lexical content         |
+| `within_subject_r2` | the same, with each subject's mean removed and its folds grouped                                             | it carries none *within* a reader either               |
+| `permutation_null`  | the identical estimator over many permuted targets, with an interval                                         | the empirical zero this run's numbers sit against      |
+
+The detectability curve is the control the machinery check could never be. The eye-tracking route proves the
+estimator works, but at a different dimensionality and sample size than the features under test;
+`zte.evaluation.audit.probe.plant_linear_target` injects a target carrying an exact share of its variance along a
+random direction of the **actual** raw feature matrix, and `detectability_curve` reports the lowest rung whose
+worst draw clears the null rung's best. That recovered $R^2$ is the floor, and `detectability_verdict` turns an
+observation into `below detectability floor`, `above detectability floor` or `floor not established`.
+
+**This is what promotes the content budget from *unmeasured* to a measurement in either direction.** An
+observation under the floor means any true effect is smaller than this probe can resolve — a statement about the
+probe. An observation over it, with the estimator established, is a statement about the signal.
+
+`passes` needs **two** clauses, and `passes_clauses` states each: something was actually probed
+(`band_power_probed`), and an estimator was established (the machinery check, the detectability curve, or band
+power clearing the floor). It can no longer read `true` beside an empty `per_target_r2`. `raw_content_r2_best`
+carries the within-subject number rather than the larger of the two, because the pooled probe can score on who is
+reading; `raw_content_r2_pooled_best`, `raw_content_r2_within_best` and `best_is` keep both on the record. The
+same searched estimator is now used by `honesty._fit_score`, which had kept the fixed `alpha=1.0` this section
+identifies as broken — on a wide no-signal design its held-out decode moves from $-0.466$ to $-0.044$.
+
+A raw-signal run has no band power to probe and says so, rather than falling through to a proxy fitted on
+normalised features that a whitening normaliser has already stripped.
 
 ## Within-task candidate pools
 
@@ -504,12 +699,12 @@ training rows, because a basis fitted before post-processing does not describe t
 signature of getting that wrong is `length_leakage_after` coming back *above* `length_leakage_before`. The numbers
 travel with the metric in `metrics['length_projection']`:
 
-| field | meaning |
-| --- | --- |
-| `length_leakage_before` | fraction of embedding variance word count explains, unprojected |
-| `length_leakage_after` | the same after projection — the part the train-fitted basis failed to transfer |
-| `n_fit` | training sentences the basis was fitted on |
-| `status` | `applied`, or a stated reason it was skipped |
+| field                   | meaning                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `length_leakage_before` | fraction of embedding variance word count explains, unprojected                |
+| `length_leakage_after`  | the same after projection — the part the train-fitted basis failed to transfer |
+| `n_fit`                 | training sentences the basis was fitted on                                     |
+| `status`                | `applied`, or a stated reason it was skipped                                   |
 
 `length_leakage_after` is **not** expected to be zero, and a zero would be the alarm rather than the result: it means
 the fit saw the scored rows. Read it beside the length-stratified gallery, which bounds the same confound a different
@@ -522,13 +717,13 @@ report showing length-free retrieval numbers that are not length-free would be w
 
 Four mechanisms, and each one is only worth having if a number moves. What to read, and against which matched pair:
 
-| mechanism | metric | matched pair | what a win looks like |
-| --- | --- | --- | --- |
-| predictive residual | `train_residual_context_explained`, subject probe, `word_len` probe | `exp16_residual_off` | subject probe down *and* content probe up; both down is collapse |
-| cross-reader consensus | `train_consensus_sentence_gallery_top1`, `same_word_gap` | `exp16_consensus_off` | word-level cross-subject cosine gap moves off +0.005 |
-| gallery contrast | `train_gallery_top1` against `train_gallery_chance` | `exp16_gallery_off` | held-out rank percentile up at equal `stratified_rank_percentile` |
-| length band | `stratified_rank_percentile` | `exp16_gallery_band_off` | the *stratified* number rises, which is the only one it can honestly move |
-| length projection | `length_leakage_before` / `after` | `exp16_length_projection_off` | the pair's gap *is* the measurement |
+| mechanism              | metric                                                              | matched pair                  | what a win looks like                                                     |
+| ---------------------- | ------------------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------- |
+| predictive residual    | `train_residual_context_explained`, subject probe, `word_len` probe | `exp16_residual_off`          | subject probe down *and* content probe up; both down is collapse          |
+| cross-reader consensus | `train_consensus_sentence_gallery_top1`, `same_word_gap`            | `exp16_consensus_off`         | word-level cross-subject cosine gap moves off +0.005                      |
+| gallery contrast       | `train_gallery_top1` against `train_gallery_chance`                 | `exp16_gallery_off`           | held-out rank percentile up at equal `stratified_rank_percentile`         |
+| length band            | `stratified_rank_percentile`                                        | `exp16_gallery_band_off`      | the *stratified* number rises, which is the only one it can honestly move |
+| length projection      | `length_leakage_before` / `after`                                   | `exp16_length_projection_off` | the pair's gap *is* the measurement                                       |
 
 The training-side metrics are per-epoch means in `history.json` and are plotted by `zte-analyze`'s **mechanism
 curves** panel. That panel exists because the final metrics cannot distinguish "the mechanism did nothing" from "the

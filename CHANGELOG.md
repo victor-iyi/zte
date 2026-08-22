@@ -35,6 +35,52 @@
   two subjects differing only by a 10× gain get whiteners identical to round-off and a post-transform power ratio
   of exactly 100.00. Excluded from the dataset cache key, so flipping it never invalidates a prepared bundle.
 - **`--allow-closed-set`** on `zte-run`, the named opt-out of the refusal below.
+- **The three-level alignment study.** Three encoders that differ in *which unit the contrastive term pulls at* and
+  in nothing else: the pooled sentence vector against a frozen E5 sentence embedding, one fixated word (= one EEG
+  token) against a frozen word vector, or four fixed intra-word slices against the LM's own sub-word embeddings. The
+  levels are exclusive rather than cumulative — each is the sentence-level CLIP objective plus at most one extra
+  term — so `sentence -> word` and `sentence -> token` each flip exactly one lever. Twelve configs at
+  `experiments/alignment/{token,word,sentence}/{combined,nr,sr,tsr}.yaml`, every one byte-identical to
+  `experiments/ablation/exp16_residual_off.yaml` apart from the weights that switch its level on;
+  `word/combined.yaml` is the published champion recipe (26 of 700 held out, 3.714% — stale pending the
+  length-projection re-measurement), included as a level rather
+  than referenced so the three are a matched triple. Run from `notebooks/alignments/zte_token.ipynb`,
+  `zte_word.ipynb` and `zte_sentence.ipynb`.
+- **`objective.token_*` — the sub-word alignment level** (`zte.models.objectives.token`). `TokenAligner` scores a
+  word's intra-word EEG sub-tokens against the frozen sub-word embeddings of the pieces it spells, and against the
+  same piece read by *another person* — the property a cross-subject decoder needs and a single-reader loss will
+  skip. `token_weight` and `token_reader_weight` default to 0, so the level is off unless asked for; `token_source`,
+  `token_sub_tokens`, `token_temperature`, `token_max_tokens`, `token_max_length` and
+  `token_same_subject_negatives` tune it. The frontend path is `RawConformer.sub_tokens` and
+  `ZTEModel.sub_token_hidden`; `zte.data.targets.tokens` gains `build_token_alignment` (the word-to-sub-word map,
+  built from real character offsets and keyed by `content_id`, so no collate change) and `build_subword_matrix` (the
+  frozen embedding of every piece type the corpus actually spells, rather than a modern tokeniser's whole table).
+- **The sub-word piece oracle** — `signature_oracle`, `piece_signatures` and `piece_profile_report` in
+  `zte.evaluation.audit.rebaseline`, reachable as `zte-rebaseline --piece-oracle`. Measured with the real
+  `Qwen/Qwen2.5-0.5B` tokeniser on a 700-sentence corpus matched to ZuCo's statistics (1.463 pieces per word against
+  ZuCo's measured 1.4, $H(\text{identity}) = 9.4512$ bits): word count alone carries 4.96 bits and retrieves 33 of
+  700; the *total* sub-word piece count — one integer per sentence — carries 5.58 bits and retrieves 62; the two
+  jointly carry 8.18 bits and retrieve 359; the per-word piece profile carries 9.44 bits and retrieves 697, and 673
+  even after ZuCo's 33% word omission. The best encoder this project has trained retrieves 26. Two consequences are
+  enforced in code: **`token_sub_tokens` is a fixed 4 for every word**, so the piece count enters the loss's target
+  mask and nothing the encoder computes, and every token-level headline is gated on `piece_profile_report`.
+- **`zte-colab sweep plan|next|status`** — the campaign driver. `plan` prints the ordered run list, with the config
+  each trains and the run directory each resolves to, on a machine with nothing trained and no Drive mounted;
+  `status` and `next` add what has already landed. A run counts as **done** when its `evaluation/metrics.json`
+  exists under a search root (the dated Drive sessions first, then the local run root) and never when its `INDEX.md`
+  row does, so a run that died between writing its metrics and its catalogue row is not paid for twice. The plan is
+  54 runs in three tiers — mechanism (12), power (36), spread (6) — 51 distinct trainings and ~109 GPU-hours, and
+  every tier is a complete, reportable table on its own.
+- **`train.eval_profile`** (`full` | `sweep`, default `full`). `sweep` keeps embedding health, sentence retrieval,
+  the held-out scoreboard and the permutation null — the only numbers allowed to be a headline — and drops the
+  neuron, emergence, analogy, seen-vs-novel and frequency-matched blocks, every figure and the interactive
+  explorers. Evaluation is the larger half of a run here (61–75 minutes against 36 of training on this project's
+  measured Colab timings), so the campaign's arms all carry it; the profile that produced a run is stamped into its
+  `metrics.json`.
+- **`src/zte/alignment/`** — the cross-level view, above the model stack and holding no `nn.Module`: `atlas` (one
+  jointly fitted projection of all three levels, as 2D and 3D plotly figure JSON), `contrastive` (alignment,
+  uniformity, effective rank and the positive/negative gap, per level) and `compare` (the cross-level table: hit
+  counts, exact binomial tails, rank percentile and the oracle floor).
 
 ### Changed
 

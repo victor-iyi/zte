@@ -227,6 +227,36 @@ Both weights default to 0. `experiments/flagship/zte_lexical_raw.yaml` turns the
 move between them, the honest reading is that ZuCo's per-word EEG carries no cross-reader lexical content — a
 result, and one worth reporting plainly.
 
+## Lever: sub-word alignment (the token level)
+
+The lever above aligns whole words. This one aligns the pieces a word is spelled from: each word's 350-sample
+fixation window is cut into **four fixed intra-word slices**, and each slice is scored against the frozen sub-word
+embedding of the piece it reads, plus against the same piece of the same word read by *someone else*. Same two
+directions as the word level — absolute identity, and the cross-reader property a decoder actually needs — one rung
+finer. Both weights default to 0, and the level needs a raw-window frontend, because there is no sub-word structure
+to slice out of a per-word band-power vector.
+
+The three granularities are **exclusive, not cumulative**: `objective.token_*` and `objective.lexical_*` are never
+on together, so sentence → word and sentence → token each flip exactly one lever. The arms live in
+`experiments/alignment/{sentence,word,token}/`, each byte-identical to `experiments/ablation/exp16_residual_off.yaml`
+except the weights named — which means the word arm *is* that config, the best-measured encoder on the board, under
+a new name.
+
+**The confound that shapes the design.** The natural way to build this lever is to give a word as many EEG
+sub-tokens as the reference spells it word-pieces. That hands the model the sentence's piece profile, and on a
+700-sentence gallery the profile is a brain-free key: measured with the real `Qwen/Qwen2.5-0.5B` tokeniser on a
+corpus matched to ZuCo's statistics, the ordered per-word profile carries 9.44 of the gallery's 9.4512 bits and
+retrieves 697/700 on its own — 673/700 even after ZuCo's 33% word omission. The *total* piece count, one integer per
+sentence, retrieves 62/700, against this programme's best measured 26/700, itself stale pending re-measurement. So `objective.token_sub_tokens` is a
+fixed 4 for every word whatever its text says: the piece count enters the loss's target mask and nothing the
+encoder computes, and every token-level headline is gated on `zte-rebaseline --piece-oracle`, whose refusal is in
+the constructor of `zte.alignment.compare.LevelRetrieval` rather than in a convention. This is to a token-level
+number what the length oracle is to a sentence-level one, and it is the larger of the two.
+
+The mathematics, the tensor shapes, the word-to-sub-word map and the campaign that measures the three levels are in
+`docs/ALIGNMENT_LEVELS.md`. No token-level number exists yet: the code and its gate are built, the campaign has not
+run.
+
 ---
 
 ## The exp16 encoder — four mechanisms, four measured failures

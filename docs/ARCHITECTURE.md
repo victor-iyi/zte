@@ -276,3 +276,46 @@ the Drive layout, `utils/mirror.py` for what a backup deliberately leaves behind
 a run wants, `device.device_plan` for what the machine will actually do, `analysis/dashboard.panel_builders` for the
 chart list the page and the notebook share, and `interactive/generation.generation_payload` for the five-clause
 generation gate. See [`RUNNING.md`](RUNNING.md).
+
+## The alignment levels
+
+One further seam, and the only one that reaches down into the frontend: **which unit the contrastive term pulls at**.
+The sentence level scores the pooled vector against a frozen sentence embedding, the word level one fixated word
+against a frozen word vector, and the token level four intra-word slices of one word against the LM's own sub-word
+embeddings. The three are exclusive rather than cumulative — each is the sentence-level objective plus at most one
+extra term — so a difference between two of them is attributable to a single lever.
+
+| Module                       | Owns                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `models/objectives/token.py` | `TokenAligner`, `build_token_aligner` — the sub-word level and its two contrastive directions                |
+| `data/targets/tokens.py`     | `TokenAlignment` — which sub-word slots belong to which word; `SubwordTargets` — the frozen piece embeddings |
+| `alignment/`                 | `atlas` · `contrastive` · `compare` — the cross-level view, above the model stack                            |
+
+The intra-word path is deliberately narrow. `RawConformer.sub_tokens(x, n_sub)` splits a raw window's time axis into
+`n_sub` contiguous spans instead of pooling it to a single token, and `ZTEModel.sub_token_hidden(batch, n_sub)` runs
+the frontend at that resolution. On the objective side, `attach_tokens()` sizes the aligner to the frozen sub-word
+matrix at build time — so a run with the level off constructs no parameter and every checkpoint written before the
+level existed still loads under `strict=True` — and `token_alignment()` scores a batch through it. `TokenAligner`
+runs two directions: against the frozen sub-word embeddings ("is this the EEG of *this* word-piece"), and against
+the same piece read by another person ("is this the same piece, whoever read it"), which is the property a
+cross-subject decoder needs and a single-reader loss will happily skip.
+
+**`n_sub` is a fixed constant, never the number of pieces the reference spells a word in.** The piece count enters
+the loss's target mask and nothing the encoder computes, so a word's EEG is encoded identically whatever its text
+turns out to be. This is a measurement rather than a preference: on the 700-sentence gallery the per-word sub-word
+piece profile is a brain-free signature that resolves almost every sentence on its own, so a frontend allowed to see
+it would be scored on the answer. `evaluation/audit/rebaseline.py` measures that floor and every token-level
+headline is read against it — see [`EVALUATION.md`](EVALUATION.md).
+
+The word-to-piece map itself comes from real character offsets rather than from re-splitting text: `tokens.py` walks
+each reference sentence's word start offsets against the tokeniser's own spans, keyed by `content_id`, so a batch
+joins to the table through an id it already carries and nothing in the collate function changes. `SubwordTargets`
+restricts the frozen embedding table to the piece types the corpus actually spells, because carrying a modern
+tokeniser's full table would mean hundreds of megabytes of frozen buffer for a few thousand distinct pieces.
+
+`alignment/` is orchestration, not architecture. Like `parallax/` and `lens/` it sits *above* the model stack: it
+imports no torch and defines no `nn.Module`, and reads the embeddings and metrics that finished runs already wrote.
+`atlas` fits one projection over all three levels at once, so their points share a frame and can be compared rather
+than merely displayed side by side; `contrastive` reports alignment, uniformity, effective rank and the
+positive/negative gap per level; `compare` builds the cross-level table — hit counts, exact tails, rank percentile,
+and the oracle floor a token-level number has to clear before it counts.

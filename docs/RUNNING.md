@@ -148,6 +148,7 @@ uv run zte-colab runs    --drive <root> --experiments res/experiments --headline
 uv run zte-colab arms    --kind encoder                     # trainable configs, read live off experiments/
 uv run zte-colab readings --from <zte-decode --out dir>     # the scored readings and the verdict that gates them
 uv run zte-colab panels  --experiments <roots> --out <dir>  # the study charts as plotly figure JSON
+uv run zte-colab sweep   plan|next|status --drive <root>    # the campaign, what landed, and what to train next
 uv run zte-colab mirror  --drive <root> --direction up      # move a session between the VM and Drive
 ```
 
@@ -159,6 +160,7 @@ uv run zte-colab mirror  --drive <root> --direction up      # move a session bet
 | `arms` | which configs are trainable, labelled by their own header comment | the §7a and §8 dropdowns |
 | `readings` | one decode's readings, scored, beside the five-clause verdict | §8d |
 | `panels` | the study's charts, drawn once, as figure JSON | §10b |
+| `sweep` | the campaign as an ordered plan, which runs already landed, and the next one to train | the alignment notebooks' §7 |
 | `mirror` | what moved between the VM and Drive, and what was deliberately left | §11, `mirror_to_drive()` / `restore_from_drive()` |
 
 `env` returns the environment as **data** rather than applying it: a notebook kernel's `!` subprocesses inherit the kernel's environment, so the kernel is where those defaults have to land. Each one fixes a failure that is silent rather than loud — a `module://` matplotlib backend that crashes a headless subprocess, a block-buffered stdout that makes a multi-hour run look hung, a CUDA allocator that fragments on the few very large blocks a raw-EEG batch asks for.
@@ -213,3 +215,99 @@ per-run explorer views and the housekeeping cells.
 
 Both need a GPU runtime (`Runtime → Change runtime type → GPU`) and both provision Python 3.14 through `uv` in their
 first cell, because Colab's system interpreter is older than ZTE requires.
+
+## The three alignment notebooks
+
+`notebooks/alignments/` holds one notebook per **alignment level** — the unit the contrastive term pulls at:
+[`zte_token.ipynb`](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/alignments/zte_token.ipynb),
+[`zte_word.ipynb`](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/alignments/zte_word.ipynb) and
+[`zte_sentence.ipynb`](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/alignments/zte_sentence.ipynb).
+The levels are **exclusive, not cumulative**: each is the sentence-level CLIP objective plus at most one extra term,
+so `sentence -> word` and `sentence -> token` each flip exactly one lever.
+
+| Level      | The unit it aligns               | Frozen target                       | Configs                           |
+| ---------- | -------------------------------- | ----------------------------------- | --------------------------------- |
+| `sentence` | the pooled sentence vector       | an E5 sentence embedding            | `experiments/alignment/sentence/` |
+| `word`     | one fixated word = one EEG token | a frozen word vector                | `experiments/alignment/word/`     |
+| `token`    | four fixed intra-word slices     | the LM's frozen sub-word embeddings | `experiments/alignment/token/`    |
+
+Each level has four arms: `combined.yaml` trains SR+NR together, and `nr.yaml` / `sr.yaml` / `tsr.yaml` train one
+reading task alone so the parallax transfer matrix has its vantage points. All twelve are byte-identical to
+`experiments/ablation/exp16_residual_off.yaml` apart from the weights that switch a level on
+(`objective.lexical_weight` / `lexical_reader_weight` for `word`, `objective.token_weight` / `token_reader_weight`
+for `token`, all four at zero for `sentence`), so a `diff` between two arms names the levers that move and nothing
+else. `word/combined.yaml` is the published champion recipe, included as a level rather than referenced so the three
+are a matched triple scored under one evaluation profile.
+
+Nothing forces an order between the three notebooks, and they write into the same dated Drive session.
+
+### One prepared bundle serves all three levels
+
+`ZuCoDataset._cache_key` hashes the `dataset` block alone, minus the fields that say *where* or *whether* to cache
+and the ones applied after a bundle loads (`montage_csv`, `raw_align*`, `subject_signature`). The `objective` block
+never enters it, and the three levels differ only in `objective`. So the levels never build a second bundle: the
+four bundles the study needs correspond to its four task sets — SR+NR, NR, SR and TSR — not to its three levels.
+Build all four in one pass, on Drive, before training anything:
+
+```sh
+uv run zte-prepare --root "<ZuCo Dataset>" --configs experiments/alignment \
+    --cache-dir res/cache --cache-remote "/gdrive/My Drive/Sharables/ZTE/prepared"
+```
+
+`--configs` takes a directory and processes each **distinct** dataset once, so pointing it at the whole study is
+both the cheapest and the safest thing to run: an arm whose dataset block ever drifts from its siblings shows up
+here as a fifth bundle instead of as a surprise multi-GB `.mat` parse in the middle of a training cell. §5 of
+whichever notebook you open first pays that cost; on a cache hit the other two are about fifteen seconds.
+
+### Driving the campaign — `zte-colab sweep`
+
+The study is a campaign, not a cell you press once, and `sweep` is what makes it survivable:
+
+```sh
+uv run zte-colab sweep plan   --levels token
+uv run zte-colab sweep status --levels token --drive "/gdrive/My Drive/Sharables/ZTE" --out-root res/experiments
+uv run zte-colab sweep next   --levels token --drive "/gdrive/My Drive/Sharables/ZTE" --out-root res/experiments
+```
+
+`plan` needs nothing trained and no Drive mounted — it prints the ordered list of runs with the config each trains
+and the run directory each resolves to. `status` and `next` add the one thing that cannot be planned: what has
+already landed. **A run counts as done when its `evaluation/metrics.json` exists** under one of the search roots
+(the dated Drive sessions first, then the local run root), and never when its `INDEX.md` row does — a run that died
+between writing its metrics and its catalogue row is finished, and keying doneness on the catalogue would spend its
+hours a second time. `next` names the first run with no metrics, so a reclaimed VM re-plans, skips what landed and
+picks up where the last session stopped.
+
+The plan's order is a contract. Tiers run `mechanism -> power -> spread`, and within a tier the alignment level
+varies fastest, so a campaign interrupted anywhere has finished the earlier tiers outright and leaves a matched
+three-level comparison rather than one level finished and two untouched.
+
+### `--resume` on every training cell
+
+Every training cell passes `--resume`, and it is idempotent: a finished run exits in seconds and an interrupted one
+continues from its last epoch. Omitting it on a re-run is destructive rather than merely wasteful. `--drive-backup`
+mirrors `best.pt` and `last.pt` after every epoch, and the pull in the other direction — staging those two files
+back down onto a machine that has never seen the run — happens *inside* the resume path. Without `--resume`, a fresh
+VM starts at epoch 1 with no restored `best_metric`, `save()` seeds a **new** best from an untrained model, and the
+next per-epoch mirror writes that over the good `best.pt` on Drive. The hours already banked are gone, and nothing
+in the log says so.
+
+### What the campaign costs
+
+54 planned runs across the three levels, 51 distinct trainings (the tiers share run directories, and a shared
+directory is trained and charged once) and **~109 GPU-hours**; `sweep plan` prints all three numbers. Colab Pro+ is
+roughly 42 A100-hours a month, so this is a multi-week campaign run in sessions — not an overnight one. That is why
+every cell mirrors to Drive, why doneness is keyed on an artifact rather than on a notebook that stayed open, and
+why each tier is designed to be a complete, reportable table on its own.
+
+It is also why these arms set `train.eval_profile: sweep`. Evaluation, not training, is the larger half of a run
+here — 61–75 minutes of it against 36 of training on this project's measured Colab timings, roughly two thirds of
+the wall clock. The `sweep` profile keeps embedding health, sentence retrieval, the held-out scoreboard and the
+permutation null, and drops the neuron, emergence, analogy, seen-vs-novel and frequency-matched blocks, every figure
+and the interactive explorers. The profile that produced a run is stamped into its `metrics.json`; re-run a winning
+arm under `full` when you want the figures.
+
+One operational gate applies to the `token` level specifically. Its notebook runs
+`uv run zte-rebaseline --piece-oracle` against the trained checkpoint and reads the result before any number is
+quoted, exactly as the length oracle is read at the sentence level. A sub-word piece count is a brain-free
+signature large enough to out-retrieve the best encoder this project has trained, so a token-level headline that
+does not clear that floor is not evidence of decoding. See [`EVALUATION.md`](EVALUATION.md).

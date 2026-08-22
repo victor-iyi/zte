@@ -9,13 +9,14 @@ uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --root res/dat
 uv run zte-run --config experiments/flagship/zte_raw_aligned.yaml --drive <folder-id-or-url> --loso-holdout ZAB
 ```
 
-| Tier         | What lives there                                                                               |
-| ------------ | ---------------------------------------------------------------------------------------------- |
-| `flagship/`  | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion. |
-| `decoder/`   | The frozen-LM prefix decoder over a trained encoder, its ablations and its length audit.       |
-| `benchmark/` | The controls a flagship must beat to earn its place.                                           |
-| `ablation/`  | Single-lever studies — matched pairs that flip exactly one knob.                               |
-| `archive/`   | Superseded or failed arms, kept for the record and for reproducibility.                        |
+| Tier         | What lives there                                                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `flagship/`  | The recipes that have beaten chance on real ZuCo, plus the encoder arms built on the champion.                   |
+| `decoder/`   | The frozen-LM prefix decoder over a trained encoder, its ablations and its length audit.                         |
+| `benchmark/` | The controls a flagship must beat to earn its place.                                                             |
+| `ablation/`  | Single-lever studies — matched pairs that flip exactly one knob.                                                 |
+| `alignment/` | The three-level study — one directory per level, four arms each. See [alignment/README.md](alignment/README.md). |
+| `archive/`   | Superseded or failed arms, kept for the record and for reproducibility.                                          |
 
 > **File paths and `run_name` are independent.** A config's run directory is named by the `run_name` inside the YAML, not by its file path, so moving a config between tiers never breaks `--resume` against runs already on Drive.
 > The name in the left column below is the *file*; the run directory uses the `run_name` in brackets.
