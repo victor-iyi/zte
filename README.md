@@ -108,7 +108,7 @@ The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte
 
 ### The experiment tiers
 
-`experiments/` is organised by what a config is *for*: **`flagship/`** are the recipes that won on real ZuCo, **`benchmark/`** are the controls a flagship has to beat, **`ablation/`** are single-lever studies, and **`archive/`** keeps superseded or failed arms for the record. The `run_name` lives *inside* each YAML, so a config's run directory is named by its `run_name`, not its file path.
+`experiments/` is organised by what a config is *for*: **`flagship/`** are the recipes that won on real ZuCo, **`decoder/`** turn one of those encoders into text through a frozen LM, **`benchmark/`** are the controls a flagship has to beat, **`ablation/`** are single-lever studies, and **`archive/`** keeps superseded or failed arms for the record. The `run_name` lives *inside* each YAML, so a config's run directory is named by its `run_name`, not its file path.
 
 > **The board was re-scored on 2026-07-25 and the champion changed.** Every run on Drive had been ranked by *pooled* retrieval, which includes the 11 training subjects and so rewards memorising them rather than reaching the 12th. Re-scored on the held-out subject alone, the band-power "champion" (`clip_e5_meaning`, headline Top-1 0.043) lands **4 hits in 700** — and an identical re-run landed 2. On the same fold the **raw conformer lands 32 at Top-5, *p* ≈ 7e-16**. Band power's low subject probe was never disentanglement: its effective-rank ratio of 0.160 means the 768-d space had collapsed to ~123 directions, leaving nothing to identify anyone by. Every band-power arm is now in [`experiments/archive/`](experiments/archive/README.md) with the number that retired it.
 
@@ -118,6 +118,8 @@ The **data source** (`--root` / `--drive` / `--synthetic`) is normalised by `zte
 | `flagship/zte_raw_aligned_wide.yaml`    | flagship  | + v2 encoder                 | The same stack on the multiscale/attentive encoder: does capacity pay once identity stops competing for it?                                                    |
 | `flagship/clip_e5_meaning_raw.yaml`     | flagship  | CLIP vs E5 + meaning distill | exp10 — **the measured baseline to beat** (held-out ZAB: 32 hits @ Top-5 of 700, *p* ≈ 7e-16)                                                                  |
 | `flagship/clip_e5_raw.yaml`             | flagship  | CLIP vs E5, raw conformer    | exp8 — the same without meaning distillation. Equal retrieval, worse subject probe (0.45 vs 0.41)                                                              |
+| `decoder/decode_frozen_e5raw.yaml`      | decoder   | prefix decode (frozen LM)    | Text out: a 227k-parameter bridge between a frozen encoder and a frozen Qwen2.5-0.5B, on the unseen-subject × unseen-stimulus split                            |
+| `decoder/rebaseline_e5raw.yaml`         | decoder   | CLIP vs E5, raw conformer    | The length-confound audit arm — `zte-rebaseline` scores it against a length-only oracle that matches the published encoder on every Top-k                      |
 | `benchmark/baseline_skipgram_loso.yaml` | benchmark | skip-gram                    | The honest floor the flagships must beat; on held-out ZAB it scored 0.0004 (*p*=0.99)                                                                          |
 | `ablation/exp12_*.yaml`                 | ablation  | one exp12 lever each         | Alignment off, adapter off, orthogonality off, alignment fit on train-only — each byte-identical to the flagship but one knob                                  |
 | `ablation/study_*.yaml`                 | ablation  | one lever each               | VICReg off/on, invariance baseline vs full — everything else held identical                                                                                    |
@@ -136,6 +138,9 @@ uv run zte-train    --bundle res/bundle --objective skipgram --tensorboard --run
 uv run zte-evaluate --ckpt res/checkpoints/best.pt --bundle res/bundle --out res/evaluation --tensorboard
 uv run zte-explore  --bundle res/bundle --out res/exploration   # brain regions + eye-tracking
 uv run zte-benchmark --root res/data/zuco_extracted --objectives skipgram,masked --pos-encodings rope,learned
+# Decoder stage: audit an encoder checkpoint for the sentence-length confound, then decode text from it.
+uv run zte-rebaseline --ckpt res/checkpoints/best.pt --root res/data/zuco_extracted --holdout ZAB
+uv run zte-decode --ckpt res/experiments/<decoder_run>/checkpoints/best.pt --root res/data/zuco_extracted --split test
 # `--drive` works on every step above instead of `--root` / `--bundle`.
 ```
 
@@ -148,9 +153,7 @@ from zte.data.synthetic import generate_synthetic_zuco
 generate_synthetic_zuco('res/data/synthetic_zuco')  # or point at real .mat files
 # EEG-only (include_eye_tracking=False) so brand-new EEG can be embedded later.
 ds = ZuCoDataset(
-    DatasetConfig(
-        root='res/data/synthetic_zuco', representation='band_power', include_eye_tracking=False
-    )
+    DatasetConfig(root='res/data/synthetic_zuco', representation='band_power', include_eye_tracking=False)
 ).build()
 
 cfg = ZTEConfig()
@@ -431,6 +434,20 @@ Every evaluation also writes `evaluation/interactive/neuron_atlas.html` (and `ne
 
 **[`docs/SUBJECT_ALIGNMENT.md`](docs/SUBJECT_ALIGNMENT.md)** covers exp12: why the standard per-subject layer is *guaranteed* to be inert on the held-out subject (an ID lookup has no row for a stranger), and what ZTE does instead — Euclidean alignment of the raw windows, a subject adapter whose weights a hypernetwork emits from that person's own covariance geometry, and a rank-preserving identity penalty that cannot be satisfied by collapsing. All three are label-free, so a subject the model has never seen needs one short unlabelled recording and no retraining.
 
+### Decoding text — a frozen LM on a 227k-parameter leash
+
+**[`docs/DECODER.md`](docs/DECODER.md)** covers the decoder stage: `train.mode: decoder` loads a trained encoder,
+freezes it, freezes `Qwen/Qwen2.5-0.5B`, and trains **only** a 226,560-parameter prefix bridge between them, so no
+amount of training can memorise 700 ZuCo sentences into the weights that emit text. `zte-decode` decodes the held-out
+cell free-running — no reference length, no candidate set — against five brain-independent controls (`mean_prefix`,
+`null_prefix`, `phase`, `noise`, length-stratified `mismatch`) plus a true-text-embedding oracle, and a verdict clause
+that fails unless the paired bootstrap CI beats *every* control, the permutation null is significant, and the prefix
+provably moves the LM's next-token distribution.
+
+The doc leads with the number that governs the whole programme: on the real 700-sentence gallery, **sentence length
+alone carries 5.14 bits of sentence identity**, and a length-only oracle at ±2 words matches or beats the best encoder
+on every Top-k. `zte-rebaseline` measures that against any existing checkpoint without retraining.
+
 ### Reproducible experiment suite
 
 **[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)** lays out a bias-controlled study set (eye-tracking confound, a LOSO subject-invariance A/B, an anti-collapse VICReg ablation, an objective sweep) that uses all 12 subjects, leakage-aware `by_stimulus` / LOSO splits, train-only normalisation, and multiple seeds so differences carry bootstrap CIs — with exact commands and a "how to read every output" guide.
@@ -464,7 +481,7 @@ The project's anti-"BLEU-trap" controls are first-class:
 ```sh
 zte/
 ├── pyproject.toml            # uv + ruff (single quotes) + deps
-├── experiments/              # configs by tier: flagship · benchmark · ablation · archive (+ README)
+├── experiments/              # configs by tier: flagship · decoder · benchmark · ablation · archive (+ README)
 ├── src/zte/
 │   ├── config/               # typed, YAML-serialisable configs (dataset · model · objective · train · types)
 │   ├── device.py             # CPU/CUDA/MPS + autocast + seeding
@@ -476,11 +493,12 @@ zte/
 │   │   └── montage/          #   montage, regions
 │   ├── models/               # embedding (ZTEModel), transformer (RoPE/ALiBi), heads, spatial
 │   │   ├── frontends/        #   band_power, raw_conformer (+ build_frontend)
-│   │   └── objectives/       #   skipgram, cbow, masked, cpc, clip (+ base, losses)
-│   ├── training/             # trainer (+TensorBoard), checkpoint, scheduler, metrics, pipeline
-│   ├── inference/            # embed (ZTEEmbedder), retrieval
-│   ├── evaluation/           # metrics, breakdown, analogy, neurons, plots, report, tensorboard
-│   │   ├── audit/            #   confound, honesty, scoreboard (is the signal real?)
+│   │   ├── objectives/       #   skipgram, cbow, masked, cpc, clip, decode (+ base, losses)
+│   │   └── decoder/          #   prefix bridge, word resampler, gap correction, frozen LM
+│   ├── training/             # trainer (+TensorBoard), checkpoint, scheduler, metrics, pipeline, init, stages
+│   ├── inference/            # embed (ZTEEmbedder), retrieval, decode (ZTEDecoder)
+│   ├── evaluation/           # metrics, breakdown, analogy, neurons, plots, report, generation, tensorboard
+│   │   ├── audit/            #   confound, honesty, scoreboard, rebaseline (is the signal real?)
 │   │   └── interactive/      #   explorer · classic · atlas · scoreboard · compare (+ web/ html·css·js)
 │   └── cli/                  # zte-run · prepare · train · extract · evaluate · … (+ support/ helpers)
 ├── tests/                    # synthetic schema, dataset, missing, models, evaluation, e2e

@@ -33,7 +33,11 @@ def parse_arguments() -> argparse.Namespace:
     add_extract_dir(parser)
 
     parser.add_argument('--config', type=str, default=None, help='Optional base YAML config.')
-    parser.add_argument('--objective', choices=['skipgram', 'cbow', 'masked', 'cpc'], default=None)
+    parser.add_argument(
+        '--objective',
+        choices=['skipgram', 'cbow', 'masked', 'cpc', 'clip', 'decode'],
+        default=None,
+    )
     parser.add_argument('--frontend', choices=['band_power_mlp', 'raw_conformer'], default=None)
     parser.add_argument('--representation', choices=['band_power', 'raw', 'both'], default=None)
     parser.add_argument('--embed-dim', type=int, default=None)
@@ -41,7 +45,34 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=None)
     parser.add_argument('--lr', type=float, default=None)
     parser.add_argument(
-        '--split', choices=['random', 'by_sentence', 'by_subject_loso', 'by_task'], default=None
+        '--split',
+        choices=[
+            'random',
+            'by_sentence',
+            'by_stimulus',
+            'by_subject_loso',
+            'by_task',
+            'by_subject_and_stimulus',
+        ],
+        default=None,
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['encoder', 'decoder', 'joint'],
+        default=None,
+        help='Which stage to train: the encoder alone, a decoder over a frozen encoder, or both.',
+    )
+    parser.add_argument(
+        '--encoder-ckpt',
+        type=str,
+        default=None,
+        dest='encoder_ckpt',
+        help='Source encoder checkpoint for --mode decoder/joint; its shapes, normaliser and aligner are reused.',
+    )
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Continue from the last checkpoint in --ckpt-dir instead of starting over.',
     )
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default=None)
     parser.add_argument('--precision', choices=['auto', 'fp32', 'fp16', 'bf16'], default=None)
@@ -73,6 +104,8 @@ def build_config(args: argparse.Namespace) -> ZTEConfig:
         ('train', 'batch_size'): args.batch_size,
         ('train', 'lr'): args.lr,
         ('train', 'split'): args.split,
+        ('train', 'mode'): args.mode,
+        ('train', 'encoder_ckpt'): args.encoder_ckpt,
         ('train', 'device'): args.device,
         ('train', 'precision'): args.precision,
         ('train', 'ckpt_dir'): args.ckpt_dir,
@@ -127,13 +160,13 @@ def main() -> None:
     config = build_config(args)
     dataset = load_dataset(args, config)
 
-    artifacts = run_training(config, dataset)
+    artifacts = run_training(config, dataset, resume=args.resume)
     out_dir = Path(config.train.ckpt_dir)
     config.to_yaml(out_dir / 'config.yaml')
 
     # Training curves are a convenience; a missing viz backend must not fail the run.
     try:
-        from zte.data.viz import plot_training_curves  # pylint: disable=import-outside-toplevel
+        from zte.data.viz import plot_training_curves
 
         fig = plot_training_curves(artifacts.history)
         fig.savefig(out_dir / 'training_curves.png', dpi=120, bbox_inches='tight')

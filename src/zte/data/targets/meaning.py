@@ -31,9 +31,7 @@ def _load_vectors_file(path: Path) -> tuple[dict[str, int], np.ndarray]:
     if path.suffix == '.npy':
         mat = np.load(path).astype(np.float32)
         vocab_path = path.with_suffix('.vocab')
-        words = [
-            w.strip() for w in vocab_path.read_text(encoding='utf-8').splitlines() if w.strip()
-        ]
+        words = [w.strip() for w in vocab_path.read_text(encoding='utf-8').splitlines() if w.strip()]
         if len(words) != len(mat):
             raise ValueError(f'{vocab_path} has {len(words)} words but {path} has {len(mat)} rows.')
         return {w: i for i, w in enumerate(words)}, mat
@@ -52,9 +50,7 @@ def _load_vectors_file(path: Path) -> tuple[dict[str, int], np.ndarray]:
     return vocab, np.vstack(rows)
 
 
-def build_meaning_matrix(
-    vocab: dict[str, int], source: str | None = None, dim: int = 64
-) -> np.ndarray:
+def build_meaning_matrix(vocab: dict[str, int], source: str | None = None, dim: int = 64) -> np.ndarray:
     """Builds a `(len(vocab), dim)` frozen, L2-normalised meaning matrix aligned to `vocab`.
 
     Args:
@@ -97,9 +93,7 @@ def build_meaning_matrix(
         mat = np.zeros((size, dim), dtype=np.float32)
         for word, idx in vocab.items():
             mat[idx] = _hash_vector(word, dim)
-        _LOG.info(
-            'Meaning matrix: %d words via deterministic hash (dim %d, no semantics).', size, dim
-        )
+        _LOG.info('Meaning matrix: %d words via deterministic hash (dim %d, no semantics).', size, dim)
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     return (mat / np.clip(norms, 1e-8, None)).astype(np.float32)
 
@@ -163,9 +157,7 @@ def build_meaning_matrix_hf(
         skey = words['stimulus_key'].fillna('').astype(str).to_numpy()
     else:
         skey = (words['task'].astype(str) + '|' + words['sentence_idx'].astype(str)).to_numpy()
-    widx = (words['word_idx'].to_numpy() if 'word_idx' in words.columns else np.arange(n)).astype(
-        int
-    )
+    widx = (words['word_idx'].to_numpy() if 'word_idx' in words.columns else np.arange(n)).astype(int)
     warr = words['word'].fillna('').astype(str).to_numpy() if 'word' in words.columns else None
     if warr is None:
         _LOG.warning('words table has no `word` column; cannot build a contextual target.')
@@ -207,8 +199,7 @@ def build_meaning_matrix_hf(
         enc = AutoModel.from_pretrained(model_name, output_hidden_states=True).eval().to(device)
     except OSError as exc:
         _LOG.warning(
-            'meaning_contextual=%r could not be loaded (%r); falling back to the static (word-type) '
-            'meaning target.',
+            'meaning_contextual=%r could not be loaded (%r); falling back to the static (word-type) meaning target.',
             model_name,
             exc,
         )
@@ -245,10 +236,7 @@ def build_meaning_matrix_hf(
             if wp is not None and wp < len(positions):
                 pooled[wp].append(hs[sub])
         # numpy has no bfloat16 dtype, which is how some encoders run on GPU.
-        vec_by_pos = {
-            positions[wp]: torch.stack(vecs).mean(0).float().cpu().numpy()
-            for wp, vecs in pooled.items()
-        }
+        vec_by_pos = {positions[wp]: torch.stack(vecs).mean(0).float().cpu().numpy() for wp, vecs in pooled.items()}
         for i in rows:
             v = vec_by_pos.get(int(widx[i]))
             if v is not None:

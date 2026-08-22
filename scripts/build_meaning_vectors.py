@@ -1,4 +1,5 @@
-"""Provision frozen GloVe word-meaning vectors for `objective.meaning_source` (`zte-run --meaning static` does this per-run).
+"""Provision frozen GloVe word-meaning vectors for `objective.meaning_source` (`zte-run --meaning static` does this
+per-run).
 
 Available --model names (the trailing number is the dimension):
     glove-wiki-gigaword-50 / -100 / -200 / -300, glove-twitter-25 / -50 / -100 / -200
@@ -28,25 +29,17 @@ def _vocab_from_config(config_path: str, root: str | None) -> set[str] | None:
         words = ds.words['word'].dropna().astype(str)
         return {w.lower() for w in words if w}
     except Exception as exc:  # pragma: no cover - provisioning convenience only
-        _LOG.warning(
-            'Could not read vocab from %s (%s); writing the full top-N instead.', config_path, exc
-        )
+        _LOG.warning('Could not read vocab from %s (%s); writing the full top-N instead.', config_path, exc)
         return None
 
 
 def main() -> None:
     """Downloads a GloVe embedding and writes it in GloVe text format (no gensim)."""
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out', required=True, type=Path, help='Destination .txt (GloVe format).')
     parser.add_argument('--model', default=DEFAULT_MODEL, help='gensim-data GloVe model name.')
-    parser.add_argument(
-        '--top', type=int, default=50000, help='Keep the N most frequent words (0 = all).'
-    )
-    parser.add_argument(
-        '--vocab-from', default=None, help='Experiment YAML to restrict the vocabulary to.'
-    )
+    parser.add_argument('--top', type=int, default=50000, help='Keep the N most frequent words (0 = all).')
+    parser.add_argument('--vocab-from', default=None, help='Experiment YAML to restrict the vocabulary to.')
     parser.add_argument('--root', default=None, help='Override dataset root for --vocab-from.')
     parser.add_argument('--log-level', default='INFO')
     args = parser.parse_args()

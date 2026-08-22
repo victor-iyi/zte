@@ -1,4 +1,4 @@
-"""Builds and wires the two heavy experiment ingredients behind `--spatial` / `--meaning`: scalp geometry and the meaning target."""
+"""Builds the heavy experiment ingredients behind `--spatial` / `--meaning`: scalp geometry and the meaning target."""
 
 from __future__ import annotations
 
@@ -107,9 +107,7 @@ def apply_spatial(
         try:
             from zte.data.montage.montage import DEFAULT_MONTAGE, build_montage_csv
 
-            path = build_montage_csv(
-                montage_out, montage=montage_name or DEFAULT_MONTAGE, zuco105=True
-            )
+            path = build_montage_csv(montage_out, montage=montage_name or DEFAULT_MONTAGE, zuco105=True)
             config.dataset.montage_csv = str(path)
             _LOG.info(
                 'Provisioned exact montage -> %s (spatial_encoding=%s).',
@@ -167,9 +165,7 @@ def apply_meaning(
     elif choice == 'contextual':
         obj.meaning_contextual = model or DEFAULT_CONTEXTUAL_MODEL
         obj.meaning_context_layer = layer
-        obj.meaning_dim = (
-            DEFAULT_CONTEXTUAL_DIM  # informational; the true hidden size is read at build time
-        )
+        obj.meaning_dim = DEFAULT_CONTEXTUAL_DIM  # informational; the true hidden size is read at build time
         _LOG.info('Wired contextual meaning target %s (layer %d).', obj.meaning_contextual, layer)
     # A meaning target is inert unless the distillation loss is on; warn instead of silently no-op'ing.
     if choice != 'keep' and obj.meaning_distill_weight <= 0.0:

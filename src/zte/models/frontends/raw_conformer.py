@@ -1,4 +1,4 @@
-"""The raw-EEG Conformer frontend: temporal convolution, pointwise mixing, self-attention over time, then temporal pooling."""
+"""The raw-EEG Conformer frontend: temporal convolution, pointwise mixing, self-attention, then temporal pooling."""
 
 from __future__ import annotations
 
@@ -22,15 +22,16 @@ class RawConformer(nn.Module):
         time_steps: int,
         config: ModelConfig,
         spatial: nn.Module | None = None,
-    ) -> None:  # pylint: disable=unused-argument
+    ) -> None:
         """Initialises the raw Conformer frontend.
 
         Args:
             n_channels (int): EEG channel count.
             time_steps (int): Raw window length (time steps).
-            config (ModelConfig): Model configuration (uses `conformer_filters`, `conformer_temporal_kernel`, `n_heads`, `n_layers`, `hidden_dim`, `dropout`).
-            spatial (SpatialChannelMixer | None): Optional electrode spatial-encoding mixer, applied to `(..., n_channels, time_steps)`
-                before the temporal convolution mixes channels.
+            config (ModelConfig): Model configuration (uses `conformer_filters`, `conformer_temporal_kernel`, `n_heads`,
+                `n_layers`, `hidden_dim`, `dropout`).
+            spatial (SpatialChannelMixer | None): Optional electrode spatial-encoding mixer, applied to `(...,
+                n_channels, time_steps)` before the temporal convolution mixes channels.
         """
         super().__init__()
         self.spatial_mixer = spatial
@@ -43,11 +44,7 @@ class RawConformer(nn.Module):
         self.temporal_scales = nn.ModuleList(
             nn.Conv1d(n_channels, filters, kernel_size=k, padding=k // 2) for k in kernels
         )
-        self.fuse = (
-            nn.Conv1d(filters * len(kernels), filters, kernel_size=1)
-            if len(kernels) > 1
-            else nn.Identity()
-        )
+        self.fuse = nn.Conv1d(filters * len(kernels), filters, kernel_size=1) if len(kernels) > 1 else nn.Identity()
         self.spatial = nn.Conv1d(filters, filters, kernel_size=1)
         self.act = nn.GELU()
         self.norm = nn.LayerNorm(filters)
@@ -85,9 +82,7 @@ class RawConformer(nn.Module):
         c, t = x.shape[-2:]
         flat = x.reshape(-1, c, t)
         h = self.act(torch.cat([conv(flat) for conv in self.temporal_scales], dim=1))
-        h = self.fuse(
-            h
-        )  # Identity for a single scale; fuses the bank otherwise -> (n_tokens, filters, time_steps)
+        h = self.fuse(h)  # Identity for a single scale; fuses the bank otherwise -> (n_tokens, filters, time_steps)
         h = self.act(self.spatial(h))
         h = h.transpose(1, 2)  # (n_tokens, time_steps, filters)
         h = self.norm(h)
@@ -100,9 +95,7 @@ class RawConformer(nn.Module):
             h = self.transformer(h)  # (n_tokens, time_steps, filters)
         if self.attn_pool is not None:
             # Softmax in float32 so the attention weights stay stable under fp16/bf16 autocast.
-            weights = torch.softmax(self.attn_pool(h).float(), dim=1).to(
-                h.dtype
-            )  # (n_tokens, time_steps, 1)
+            weights = torch.softmax(self.attn_pool(h).float(), dim=1).to(h.dtype)  # (n_tokens, time_steps, 1)
             pooled = (h * weights).sum(dim=1)  # attentive temporal pool -> (n_tokens, filters)
         else:
             pooled = h.mean(dim=1)  # temporal average pool -> (n_tokens, filters)
@@ -114,13 +107,6 @@ def _largest_divisor(value: int, target: int) -> int:
     """Returns the largest divisor of `value` that is `<= target` (min 1).
 
     Keeps `nhead` an exact divisor of the transformer `d_model` even when the configured head count is not.
-
-    Args:
-        value (int): The model dimension to divide.
-        target (int): The desired (maximum) head count.
-
-    Returns:
-        int: A valid head count dividing `value`.
     """
     for h in range(min(target, value), 0, -1):
         if value % h == 0:

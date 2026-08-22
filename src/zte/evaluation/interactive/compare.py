@@ -178,9 +178,7 @@ def load_run_record(run_dir: Path) -> dict[str, Any] | None:
     checks: dict[str, bool] = {}
     for key, _label, _desc in CHECKS:
         if key == 'beats_noise':
-            checks[key] = bool(verdict.get('beats_noise_all_targets')) or bool(
-                verdict.get('beats_noise_on')
-            )
+            checks[key] = bool(verdict.get('beats_noise_all_targets')) or bool(verdict.get('beats_noise_on'))
         else:
             checks[key] = bool(verdict.get(key))
     checks_passed = sum(1 for v in checks.values() if v)
@@ -189,20 +187,14 @@ def load_run_record(run_dir: Path) -> dict[str, Any] | None:
     sr = metrics.get('sentence_retrieval', {}) or {}
     retr_top1 = _as_float(sr.get('top1'))
     retr_chance = _as_float(sr.get('chance_top1'))
-    retrieval_margin = (
-        retr_top1 - retr_chance if retr_top1 is not None and retr_chance is not None else None
-    )
+    retrieval_margin = retr_top1 - retr_chance if retr_top1 is not None and retr_chance is not None else None
 
     record_metrics = {
         'retrieval_margin': retrieval_margin,
         'who_vs_what': _as_float(_dig(metrics, 'neurons', 'who_vs_what_ratio')),
-        'same_meaning_gap': _as_float(
-            _dig(metrics, 'emergence', 'cross_subject', 'same_meaning', 'gap')
-        ),
+        'same_meaning_gap': _as_float(_dig(metrics, 'emergence', 'cross_subject', 'same_meaning', 'gap')),
         'same_word_gap': _as_float(_dig(metrics, 'emergence', 'cross_subject', 'same_word', 'gap')),
-        'effective_rank_ratio': _as_float(
-            _dig(metrics, 'embedding_health', 'effective_rank_ratio')
-        ),
+        'effective_rank_ratio': _as_float(_dig(metrics, 'embedding_health', 'effective_rank_ratio')),
         'anisotropy': _as_float(_dig(metrics, 'embedding_health', 'anisotropy')),
         'subject_knn': _subject_knn(metrics),
     }
@@ -261,11 +253,7 @@ def score_runs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Min-max each metric across the cohort, flipping the sense of lower-is-better ones.
     total_weight = sum(spec.weight for spec in METRIC_SPECS) or 1.0
     for spec in METRIC_SPECS:
-        values = [
-            r['metrics'].get(spec.key)
-            for r in records
-            if _as_float(r['metrics'].get(spec.key)) is not None
-        ]
+        values = [r['metrics'].get(spec.key) for r in records if _as_float(r['metrics'].get(spec.key)) is not None]
         values = [v for v in values if v is not None]
         lo = min(values) if values else 0.0
         hi = max(values) if values else 1.0
@@ -336,9 +324,9 @@ def combined_dashboard_html(
         'rubric': _rubric_payload(),
         'best': records[0]['name'] if records else None,
     }
-    html = _COMPARE_TEMPLATE.replace(
-        '"__PAYLOAD__"', json.dumps(payload, separators=(',', ':'))
-    ).replace('__TITLE__', _escape(title))
+    html = _COMPARE_TEMPLATE.replace('"__PAYLOAD__"', json.dumps(payload, separators=(',', ':'))).replace(
+        '__TITLE__', _escape(title)
+    )
     out.write_text(html, encoding='utf-8')
     _LOG.info('Wrote comparison dashboard (%d runs) to %s', len(records), out)
     return out
@@ -410,10 +398,8 @@ def _data_uri(path: Path) -> str | None:
     """Reads a PNG and returns a base64 `data:` URI, or `None` if unreadable.
 
     Thumbnails are embedded rather than linked because Colab's sandboxed HTML display and Drive copies cannot
-    resolve a relative `<img src>` path.
 
-    Args:
-        path (Path): Path to a PNG file.
+    resolve a relative `<img src>` path.
 
     Returns:
         str | None: A `data:image/png;base64,...` string, or `None` if the file is missing or unreadable.
@@ -446,9 +432,7 @@ def _relative_paths(run_dir: Path) -> dict[str, str | None]:
 
 def _escape(text: str) -> str:
     """Minimal HTML escaping for text substituted into the template."""
-    return (
-        text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-    )
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
 _COMPARE_TEMPLATE: str = load_page('compare')

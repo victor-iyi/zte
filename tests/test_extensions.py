@@ -1,7 +1,6 @@
-"""Tests for the new ZTE capabilities: regions, analogy, positional encodings,
-eye-tracking toggle, categories, sources, interactive viz and TensorBoard."""
+"""Tests for regions, analogy, positional encodings, the eye-tracking toggle, categories, sources,
+interactive viz and TensorBoard."""
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import shutil
@@ -73,9 +72,7 @@ def test_positional_encoding_forward(pos: str) -> None:
 
 def test_learned_encoding_has_position_table() -> None:
     """The learned scheme adds a position table; rope/alibi/none do not."""
-    learned = build_model(
-        ModelConfig(pos_encoding='learned', hidden_dim=32, embed_dim=32), in_dim=40
-    )
+    learned = build_model(ModelConfig(pos_encoding='learned', hidden_dim=32, embed_dim=32), in_dim=40)
     rope = build_model(ModelConfig(pos_encoding='rope', hidden_dim=32, embed_dim=32), in_dim=40)
     assert learned.pos_emb is not None
     assert rope.pos_emb is None
@@ -268,9 +265,7 @@ def test_parse_drive_spec_normalizes_shell_escaped_urls() -> None:
     """Shell-escaped share URLs still resolve to the correct folder id."""
     from zte.data.io.remote import parse_drive_spec
 
-    escaped = (
-        r'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL\?usp\=share_link'
-    )
+    escaped = r'https://drive.google.com/drive/folders/1Rd3vZq404sykxhCfkIJERz6qT5csWARL\?usp\=share_link'
     assert parse_drive_spec(escaped) == ('folder', '1Rd3vZq404sykxhCfkIJERz6qT5csWARL')
     assert parse_drive_spec('1Rd3vZq404sykxhCfkIJERz6qT5csWARL') == (
         'folder',

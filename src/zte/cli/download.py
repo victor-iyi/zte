@@ -18,12 +18,8 @@ def parse_arguments() -> argparse.Namespace:
         description='Resumable Google Drive download (interrupt with Ctrl+C, re-run to continue).',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        '--drive', type=str, required=True, help='Google Drive folder id or shareable URL.'
-    )
-    parser.add_argument(
-        '--out', type=Path, default=Path('res/data/_downloads'), help='Download directory.'
-    )
+    parser.add_argument('--drive', type=str, required=True, help='Google Drive folder id or shareable URL.')
+    parser.add_argument('--out', type=Path, default=Path('res/data/_downloads'), help='Download directory.')
     add_extract_dir(parser)
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()

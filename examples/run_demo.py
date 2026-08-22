@@ -32,9 +32,7 @@ def parse_arguments() -> argparse.Namespace:
         The parsed argument namespace.
     """
     parser = argparse.ArgumentParser(description='Run the end-to-end ZTE demo on synthetic data.')
-    parser.add_argument(
-        '--objective', choices=['skipgram', 'cbow', 'masked', 'cpc'], default='skipgram'
-    )
+    parser.add_argument('--objective', choices=['skipgram', 'cbow', 'masked', 'cpc'], default='skipgram')
     parser.add_argument('--epochs', type=int, default=8)
     parser.add_argument('--subjects', type=str, default='ZAB,ZDM,ZJN')
     parser.add_argument('--sentences', type=int, default=10)

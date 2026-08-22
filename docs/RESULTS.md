@@ -1,6 +1,208 @@
-# Validated results (synthetic smoke-runs)
+# Validated results
 
-The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale.
+## Real ZuCo — the held-out board (2026-08-13, held out on `ZAB`, 700 queries)
+
+Everything in this section is measured on real ZuCo. Everything below it is a synthetic smoke-run and is labelled as
+such; the two are different kinds of evidence and must never be quoted together.
+
+**Read rank percentile, not Top-1.** Two seeds of the same `zte_raw_aligned` config give rank percentile 0.9672 and
+0.9670 — a gap of 0.0002 — while their Top-1 moves from 9 hits to 8. At chance 1/700 a Top-1 comparison between
+these arms is a comparison between one or two lucky queries. Rank percentile uses all 700.
+
+| Config (`run_name`) | Rank percentile (95% CI) | Top-1 / 700 | Top-5 / 700 | Length-stratified rank pct | Eff-rank |
+| --- | --- | --- | --- | --- | --- |
+| `flagship/zte_raw_aligned` (seed 41) | 0.9672 (0.9635–0.9708) | 9 | 39 | 0.9271 | 0.25 |
+| `flagship/zte_raw_aligned` (seed 42) | 0.9670 (0.9632–0.9706) | 8 | 38 | 0.9269 | 0.25 |
+| `ablation/exp12_align_off` | 0.9670 (0.9632–0.9706) | 8 | 39 | 0.9269 | 0.25 |
+| `flagship/clip_e5_meaning_raw` | 0.9667 (0.9629–0.9705) | 7 | 37 | 0.9268 | 0.25 |
+| `flagship/clip_e5_raw` | 0.9635 (0.9599–0.9673) | 9 | 38 | 0.9208 | 0.24 |
+| `archive/zte_raw_aligned_wide` | 0.9523 (0.9479–0.9565) | 5 | 14 | 0.9212 | 0.45 |
+
+Three findings, stated as they were measured.
+
+**The three retained flagships are tied.** Their intervals all overlap. There is no champion, and any claim that one
+of these recipes beats another on this fold is not supported. `clip_e5_raw` is the only arm whose *length-stratified*
+Top-1 clears *p* < 0.05 (0.0443 against a 0.0285 stratified chance rate, *p* 0.012); the other two do not (*p* 0.150
+and 0.206), which matters because length alone carries 5.14 bits of sentence identity here.
+
+**The exp12 alignment stack is a measured no-op.** `exp12_align_off` switches Euclidean alignment off and returns
+rank percentile 0.9670 against the full stack's 0.9672, effective rank 190.31 against 190.25, and a subject probe of
+0.4179 against 0.4180. Agreement to four decimal places on every metric is not a small effect; it is no effect. The
+stack was built to close the cross-subject identity gap, and on this fold it does not.
+
+**Capacity retained is not capacity used.** `zte_raw_aligned_wide` and `clip_e5_meaning_raw_v2` have the two
+healthiest geometries ever measured here (effective-rank ratios 0.45 and 0.53, against 0.24–0.25 for the retained
+set) and the two worst retrieval scores. `wide` is the first arm this board separates with non-overlapping
+intervals, and its length-stratified Top-1 of 0.0200 is *below* stratified chance. Both were retired to
+`experiments/archive/` on 2026-08-14. The long-standing warning that a *low* effective rank can mean invariance
+bought by destroying capacity now has a converse with a number behind it.
+
+Nothing here is a decoding result. It is cross-subject sentence *retrieval* over a 700-sentence gallery, and the
+honest summary of real ZuCo remains: decodable, and not yet subject-invariant.
+
+## The thirteen-arm sweep (2026-07-25, held out on `ZAB`)
+
+The full lever sweep, quoted as **held-out Top-1 hit counts out of 700** because that is what the numbers are. Chance
+expects one hit.
+
+| arm | hits / 700 | eff-rank ratio |
+| --- | --- | --- |
+| `exp12_align_off` | 9 | 0.29 |
+| `exp8_clip_e5_raw` · `exp12_zte_raw_aligned` (s42) · `exp12_orthogonality_off` | 8 | 0.26 · 0.25 · 0.28 |
+| `exp10_clip_e5_meaning_raw` · `exp12_zte_raw_aligned_wide` | 7 | 0.26 · 0.52 |
+| `exp12_adapter_off` · `exp12_align_fit_train` | 6 | 0.26 · 0.24 |
+| `exp12_zte_raw_aligned` | 5 | 0.23 |
+| `exp10_clip_bge_meaning` | 4 | 0.16 |
+| `exp10_clip_mpnet_meaning` | 3 | 0.16 |
+| `exp9_clip_e5_meaning` · `exp10_clip_e5_meaning_raw_v2` · `exp8_clip_qwen` | 2 | 0.17 · 0.53 · 0.17 |
+
+**The finding is the spread, not the ordering.** Thirteen arms flipping Euclidean alignment, the subject adapter,
+identity orthogonality, the text encoder and the meaning target land between 2 and 9 hits. Turning alignment *off*
+scores highest. Two seeds of one unchanged configuration have already produced 4 hits and then 2. Run-to-run noise is
+the size of every effect in this table, so **no arm here is measurably better than another**, and the honest reading
+is that the levers exposed at that point were exhausted. That is what motivated the exp16 architectural work rather
+than a fourteenth lever.
+
+## The decoder on real ZuCo (`exp13_decode_frozen_e5raw`, 2026-08-13)
+
+| measurement | value |
+| --- | --- |
+| Held-out retrieval rank percentile | 0.9636 (0.9599–0.9674), 9 hits / 700 |
+| Length-stratified rank percentile | 0.9211 (0.9154–0.9270) |
+| Decoder-rescoring rank percentile | 0.7244 (0.6835–0.7654), 105 queries |
+| Decoder-rescoring, **length-stratified** | **0.4349** (0.3743–0.4998) |
+| Free-running generation vs its worst control | −0.0117 (−0.0239, −0.0001), permutation *p* = 0.96 |
+| Prefix-influence KL | 0.4166 nats (floor 0.05) |
+| Variance budget | 8.4% subject · 0.0% content · 91.6% neither |
+| Same word across subjects | cosine 0.005 vs random −0.000 — *not clustered* |
+
+Two things to state plainly. **Generation is an honest null**: it beats none of the five controls and its permutation
+*p* is 0.96, which is exactly what the bit budget predicts — 1.5 encoder bits against the ~190 a 19.6-word sentence
+needs. And **the decoder's rescoring contribution is entirely length**: rank percentile 0.7244 unstratified falls to
+0.4349 once sentence length is held constant, which is *below* the 0.5 chance line. The prefix does influence the
+output (KL 0.4166 clears the floor), so the mechanism is wired; what it carries is word count.
+
+## The v2 decoder on real ZuCo (`decode_zte_v2_loZAB_s42`, 2026-08-15, over the v3 encoder)
+
+| measurement | value |
+| --- | --- |
+| Held-out retrieval rank percentile | 0.9359 (0.9295–0.9419), 5 hits / 700 |
+| Honest cell (train-fitted, length-stratified) | 0.8775 (0.8695–0.8855) vs length-oracle 0.9525 — `clears_floor: False` |
+| Decoder-rescoring rank percentile | 0.6234 (0.5737–0.6736), 105 queries |
+| Decoder-rescoring, **length-stratified** | 0.4325 (0.3767–0.4916) |
+| Free-running generation | verdict **False** — beats 1 of 7 controls; `mean_prefix` beats the model; permutation *p* = 0.19 |
+| Prefix-influence KL | 1.9943 nats (floor 0.05) |
+| Encoder bit budget | 0.639 bits carried, 9.45 needed, 5.14 free from length |
+
+The stratified-rescoring cells in both decoder tables were produced under a convention that hard-scored a query as
+percentile 0.0 whenever its truth fell outside its own ±1-word stratum; that convention has been retired in the
+audit code (unanswerable queries are now excluded and counted), and the cell is expected to move toward chance —
+an honest null, not an anti-signal — when re-scored. Until that re-score lands, read these two rows as "the
+rescoring adds nothing beyond length", not as "the LM anti-ranks the truth".
+
+## The exp16 sweep on real ZuCo (2026-08-15, held out on `ZAB`, 700 queries)
+
+| arm | held-out Top-1 | eff-rank ratio |
+| --- | --- | --- |
+| `zte_encoder_v3` s42 / s43 / s44 | 0.010 / 0.021 / 0.029 | 0.078 / 0.060 / 0.094 |
+| `exp16_residual_off` s42 | **0.0371** | **0.289** |
+| `exp16_gallery_off` s42 | 0.030 | 0.088 |
+| `exp16_gallery_band_off` s42 | 0.027 | 0.098 |
+| `exp16_consensus_off` s42 | 0.0057 | 0.071 |
+| `exp16_length_projection_off` s42 | 0.0086 | 0.077 |
+
+The sweep falsified two of the four v3 mechanisms. **The predictive residual is the collapse**: its expectation head
+learns to subtract every within-sentence-predictable component of the token hiddens — which is exactly the
+per-sentence-constant code retrieval scores — and it runs at inference with training-subject statistics; turning it
+off nearly quadruples held-out Top-1 and more than triples effective rank. **The gallery CE hurts too**: a
+single-positive classification onto frozen train-text anchors rewards any route to the anchor, subject-specific
+features included, and buys pooled Top-1 at the expense of the cross-subject consistency the honest metric measures.
+Consensus is the one mechanism whose removal hurts (0.0057), and the length projection is measurement-neutral.
+The run's own length audit (`decode_zte_v2_loZAB_s42`): the encoder carries **0.639 bits** of sentence identity
+against 9.45 needed; the honest cell (train-fitted, length-stratified) rank percentile is 0.8775 (0.8695–0.8855)
+versus the ±1 length oracle's 0.9525 — `clears_floor: False`. The variance budget of the v3 space reads 41.1%
+subject, 35.7% task, ~0% content — the encoder *amplifies* the task register (probe 0.918 vs 0.685 raw).
+
+The repair family is `ablation/exp17_*` (residual off + gallery off as the base, then sentence-slice VICReg,
+task-pure negatives, and the deployable alignment fit as matched pairs). The best-measured encoder arm today is
+`exp16_residual_off` at one seed; seeds 43/44 are the first item on the run matrix.
+
+**Stale pending re-measurement.** Every arm in this table except `exp16_length_projection_off` ran with
+`length_projection: true`, which was fitted in the wrong frame — see [Measurement corrections](#measurement-corrections).
+
+## The parallax transfer matrix (2026-08-16/17, held out on `ZAB`, seeds 42/43/44)
+
+The per-task encoders (`experiments/parallax/`, the exp17 recipe on one task each) measured on real ZuCo. Full design
+and per-cell CIs: [`PARALLAX.md`](PARALLAX.md).
+
+| cell | rank percentile (s42 / s43 / s44) |
+| --- | --- |
+| NR → SR (never-seen subject × never-seen sentences) | 0.9507 / 0.9647 / 0.9715 |
+| SR → NR (never-seen subject × never-seen sentences) | 0.9515 / 0.9577 / 0.9591 |
+| NR → NR diagonal (pooled over seeds) | 0.9530 |
+| SR → SR diagonal (pooled over seeds) | 0.9575 |
+
+Length-stratified, the off-diagonal cells hold at ~0.92–0.93, and effective-rank ratios sit at 0.41–0.46 against the
+v3 encoder's 0.06–0.09 — the geometry healed without giving the transfer back. The honest statement: **a
+task-invariant, stimulus-set-invariant code reaches a never-seen subject at rank-percentile ~0.95–0.97,
+length-stratified ~0.92; single-reference exact-length menus remain at chance; TSR carries no measurable content
+signal in-task.**
+
+The two findings behind the qualifiers, stated as measured:
+
+- **TSR in-task is a null.** At s44: held-out Top-1 0.00246 — exactly chance on its 407-sentence gallery — lift
+  −0.0003, permutation *p* = 0.998, effective rank 0.33. Healthy geometry, no content signal.
+- **The certified menu is at chance on exact-length prototype pools.** K=2 accuracy 0.522 (CI 0.484–0.560,
+  permutation *p* = 0.12) for NR s44; the ±1/±2 tolerance rows read 0.526 / 0.538, so tolerance is not the driver.
+  The open menu's 0.707 (*p* = 0.002) is stamped `gamed: true` by its own 0.971 length oracle and self-disqualifies.
+  The discriminative signal lives in individual readings, not centroids — the enrolled menu flavor exists to score
+  exactly that.
+
+**Stale pending re-measurement.** All three parallax encoders ran with `length_projection: true`, which was fitted
+in the wrong frame — see [Measurement corrections](#measurement-corrections).
+
+## Measurement corrections
+
+Corrections to the *measuring instrument*, not to the numbers. Nothing in the tables above has been edited; what
+changes is which of them may still be quoted.
+
+### The length projector was fitted in the wrong frame
+
+`objective.length_projection` regresses each sentence embedding on a basis of its word count and subtracts the
+fitted component. The projector was **fitted on the raw training rows and applied to the whitened, all-but-the-top
+rows** — two different frames. A basis fitted before post-processing does not describe the space it is subtracted
+from, so the subtraction removed a direction the scored rows did not have and left the one they did.
+
+The real-data signature is that the de-confounder made the confound **worse**, not merely weaker than hoped. In
+`exp16_residual_off`, word count explained 0.0206 of sentence-embedding variance before the projection and 0.3619
+after it — leakage rising by more than an order of magnitude, in the one metric whose entire job is to fall. A
+projection that increases length leakage is not a partially effective projection; it is a mis-specified one, and
+its retrieval numbers were measured on a space with *more* length in it than the unprojected space had.
+
+The projector is now fitted on the same post-processed training rows it is applied to.
+
+**Every retrieval number measured with `length_projection: true` predates this fix and must be re-measured before
+it is quoted again.** That is:
+
+| Section above | Status |
+| --- | --- |
+| [The exp16 sweep on real ZuCo](#the-exp16-sweep-on-real-zuco-2026-08-15-held-out-on-zab-700-queries) | **Re-measure.** Every arm except `exp16_length_projection_off` ran with the knob on |
+| [The parallax transfer matrix](#the-parallax-transfer-matrix-2026-08-1617-held-out-on-zab-seeds-424344) | **Re-measure.** `parallax_{nr,sr,tsr}` all ran with the knob on |
+| `ablation/exp17_*` | Configs only; no number from them has ever been quoted |
+| The held-out board, the thirteen-arm sweep, and every decoder section | Unaffected — none of those configs sets `length_projection` |
+
+The direction of the correction is not predictable from the sign of the bug: the affected numbers may rise, fall or
+hold. Until they are re-measured on Drive they are neither confirmed nor retracted — they are **stale**, and a
+stale number is not a result.
+
+## Not yet measured
+
+`flagship/zte_lexical_raw` (exp14) remains unmeasured on real ZuCo, and the `exp17_*` repair family exists as
+configs only. **No number from them appears anywhere in this document.**
+
+## Synthetic smoke-runs
+
+The real ZuCo archives are 17–23 GB each and cannot be pulled into this environment, so the numbers below come from **schema-faithful synthetic ZuCo** — the generator reproduces ZuCo's exact struct schema (105 channels × 8 bands × 5 eye-tracking measures, empty arrays for omitted words). The point is to show the whole pipeline runs end-to-end and behaves sensibly; on real ZuCo the same commands produce the same artifacts at scale. **A synthetic run is never a result.**
 
 > How to regenerate everything on this page is at the [bottom](#reproduce).
 > For methodology see [EVALUATION.md]; for the knobs see [TRAINING.md] and [DATASET.md].

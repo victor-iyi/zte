@@ -1,0 +1,220 @@
+# decode_tiny_mps -- a shape-and-wiring smoke test. NOTHING FROM THIS FILE IS A RESULT.
+#
+# decoder.lm_source: tiny builds a 2-layer, 32-wide LlamaForCausalLM (22,688 parameters) locally with a 64-token byte
+# tokeniser, so the whole decoder path -- prompt assembly, teacher forcing, grounding, stage 0, prefix-influence KL,
+# greedy generation -- runs with no network and no downloaded LM weights. run_name is smoke_mps and every command
+# below passes --synthetic, so the manifest records synthetic: true and no number here can be mistaken for a
+# measurement. The frozen text target still comes from objective.text_source; when it is unavailable both steps fall
+# back to the same seeded hash target, which carries no semantics and is entirely adequate for wiring.
+#
+# MPS is smoke-only by design: device.resolve_precision deliberately returns fp32 there (autocast still NaNs on some
+# ops), and the raw (B, L, 105, 350) path has already OOMed on it at real batch sizes. Hence batch_size 4 and 2
+# epochs. train.device is mps here, so pass --device cpu to run the same file anywhere else. The split fractions are
+# wider than the headline arm's because the synthetic corpus has only a handful of unique stimuli to partition.
+#
+# Decoder mode needs a source checkpoint, so train an encoder on the same synthetic tree first; the two steps share
+# this file's dataset, model and objective blocks, which is what makes the checkpoint loadable.
+#
+#   uv run zte-run --config experiments/decoder/smoke/decode_tiny_mps.yaml --synthetic --mode encoder \
+#       --name smoke_mps_encoder
+#   uv run zte-run --config experiments/decoder/smoke/decode_tiny_mps.yaml --synthetic
+dataset:
+  root: res/data/zuco_extracted
+  tasks:
+  - SR
+  - NR
+  subjects: null
+  granularity: word
+  representation: raw
+  band_power_measures:
+  - TRT
+  include_eye_tracking: false
+  eye_tracking_measures:
+  - FFD
+  - GD
+  - GPT
+  - TRT
+  - n_fixations
+  - mean_pupil
+  bands:
+  - t1
+  - t2
+  - a1
+  - a2
+  - b1
+  - b2
+  - g1
+  - g2
+  raw_field: rawEEG
+  raw_window: 350
+  time_bins: 1
+  normalize: riemannian
+  normalizer_fit: train
+  montage_csv: res/montage_gsn105.csv
+  bandpass: null
+  raw_align: none
+  raw_align_fit: all
+  subject_signature: false
+  missing:
+    method: mask_only
+    knn_neighbors: 5
+    iterative_max_iter: 10
+    interpolate_method: linear
+    add_missing_indicator: true
+  include_omitted: true
+  min_words: 1
+  max_words: null
+  cache_dir: res/cache
+  cache_remote: null
+  cache_extracts: true
+  cache_format: npz
+model:
+  frontend: raw_conformer
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  conformer_filters: 40
+  conformer_temporal_kernel: 25
+  conformer_multiscale_kernels: []
+  conformer_temporal_pool: mean
+  pos_encoding: rope
+  max_positions: 512
+  spatial_encoding: spherical_harmonics
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
+  pool: attention
+  subject_conditioning: false
+  subject_film: false
+  subject_adapter: false
+  subject_adapter_width: 128
+  subject_adapter_spatial: true
+  n_subjects: 12
+  n_tasks: 3
+  grad_checkpoint: true
+  projection_hidden: 512
+  factored: true
+  content_dim: 384
+  band_routing: false
+objective:
+  name: decode
+  temperature: 0.07
+  context_window: 2
+  mask_ratio: 0.5
+  masked_target: latent
+  ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
+  cpc_steps: 4
+  variance_weight: 1.0
+  covariance_weight: 1.0
+  variance_target: 1.0
+  anisotropy_weight: 1.0
+  whiten: true
+  cross_subject_positives: true
+  meaning_positives: true
+  subject_adversary_weight: 0.1
+  identity_orthogonality_weight: 0.0
+  stimulus_adversary_weight: 0.3
+  meaning_distill_weight: 0.0
+  meaning_source: res/vectors/glove.300d.txt
+  meaning_dim: 300
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.5
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 1
+  csls_neighbors: 10
+  subject_adversary_warmup_ratio: 0.3
+  alignment_weight: 0.1
+  tau_plus: 0.1
+  data2vec_aux_weight: 0.5
+  meaning_contextual: null
+  meaning_context_layer: -1
+  eval_phase_shuffle: false
+  eval_seen_novel: true
+  eval_freq_matched: true
+  eval_generation: true
+  eval_rescoring: true
+  eval_length_stratified: true
+  text_source: intfloat/e5-base-v2
+  text_backend: sentence-transformers
+  text_query_prefix: 'query: '
+  clip_temperature: 0.07
+  semantic_hard_negatives: true
+  hard_negative_pool: 8
+train:
+  epochs: 2
+  batch_size: 4
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_accum_steps: 1
+  grad_clip: 1.0
+  device: mps
+  precision: auto
+  num_workers: 0
+  static_shapes: auto
+  split: by_subject_and_stimulus
+  val_fraction: 0.15
+  test_fraction: 0.2
+  loso_holdout_subject: ZAB
+  seed: 42
+  deterministic: true
+  log_every: 10
+  eval_every: 1
+  ckpt_dir: res/checkpoints
+  ckpt_keep_last: 1
+  tensorboard: true
+  drive_backup_dir: null
+  compile_model: false
+  mode: decoder
+  encoder_ckpt: res/experiments/smoke_mps_encoder/checkpoints/best.pt
+  freeze_encoder: true
+  bridge_lr: 0.001
+  encoder_lr_scale: 0.1
+  stage_a_epochs: 3
+  early_stop_patience: 0
+decoder:
+  lm_source: tiny
+  lm_revision: null
+  tokenizer_source: tiny
+  lm_cache_dir: null
+  conditioning: pooled
+  prefix_slots: 8
+  word_slots: 8
+  bottleneck: 128
+  gap_correction: mean_scale
+  null_prefix_prob: 0.1
+  cfg_weight: 1.0
+  ground_weight: 0.5
+  ground_negatives: 3
+  max_target_tokens: 96
+  max_new_tokens: 32
+  beams: 1
+  stage0_epochs: 2
+  min_prefix_kl: 0.05
+  clip_aux_weight: 1.0
+  cache_embeddings: true
+  prompt_template: '
+
+    Sentence: '
+  generation_controls:
+  - mean_prefix
+  - null_prefix
+  - phase
+  - noise
+  - mismatch
+  n_permutations: 100
+  rescore_gallery: true
+  length_tol: 1
+run_name: smoke_mps

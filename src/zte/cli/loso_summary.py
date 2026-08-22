@@ -51,13 +51,9 @@ def _fold_row(metrics: dict[str, Any]) -> dict[str, Any] | None:
         'category_decode': round(float(cat.get('mean', float('nan'))), 3),
         'category_chance': round(float(cat.get('chance', float('nan'))), 3),
         'category_above_chance': bool(cat.get('above_chance', False)),
-        'calibration_lift': round(
-            float(_get(metrics, 'honesty.calibration.mean_lift', float('nan'))), 3
-        ),
+        'calibration_lift': round(float(_get(metrics, 'honesty.calibration.mean_lift', float('nan'))), 3),
         'who_variance': round(float(_get(metrics, 'neurons.who_variance', float('nan'))), 3),
-        'same_word_gap': round(
-            float(_get(metrics, 'emergence.cross_subject.same_word.gap', float('nan'))), 4
-        ),
+        'same_word_gap': round(float(_get(metrics, 'emergence.cross_subject.same_word.gap', float('nan'))), 4),
         'content_probe_passes': bool(control.get('passes', False)) if control else None,
         'converged': pooled >= _CONVERGED_FLOOR,
         'collapsed': pooled < _COLLAPSED_CEIL,
@@ -131,8 +127,7 @@ def render_markdown(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
         '(a new brain snapped into the shared frame from anchor words)',
         f'- Training convergence: **{summary["converged_folds"]} converged**, '
         f'**{summary["collapsed_folds"]} collapsed** (of {summary["n_folds"]}) — bimodal instability if both > 0.',
-        f'- Content-probe positive control passing: '
-        f'**{summary["content_probe_pass_folds"]}/{summary["n_folds"]}**.',
+        f'- Content-probe positive control passing: **{summary["content_probe_pass_folds"]}/{summary["n_folds"]}**.',
         '',
         '| held-out | n_words | pooled Top-1 | held-out Top-1 | held-out lift | rank% | category | calib lift | who-var | conv? |',
         '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
@@ -188,9 +183,7 @@ def main() -> None:
     configure_logging(args.log_level)
     rows = collect_folds(args.experiments)
     if not rows:
-        raise SystemExit(
-            f'No LOSO folds found under {args.experiments} (need evaluation/metrics.json).'
-        )
+        raise SystemExit(f'No LOSO folds found under {args.experiments} (need evaluation/metrics.json).')
 
     summary = summarise(rows)
     out = Path(args.out) if args.out else Path(args.experiments) / 'LOSO_SUMMARY.md'

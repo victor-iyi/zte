@@ -28,13 +28,9 @@ class CBOWObjective(_ObjectiveBase):
             model (ZTEModel): The encoder, used to size the context head.
         """
         super().__init__(config, model)
-        self.context_head = ProjectionHead(
-            model.hidden_dim, model.config.projection_hidden, model.embed_dim
-        )
+        self.context_head = ProjectionHead(model.hidden_dim, model.config.projection_hidden, model.embed_dim)
 
-    def compute(
-        self, model: ZTEModel, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def compute(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
         """Computes the CBOW InfoNCE loss for a batch.
 
         Args:

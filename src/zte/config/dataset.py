@@ -13,7 +13,7 @@ class MissingConfig:
     """How missing word-level values (omitted words, rejected epochs) are filled."""
 
     method: MissingMethod = 'mask_only'
-    """Imputation strategy. `mask_only` leaves NaNs to the presence mask; `drop` removes incomplete rows; the rest fill."""
+    """Imputation strategy. `mask_only` defers to the presence mask; `drop` removes incomplete rows; the rest fill."""
 
     knn_neighbors: int = 5
     """Neighbour count for the `knn` method."""
@@ -104,6 +104,10 @@ class DatasetConfig(PathFields):
     raw_align: RawAlign = 'none'
     """Per-subject alignment of raw EEG windows. `euclidean` whitens each subject by their own mean channel
     covariance. Note `normalize` only ever applied to band power, so this is the raw path's only alignment."""
+
+    raw_align_amplitude: bool = False
+    """Also divide each subject's windows by their own RMS voltage. The covariance reference is trace-normalised and
+    therefore fixes only the shape of a subject's channel geometry; amplitude is the larger identity carrier."""
 
     raw_align_fit: Literal['train', 'all'] = 'all'
     """Whose windows the alignment maps are fitted on. `all` includes the held-out subject, which is label-free

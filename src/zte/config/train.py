@@ -7,6 +7,7 @@ from zte.config._paths import PathFields
 from zte.config.types import (
     SchedulerName,
     SplitStrategy,
+    TrainMode,
 )
 
 
@@ -14,7 +15,7 @@ from zte.config.types import (
 class TrainConfig(PathFields):
     """Optimisation, scheduling, logging and checkpointing."""
 
-    _PATH_FIELDS: ClassVar[tuple[str, ...]] = ('ckpt_dir', 'drive_backup_dir')
+    _PATH_FIELDS: ClassVar[tuple[str, ...]] = ('ckpt_dir', 'drive_backup_dir', 'encoder_ckpt')
 
     epochs: int = 20
     """Number of passes over the training split."""
@@ -93,3 +94,29 @@ class TrainConfig(PathFields):
 
     compile_model: bool = False
     """Apply `torch.compile` (skipped on MPS/CPU)."""
+
+    # -- Staged decoder training -------------------------------------------- #
+    mode: TrainMode = 'encoder'
+    """Which stage this run trains. `'encoder'` is the pre-decoder pipeline unchanged."""
+
+    encoder_ckpt: str | None = None
+    """Source checkpoint for `decoder`/`joint` mode. Its stored shapes, normaliser and aligner are reused verbatim."""
+
+    freeze_encoder: bool = True
+    """Never let the loaded encoder receive a gradient: it stays frozen and in eval for every epoch, so the
+    conditioning vector is deterministic. A `joint` run rejects it, because unfreezing the encoder is what that mode
+    is for; there, `stage_a_epochs` alone decides when the encoder starts training."""
+
+    bridge_lr: float = 1e-3
+    """Peak learning rate for the prefix bridge (and resampler)."""
+
+    encoder_lr_scale: float = 0.1
+    """Encoder learning rate as a fraction of `bridge_lr`, applied once the encoder unfreezes in `joint` mode."""
+
+    stage_a_epochs: int = 3
+    """Epochs of bridge-only training before the encoder unfreezes in `joint` mode; `0` unfreezes it at epoch 1.
+    Read only in `joint` mode -- a `decoder` run keeps the encoder frozen throughout."""
+
+    early_stop_patience: int = 0
+    """Stop after this many epochs without a monitored-metric improvement (`0` disables). Every run on record
+    minimises validation loss at epoch 5-6 of 40."""

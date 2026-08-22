@@ -1,7 +1,7 @@
 """Tests for electrode spatial (spherical-harmonic) positional encoding.
 
-These cover both the mathematics (orthonormality, known values, the addition theorem, rotation behaviour) and the integration into the ZTE frontends
-(shape preservation, opt-in activation, checkpoint round-trip).
+These cover both the mathematics (orthonormality, known values, the addition theorem, rotation behaviour) and the
+integration into the ZTE frontends (shape preservation, opt-in activation, checkpoint round-trip).
 """
 
 from __future__ import annotations
@@ -72,8 +72,8 @@ def test_orthonormality_by_monte_carlo() -> None:
 def test_addition_theorem() -> None:
     """Per-degree harmonic inner products equal the Legendre kernel of the geodesic angle.
 
-    `sum_m Y_l^m(a) Y_l^m(b) = (2l + 1) / (4 pi) * P_l(cos gamma)`, the spherical addition theorem -- the property that makes the encoding a
-    geodesic-distance kernel over electrodes.
+    `sum_m Y_l^m(a) Y_l^m(b) = (2l + 1) / (4 pi) * P_l(cos gamma)`, the spherical addition theorem -- the property that
+    makes the encoding a geodesic-distance kernel over electrodes.
     """
     rng = np.random.default_rng(0)
     a = rng.normal(size=3)
@@ -125,9 +125,7 @@ def test_from_csv_xyz_and_spherical(tmp_path: Path) -> None:
     """from_csv reads both x,y,z and theta,phi montages and agrees for the same points."""
     theta = np.array([0.3, 1.1, 2.0])
     phi = np.array([0.0, 1.5, -2.0])
-    xyz = np.stack(
-        [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], axis=1
-    )
+    xyz = np.stack([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], axis=1)
     xyz_csv = tmp_path / 'xyz.csv'
     xyz_csv.write_text(
         'channel,x,y,z\n' + '\n'.join(f'{i},{p[0]},{p[1]},{p[2]}' for i, p in enumerate(xyz)),
@@ -135,8 +133,7 @@ def test_from_csv_xyz_and_spherical(tmp_path: Path) -> None:
     )
     sph_csv = tmp_path / 'sph.csv'
     sph_csv.write_text(
-        'channel,theta,phi\n'
-        + '\n'.join(f'{i},{t},{p}' for i, (t, p) in enumerate(zip(theta, phi))),
+        'channel,theta,phi\n' + '\n'.join(f'{i},{t},{p}' for i, (t, p) in enumerate(zip(theta, phi))),
         encoding='utf-8',
     )
     g_xyz = ScalpGeometry.from_csv(xyz_csv, 3)
@@ -166,8 +163,8 @@ def test_resolve_geometry_falls_back_without_coords() -> None:
 def test_encoding_shape_and_rotation_of_degree_gram() -> None:
     """Encoding has the right shape and rotating the head preserves each degree's Gram block.
 
-    Rotations act within a degree (Wigner-D), so the per-degree Gram matrix `Y_l Y_l^T` over electrodes is rotation-invariant -- the defining
-    equivariance property. We check it on the raw harmonics for degree 2.
+    Rotations act within a degree (Wigner-D), so the per-degree Gram matrix `Y_l Y_l^T` over electrodes is
+    rotation-invariant -- the defining equivariance property. We check it on the raw harmonics for degree 2.
     """
     geo = ScalpGeometry.fibonacci_fallback(40)
     enc = SphericalHarmonicEncoding(geo, l_max=4, out_dim=16)
@@ -176,9 +173,7 @@ def test_encoding_shape_and_rotation_of_degree_gram() -> None:
 
     # Rotate coordinates by a fixed rotation about z, rebuild harmonics, compare degree-2 Gram.
     ang = 0.7
-    rot = np.array(
-        [[np.cos(ang), -np.sin(ang), 0.0], [np.sin(ang), np.cos(ang), 0.0], [0.0, 0.0, 1.0]]
-    )
+    rot = np.array([[np.cos(ang), -np.sin(ang), 0.0], [np.sin(ang), np.cos(ang), 0.0], [0.0, 0.0, 1.0]])
     rotated = ScalpGeometry.from_xyz(geo.xyz @ rot.T, normalize=False)
     y0 = geo.spherical_harmonics(4)
     y1 = rotated.spherical_harmonics(4)
@@ -232,9 +227,7 @@ def test_band_power_spatial_forward(small_dataset: ZuCoDataset) -> None:
     n_ch = small_dataset.band_power_raw.shape[2]
     n_bp = small_dataset.band_power_raw.shape[1]
 
-    base = build_model(
-        ModelConfig(frontend='band_power_mlp', embed_dim=32, hidden_dim=32), in_dim=in_dim
-    )
+    base = build_model(ModelConfig(frontend='band_power_mlp', embed_dim=32, hidden_dim=32), in_dim=in_dim)
     spatial = build_model(
         ModelConfig(
             frontend='band_power_mlp',

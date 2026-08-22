@@ -55,6 +55,45 @@ simulate a BCI that refuses to calibrate its own cap. The strict alternative is 
 `raw_align_fit: train` and is run as an ablation (`exp12_align_fit_train`), so the choice is measured rather than
 asserted.
 
+#### What Euclidean alignment does not equalise: gain (`dataset.raw_align_amplitude`)
+
+The reference covariance is estimated from **trace-normalised** trials, and the whitener is then applied to the
+**un-normalised** windows. Those two frames do not match, and the mismatch is the whole story: dividing each trial
+by its trace before averaging removes exactly the scalar the whitener would otherwise have absorbed, so
+$R_s^{-1/2}$ equalises the *shape* of a subject's channel geometry and leaves their overall *gain* untouched.
+
+The measurement, on two synthetic subjects differing by nothing but a 10× amplitude factor
+(`tests/test_subject_alignment.py::test_amplitude_matching_removes_the_per_subject_gain`, 24 channels, 120 trials
+each):
+
+| Quantity | Measured |
+| --- | --- |
+| Relative Frobenius difference between the two subjects' whiteners | 1.20e-08 (float64 path); 1.79e-07 (float32 accelerator path) |
+| Post-transform power ratio between the two subjects | exactly 100.00 |
+
+The whiteners are identical to round-off — alignment saw two subjects with the same covariance shape and gave them
+the same map — while the aligned windows still differ in power by $10^2$, the square of the gain it was supposed to
+remove. Amplitude is the single largest carrier of subject identity in raw EEG (electrode impedance, cap contact,
+skull thickness), and Euclidean alignment as specified does not touch it.
+
+**This is the mechanism behind `exp12_align_off` measuring as an exact no-op.** That ablation switches alignment off
+and returns rank percentile 0.9670 against 0.9672, effective rank 190.31 against 190.25, and a subject probe of
+0.4179 against 0.4180 — agreement to four decimal places on every metric. A stack that only ever equalised
+covariance shape, on a cohort whose identity signal is dominated by gain, has almost nothing left to remove.
+
+`dataset.raw_align_amplitude: true` folds each subject's own RMS voltage into their whitener, which makes the map
+scale-equivariant and removes the gain along with the shape. A subject the fit never saw borrows the cohort RMS
+along with the cohort reference, so the zero-shot path is unchanged in kind.
+
+The knob **defaults to `false`**, so every existing config and every number already on the board is byte-identical
+with it present. It changes every downstream number when it is on, which is exactly why it is a measured lever
+rather than a silent improvement: turning it on and turning alignment off are then two arms of the same question,
+and one of them has to move.
+
+Amplitude matching produces different windows from the same prepared bundle, so the aligned scratch memmap keys on
+it (`..._amp.npy`) while the shared bundle stays unaligned and its cache key excludes the knob entirely — an
+expensive prepared bundle is never invalidated by flipping it.
+
 ### 2. A subject adapter keyed on inferred statistics, not identity (`model.subject_adapter`)
 
 This is the part that is new.
@@ -118,11 +157,12 @@ STUDIES="flagship ablate" bash scripts/run_suite.sh /path/to/zuco_extracted
 ## Cost and compatibility
 
 Alignment is applied **after** the cached dataset bundle loads, not baked into it, so enabling it never invalidates
-a prepared bundle — `raw_align`, `raw_align_fit` and `subject_signature` are excluded from the cache key. The
-covariance work is a handful of 105×105 eigendecompositions, negligible against the `.mat` parse.
+a prepared bundle — `raw_align`, `raw_align_fit`, `raw_align_amplitude` and `subject_signature` are excluded from
+the cache key. The covariance work is a handful of 105×105 eigendecompositions, negligible against the `.mat` parse.
 
-Defaults are off (`raw_align: none`, `subject_signature: false`, `subject_adapter: false`), so every existing config
-behaves exactly as before; with no signature the adapter is not constructed and the forward path is unchanged.
+Defaults are off (`raw_align: none`, `raw_align_amplitude: false`, `subject_signature: false`,
+`subject_adapter: false`), so every existing config behaves exactly as before; with no signature the adapter is not
+constructed and the forward path is unchanged.
 
 The fitted maps and signatures are embedded in the checkpoint, so `ZTEEmbedder` reproduces the exact alignment at
 inference without the training data.

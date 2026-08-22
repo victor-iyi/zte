@@ -1,4 +1,4 @@
-"""Model-free confound audit: how entangled are the nuisance factors with the content an invariance loss would delete?"""
+"""Model-free confound audit: how entangled are nuisance factors with the content an invariance loss would delete?"""
 
 from __future__ import annotations
 

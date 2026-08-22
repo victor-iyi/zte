@@ -1,8 +1,9 @@
 """A pre-norm Transformer encoder with pluggable positional encoding.
 
-`torch.nn.TransformerEncoder` only supports absolute positions added to the inputs; ZuCo sentences vary in length, so this encoder also
-offers the relative in-attention schemes `rope` and `alibi` (plus `none` for ablation). The absolute `sinusoidal` / `learned` schemes are
-added to the inputs by the caller, leaving attention here position-agnostic. Key-padding and causal (CPC) masks are both honoured.
+`torch.nn.TransformerEncoder` only supports absolute positions added to the inputs; ZuCo sentences vary in length, so
+this encoder also offers the relative in-attention schemes `rope` and `alibi` (plus `none` for ablation). The absolute
+`sinusoidal` / `learned` schemes are added to the inputs by the caller, leaving attention here position-agnostic.
+Key-padding and causal (CPC) masks are both honoured.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-AttnPos = Literal['rope', 'alibi', 'none']
+type AttnPos = Literal['rope', 'alibi', 'none']
 
 
 def sinusoidal_encoding(length: int, dim: int, device: torch.device | None = None) -> torch.Tensor:
@@ -38,14 +39,7 @@ def sinusoidal_encoding(length: int, dim: int, device: torch.device | None = Non
 
 
 def _alibi_slopes(n_heads: int) -> torch.Tensor:
-    """Returns the geometric ALiBi slope per head.
-
-    Args:
-        n_heads (int): Number of attention heads.
-
-    Returns:
-        torch.Tensor: A `(n_heads,)` tensor of positive slopes.
-    """
+    """Returns the geometric ALiBi slope per head."""
 
     def pow2_slopes(n: int) -> list[float]:
         start = 2.0 ** (-(2.0 ** -(math.log2(n) - 3)))
@@ -61,15 +55,8 @@ def _alibi_slopes(n_heads: int) -> torch.Tensor:
     return torch.tensor(slopes, dtype=torch.float32)
 
 
-def _rope_cos_sin(
-    length: int, head_dim: int, device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
+def _rope_cos_sin(length: int, head_dim: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     """Precomputes RoPE cosine/sine tables for a sequence.
-
-    Args:
-        length (int): Sequence length.
-        head_dim (int): Per-head dimensionality (rotation uses its largest even prefix).
-        device (torch.device): Device for the tables.
 
     Returns:
         tuple[torch.Tensor, torch.Tensor]: `(cos, sin)`, each `(1, 1, seq_len, rot)` for the even rotation width `rot`.
@@ -84,11 +71,6 @@ def _rope_cos_sin(
 
 def _apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Rotates the even-dimensional prefix of `x` by the RoPE angles.
-
-    Args:
-        x (torch.Tensor): Query/key tensor `(batch_size, n_heads, seq_len, head_dim)`.
-        cos (torch.Tensor): Cosine table `(1, 1, seq_len, rot)`.
-        sin (torch.Tensor): Sine table `(1, 1, seq_len, rot)`.
 
     Returns:
         torch.Tensor: `x` with its first `rot` channels rotated; any odd trailing channel passes through unchanged.
@@ -190,9 +172,7 @@ class EncoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.attn = MultiHeadSelfAttention(dim, n_heads, dropout, pos)
         self.norm2 = nn.LayerNorm(dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(dim * 4, dim)
-        )
+        self.mlp = nn.Sequential(nn.Linear(dim, dim * 4), nn.GELU(), nn.Dropout(dropout), nn.Linear(dim * 4, dim))
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, valid_mask: torch.Tensor, causal: bool) -> torch.Tensor:
@@ -230,14 +210,10 @@ class ZTETransformerEncoder(nn.Module):
         """
         super().__init__()
         self.pos_mode = pos
-        self.layers = nn.ModuleList(
-            EncoderLayer(dim, n_heads, dropout, pos) for _ in range(max(1, n_layers))
-        )
+        self.layers = nn.ModuleList(EncoderLayer(dim, n_heads, dropout, pos) for _ in range(max(1, n_layers)))
         self.norm = nn.LayerNorm(dim)
 
-    def forward(
-        self, x: torch.Tensor, valid_mask: torch.Tensor, causal: bool = False
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor, causal: bool = False) -> torch.Tensor:
         """Encodes a padded token sequence.
 
         Args:

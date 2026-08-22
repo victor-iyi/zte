@@ -1,10 +1,9 @@
 """Signal transforms: band-pass filtering and feature normalisation.
 
-These operate on NumPy arrays before tensors are built. Normalisers are stateful so the statistics learned on the training
-split can be re-applied verbatim to validation/test splits, preventing information leakage.
+These operate on NumPy arrays before tensors are built. Normalisers are stateful so the statistics learned on the
+training split can be re-applied verbatim to validation/test splits, preventing information leakage.
 """
 
-# pylint: disable=import-outside-toplevel,protected-access
 from __future__ import annotations
 
 from typing import ClassVar
@@ -125,10 +124,7 @@ def band_power_from_raw(
         block = np.asarray(x[start : start + chunk], dtype=np.float32)
         spec = np.fft.rfft(block, axis=-1)  # complex64 for float32 input
         power = np.square(spec.real) + np.square(spec.imag)  # (b, n_ch, n_freq)
-        cols = [
-            power[..., m].mean(axis=-1) if m.any() else np.zeros(power.shape[:-1], dtype=np.float32)
-            for m in masks
-        ]
+        cols = [power[..., m].mean(axis=-1) if m.any() else np.zeros(power.shape[:-1], dtype=np.float32) for m in masks]
         out[start : start + len(block)] = np.stack(cols, axis=-1).reshape(len(block), -1)
     return out
 
@@ -180,9 +176,7 @@ class FeatureNormalizer:
     # Above this width the O(d^3) per-subject covariance whitening is skipped and `riemannian` degrades to a z-score.
     _RIEMANN_MAX_DIM: ClassVar[int] = 2048
 
-    def __init__(
-        self, mode: Normalization = 'zscore_channel', eps: float = 1e-6, shrinkage: float = 0.1
-    ) -> None:
+    def __init__(self, mode: Normalization = 'zscore_channel', eps: float = 1e-6, shrinkage: float = 0.1) -> None:
         """Initialises the normaliser.
 
         Args:
@@ -278,8 +272,7 @@ class FeatureNormalizer:
         x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0)
         if x.shape[1] > self._RIEMANN_MAX_DIM:
             _LOG.warning(
-                'riemannian normalise skipped: %d features exceed the %d cap; '
-                'falling back to zscore_subject.',
+                'riemannian normalise skipped: %d features exceed the %d cap; falling back to zscore_subject.',
                 x.shape[1],
                 self._RIEMANN_MAX_DIM,
             )
@@ -302,9 +295,7 @@ class FeatureNormalizer:
                 self._subject_maps[str(code)] = (mean.astype(np.float32), inv_sqrt, sqrt)
         return self
 
-    def _riemann_apply(
-        self, x: np.ndarray, subjects: np.ndarray | None, inverse: bool
-    ) -> np.ndarray:
+    def _riemann_apply(self, x: np.ndarray, subjects: np.ndarray | None, inverse: bool) -> np.ndarray:
         """Applies (or inverts) per-subject whitening row-wise, global map for unknown subjects."""
         assert self._global_map is not None
         x = np.nan_to_num(np.asarray(x, dtype=np.float64), nan=0.0)
@@ -319,9 +310,7 @@ class FeatureNormalizer:
                 out[i] = (x[i] - mean) @ inv_sqrt
         return out
 
-    def _subject_ab(
-        self, n_rows: int, subjects: np.ndarray | None
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _subject_ab(self, n_rows: int, subjects: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
         """Broadcasts per-subject (mean, std) to `(n_rows, n_features)`, global for unknowns."""
         a = np.tile(np.asarray(self._a, dtype=np.float32), (n_rows, 1))
         b = np.tile(np.asarray(self._b, dtype=np.float32), (n_rows, 1))

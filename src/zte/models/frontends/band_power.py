@@ -14,9 +14,9 @@ _LOG = get_logger('models.frontends')
 class BandPowerMLP(nn.Module):
     """MLP token encoder for flattened band-power vectors `(..., in_dim)`.
 
-    When `spatial` is supplied, the leading `n_bp_features * n_channels` columns are reshaped into electrode tokens, given their
-    scalp-position encoding, mixed across electrodes and re-flattened, so the MLP sees geometry-aware channel features. Any trailing
-    eye-tracking columns pass through untouched.
+    When `spatial` is supplied, the leading `n_bp_features * n_channels` columns are reshaped into electrode tokens,
+    given their scalp-position encoding, mixed across electrodes and re-flattened, so the MLP sees geometry-aware
+    channel features. Any trailing eye-tracking columns pass through untouched.
 
     Attributes:
         out_dim (int): The hidden dimensionality produced for each token.
@@ -37,7 +37,8 @@ class BandPowerMLP(nn.Module):
             config (ModelConfig): Model configuration (uses `hidden_dim`, `n_layers`, `dropout`).
             spatial (SpatialChannelMixer | None): Optional electrode spatial-encoding mixer.
             n_channels (int | None): EEG channel count (required with `spatial`).
-            bp_features_per_channel (int | None): Band-power features per channel, i.e. the size of each electrode token (required with `spatial`).
+            bp_features_per_channel (int | None): Band-power features per channel, i.e. the size of each electrode token
+                (required with `spatial`).
         """
         super().__init__()
         self.out_dim = config.hidden_dim
@@ -102,17 +103,16 @@ class BandPowerMLP(nn.Module):
 class BandRoutedMLP(nn.Module):
     """Band-family-routed MLP: theta/gamma (content) and alpha/beta (state) get separate paths.
 
-    Each bp-feature of the `(n_bp_features, n_channels)` block carries a band whose family is known (`zte.data.schema.BAND_FAMILY`).
-    Theta and gamma carry lexical-semantic load while alpha and beta carry attention/arousal state, so separate sub-encoders let
-    invariance pressure fall asymmetrically. Trailing eye-tracking columns join the state path; the two hiddens concatenate to `hidden_dim`.
+    Each bp-feature of the `(n_bp_features, n_channels)` block carries a band whose family is known
+    (`zte.data.schema.BAND_FAMILY`). Theta and gamma carry lexical-semantic load while alpha and beta carry
+    attention/arousal state, so separate sub-encoders let invariance pressure fall asymmetrically. Trailing eye-tracking
+    columns join the state path; the two hiddens concatenate to `hidden_dim`.
 
     Attributes:
         out_dim (int): Hidden dimensionality per token.
     """
 
-    def __init__(
-        self, in_dim: int, config: ModelConfig, n_channels: int, bp_features_per_channel: int
-    ) -> None:
+    def __init__(self, in_dim: int, config: ModelConfig, n_channels: int, bp_features_per_channel: int) -> None:
         """Builds the two band-family pathways.
 
         Args:

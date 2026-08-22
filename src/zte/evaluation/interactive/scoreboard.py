@@ -26,7 +26,8 @@ def scoreboard_html(scoreboard: dict, out_path: str | Path, run_name: str = 'ZTE
     Args:
         scoreboard (dict): The dict from `zte.evaluation.audit.scoreboard.build_scoreboard`; every block is optional
             and read defensively.
-        out_path (str | Path): Destination `.html` path (parents are created; a non-html suffix is rewritten to `.html`).
+        out_path (str | Path): Destination `.html` path (parents are created; a non-html suffix is rewritten to
+            `.html`).
         run_name (str): Human label for the run, shown in the header and the page title.
 
     Returns:
@@ -79,9 +80,7 @@ def _build_payload(board: dict, run_name: str) -> dict[str, Any]:
     )
     if held is not None:
         views['held_out'] = held
-    insample = _view(
-        'In-sample', _first(board, _INSAMPLE_GEOMETRY_KEYS), _first(board, _INSAMPLE_RETRIEVAL_KEYS)
-    )
+    insample = _view('In-sample', _first(board, _INSAMPLE_GEOMETRY_KEYS), _first(board, _INSAMPLE_RETRIEVAL_KEYS))
     if insample is not None:
         views['in_sample'] = insample
 
@@ -134,13 +133,7 @@ def _clean(obj: Any) -> Any:
 
 def _esc(text: str) -> str:
     """Minimal HTML escaping for text substituted into the template."""
-    return (
-        str(text)
-        .replace('&', '&amp;')
-        .replace('<', '&lt;')
-        .replace('>', '&gt;')
-        .replace('"', '&quot;')
-    )
+    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
 _TEMPLATE: str = load_page('scoreboard')

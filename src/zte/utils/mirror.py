@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import shutil
@@ -27,7 +28,7 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _needs_copy(src: Path, dst: Path) -> bool:
+def needs_copy(src: Path, dst: Path) -> bool:
     """Whether `src` differs from `dst`.
 
     Small files are compared by content: a metrics.json rewritten in the same second with the same
@@ -64,7 +65,7 @@ def mirror_file(src: str | Path, dst_dir: str | Path) -> bool:
     if not source.is_file():
         return False
     target = target_dir / source.name
-    if not _needs_copy(source, target):
+    if not needs_copy(source, target):
         return False
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,7 @@ def mirror_tree(
     dst: str | Path,
     *,
     exclude_dirs: Iterable[str] = HEAVY_DIRS,
+    exclude_files: Iterable[str] = (),
 ) -> tuple[int, int]:
     """Copies `src` into `dst`, transferring only files that changed since the last call.
 
@@ -92,6 +94,8 @@ def mirror_tree(
         src (str | Path): Directory to mirror from.
         dst (str | Path): Destination directory (created if missing).
         exclude_dirs (Iterable[str]): Directory names to skip anywhere in the tree.
+        exclude_files (Iterable[str]): Filename glob patterns to skip anywhere in the tree, matched on the
+            basename -- `'ckpt_epoch*.pt'` leaves the rotation history behind without touching `last.pt`.
 
     Returns:
         tuple[int, int]: The number of files copied and the number that failed.
@@ -100,6 +104,7 @@ def mirror_tree(
     if not source.is_dir():
         return 0, 0
     skip = set(exclude_dirs)
+    patterns = tuple(exclude_files)
     copied = failed = 0
     try:
         target.mkdir(parents=True, exist_ok=True)
@@ -109,17 +114,19 @@ def mirror_tree(
 
     for root, dirs, files in os.walk(source):
         dirs[:] = [d for d in dirs if d not in skip]
+        # Filtered before the accounting below, so a file deliberately left behind is never counted as a failure.
+        wanted = [f for f in files if not any(fnmatch.fnmatch(f, pattern) for pattern in patterns)]
         rel = Path(root).relative_to(source)
         out_dir = target / rel
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             _LOG.debug('Could not create %s: %r', out_dir, exc)
-            failed += len(files)
+            failed += len(wanted)
             continue
-        for name in files:
+        for name in wanted:
             src_file, dst_file = Path(root) / name, out_dir / name
-            if not _needs_copy(src_file, dst_file):
+            if not needs_copy(src_file, dst_file):
                 continue
             try:
                 # Copy via a temp name so a killed VM cannot leave a truncated file on Drive.

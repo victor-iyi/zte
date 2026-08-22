@@ -154,19 +154,25 @@ The context transformer (`transformer.py`) honours `model.pos_encoding`:
 
 All four schemes modify the same scaled dot-product attention that the context transformer computes over its $L$ tokens, where $Q,K,V$ are the per-head query/key/value projections and $d_h$ is the per-head dimension:
 
-$$\mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V$$
+$$
+\mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_h}}\Big)V
+$$
 
 They differ in *where* they inject position (token position $p$, or indices $m,n$):
 
 - **`sinusoidal`** adds a fixed absolute code to the inputs before attention, indexing dimension $i$ of the model dim $d$:
 
-$$PE_{p,2i} = \sin\!\Big(\frac{p}{10000^{2i/d}}\Big), \qquad PE_{p,2i+1} = \cos\!\Big(\frac{p}{10000^{2i/d}}\Big)$$
+$$
+PE_{p,2i} = \sin\!\Big(\frac{p}{10000^{2i/d}}\Big), \qquad PE_{p,2i+1} = \cos\!\Big(\frac{p}{10000^{2i/d}}\Big)
+$$
 
 - **`rope`** rotates $Q$ and $K$ *inside* attention. With per-pair frequencies $\theta_i = 10000^{-2i/d_h}$, a token at position $p$ is rotated by a block-diagonal rotation $R(p)$ that turns coordinate pair $i$ through angle $p\theta_i$, so the attention score $\langle R(m)q,\ R(n)k\rangle$ depends only on the relative offset $m-n$ — the source of its length generalisation.
 
 - **`alibi`** leaves the projections untouched and subtracts a linear per-head distance bias with slope $m_h$:
 
-$$\text{score}_{ij} = \frac{q_i^\top k_j}{\sqrt{d_h}} - m_h\,\lvert i - j \rvert$$
+$$
+\text{score}_{ij} = \frac{q_i^\top k_j}{\sqrt{d_h}} - m_h\,\lvert i - j \rvert
+$$
 
 Each run records its scheme in the checkpoint config, so inference rebuilds the matching encoder automatically.
 
@@ -187,7 +193,9 @@ flowchart LR
 
 The symmetric InfoNCE used here is the same family the parent project applies for EEG↔text alignment:
 
-$$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{B}\sum_i \log \frac{\exp(\text{sim}(e_i, t_i)/\tau)}{\sum_j \exp(\text{sim}(e_i, t_j)/\tau)}$$
+$$
+\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{B}\sum_i \log \frac{\exp(\text{sim}(e_i, t_i)/\tau)}{\sum_j \exp(\text{sim}(e_i, t_j)/\tau)}
+$$
 
 In ZTE, `t` is a *neighbouring word's EEG* (skip-gram) or a *future word latent* (CPC) rather than text — pretraining the geometry that alignment later reuses.  The objective is selected with `objective.name`; see [TRAINING.md] for the full hyper-parameter table.
 
@@ -216,7 +224,9 @@ flowchart LR
 
 ZTE outputs `(M, 768)` embeddings + aligned metadata. The downstream aligner adds a frozen LLM text encoder and the composite loss
 
-$$\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}$$
+$$
+\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\text{OT}}
+$$
 
 (Sinkhorn-regularised Wasserstein, optionally Gromov-Wasserstein for distinct metric spaces), evaluated by **noise-anchored zero-shot retrieval** under LOSO.  ZTE ships the building blocks for that evaluation in `training/metrics.py` and `evaluation/`. Because the default `embed_dim` is **768**, ZTE embeddings are plug-compatible with that downstream space.
 
@@ -224,3 +234,45 @@ $$\mathcal{L} = \lambda_1\mathcal{L}_{\text{InfoNCE}} + \lambda_2\mathcal{L}_{\t
 [EVALUATION]: ./EVALUATION.md
 [RESULTS]: ./RESULTS.md
 [TRAINING]: ./TRAINING.md
+
+## What the rebuild added
+
+| Module                             | Owns                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `models/decoder/quantiser.py`      | `SemanticRateLadder` — the text-anchored residual quantiser and its measured bit report |
+| `models/decoder/evidence.py`       | `MonotonicPointer`, `WordEvidence` — the word-synchronous path                          |
+| `models/decoder/gap.py`            | `GapCorrector`, moved out of `bridge.py` now that the bridge has company                |
+| `models/objectives/lexical.py`     | `LexicalAligner` — the token-level loss, shared by the encoder and read by the decoder  |
+| `data/targets/lexical.py`          | The frozen per-word-type embedding target                                               |
+| `evaluation/analysis/`             | `collect` · `aggregate` · `figures` · `dashboard` — the study-level analysis            |
+| `cli/analyze.py`                   | `zte-analyze`                                                                           |
+| `evaluation/interactive/studio.py` | The decode studio: per-step trace, scalp cube and the page it writes                    |
+| `cli/studio.py`                    | `zte-studio`                                                                            |
+| `models/encoder/residual.py`       | `PredictiveResidual` — de-trends a token against what its left context predicted        |
+| `models/encoder/consensus.py`      | `ConsensusBank`, `ConsensusDistiller` — the cross-reader prototype teacher              |
+| `models/encoder/gallery.py`        | `GalleryContrast` — the full-gallery, length-matched InfoNCE denominator                |
+| `models/encoder/nuisance.py`       | `LengthProjector` — train-fitted removal of the sentence-length subspace                |
+| `utils/session.py`                 | `DriveSession`, `discover_runs`, `find_checkpoint` — the dated Drive layout             |
+| `cli/colab.py`                     | `zte-colab` — every notebook capability as one JSON object on stdout                    |
+
+The lexical projection is the seam between the two halves: the **encoder** trains it contrastively
+(`objective.lexical_weight`), the checkpoint carries it under `lexical.head.*`, and the **decoder** restores it
+frozen and reads per-word vectors through it. A decoder built over an encoder that never trained one degrades to
+the pooled decoder and says so at startup.
+
+`models/encoder/` is the mirror of `models/decoder/`: mechanisms that layer onto `ZTEModel` rather than replacing it.
+Three of the four are training-time only and leave the exported embedding's *shape* and inference path untouched --
+the residual coder runs inside `ZTEModel.token_hidden` and so travels in the checkpoint, the consensus bank lives on
+the objective and is never consulted at inference, and the gallery denominator exists only inside the loss. The
+fourth, `LengthProjector`, is evaluation post-processing and sits beside `whiten` and `all_but_top` in
+`evaluation/report.py`, carrying the same `postprocess_fit` provenance discipline.
+
+`cli/colab.py` is the seam in the other direction. Colab opens a notebook with an interpreter older than the
+`>=3.14` this package requires, so the kernel cannot import `zte` at all. Rather than keep a second, untested copy
+of the search order and the verdict arithmetic inside notebook cells, every capability the notebook needs is a
+`zte-colab` subcommand printing one JSON object on stdout with its logs on stderr, and the kernel only renders it.
+The shared pieces it reaches through are ordinary library functions with their own tests --- `utils/session.py` for
+the Drive layout, `utils/mirror.py` for what a backup deliberately leaves behind, `utils/env.py` for the environment
+a run wants, `device.device_plan` for what the machine will actually do, `analysis/dashboard.panel_builders` for the
+chart list the page and the notebook share, and `interactive/generation.generation_payload` for the five-clause
+generation gate. See [`RUNNING.md`](RUNNING.md).

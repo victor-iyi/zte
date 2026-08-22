@@ -1,10 +1,11 @@
 """The ZTE Trainer: a device-agnostic, pausable, checkpointing self-supervised loop."""
 
 # pyright: reportFunctionMemberAccess=false, reportPrivateImportUsage=false
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
+import dataclasses
 import math
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,15 @@ from torch.utils.data import DataLoader
 from zte.config import ZTEConfig
 from zte.device import DeviceSpec, autocast, configure_backend, resolve_device, seed_everything
 from zte.logging_utils import get_logger, progress
+from zte.training import stages
 from zte.training.checkpoint import CheckpointManager
 from zte.training.scheduler import build_scheduler
+from zte.utils.provenance import git_info, package_versions
 
 _LOG = get_logger('training.trainer')
+
+_DECODER_MODULES = ('bridge', 'resampler', 'gap', 'clip_head', 'ladder', 'evidence', 'lexical')
+"""Objective submodules a `ZTEDecoder` rebuilds, in the order `decoder_state` records them."""
 
 
 def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -48,7 +54,8 @@ class Trainer:
         objective (nn.Module): The self-supervised objective module.
         train_loader (DataLoader[Any]): Training DataLoader (yields collated batch dicts).
         val_loader (DataLoader[Any] | None): Optional validation DataLoader.
-        extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
+        extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every
+            checkpoint for reproducible inference.
         history (dict[str, list[float]]): Per-epoch metric history (train/val loss, lr).
     """
 
@@ -72,7 +79,8 @@ class Trainer:
             train_loader (DataLoader[Any]): Training DataLoader (yields collated batch dicts).
             val_loader (DataLoader[Any] | None): Optional validation DataLoader.
             device (DeviceSpec | None): Pre-resolved device spec; auto-resolved when `None`.
-            extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every checkpoint for reproducible inference.
+            extra_state (dict[str, Any] | None): Picklable extras (normaliser state, subject vocab) to embed in every
+                checkpoint for reproducible inference.
             resume (bool): Restore model, optimiser, scheduler, scaler, objective/teacher, best metric,
                 history and step from `last.pt` and continue from the next epoch.
         """
@@ -89,10 +97,11 @@ class Trainer:
         self.extra_state = extra_state or {}
 
         # Optimiser and schedule, sized from the accumulated (not raw) step count.
-        params = list(self.model.parameters()) + list(self.objective.parameters())
-        self.optimizer = torch.optim.AdamW(
-            params, lr=config.train.lr, weight_decay=config.train.weight_decay
-        )
+        groups = stages.parameter_groups(self.model, self.objective, config)
+        # `optimizer.load_state_dict` replaces each group's keys with the saved ones, dropping `name`.
+        self._group_names = [str(group.get('name', f'group{i}')) for i, group in enumerate(groups)]
+        self.optimizer = torch.optim.AdamW(groups, lr=config.train.lr, weight_decay=config.train.weight_decay)
+        self._trainable_params = stages.trainable_parameters(self.model, self.objective)
         steps_per_epoch = max(1, len(train_loader) // max(1, config.train.grad_accum_steps))
         self.total_steps = steps_per_epoch * config.train.epochs
         self.scheduler = build_scheduler(
@@ -116,15 +125,21 @@ class Trainer:
         self._global_step = 0
         self._last_grad_norm: float | None = None
         self._start_epoch = 1
+        self._epochs_since_best = 0
+        # Curriculum stage of the most recent epoch (ran or resumed); `None` until there is one to compare against.
+        self._stage: str | None = None
+        self._wall_start = time.perf_counter()
+        self._wall_seconds = 0.0
         if resume:
             self._resume_from_last()
         self._maybe_compile()
         _LOG.info(
-            'Trainer ready | device=%s | objective=%s | steps=%d | params=%.2fM',
+            'Trainer ready | device=%s | objective=%s | mode=%s | steps=%d | trainable=%.2fM',
             self.device.name,
             config.objective.name,
+            config.train.mode,
             self.total_steps,
-            sum(p.numel() for p in params) / 1e6,
+            sum(p.numel() for p in self._trainable_params) / 1e6,
         )
 
     # -- public API --------------------------------------------------------- #
@@ -151,9 +166,10 @@ class Trainer:
         previous = self._install_signal_handlers()
         try:
             for epoch in range(self._start_epoch, total + 1):
+                self._enter_stage(epoch)
                 train_loss = self._train_one_epoch(epoch)
                 self.history['train_loss'].append(train_loss)
-                self.history['lr'].append(self.optimizer.param_groups[0]['lr'])
+                self._record_learning_rates()
 
                 val_loss = float('nan')
                 if self.val_loader is not None and epoch % self.config.train.eval_every == 0:
@@ -161,7 +177,8 @@ class Trainer:
                     self.history['val_loss'].append(val_loss)
 
                 monitor = val_loss if not _isnan(val_loss) else train_loss
-                self.ckpt.save(self._checkpoint_state(epoch), epoch=epoch, metric=monitor)
+                self._epochs_since_best = 0 if self.ckpt.is_improvement(monitor) else self._epochs_since_best + 1
+                self.ckpt.save(self._checkpoint_state(epoch, monitor), epoch=epoch, metric=monitor)
                 _LOG.info(
                     '[epoch %d/%d] train_loss=%.4f val_loss=%.4f lr=%.2e',
                     epoch,
@@ -174,7 +191,10 @@ class Trainer:
                     self.writer.add_scalar('loss/train', train_loss, epoch)
                     if not _isnan(val_loss):
                         self.writer.add_scalar('loss/val', val_loss, epoch)
+                if self._should_early_stop(epoch):
+                    break
         except KeyboardInterrupt:
+            self._wall_seconds += time.perf_counter() - self._wall_start
             done = len(self.history['train_loss']) + self._start_epoch - 1
             _LOG.warning(
                 'Paused at epoch %d/%d. Progress saved to %s. Resume with --resume.',
@@ -188,10 +208,80 @@ class Trainer:
         finally:
             self._restore_signal_handlers(previous)
 
+        self._wall_seconds += time.perf_counter() - self._wall_start
         self._log_hparams()
         if self.writer is not None:
             self.writer.close()
         return dict(self.history)
+
+    def provenance(self) -> dict[str, Any]:
+        """Returns what a results table needs to place this run: code, hardware, schedule and library versions.
+
+        Returns:
+            dict[str, Any]: JSON-safe provenance, embedded in every checkpoint and consumed by `manifest.json`.
+        """
+        cfg = self.config
+        git = git_info()
+        record: dict[str, Any] = {
+            'git_commit': git['commit'],
+            'git_branch': git['branch'],
+            'git_dirty': git['dirty'],
+            'device': self.device.name,
+            'device_kind': self.device.kind,
+            'precision': cfg.train.precision,
+            'autocast_dtype': str(self.device.autocast_dtype),
+            'batch_size': cfg.train.batch_size,
+            'grad_accum_steps': cfg.train.grad_accum_steps,
+            'effective_batch_size': cfg.train.batch_size * max(1, cfg.train.grad_accum_steps),
+            'seed': cfg.train.seed,
+            'mode': cfg.train.mode,
+            'wall_seconds': round(self._wall_seconds + (time.perf_counter() - self._wall_start), 3),
+            'total_steps': self.total_steps,
+            'torch': torch.__version__,
+        }
+        # `torch.__version__` keeps the build suffix (`+cu121`) that the distribution version drops.
+        record.update({k: v for k, v in package_versions().items() if v is not None and k != 'torch'})
+        return record
+
+    def _record_learning_rates(self) -> None:
+        """Appends this epoch's learning rates; `history['lr']` stays group 0, which is what the run plots read."""
+        groups = self.optimizer.param_groups
+        self.history['lr'].append(groups[0]['lr'])
+        if len(groups) < 2:
+            return
+        for name, group in zip(self._group_names, groups, strict=False):
+            self.history[f'lr_{name}'].append(group['lr'])
+
+    def _enter_stage(self, epoch: int) -> None:
+        """Tracks the curriculum stage, resetting the best monitor and patience when a boundary is crossed."""
+        stage = stages.stage_for_epoch(epoch, self.config)
+        if stage is None:
+            return
+
+        # Stage B adds the joint auxiliaries to the val loss too, so a lifetime best would pin `best.pt` to stage A.
+        if self._stage is not None and stage != self._stage:
+            self.ckpt.reset_best()
+            self._epochs_since_best = 0
+            _LOG.info(
+                'Stage %s -> %s at epoch %d: best-checkpoint monitor and early-stop patience reset.',
+                self._stage.upper(),
+                stage.upper(),
+                epoch,
+            )
+        self._stage = stage
+
+    def _should_early_stop(self, epoch: int) -> bool:
+        """Reports whether patience on the monitored metric has run out (`early_stop_patience=0` disables)."""
+        patience = self.config.train.early_stop_patience
+        if patience <= 0 or self._epochs_since_best < patience:
+            return False
+        _LOG.info(
+            'Early stop at epoch %d: no improvement in %d epochs (best=%.4f).',
+            epoch,
+            self._epochs_since_best,
+            self.ckpt.best_metric,
+        )
+        return True
 
     def _log_hparams(self) -> None:
         """Records this run's key knobs joined to its final losses (HParams tab)."""
@@ -208,9 +298,7 @@ class Trainer:
             'include_eye_tracking': cfg.dataset.include_eye_tracking,
         }
         final = {
-            'hparam/final_train_loss': self.history['train_loss'][-1]
-            if self.history['train_loss']
-            else float('nan'),
+            'hparam/final_train_loss': self.history['train_loss'][-1] if self.history['train_loss'] else float('nan'),
         }
         if self.history.get('val_loss'):
             final['hparam/final_val_loss'] = self.history['val_loss'][-1]
@@ -236,16 +324,19 @@ class Trainer:
                 loss, _ = self.objective.compute(self.model, batch)
             total += float(loss.detach())
             count += 1
-        self.model.train()
-        self.objective.train()
+            # Drain the residual head's stash every step: left to accumulate it would pin one autograd graph per
+            # validation batch for the whole loop.
+            self._residual_loss({})
+        self._set_train_mode()
         return total / max(count, 1)
 
     # -- internals ---------------------------------------------------------- #
 
     def _train_one_epoch(self, epoch: int) -> float:
         """Runs one training epoch and returns the mean step loss."""
-        self.model.train()
-        self.objective.train()
+        if stages.apply_stage(epoch, self.model, self.objective, self.config):
+            self._trainable_params = stages.trainable_parameters(self.model, self.objective)
+        self._set_train_mode()
         accum = self.config.train.grad_accum_steps
         running, n_steps = 0.0, 0
         self.optimizer.zero_grad(set_to_none=True)
@@ -255,6 +346,7 @@ class Trainer:
             description=f'epoch {epoch}/{self.config.train.epochs}',
             total=len(self.train_loader),
         )
+        epoch_metrics: dict[str, list[float]] = {}
         for i, raw_batch in enumerate(iterator):
             batch = move_batch(raw_batch, self.device.device)
             # Progress drives the subject-adversary gradient-reversal ramp.
@@ -262,6 +354,7 @@ class Trainer:
                 self.objective.set_progress(self._global_step, self.total_steps)
             with autocast(self.device):
                 loss, metrics = self.objective.compute(self.model, batch)
+                loss = loss + self._residual_loss(metrics)
                 loss = loss / accum
 
             self._backward(loss)
@@ -278,7 +371,63 @@ class Trainer:
                     self._log_step(metrics)
             running += metrics.get('loss', 0.0)
             n_steps += 1
+            for key, value in metrics.items():
+                if key != 'loss' and isinstance(value, (int, float)):
+                    epoch_metrics.setdefault(key, []).append(float(value))
+
+        self._record_epoch_metrics(epoch_metrics)
         return running / max(n_steps, 1)
+
+    def _record_epoch_metrics(self, collected: dict[str, list[float]]) -> None:
+        """Appends the epoch mean of every objective metric to `history`, padding series that started late.
+
+        These are what `zte-analyze` plots as the mechanism curves -- a consensus term that never engaged or a
+        gallery accuracy that never left chance is visible here and nowhere else in the artifacts.
+        """
+        epochs = len(self.history['train_loss']) + 1
+        for key, values in collected.items():
+            series = self.history[f'train_{key}']
+            series.extend([float('nan')] * (epochs - 1 - len(series)))
+            series.append(sum(values) / len(values) if values else float('nan'))
+
+    def _residual_loss(self, metrics: dict[str, float]) -> torch.Tensor:
+        """Drains the predictive-residual head's own regression loss and merges its metrics in place.
+
+        The head trains here rather than inside an objective because it belongs to no objective: it de-trends the
+        encoder's tokens for whatever loss comes next, and every objective gets the same treatment.
+        """
+        drain = getattr(self.model, 'take_residual_loss', None)
+        if drain is None:
+            return torch.zeros((), device=self.device.device)
+
+        loss, extra = drain()
+        metrics.update(extra)
+        if loss is None:
+            return torch.zeros((), device=self.device.device)
+
+        return loss * self.config.model.residual_predict_weight
+
+    def _set_train_mode(self) -> None:
+        """Puts the model and objective in train mode, then pins every frozen submodule back to eval.
+
+        A frozen encoder left in train mode keeps its dropout and normalisation statistics live, which makes the
+        conditioning vector non-deterministic even though no gradient reaches it.
+        """
+        self.model.train()
+        self.objective.train()
+        for module in self._frozen_modules():
+            module.eval()
+
+    def _frozen_modules(self) -> list[nn.Module]:
+        """Returns the submodules whose parameters all have `requires_grad=False`, so they belong in eval mode."""
+        frozen: list[nn.Module] = []
+        for module in (self.model, getattr(self.objective, 'lm', None)):
+            if module is None:
+                continue
+            params = list(module.parameters())
+            if params and not any(p.requires_grad for p in params):
+                frozen.append(module)
+        return frozen
 
     def _log_step(self, metrics: dict[str, float]) -> None:
         """Writes per-step training scalars to TensorBoard (loss, lr, grad-norm, ...)."""
@@ -287,6 +436,9 @@ class Trainer:
         step = self._global_step
         self.writer.add_scalar('train/loss', metrics.get('loss', float('nan')), step)
         self.writer.add_scalar('train/lr', self.optimizer.param_groups[0]['lr'], step)
+        if len(self.optimizer.param_groups) > 1:
+            for name, group in zip(self._group_names, self.optimizer.param_groups, strict=False):
+                self.writer.add_scalar(f'train/lr/{name}', group['lr'], step)
         if self._last_grad_norm is not None:
             self.writer.add_scalar('train/grad_norm', self._last_grad_norm, step)
         for key, value in metrics.items():
@@ -302,12 +454,11 @@ class Trainer:
 
     def _optimizer_step(self) -> None:
         """Applies grad clipping, the optimiser/scheduler step and EMA update."""
-        params = list(self.model.parameters()) + list(self.objective.parameters())
         if self.config.train.grad_clip > 0:
             if self.scaler is not None:
                 self.scaler.unscale_(self.optimizer)
             self._last_grad_norm = float(
-                torch.nn.utils.clip_grad_norm_(params, self.config.train.grad_clip)
+                torch.nn.utils.clip_grad_norm_(self._trainable_params, self.config.train.grad_clip)
             )
         if self.scaler is not None:
             self.scaler.step(self.optimizer)
@@ -326,20 +477,32 @@ class Trainer:
                 pass
         if getattr(self.objective, 'needs_teacher', False) and hasattr(self.objective, 'post_step'):
             # Pass the global step so the objective can ramp its EMA teacher decay across training.
-            self.objective.post_step(
-                self.model, step=self._global_step, total_steps=self.total_steps
-            )
+            self.objective.post_step(self.model, step=self._global_step, total_steps=self.total_steps)
 
-    def _checkpoint_state(self, epoch: int) -> dict[str, Any]:
-        """Builds the checkpoint payload, including objective/teacher/resume state and extras."""
+    def _checkpoint_state(self, epoch: int, monitor: float | None = None) -> dict[str, Any]:
+        """Builds the checkpoint payload, including objective/teacher/resume state and extras.
+
+        Args:
+            epoch (int): The epoch being written.
+            monitor (float | None, optional): This epoch's monitored value. Defaults to `None`; supplying it records
+                the best metric this checkpoint will leave behind rather than the one it inherited.
+        """
         extra = dict(self.extra_state)
         extra['objective_state'] = self.objective.state_dict()
         # The EMA teacher, best metric and history live outside any state_dict, so persist them here.
         teacher = getattr(self.objective, 'teacher', None)
         if teacher is not None:
             extra['teacher_state'] = teacher.module.state_dict()
-        extra['best_metric'] = self.ckpt.best_metric
+        best = self.ckpt.best_metric
+        if monitor is not None and self.ckpt.is_improvement(monitor):
+            best = monitor
+        extra['best_metric'] = best
+        extra['epochs_since_best'] = self._epochs_since_best
+        if self._stage is not None:
+            extra['stage'] = self._stage
         extra['history'] = {k: list(v) for k, v in self.history.items()}
+        extra['provenance'] = self.provenance()
+        extra.update(self._decoder_extras())
         return CheckpointManager.build_state(
             self.model,
             self.config,
@@ -351,15 +514,64 @@ class Trainer:
             extra=extra,
         )
 
+    def _decoder_extras(self) -> dict[str, Any]:
+        """Collects the decoder-side payload a `ZTEDecoder` needs, or nothing when this run has no bridge.
+
+        `decoder_state` carries the decoder's own surface -- the bridge, the word resampler, the fitted gap correction
+        and the text projection -- named as `objective_state` names them. The encoder-side heads stay out: no decoder
+        reads them, and `objective_state` in the same checkpoint already holds everything a resume restores.
+        """
+        if getattr(self.objective, 'bridge', None) is None:
+            return {}
+        extras: dict[str, Any] = {
+            'decoder_state': self._decoder_state(),
+            'decoder_config': dataclasses.asdict(self.config.decoder),
+        }
+        gap = getattr(self.objective, 'gap', None)
+        gap_state = getattr(gap, 'state', None)
+        if gap_state is not None:
+            extras['gap_correction'] = gap_state
+        source = self.extra_state.get('encoder_source')
+        if source is not None:
+            extras['encoder_source'] = source
+        extras['lm_provenance'] = self._lm_provenance()
+        return extras
+
+    def _decoder_state(self) -> dict[str, torch.Tensor]:
+        """Returns the state of every decoder submodule this objective owns, prefixed with the submodule's name."""
+        state: dict[str, torch.Tensor] = {}
+        for name in _DECODER_MODULES:
+            module = getattr(self.objective, name, None)
+            if isinstance(module, nn.Module):
+                state.update({f'{name}.{key}': v for key, v in module.state_dict().items()})
+        return state
+
+    def _lm_provenance(self) -> dict[str, Any]:
+        """Returns what pins the frozen LM: its id, revision and tokeniser, so a decode is reproducible."""
+        lm = getattr(self.objective, 'lm', None)
+        recorded = getattr(lm, 'provenance', None)
+        if callable(recorded):
+            return dict(recorded())  # type: ignore[return-value]
+        decoder = self.config.decoder
+        return {
+            'lm_source': decoder.lm_source,
+            'lm_revision': decoder.lm_revision,
+            'tokenizer_source': decoder.tokenizer_source or decoder.lm_source,
+            'name_or_path': getattr(lm, 'name_or_path', None),
+        }
+
     def _resume_from_last(self) -> None:
         """Restores model/optimiser/scheduler/scaler/objective/teacher/best/history from the newest checkpoint.
 
         Reads whichever checkpoint is newest *and* readable, so a write torn apart by a reclaimed VM
         costs one epoch rather than the run.
         """
-        ckpt, last = CheckpointManager.load_latest(
-            self.ckpt.ckpt_dir, map_location=self.device.device
-        )
+        # A fresh VM has an empty checkpoint directory even though Drive holds the run. Pull it down before
+        # deciding there is nothing to resume: otherwise this restarts at epoch 1, seeds a *new* best from an
+        # untrained model, and the next mirror writes that over the good `best.pt` on Drive.
+        self.ckpt.stage_from_drive()
+
+        ckpt, last = CheckpointManager.load_latest(self.ckpt.ckpt_dir, map_location=self.device.device)
         if ckpt is None:
             _LOG.info(
                 'resume requested but no readable checkpoint in %s; starting fresh.',
@@ -378,12 +590,22 @@ class Trainer:
 
         # Trainer-side bookkeeping carried in `extra`.
         extra = ckpt.get('extra', {})
-        if 'objective_state' in extra:
-            self.objective.load_state_dict(extra['objective_state'])
+        # A decoder objective's frozen LM returns an empty `state_dict`, so only a non-strict load fits it.
+        decoder_run = getattr(self.objective, 'bridge', None) is not None
+        objective_state = extra.get('objective_state')
+        if objective_state is None and decoder_run:
+            objective_state = extra.get('decoder_state')
+        if objective_state is not None:
+            self.objective.load_state_dict(objective_state, strict=not decoder_run)
         teacher = getattr(self.objective, 'teacher', None)
         if teacher is not None and 'teacher_state' in extra:
             teacher.module.load_state_dict(extra['teacher_state'])
         self.ckpt.best_metric = extra.get('best_metric', self.ckpt.best_metric)
+        self._epochs_since_best = int(extra.get('epochs_since_best', 0))
+        # Older payloads carry no stage; `None` keeps their monitor behaviour unchanged rather than guessing a reset.
+        stage = extra.get('stage')
+        self._stage = stage if isinstance(stage, str) else None
+        self._wall_seconds = float((extra.get('provenance') or {}).get('wall_seconds', 0.0))
         for key, values in extra.get('history', {}).items():
             self.history[key] = list(values)
         self._global_step = int(ckpt.get('step', 0))

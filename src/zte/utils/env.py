@@ -5,11 +5,18 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('utils.env')
+
+# A raw-EEG bundle is ~24 GB once materialised, so a machine under this is one that will be killed mid-epoch.
+_LOW_RAM_GB: Final[float] = 20.0
+"""System RAM below which the raw arms are not expected to fit."""
+
+_GB: Final[int] = 1 << 30
+"""Bytes per gibibyte, for reporting memory and disk at a readable scale."""
 
 # Named `res/` output subtrees that are safe to wipe to free space / start fresh.
 _RES_TARGETS: dict[str, str] = {
@@ -42,6 +49,69 @@ def project_root(start: str | Path | None = None) -> Path:
     return Path.cwd()
 
 
+def env_defaults(root: str | Path | None = None) -> dict[str, str]:
+    """The environment every ZTE process wants, as data rather than as a side effect.
+
+    Note:
+        Each entry fixes a failure that is silent rather than loud -- an inline matplotlib backend that crashes a
+        headless subprocess, a block-buffered stdout that makes a multi-hour run look hung, an allocator that
+        fragments on the few very large blocks a raw-EEG batch asks for. Returning them lets a caller that cannot
+        import ZTE -- a notebook kernel, whose `!` subprocesses inherit its environment -- apply them itself.
+
+    Args:
+        root (str | Path | None, optional): Project root the cache paths hang off. Defaults to `project_root`.
+
+    Returns:
+        dict[str, str]: Environment variables and the values ZTE runs on.
+    """
+    base = Path(root) if root is not None else project_root()
+    cache = base / 'res' / '.cache'
+
+    return {
+        'MPLBACKEND': 'Agg',
+        'MPLCONFIGDIR': str(cache / 'matplotlib'),
+        'TOKENIZERS_PARALLELISM': 'false',
+        'NUMBA_CACHE_DIR': str(cache / 'numba'),
+        'XDG_CACHE_HOME': str(cache),
+        'PYTHONUNBUFFERED': '1',
+        'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True',
+    }
+
+
+def machine_resources(root: str | Path | None = None) -> dict[str, Any]:
+    """Reports the RAM, disk and GPU a run has to fit inside, without raising on any platform.
+
+    Args:
+        root (str | Path | None, optional): Directory whose filesystem is measured. Defaults to `project_root`.
+
+    Returns:
+        dict[str, Any]: `ram_gb` is `None` where the platform does not expose it, and `gpu` is `None` when there is
+        no CUDA device. `low_ram` flags a machine the raw arms are not expected to fit on.
+    """
+    base = Path(root) if root is not None else project_root()
+
+    try:
+        ram_gb: float | None = round(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / _GB, 1)
+    except AttributeError, OSError, ValueError:  # pragma: no cover -- non-POSIX, where sysconf is absent
+        ram_gb = None
+
+    gpu: dict[str, Any] | None = None
+    import torch
+
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        gpu = {'name': props.name, 'total_gb': round(props.total_memory / _GB, 1)}
+
+    return {
+        'cpu_count': os.cpu_count() or 1,
+        'ram_gb': ram_gb,
+        'free_disk_gb': round(shutil.disk_usage(base).free / _GB, 1),
+        'gpu': gpu,
+        'low_ram': ram_gb is not None and ram_gb < _LOW_RAM_GB,
+        'low_ram_threshold_gb': _LOW_RAM_GB,
+    }
+
+
 def set_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     """Sets defaults for headless matplotlib, quiet tokenizers and writable caches, never overwriting existing values.
 
@@ -53,13 +123,7 @@ def set_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     """
     root = project_root()
     cache = root / 'res' / '.cache'
-    defaults = {
-        'MPLBACKEND': 'Agg',
-        'MPLCONFIGDIR': str(cache / 'matplotlib'),
-        'TOKENIZERS_PARALLELISM': 'false',
-        'NUMBA_CACHE_DIR': str(cache / 'numba'),
-        'XDG_CACHE_HOME': str(cache),
-    }
+    defaults = env_defaults(root)
     if overrides:
         defaults.update(overrides)
     applied: dict[str, str] = {}
@@ -100,9 +164,7 @@ def ensure_dirs(root: str | Path | None = None) -> list[Path]:
     return dirs
 
 
-def clean_outputs(
-    targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False
-) -> list[Path]:
+def clean_outputs(targets: list[str] | None = None, root: str | Path | None = None, *, yes: bool = False) -> list[Path]:
     """Deletes selected `res/` output subtrees, to free space or start fresh.
 
     Args:
@@ -117,9 +179,7 @@ def clean_outputs(
     base = Path(root) if root is not None else project_root()
     names = targets or ['experiments']
     paths = (
-        [base / _RES_TARGETS['all']]
-        if 'all' in names
-        else [base / _RES_TARGETS[n] for n in names if n in _RES_TARGETS]
+        [base / _RES_TARGETS['all']] if 'all' in names else [base / _RES_TARGETS[n] for n in names if n in _RES_TARGETS]
     )
     removed: list[Path] = []
     for p in paths:
@@ -139,7 +199,8 @@ def accelerator_info() -> dict[str, Any]:
     """Reports the available accelerator without raising, on any platform.
 
     Returns:
-        dict[str, Any]: `{kind, name, torch_version, cuda, mps, tpu}`, where `kind` is the backend `--device auto` picks.
+        dict[str, Any]: `{kind, name, torch_version, cuda, mps, tpu}`, where `kind` is the backend `--device auto`
+        picks.
     """
     import torch
 

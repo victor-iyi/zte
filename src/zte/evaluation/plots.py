@@ -4,10 +4,10 @@ Every function returns a Matplotlib `Figure` (Agg backend, headless-safe) so the
 2-D projections use a plain NumPy PCA to avoid extra dependencies.
 """
 
-# pylint: disable=import-outside-toplevel,wrong-import-position
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import textwrap
+from typing import TYPE_CHECKING, Any, Final
 
 import matplotlib
 
@@ -18,16 +18,36 @@ import numpy as np
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
+# One colour per conditioning arm, shared with the Plotly dashboard so an arm reads the same in the report and
+# on the page: warm is the EEG-driven decode, earth and slate are the controls it has to beat.
+CAPACITY_ARM_COLOURS: Final[dict[str, str]] = {
+    'model': '#e4572e',
+    'length_only': '#b08968',
+    'shuffled_eeg': '#5c677d',
+    'mismatch': '#4a5759',
+    'null_prefix': '#8896ab',
+}
+"""Colour per capacity arm."""
+
+# Draw order as well as legend order: the model first because it is the claim, then the controls in the order
+# the certification argues them.
+CAPACITY_ARM_LABELS: Final[dict[str, str]] = {
+    'model': 'model (EEG prefix)',
+    'length_only': 'length-only prefix',
+    'shuffled_eeg': 'shuffled EEG (derangement)',
+    'mismatch': 'mismatched stimulus',
+    'null_prefix': 'no prefix',
+}
+"""Legend label per capacity arm, in the order the figures draw them."""
+
+# The two arms whose interval is drawn: the claim and the control that decides it. Four ribbons on one panel
+# hide the very gap the panel exists to show.
+CAPACITY_RIBBON_ARMS: Final[tuple[str, str]] = ('model', 'length_only')
+"""Arms whose bootstrap CI is drawn as a ribbon."""
+
 
 def _pca_2d(embeddings: np.ndarray) -> np.ndarray:
-    """Projects embeddings to 2-D with PCA (centred SVD).
-
-    Args:
-        embeddings (np.ndarray): Array `(n_samples, embed_dim)`.
-
-    Returns:
-        np.ndarray: `(n_samples, 2)` projection.
-    """
+    """Projects embeddings to 2-D with PCA (centred SVD)."""
     x = np.asarray(embeddings, dtype=np.float64)
     x = x - x.mean(axis=0, keepdims=True)
     _, _, vt = np.linalg.svd(x, full_matrices=False)
@@ -69,9 +89,7 @@ def scatter_2d(
     return fig
 
 
-def bar_probe_comparison(
-    rows: list[dict[str, Any]], metric: str = 'linear_score', title: str | None = None
-) -> Figure:
+def bar_probe_comparison(rows: list[dict[str, Any]], metric: str = 'linear_score', title: str | None = None) -> Figure:
     """Grouped bar chart of probe scores per target across representations.
 
     Args:
@@ -217,7 +235,6 @@ def region_importance_heatmap(
 
     Returns:
         Figure: The created heatmap.
-
     """
     frame = _pivot(rows, index='region', column='target', value='importance')
     regions, targets = list(frame.index), list(frame.columns)
@@ -245,9 +262,7 @@ def region_importance_heatmap(
     return fig
 
 
-def breakdown_bars(
-    rows: list[dict[str, Any]], metric: str, group: str, title: str | None = None
-) -> Figure:
+def breakdown_bars(rows: list[dict[str, Any]], metric: str, group: str, title: str | None = None) -> Figure:
     """Bar chart of one metric across the values of one stratification column.
 
     Args:
@@ -406,9 +421,7 @@ def retrieval_rank_distribution(
     return fig
 
 
-def variance_budget_pie(
-    summary: dict[str, Any], title: str = 'Variance budget: who vs what'
-) -> Figure:
+def variance_budget_pie(summary: dict[str, Any], title: str = 'Variance budget: who vs what') -> Figure:
     """Pie of the variance budget (which attribute each dimension serves).
 
     Args:
@@ -525,9 +538,7 @@ def geometry_before_after(
         sims = np.sum(x[a] * x[b], axis=1)
         same = group_ids[a] == group_ids[b]
         if same.any():
-            ax.hist(
-                sims[same], bins=40, alpha=0.6, density=True, label='same content', color='#4C78A8'
-            )
+            ax.hist(sims[same], bins=40, alpha=0.6, density=True, label='same content', color='#4C78A8')
         if (~same).any():
             ax.hist(
                 sims[~same],
@@ -672,9 +683,7 @@ def neuron_selectivity_heatmap(
     Returns:
         Figure: The created heatmap.
     """
-    fig, ax = plt.subplots(
-        figsize=(1.2 * max(len(top_neurons), 1) + 3, 0.5 * max(len(top_neurons), 1) + 2)
-    )
+    fig, ax = plt.subplots(figsize=(1.2 * max(len(top_neurons), 1) + 3, 0.5 * max(len(top_neurons), 1) + 2))
     if not top_neurons:
         ax.text(0.5, 0.5, 'no neurons', ha='center', va='center', transform=ax.transAxes)
         ax.set_title(title)
@@ -716,4 +725,547 @@ def neuron_selectivity_heatmap(
     fig.colorbar(im, ax=ax, label='variance explained')
     ax.set_title(title)
     fig.tight_layout()
+    return fig
+
+
+# ---- Decoder menu capacity ---- #
+
+
+def _finite(value: Any) -> float:
+    """A metric as a float, with anything missing, non-numeric or non-finite as NaN."""
+    try:
+        out = float(value)
+    except TypeError, ValueError:
+        return float('nan')
+
+    return out if np.isfinite(out) else float('nan')
+
+
+def _capacity_block(capacity: dict[str, Any]) -> dict[str, Any]:
+    """The headline score-family and pool-flavor block of a capacity report."""
+    headline = capacity.get('headline') or {}
+    families = capacity.get('scores') or {}
+
+    return ((families.get(headline.get('score')) or {}).get(headline.get('flavor'))) or {}
+
+
+def _capacity_placeholder(fig: Figure, ax: Any, message: str, title: str) -> Figure:
+    """Draws a centred message so a missing capacity report reads as absent rather than as a zero."""
+    ax.text(0.5, 0.5, message, ha='center', va='center', transform=ax.transAxes, fontsize=11, color='#5c5c5c')
+    ax.set_axis_off()
+    ax.set_title(title)
+    fig.tight_layout()
+
+    return fig
+
+
+def _capacity_failures(capacity: dict[str, Any]) -> list[str]:
+    """The clauses standing between this report and a certified menu size."""
+    clauses = (capacity.get('verdict') or {}).get('capacity_clauses') or {}
+    if clauses:
+        return [name for name, passed in clauses.items() if not passed]
+
+    per_k = _capacity_block(capacity).get('per_k') or {}
+    first = per_k.get(str(min((int(k) for k in per_k), default=0)))
+
+    return list((first or {}).get('failed_clauses') or [])
+
+
+def _capacity_label(capacity: dict[str, Any], *, named: int = 2) -> str:
+    """The certified menu size, or an em dash naming the clauses that failed -- never a blank and never a zero."""
+    certified = capacity.get('certified_k')
+    if certified is not None:
+        return f'certified K = {certified}'
+
+    failed = _capacity_failures(capacity)
+    if not failed:
+        return 'certified K = — (no cell scored)'
+
+    rest = len(failed) - named
+
+    return f'certified K = — (failed: {", ".join(failed[:named])}' + (f' +{rest} more)' if rest > 0 else ')')
+
+
+def _capacity_subtitle(capacity: dict[str, Any]) -> str:
+    """The provenance line every capacity panel carries: which cell, which pool, how many queries."""
+    headline = capacity.get('headline') or {}
+    line = (
+        f'{headline.get("score", "?")} / {headline.get("flavor", "?")} · holdout {capacity.get("holdout", "?")} · '
+        f'{capacity.get("n_queries", 0)} queries over a {capacity.get("n_gallery", 0)}-sentence gallery · '
+        f'{capacity.get("tie_policy", "ties lose")}'
+    )
+
+    # The verdict keeps its own line so no wrap can split `certified K = —` from the clause that failed.
+    return f'{textwrap.fill(line, width=104)}\n{_capacity_label(capacity)}'
+
+
+def _capacity_arm_series(cells: list[dict[str, Any]], arm: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """An arm's accuracy and CI bounds across menu sizes, NaN wherever that size held no scoreable pool."""
+    accuracy, lo, hi = [], [], []
+    for cell in cells:
+        block = (cell.get('arms') or {}).get(arm) or {}
+        interval = block.get('ci')
+        accuracy.append(_finite(block.get('accuracy')))
+        lo.append(_finite(interval[1]) if isinstance(interval, (list, tuple)) and len(interval) >= 3 else float('nan'))
+        hi.append(_finite(interval[2]) if isinstance(interval, (list, tuple)) and len(interval) >= 3 else float('nan'))
+
+    return np.asarray(accuracy), np.asarray(lo), np.asarray(hi)
+
+
+def _capacity_run_label(capacity: dict[str, Any], index: int) -> str:
+    """A per-run tick label: the held-out subject and the seed behind it."""
+    seed = (capacity.get('provenance') or {}).get('seed')
+    holdout = capacity.get('holdout') or f'run {index + 1}'
+
+    return f'{holdout}\ns{seed}' if seed is not None else str(holdout)
+
+
+def capacity_curve(
+    capacity: dict[str, Any], title: str = 'Decoder menu capacity — accuracy against menu size'
+) -> Figure:
+    """Menu accuracy against menu size for every arm, with the model-over-length gap drawn as the result.
+
+    Args:
+        capacity (dict[str, Any]): A `zte.evaluation.audit.capacity.capacity_report` block.
+        title (str, optional): Figure title. Defaults to 'Decoder menu capacity — accuracy against menu size'.
+
+    Returns:
+        Figure: The created figure.
+
+    Note:
+        The height of the model line is not the finding. A length-only prefix already scores well above chance
+        inside a pool it shares a word count with, so what certifies is the vertical gap to the length-only
+        trace -- which is why that gap is shaded and annotated with its paired sign-test p. Chance is a curve
+        rather than a line because it is exactly `1/K` and moves with every menu size, and a size no pool could
+        fill is greyed out so "unreachable" never reads as "the model failed here".
+    """
+    block = _capacity_block(capacity)
+    per_k = block.get('per_k') or {}
+    fig, ax = plt.subplots(figsize=(9.5, 5.8))
+
+    ks = sorted(int(k) for k in per_k)
+    if not ks:
+        return _capacity_placeholder(fig, ax, 'no capacity report', title)
+
+    cells = [per_k[str(k)] for k in ks]
+    grid = np.asarray(ks, dtype=np.float64)
+    chance = np.asarray([_finite(cell.get('chance')) for cell in cells])
+    chance = np.where(np.isfinite(chance), chance, 1.0 / grid)
+
+    unreachable = sorted({int(k) for k in (block.get('ks_unreachable') or [])})
+    for k in unreachable:
+        ax.axvspan(
+            k / 1.32,
+            k * 1.32,
+            color='#ebe8e3',
+            zorder=0,
+            label='no pool could fill this menu' if k == unreachable[0] else None,
+        )
+
+    series = {arm: _capacity_arm_series(cells, arm) for arm in CAPACITY_ARM_LABELS}
+    drawn = {arm: value for arm, value in series.items() if np.isfinite(value[0]).any()}
+    if not drawn:
+        return _capacity_placeholder(fig, ax, 'no arm scored at any menu size', title)
+
+    # The gap is the claim, so it is filled before the lines and named in the legend as such.
+    model, length = drawn.get('model'), drawn.get('length_only')
+    if model is not None and length is not None:
+        both = np.isfinite(model[0]) & np.isfinite(length[0])
+        ax.fill_between(
+            grid,
+            np.where(both, length[0], np.nan),
+            np.where(both, model[0], np.nan),
+            where=both & (model[0] > length[0]),
+            color=CAPACITY_ARM_COLOURS['model'],
+            alpha=0.13,
+            interpolate=True,
+            zorder=1,
+            label='model over length-only — the certifying gap',
+        )
+
+    ax.plot(
+        grid,
+        chance,
+        color='#5c5c5c',
+        linestyle=(0, (5, 3)),
+        linewidth=1.4,
+        zorder=2,
+        label='chance = 1/K (moves with K)',
+    )
+    for arm, (accuracy, lo, hi) in drawn.items():
+        colour = CAPACITY_ARM_COLOURS.get(arm, '#8c8c8c')
+        headline_arm = arm == 'model'
+        if arm in CAPACITY_RIBBON_ARMS and np.isfinite(lo).any():
+            ax.fill_between(grid, lo, hi, color=colour, alpha=0.16, linewidth=0, zorder=2)
+        ax.plot(
+            grid,
+            accuracy,
+            marker='o' if headline_arm else 's',
+            markersize=7 if headline_arm else 4.5,
+            linewidth=2.6 if headline_arm else 1.5,
+            color=colour,
+            zorder=4 if headline_arm else 3,
+            label=CAPACITY_ARM_LABELS[arm],
+        )
+
+    stack = np.concatenate([np.concatenate(value) for value in drawn.values()] + [chance])
+    finite = stack[np.isfinite(stack)]
+    top = min(1.05, max(0.14, float(finite.max()) * 1.35)) if finite.size else 1.05
+
+    certified = capacity.get('certified_k')
+    if certified is not None:
+        ax.axvline(float(certified), color='#1baf7a', linestyle='dotted', linewidth=1.8, zorder=2)
+        ax.text(
+            float(certified),
+            top * 0.5,
+            f'certified K = {certified}',
+            color='#1baf7a',
+            fontsize=9,
+            rotation=90,
+            ha='right',
+            va='center',
+            bbox={'facecolor': 'white', 'edgecolor': 'none', 'alpha': 0.85, 'pad': 1.5},
+        )
+
+    # The paired delta is annotated where the claim is made: at the certified size, or at the largest size a
+    # pool could actually fill when nothing certified.
+    feasible = [int(k) for k in (block.get('ks_feasible') or ks)]
+    focus = int(certified) if certified is not None else max(feasible, default=ks[0])
+    paired = ((per_k.get(str(focus)) or {}).get('paired') or {}).get('length_only')
+    if paired is not None and model is not None and length is not None:
+        index = ks.index(focus)
+        low, high = length[0][index], model[0][index]
+        if np.isfinite(low) and np.isfinite(high):
+            ax.annotate('', xy=(focus, high), xytext=(focus, low), arrowprops={'arrowstyle': '<->', 'color': '#e4572e'})
+            ax.text(
+                focus * 1.06,
+                (low + high) / 2.0,
+                f'{paired["delta"]:+.4f} over length-only\nsign-test p = {paired["sign_test_p"]:.2e}',
+                fontsize=8,
+                color='#e4572e',
+                va='center',
+            )
+
+    ax.set_xscale('log', base=2)
+    ax.set_xticks(ks)
+    ax.set_xticklabels([f'{k}\nn={cell.get("n_queries", 0)}' for k, cell in zip(ks, cells, strict=True)])
+    ax.minorticks_off()
+    ax.set_ylim(0.0, top)
+    ax.set_xlabel('menu size K (log2 axis) — n is the queries whose pool could fill that menu')
+    ax.set_ylabel('accuracy: the read sentence scored above every distractor')
+    ax.set_title(f'{title}\n{_capacity_subtitle(capacity)}', fontsize=10.5)
+    ax.legend(fontsize=8, loc='upper right', framealpha=0.92)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+    return fig
+
+
+def capacity_bits_ledger(
+    capacity: dict[str, Any], title: str = 'The bits ledger — free, certified, and still unrecovered'
+) -> Figure:
+    """One stacked bar of stimulus identity: what word count gives away, what certified, what is still missing.
+
+    Args:
+        capacity (dict[str, Any]): A `zte.evaluation.audit.capacity.capacity_report` block.
+        title (str, optional): Figure title. Defaults to 'The bits ledger — free, certified, and still unrecovered'.
+
+    Returns:
+        Figure: The created figure.
+
+    Note:
+        The denominator is drawn as a bracket rather than left in the caption, because a certified bit count is
+        credited against the identity that survives knowing word count, never against the full identity of the
+        gallery. Nothing certified renders as a hatched remainder and an em dash, never as a zero-height bar.
+    """
+    bits = capacity.get('bits') or {}
+    total, residual, free = (
+        _finite(bits.get('entropy_identity')),
+        _finite(bits.get('entropy_identity_given_length')),
+        _finite(bits.get('bits_from_length')),
+    )
+    fig, ax = plt.subplots(figsize=(10, 4.0))
+    if not (np.isfinite(total) and np.isfinite(residual) and np.isfinite(free)) or total <= 0.0:
+        return _capacity_placeholder(fig, ax, 'no bits ledger', title)
+
+    certified = _finite(bits.get('bits_certified'))
+    earned = certified if np.isfinite(certified) else 0.0
+    unrecovered = max(total - free - earned, 0.0)
+
+    ax.barh(0.0, free, height=0.42, color='#b08968', label=f'word count, free — {free:.4f} bits')
+    if earned > 0.0:
+        ax.barh(
+            0.0,
+            earned,
+            left=free,
+            height=0.42,
+            color='#e4572e',
+            label=f'decoder certified — {earned:.4f} bits ({capacity.get("readout", "menu selection")})',
+        )
+    ax.barh(
+        0.0,
+        unrecovered,
+        left=free + earned,
+        height=0.42,
+        color='#e9e9e9',
+        edgecolor='#b5b5b5',
+        hatch=None if earned > 0.0 else '//',
+        label=(
+            f'unrecovered — {unrecovered:.4f} bits'
+            if earned > 0.0
+            else f'unrecovered — {unrecovered:.4f} bits (nothing certified)'
+        ),
+    )
+
+    # Staggered heights: the two references sit close enough on a 9.45-bit axis that one row would collide.
+    for value, height, colour, note in (
+        (total, 0.52, '#c1121f', f'{total:.4f} — full stimulus identity'),
+        (free, 0.30, '#b08968', f'{free:.4f} — word count alone'),
+    ):
+        ax.axvline(value, color=colour, linestyle='dotted', linewidth=1.4)
+        ax.text(value, height, note, ha='right', va='bottom', fontsize=8, color=colour)
+
+    ax.annotate(
+        '',
+        xy=(free, -0.36),
+        xytext=(total, -0.36),
+        arrowprops={'arrowstyle': '|-|,widthA=0.4,widthB=0.4', 'color': '#4a5759', 'linewidth': 1.3},
+    )
+    ax.text(
+        (free + total) / 2.0,
+        -0.44,
+        f'the honest denominator: {residual:.4f} bits of identity left once word count is known',
+        ha='center',
+        va='top',
+        fontsize=9,
+        color='#4a5759',
+    )
+
+    fraction = _finite(bits.get('fraction_of_residual'))
+    share = '—' if not np.isfinite(fraction) else f'{fraction:.1%}'
+    recovered = (
+        f'recovered {certified:.4f} bits = {share} of the residual'
+        if np.isfinite(certified)
+        else f'recovered nothing of the {residual:.4f}-bit residual'
+    )
+    failed = _capacity_failures(capacity)
+    footer = f'{_capacity_label(capacity)} · estimator {bits.get("estimator", "log2(certified K)")} · {recovered}'
+    if not np.isfinite(certified) and failed:
+        footer += '\nevery failing clause: ' + textwrap.fill(', '.join(failed), width=118, subsequent_indent='  ')
+    ax.text(0.0, -0.72, footer, ha='left', va='top', fontsize=9, color='#333333')
+
+    ax.set_xlim(0.0, total * 1.02)
+    ax.set_ylim(-1.0, 0.95)
+    ax.set_yticks([])
+    ax.set_xlabel('bits of stimulus identity')
+    ax.set_title(f'{title}\n{_capacity_subtitle(capacity)}', fontsize=10.5)
+    ax.legend(fontsize=8, loc='upper left', framealpha=0.92)
+    ax.grid(axis='x', alpha=0.3)
+    fig.tight_layout()
+
+    return fig
+
+
+def capacity_seed_strip(
+    reports: list[dict[str, Any]],
+    *,
+    k: int = 2,
+    pooled: dict[str, Any] | None = None,
+    title: str = 'Every run as its own point — the 2-way menu across seeds',
+) -> Figure:
+    """Per-run menu accuracy at one size as individual points, over the interval the runs jointly support.
+
+    Args:
+        reports (list[dict[str, Any]]): One `capacity_report` block per seed or per held-out subject.
+        k (int, optional): Menu size to read. Defaults to 2.
+        pooled (dict[str, Any] | None, optional): A `pooled_capacity` block, whose verdict is printed beneath
+            the points. Defaults to None.
+        title (str, optional): Figure title. Defaults to 'Every run as its own point — the 2-way menu across seeds'.
+
+    Returns:
+        Figure: The created figure.
+
+    Note:
+        Run-to-run drift on this project has been the size of the effect, so a bar over the seeds would hide
+        exactly what a reader needs. Each run keeps its own interval, and a single run is labelled as a
+        measurement rather than a result.
+    """
+    points: list[dict[str, Any]] = []
+    for index, report in enumerate(reports or []):
+        cell = ((_capacity_block(report).get('per_k') or {}).get(str(k))) or {}
+        score = _finite(cell.get('accuracy'))
+        if not np.isfinite(score):
+            continue
+
+        reported = cell.get('ci')
+        interval = list(reported) if isinstance(reported, (list, tuple)) and len(reported) >= 3 else [score] * 3
+        points.append(
+            {
+                'label': _capacity_run_label(report, index),
+                'accuracy': score,
+                'lo': _finite(interval[1]),
+                'hi': _finite(interval[2]),
+                'chance': _finite(cell.get('chance')) if cell.get('chance') else 1.0 / k,
+                'certified': report.get('certified_k') is not None,
+                'n': int(cell.get('n_queries') or 0),
+            }
+        )
+
+    fig, ax = plt.subplots(figsize=(max(6.0, 1.5 * len(points) + 3.5), 5.0))
+    if not points:
+        return _capacity_placeholder(fig, ax, f'no run scored a {k}-way menu', title)
+
+    x = np.arange(len(points), dtype=np.float64)
+    accuracy = np.asarray([p['accuracy'] for p in points])
+    lo = np.asarray([p['lo'] if np.isfinite(p['lo']) else p['accuracy'] for p in points])
+    hi = np.asarray([p['hi'] if np.isfinite(p['hi']) else p['accuracy'] for p in points])
+    chance = float(np.nanmean([p['chance'] for p in points]))
+
+    ax.axhspan(
+        float(lo.min()),
+        float(hi.max()),
+        color='#dfe4ea',
+        alpha=0.75,
+        zorder=0,
+        label='interval every run supports (union of per-run CIs)',
+    )
+    ax.axhline(
+        float(accuracy.mean()),
+        color='#5c677d',
+        linestyle='dashed',
+        linewidth=1.3,
+        zorder=1,
+        label=f'mean over runs = {accuracy.mean():.4f}',
+    )
+    ax.axhline(chance, color='#5c5c5c', linestyle=(0, (5, 3)), linewidth=1.4, zorder=1, label=f'chance = 1/{k}')
+    ax.errorbar(
+        x, accuracy, yerr=[accuracy - lo, hi - accuracy], fmt='none', ecolor='#8c8c8c', capsize=4, linewidth=1.2
+    )
+    for certified, colour, label in (
+        (True, CAPACITY_ARM_COLOURS['model'], 'run certified a menu size'),
+        (False, '#8896ab', 'run certified nothing'),
+    ):
+        picked = [i for i, p in enumerate(points) if p['certified'] is certified]
+        if picked:
+            ax.scatter(
+                x[picked],
+                accuracy[picked],
+                s=80,
+                color=colour,
+                edgecolors='white',
+                linewidths=0.9,
+                zorder=4,
+                label=label,
+            )
+
+    if len(points) == 1:
+        ax.text(
+            0.5,
+            0.04,
+            'one seed is a measurement, not yet a result',
+            transform=ax.transAxes,
+            ha='center',
+            va='bottom',
+            fontsize=10,
+            color='#c1121f',
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'{p["label"]}\nn={p["n"]}' for p in points], fontsize=8)
+    ax.set_xlim(-0.6, len(points) - 0.4)
+    ax.set_ylim(0.0, min(1.05, max(float(hi.max()) * 1.3, chance * 1.6)))
+    ax.set_ylabel(f'{k}-way menu accuracy')
+    subtitle = (pooled or {}).get('reason') or f'{len(points)} run(s) at K = {k}'
+    ax.set_title(f'{title}\n{subtitle}', fontsize=10.5)
+    ax.legend(fontsize=8, loc='upper center', bbox_to_anchor=(0.5, -0.16), ncol=2, framealpha=0.92)
+    ax.grid(axis='y', alpha=0.3)
+    fig.tight_layout()
+
+    return fig
+
+
+def capacity_vs_length_oracle(
+    capacity: dict[str, Any],
+    arm: str = 'length_only',
+    title: str = 'Paired against the control — who wins each query, not who wins on average',
+) -> Figure:
+    """Per-query wins, losses and ties against one control arm, per menu size, with the exact sign-test p.
+
+    Args:
+        capacity (dict[str, Any]): A `zte.evaluation.audit.capacity.capacity_report` block.
+        arm (str, optional): Control arm to compare against. Defaults to 'length_only'.
+        title (str, optional): Figure title. Defaults to a paired-comparison caption.
+
+    Returns:
+        Figure: The created figure.
+
+    Note:
+        Every comparison in the certification is paired on identical query indices, and this is the panel that
+        shows it: a mean difference can be carried by a handful of queries, a sign test over wins and losses
+        cannot. Ties are drawn neutral but count as losses in the accuracy, which is why they are labelled.
+    """
+    block = _capacity_block(capacity)
+    per_k = block.get('per_k') or {}
+    alpha = _finite((capacity.get('headline') or {}).get('alpha'))
+    alpha = alpha if np.isfinite(alpha) else 0.05
+
+    rows = [
+        (int(key), cell['paired'][arm])
+        for key, cell in sorted(per_k.items(), key=lambda item: int(item[0]))
+        if arm in (cell.get('paired') or {})
+    ]
+    fig, ax = plt.subplots(figsize=(10, 0.85 * max(len(rows), 1) + 3.2))
+    if not rows:
+        return _capacity_placeholder(fig, ax, f'no paired comparison against {arm}', title)
+
+    y = np.arange(len(rows), dtype=np.float64)
+    wins = np.asarray([float(cell['model_wins']) for _, cell in rows])
+    losses = np.asarray([float(cell['control_wins']) for _, cell in rows])
+    ties = np.asarray([float(cell['ties']) for _, cell in rows])
+
+    ax.barh(y, ties, left=-ties / 2.0, height=0.5, color='#e9e9e9', edgecolor='#b5b5b5', label='ties (count as losses)')
+    ax.barh(y, wins, height=0.5, color=CAPACITY_ARM_COLOURS['model'], label='model wins the query')
+    ax.barh(
+        y,
+        -losses,
+        height=0.5,
+        color=CAPACITY_ARM_COLOURS.get(arm, '#8c8c8c'),
+        label=f'{CAPACITY_ARM_LABELS.get(arm, arm)} wins the query',
+    )
+    ax.axvline(0.0, color='#333333', linewidth=1.1)
+
+    span = float(max(np.max(wins), np.max(losses), np.max(ties) / 2.0, 1.0))
+    for index, (k, cell) in enumerate(rows):
+        passes = cell['ci'][1] > 0.0 and cell['sign_test_p'] < alpha
+        ax.text(
+            span * 1.06,
+            float(index),
+            f'Δ {cell["delta"]:+.4f} [{cell["ci"][1]:+.4f}, {cell["ci"][2]:+.4f}]   '
+            f'p = {cell["sign_test_p"]:.2e}   {"clause holds" if passes else "clause fails"}',
+            va='center',
+            fontsize=8,
+            color='#333333' if passes else '#c1121f',
+        )
+
+    certified = capacity.get('certified_k')
+
+    def _tick(k: int, cell: dict[str, Any]) -> str:
+        """One row label: the menu size, whether it certified, and how many pairs stand behind it."""
+        mark = ' (certified)' if certified is not None and k <= int(certified) else ''
+
+        return f'K = {k}{mark}\n{cell["n_pairs"]} pairs'
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([_tick(k, cell) for k, cell in rows], fontsize=9)
+    ticks = np.linspace(-span, span, 5)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f'{abs(t):.0f}' for t in ticks])
+    ax.set_xlim(-span * 1.15, span * 3.4)
+    ax.invert_yaxis()
+    ax.set_xlabel(f'queries, paired one-for-one — {CAPACITY_ARM_LABELS.get(arm, arm)} on the left, model on the right')
+    ax.set_title(f'{title}\n{_capacity_subtitle(capacity)}', fontsize=10.5)
+    ax.legend(fontsize=8, loc='upper center', bbox_to_anchor=(0.5, -0.12), ncol=3, framealpha=0.92)
+    ax.grid(axis='x', alpha=0.3)
+    fig.tight_layout()
+
     return fig

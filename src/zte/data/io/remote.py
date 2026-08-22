@@ -3,7 +3,6 @@
 A missing optional dependency or credential raises an actionable error rather than a stack trace.
 """
 
-# pylint: disable=import-outside-toplevel
 from __future__ import annotations
 
 import re
@@ -22,7 +21,8 @@ _DRIVE_ID_RE: Final[re.Pattern[str]] = re.compile(r'^[-\w]{10,}$')
 def parse_drive_spec(spec: str) -> tuple[DriveKind, str] | None:
     """Parses a Google Drive folder/file id or share URL into `(kind, id)`.
 
-    Strips common shell-escape artifacts (e.g. trailing `\\` before `?usp=`) so pasted terminal URLs work even when over-escaped.
+    Strips common shell-escape artifacts (e.g. trailing `\\` before `?usp=`) so pasted terminal URLs work even when
+    over-escaped.
 
     Args:
         spec (str): A Drive id, share link, or `uc?id=` URL.
@@ -103,9 +103,9 @@ def download_to_dir(remote_spec: str, local_dir: str | Path, *, resume: bool = T
     """Downloads a Drive file/folder (or copies a mounted path) into `local_dir`.
 
     Note:
-        Folder downloads are **resumable**: each file is fetched individually with `gdown`'s `resume=True`, completed files
-        are recorded in `.zte_drive_manifest.json`, and re-running the same command skips finished files and continues
-        partial `.part` transfers. Interrupt with Ctrl+C at any time and run again to continue.
+        Folder downloads are **resumable**: each file is fetched individually with `gdown`'s `resume=True`, completed
+        files are recorded in `.zte_drive_manifest.json`, and re-running the same command skips finished files and
+        continues partial `.part` transfers. Interrupt with Ctrl+C at any time and run again to continue.
 
     Args:
         remote_spec (str): A Drive file/folder id, a shareable URL, or a local path.
@@ -114,7 +114,6 @@ def download_to_dir(remote_spec: str, local_dir: str | Path, *, resume: bool = T
 
     Returns:
         The local directory containing the downloaded bundle.
-
     """
     dest = Path(local_dir)
     dest.mkdir(parents=True, exist_ok=True)
@@ -167,7 +166,6 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
 
     Raises:
         RuntimeError: If neither a mounted path nor PyDrive2 credentials are available.
-
     """
     local = Path(local_dir)
     if is_mounted_path(remote_dir):
@@ -181,18 +179,15 @@ def upload_directory(local_dir: str | Path, remote_dir: str) -> str:
         from pydrive2.drive import GoogleDrive  # type: ignore[reportMissingImports]
     except ImportError as exc:
         raise RuntimeError(
-            'Drive upload requires either a mounted Drive path or PyDrive2 (uv add pydrive2) with configured credentials.'
+            'Drive upload needs a mounted Drive path, or PyDrive2 (uv add pydrive2) with configured credentials.'
         ) from exc
 
-    # Authenticate with Google
     gauth = GoogleAuth()
     gauth.LocalWebserverAuth()
     drive = GoogleDrive(gauth)
 
-    # Create a zip archive of the local directory
     archive = shutil.make_archive(str(local), 'zip', root_dir=local)
 
-    # Upload the archive to the remote directory
     file = drive.CreateFile({'title': Path(archive).name, 'parents': [{'id': remote_dir}]})
     file.SetContentFile(archive)
     file.Upload()

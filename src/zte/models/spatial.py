@@ -1,8 +1,8 @@
 """Spatial positional encoding of EEG electrodes on the scalp -- see docs/SPATIAL_ENCODING.md for the derivation.
 
-Electrodes sit on a sphere, not a line, so the spatial analogue of the sequence encodings in `zte.models.transformer` is the real
-spherical-harmonic basis. The harmonics are exact for any coordinates; accuracy lives entirely in `ScalpGeometry`, which flags
-`approximate=True` when no real montage is supplied.
+Electrodes sit on a sphere, not a line, so the spatial analogue of the sequence encodings in `zte.models.transformer` is
+the real spherical-harmonic basis. The harmonics are exact for any coordinates; accuracy lives entirely in
+`ScalpGeometry`, which flags `approximate=True` when no real montage is supplied.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ _LOG = get_logger('models.spatial')
 def real_spherical_harmonics(theta: np.ndarray, phi: np.ndarray, l_max: int) -> np.ndarray:
     """Evaluates the real spherical-harmonic basis up to degree `l_max`.
 
-    Columns are the standard tesseral real harmonics (Condon-Shortley phase included), ordered `(l, m)` with `m` ascending from `-l`
-    to `l` within each degree -- `(l_max + 1) ** 2` columns in total.
+    Columns are the standard tesseral real harmonics (Condon-Shortley phase included), ordered `(l, m)` with `m`
+    ascending from `-l` to `l` within each degree -- `(l_max + 1) ** 2` columns in total.
 
     Args:
         theta (np.ndarray): Polar angle / colatitude in radians (`0` at `+z`, `pi` at `-z`), shape `(n_points,)`.
@@ -90,13 +90,9 @@ def degree_of_column(l_max: int) -> np.ndarray:
 def _fit_unit_sphere(xyz: np.ndarray) -> np.ndarray:
     """Centres electrode coordinates on the best-fit sphere and projects them onto the unit sphere.
 
-    Least-squares solves `|p - c| = r` for the centre, subtracts it and normalises, so the result lies on `S^2` for any input units or origin.
+    Least-squares solves `|p - c| = r` for the centre, subtracts it and normalises, so the result lies on `S^2` for any
 
-    Args:
-        xyz (np.ndarray): `(n_channels, 3)` electrode coordinates in any units/origin.
-
-    Returns:
-        np.ndarray: `(n_channels, 3)` unit-norm coordinates.
+    input units or origin.
     """
     p = np.asarray(xyz, dtype=np.float64)
     # Linear sphere fit: |p|^2 = 2 p.c + (r^2 - |c|^2)  ->  A [cx, cy, cz, k]^T = b.
@@ -114,13 +110,15 @@ def _fit_unit_sphere(xyz: np.ndarray) -> np.ndarray:
 class ScalpGeometry:
     """Electrode positions on the unit sphere, plus their spherical coordinates.
 
-    The channel order must match the channel axis of the EEG tensors, so that harmonic column `c` describes electrode `c`.
+    The channel order must match the channel axis of the EEG tensors, so that harmonic column `c` describes electrode
+    `c`.
 
     Attributes:
-        xyz (np.ndarray): `(n_channels, 3)` unit-norm electrode coordinates (`+x` right, `+y` front, `+z` up by convention).
+        xyz (np.ndarray): `(n_channels, 3)` unit-norm electrode coordinates (`+x` right, `+y` front, `+z` up by
+            convention).
         labels (tuple[str, ...] | None): Optional electrode labels (e.g. `'E1'`, `'Oz'`) aligned with `xyz`.
-        approximate (bool): `True` when the coordinates are the coordinate-free fallback rather than a real montage; downstream maths
-            is exact either way, only the coordinates differ.
+        approximate (bool): `True` when the coordinates are the coordinate-free fallback rather than a real montage;
+            downstream maths is exact either way, only the coordinates differ.
     """
 
     xyz: np.ndarray
@@ -152,8 +150,8 @@ class ScalpGeometry:
     def coords_2d(self) -> np.ndarray:
         """Azimuthal-equidistant 2-D scalp projection in `[0, 1] ** 2`, shape `(n_channels, 2)`.
 
-        The standard EEG topomap flattening -- radius is colatitude from the vertex, azimuth is `phi` -- as consumed by `SpatialAttention`
-        and `zte.evaluation.plots.scalp_topomap`.
+        The standard EEG topomap flattening -- radius is colatitude from the vertex, azimuth is `phi` -- as consumed by
+        `SpatialAttention` and `zte.evaluation.plots.scalp_topomap`.
 
         Returns:
             np.ndarray: `(n_channels, 2)` coordinates in `[0, 1]`, `+y` toward the front of the head.
@@ -205,8 +203,9 @@ class ScalpGeometry:
     def from_csv(cls, path: str | Path, n_channels: int) -> ScalpGeometry:
         """Loads exact electrode coordinates from a montage CSV.
 
-        The CSV must have a header and either Cartesian columns `channel,x,y,z` or spherical columns `channel,theta,phi` (radians, `theta` the
-        colatitude). `channel` is the 0-based index into the EEG channel axis. Every channel in `range(n_channels)` must be present.
+        The CSV must have a header and either Cartesian columns `channel,x,y,z` or spherical columns `channel,theta,phi`
+        (radians, `theta` the colatitude). `channel` is the 0-based index into the EEG channel axis. Every channel in
+        `range(n_channels)` must be present.
 
         Args:
             path (str | Path): Path to the montage CSV.
@@ -231,27 +230,18 @@ class ScalpGeometry:
 
         missing = [c for c in range(n_channels) if c not in rows]
         if missing:
-            raise ValueError(
-                f'Montage CSV {path} is missing channels {missing[:8]}... (of {n_channels}).'
-            )
+            raise ValueError(f'Montage CSV {path} is missing channels {missing[:8]}... (of {n_channels}).')
 
         # Cartesian columns are used as-is; spherical columns are converted to unit vectors.
         labels: list[str] = []
         if {'x', 'y', 'z'} <= fields:
-            xyz = np.array(
-                [
-                    [float(rows[c]['x']), float(rows[c]['y']), float(rows[c]['z'])]
-                    for c in range(n_channels)
-                ]
-            )
+            xyz = np.array([[float(rows[c]['x']), float(rows[c]['y']), float(rows[c]['z'])] for c in range(n_channels)])
         elif {'theta', 'phi'} <= fields:
             th = np.array([float(rows[c]['theta']) for c in range(n_channels)])
             ph = np.array([float(rows[c]['phi']) for c in range(n_channels)])
             xyz = np.stack([np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), np.cos(th)], axis=1)
         else:
-            raise ValueError(
-                f'Montage CSV {path} needs either x,y,z or theta,phi columns; found {sorted(fields)}.'
-            )
+            raise ValueError(f'Montage CSV {path} needs either x,y,z or theta,phi columns; found {sorted(fields)}.')
 
         if 'label' in fields:
             labels = [str(rows[c].get('label', '')) for c in range(n_channels)]
@@ -261,9 +251,9 @@ class ScalpGeometry:
     def fibonacci_fallback(cls, n_channels: int) -> ScalpGeometry:
         """Builds a coordinate-free placeholder geometry (flagged `approximate=True`).
 
-        A Fibonacci (golden-angle) spiral over the scalp cap: near-uniform and well separated, so the harmonics stay well conditioned, with
-        the index running anterior -> posterior to match the EGI channel ordering `zte.data.montage.regions` assumes. Not a real montage --
-        use `from_csv` or `from_mne` for geometric accuracy.
+        A Fibonacci (golden-angle) spiral over the scalp cap: near-uniform and well separated, so the harmonics stay
+        well conditioned, with the index running anterior -> posterior to match the EGI channel ordering
+        `zte.data.montage.regions` assumes. Not a real montage -- use `from_csv` or `from_mne` for geometric accuracy.
 
         Args:
             n_channels (int): Number of electrodes to place.
@@ -277,9 +267,7 @@ class ScalpGeometry:
         theta = cap * (idx + 0.5) / n_channels
         golden = math.pi * (3.0 - math.sqrt(5.0))  # golden angle
         phi = golden * idx
-        xyz = np.stack(
-            [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], axis=1
-        )
+        xyz = np.stack([np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)], axis=1)
         _LOG.info(
             'ScalpGeometry: using APPROXIMATE coordinate-free electrode positions '
             '(Fibonacci cap) for %d channels. Supply a montage CSV (channel,x,y,z) or '
@@ -296,8 +284,9 @@ class ScalpGeometry:
 
         Args:
             montage (str): An MNE standard montage name (default the EGI net ZuCo used).
-            keep (list[str] | None): Electrode labels to retain, in the exact order of the EEG channel axis. `None` keeps all EEG channels in the
-                montage's own order -- which will **not** match the ZuCo 105-channel subset, so pass the retained labels explicitly for real data.
+            keep (list[str] | None): Electrode labels to retain, in the exact order of the EEG channel axis. `None`
+                keeps all EEG channels in the montage's own order -- which will **not** match the ZuCo 105-channel
+                subset, so pass the retained labels explicitly for real data.
 
         Returns:
             ScalpGeometry: An exact (`approximate=False`) geometry.
@@ -323,13 +312,13 @@ class ScalpGeometry:
 def resolve_geometry(n_channels: int, montage_csv: str | Path | None = None) -> ScalpGeometry:
     """Returns the best available electrode geometry for `n_channels`.
 
-    Loads a real montage from `montage_csv` when supplied (and it contains coordinates); otherwise falls back to the approximate Fibonacci cap and
-    logs that geometry is not exact.
+    Loads a real montage from `montage_csv` when supplied (and it contains coordinates); otherwise falls back to the
+    approximate Fibonacci cap and logs that geometry is not exact.
 
     Args:
         n_channels (int): Number of EEG channels.
-        montage_csv (str | Path | None): Optional montage CSV path (`channel,x,y,z` or `channel,theta,phi`). A region-only
-            `channel,region` CSV is ignored here with a warning, since it carries no coordinates.
+        montage_csv (str | Path | None): Optional montage CSV path (`channel,x,y,z` or `channel,theta,phi`). A
+            region-only `channel,region` CSV is ignored here with a warning, since it carries no coordinates.
 
     Returns:
         ScalpGeometry: A real geometry when coordinates are available, else the approximate fallback.
@@ -339,8 +328,7 @@ def resolve_geometry(n_channels: int, montage_csv: str | Path | None = None) -> 
             return ScalpGeometry.from_csv(montage_csv, n_channels)
         except (ValueError, KeyError, FileNotFoundError) as exc:
             _LOG.warning(
-                'Could not load coordinates from montage_csv=%s (%s); falling back to '
-                'approximate electrode geometry.',
+                'Could not load coordinates from montage_csv=%s (%s); falling back to approximate electrode geometry.',
                 montage_csv,
                 exc,
             )
@@ -351,9 +339,10 @@ def resolve_geometry(n_channels: int, montage_csv: str | Path | None = None) -> 
 class SphericalHarmonicEncoding(nn.Module):
     """Fixed-geometry, learnable-projection spherical-harmonic positional encoding for electrodes.
 
-    The `(n_channels, n_harmonics)` harmonic matrix is a non-trainable buffer (geometry is data, not a parameter); each degree gets a
-    learnable gain `exp(log_scale_l)` shared across its `2l + 1` orders, and a linear map projects to `out_dim`. By the addition theorem
-    the per-degree gains select which geodesic scales matter, giving a rotation-invariant electrode code.
+    The `(n_channels, n_harmonics)` harmonic matrix is a non-trainable buffer (geometry is data, not a parameter); each
+    degree gets a learnable gain `exp(log_scale_l)` shared across its `2l + 1` orders, and a linear map projects to
+    `out_dim`. By the addition theorem the per-degree gains select which geodesic scales matter, giving a
+    rotation-invariant electrode code.
 
     Attributes:
         n_channels (int): Number of electrodes encoded.
@@ -373,9 +362,11 @@ class SphericalHarmonicEncoding(nn.Module):
 
         Args:
             geometry (ScalpGeometry): Electrode positions; its channel order defines the encoding's channel order.
-            l_max (int): Maximum harmonic degree. Larger resolves finer scalp detail; `(l_max + 1) ** 2` harmonics are used.
+            l_max (int): Maximum harmonic degree. Larger resolves finer scalp detail; `(l_max + 1) ** 2` harmonics are
+                used.
             out_dim (int): Output width (typically the frontend's per-channel feature width).
-            learnable (bool): If `True`, per-degree gains are trainable; if `False` they are fixed to 1 (the projection stays trainable).
+            learnable (bool): If `True`, per-degree gains are trainable; if `False` they are fixed to 1 (the projection
+                stays trainable).
         """
         super().__init__()
         self.n_channels = geometry.n_channels
@@ -419,9 +410,9 @@ def _largest_divisor(value: int, target: int) -> int:
 class SpatialChannelMixer(nn.Module):
     """Adds spherical-harmonic electrode encoding to per-channel features and (optionally) mixes across electrodes.
 
-    Each electrode in the input's `(n_channels, feat_dim)` trailing axes is a token; its positional encoding is added exactly as a sequence
-    transformer adds sequence position, then `mix` runs one pre-norm multi-head self-attention over the channel axis. Output shape equals
-    input shape, so it drops in ahead of any channel-consuming frontend.
+    Each electrode in the input's `(n_channels, feat_dim)` trailing axes is a token; its positional encoding is added
+    exactly as a sequence transformer adds sequence position, then `mix` runs one pre-norm multi-head self-attention
+    over the channel axis. Output shape equals input shape, so it drops in ahead of any channel-consuming frontend.
 
     Attributes:
         feat_dim (int): Per-electrode feature width (the last axis).
@@ -470,16 +461,16 @@ class SpatialChannelMixer(nn.Module):
             x (torch.Tensor): `(..., n_channels, feat_dim)` with arbitrary leading (batch/sequence) dims.
 
         Returns:
-            torch.Tensor: Same shape as `x`, with electrode positional encoding added and (optionally) spatial self-attention applied.
+            torch.Tensor: Same shape as `x`, with electrode positional encoding added and (optionally) spatial
+                self-attention applied.
         """
         lead = x.shape[:-2]
         c, d = x.shape[-2:]
         flat = x.reshape(-1, c, d)
         flat = flat + self.pos().to(flat.dtype)[None]
         if self.mix:
-            # Every (sentence, word) token becomes its own attention problem, so the q/k/v activations
-            # scale with batch x sentence length -- gigabytes before the first backward on a raw window.
-            # Recomputing them in the backward pass is numerically identical and frees most of that.
+            # Every (sentence, word) token is its own attention problem, so q/k/v activations scale with
+            # batch x sentence length -- gigabytes on a raw window. Recomputing in backward is exact.
             if self.grad_checkpoint and self.training and flat.requires_grad:
                 flat = flat + checkpoint(self._mix, flat, use_reentrant=False)
             else:
@@ -496,18 +487,17 @@ class SpatialChannelMixer(nn.Module):
 class SpatialAttention(nn.Module):
     """Défossez-style learned spatial attention over 2-D electrode coordinates.
 
-    An alternative to `SpatialChannelMixer`: each output electrode is a geometry-derived weighted combination of the inputs,
-    `out_o = in_o + sum_c softmax_c(z_o(pos_c)) . in_c`, where `z_o` reads a 2-D Fourier embedding of the flattened scalp coordinate.
-    Input and output channel counts are equal, so it drops into a frontend exactly like `SpatialChannelMixer`.
+    An alternative to `SpatialChannelMixer`: each output electrode is a geometry-derived weighted combination of the
+    inputs, `out_o = in_o + sum_c softmax_c(z_o(pos_c)) . in_c`, where `z_o` reads a 2-D Fourier embedding of the
+    flattened scalp coordinate. Input and output channel counts are equal, so it drops into a frontend exactly like
+    `SpatialChannelMixer`.
 
     Attributes:
         n_channels (int): Number of electrodes.
         approximate_geometry (bool): Whether the coordinates were the approximate fallback.
     """
 
-    def __init__(
-        self, geometry: ScalpGeometry, feat_dim: int, n_freqs: int = 8, dropout: float = 0.0
-    ) -> None:  # pylint: disable=unused-argument
+    def __init__(self, geometry: ScalpGeometry, feat_dim: int, n_freqs: int = 8, dropout: float = 0.0) -> None:
         """Builds the spatial-attention mixer.
 
         Args:

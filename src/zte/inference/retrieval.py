@@ -16,15 +16,7 @@ type ProbeTask = Literal['auto', 'classification', 'regression']
 
 
 def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """L2-normalises rows of `x`.
-
-    Args:
-        x (np.ndarray): Array `(n_samples, embed_dim)`.
-        eps (float): Numerical floor (default `1e-8`).
-
-    Returns:
-        np.ndarray: Row-normalised float32 array.
-    """
+    """L2-normalises rows of `x`."""
     x = np.asarray(x, dtype=np.float32)
     return x / (np.linalg.norm(x, axis=1, keepdims=True) + eps)
 
@@ -34,14 +26,7 @@ _QUERY_SIM_BUDGET_BYTES = 128 * 1024 * 1024
 
 
 def _query_block_rows(n_items: int) -> int:
-    """Number of queries to score at once so the similarity tile stays under budget.
-
-    Args:
-        n_items (int): Bank size (columns of the similarity tile).
-
-    Returns:
-        int: Query-block height in `[1, 4096]`, bounding the tile to ~128 MiB.
-    """
+    """Number of queries to score at once so the similarity tile stays under budget."""
     if n_items <= 0:
         return 1
     return max(1, min(4096, _QUERY_SIM_BUDGET_BYTES // (n_items * 4)))
@@ -78,29 +63,17 @@ class NearestNeighborIndex:
         """
         embeddings = np.asarray(embeddings, dtype=np.float32)
         if len(embeddings) != len(metadata):
-            raise ValueError(
-                f'embeddings ({len(embeddings)}) and metadata ({len(metadata)}) must align.'
-            )
+            raise ValueError(f'embeddings ({len(embeddings)}) and metadata ({len(metadata)}) must align.')
         self.bank = _l2_normalize(embeddings)
         self.metadata = metadata.reset_index(drop=True)
         self.csls = bool(csls)
         self.csls_k = int(csls_k)
-        self.r_bank: np.ndarray | None = (
-            self._neighbourhood_means(self.bank, self.csls_k) if self.csls else None
-        )
+        self.r_bank: np.ndarray | None = self._neighbourhood_means(self.bank, self.csls_k) if self.csls else None
 
     def _neighbourhood_means(self, points: np.ndarray, m: int) -> np.ndarray:
         """Mean of each row's top-`m` cosine similarities to the bank, excluding an exact self-match.
 
         Block-tiled under the same memory guard `query` uses, so the `(n_items x n_items)` matrix never materialises.
-
-        Args:
-            points (np.ndarray): L2-normalised points `(n, embed_dim)` scored against the bank. When
-                `points is self.bank` the diagonal self-match is dropped.
-            m (int): Neighbourhood size.
-
-        Returns:
-            np.ndarray: Per-row mean top-`m` cosine `(n,)`, float32.
         """
         n_items = self.bank.shape[0]
         m = max(1, min(m, n_items - 1))
@@ -232,27 +205,13 @@ class NearestNeighborIndex:
 
 
 def _looks_categorical(values: np.ndarray) -> bool:
-    """Heuristically decides whether label values are categorical.
-
-    Args:
-        values (np.ndarray): Candidate label values.
-
-    Returns:
-        bool: `True` for non-numeric dtypes or low-cardinality integer labels.
-    """
+    """Heuristically decides whether label values are categorical."""
     if values.dtype.kind in {'U', 'S', 'O', 'b'}:
         return True
     return values.dtype.kind in {'i', 'u'} and len(np.unique(values)) <= 20
 
 
 def _majority(row: np.ndarray) -> Any:
-    """Returns the most frequent value in `row` (ties broken by first seen).
-
-    Args:
-        row (np.ndarray): Neighbour label values for one query.
-
-    Returns:
-        Any: The majority label.
-    """
+    """Returns the most frequent value in `row` (ties broken by first seen)."""
     labels, counts = np.unique(row, return_counts=True)
     return labels[int(np.argmax(counts))]

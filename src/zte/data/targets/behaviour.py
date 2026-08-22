@@ -23,20 +23,14 @@ def _column(words: 'pd.DataFrame', name: str) -> np.ndarray:
     """Returns a float column, synthesising derived targets; NaN where unavailable."""
     if name == 'regression_time':
         if {'GPT', 'GD'}.issubset(words.columns):
-            return (
-                (words['GPT'].astype('float64') - words['GD'].astype('float64'))
-                .clip(lower=0.0)
-                .to_numpy()
-            )
+            return (words['GPT'].astype('float64') - words['GD'].astype('float64')).clip(lower=0.0).to_numpy()
         return np.full(len(words), np.nan)
     if name in words.columns:
         return words[name].astype('float64').to_numpy()
     return np.full(len(words), np.nan)
 
 
-def build_behaviour_matrix(
-    words: 'pd.DataFrame', targets: tuple[str, ...]
-) -> tuple[np.ndarray, list[str], np.ndarray]:
+def build_behaviour_matrix(words: 'pd.DataFrame', targets: tuple[str, ...]) -> tuple[np.ndarray, list[str], np.ndarray]:
     """Builds a `(n_words, n_targets)` behaviour target matrix aligned to `words` rows.
 
     Args:

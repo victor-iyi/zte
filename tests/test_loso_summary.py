@@ -38,10 +38,8 @@ def _fold(directory: Path, holdout: str, pooled: float, held_top1: float, cat_ab
 
 
 def test_collect_and_summarise_reports_the_honest_trend(tmp_path: Path) -> None:
-    """Test that the aggregator separates converged/collapsed folds and averages the held-out lift."""
-    _fold(
-        tmp_path, 'ZDN', pooled=0.131, held_top1=0.0, cat_above=True
-    )  # converged, held-out at chance
+    """The aggregator separates converged/collapsed folds and averages the held-out lift."""
+    _fold(tmp_path, 'ZDN', pooled=0.131, held_top1=0.0, cat_above=True)  # converged, held-out at chance
     _fold(tmp_path, 'ZGW', pooled=0.008, held_top1=0.0086, cat_above=True)  # collapsed pooled
     _fold(tmp_path, 'ZJM', pooled=0.0015, held_top1=0.0, cat_above=False)  # collapsed + degenerate
     _fold(tmp_path, 'ZKB', pooled=0.02, held_top1=0.0071, cat_above=True)  # partial
@@ -60,7 +58,7 @@ def test_collect_and_summarise_reports_the_honest_trend(tmp_path: Path) -> None:
 
 
 def test_non_loso_runs_are_ignored(tmp_path: Path) -> None:
-    """Test that a non-LOSO run (no held-out subject) is not counted as a fold."""
+    """A non-LOSO run (no held-out subject) is not counted as a fold."""
     d = tmp_path / 'some_run' / 'evaluation'
     d.mkdir(parents=True)
     (d / 'metrics.json').write_text(

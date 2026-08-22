@@ -13,6 +13,8 @@
 - `zte.cli.compare` -- `zte-compare`: cross-run comparison dashboard.
 - `zte.cli.download` -- `zte-download`: resumable Google Drive download.
 - `zte.cli.pack` -- `zte-pack`: archive, unpack and delete runs.
+- `zte.cli.parallax` -- `zte-parallax`: per-task encoders scored across tasks, the 3x3 matrix and the chamber.
+- `zte.cli.colab` -- `zte-colab`: every Colab capability as JSON, so the notebook kernel never imports ZTE.
 - `zte.cli.support` -- shared argparse groups and provisioning helpers.
 """
 

@@ -19,7 +19,7 @@
 #   arm (held out ZAB)                 frontend        Top-5 hits/700   p        eff-rank
 #   exp8_clip_e5_raw                   raw_conformer        32        7e-16      0.264
 #   exp10_clip_e5_meaning_raw          raw_conformer        32        7e-16      0.264
-#   exp10_clip_e5_meaning_raw_v2       raw_conformer        19        1e-06      0.535
+#   exp10_clip_e5_meaning_raw_v2       raw_conformer        19        1e-06      0.535   (retired 2026-08-14)
 #   exp9_clip_e5_meaning (retired)     band_power           10        3e-02      0.160
 #
 # WHAT THE DEFAULT ADDS ON TOP. The raw path had never had cross-subject alignment of any kind --
@@ -50,7 +50,7 @@
 #   CONTROL=1 bash scripts/run_loso.sh             # also run the skip-gram control arm (A/B)
 #   SUBJECTS="ZAB ZDM" bash scripts/run_loso.sh    # restrict the held-out set
 #   SEEDS="42 43 44" bash scripts/run_loso.sh      # repeat each fold at N seeds -> mean±std
-#   FULL_CFG=experiments/flagship/zte_raw_aligned_wide.yaml bash scripts/run_loso.sh  # v2 encoder
+#   FULL_CFG=experiments/flagship/clip_e5_raw.yaml bash scripts/run_loso.sh           # the third tied arm
 #   FULL_CFG=experiments/flagship/clip_e5_meaning_raw.yaml bash scripts/run_loso.sh   # the 32/700 baseline
 #
 # WHY MULTI-SEED. The 2026-07-24 single-seed sweep converged bimodally: 5/12 folds trained to a healthy
@@ -84,7 +84,7 @@ FULL_CFG="${FULL_CFG:-experiments/flagship/zte_raw_aligned.yaml}"   # the raw-co
 CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
 SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"    # leave each config's own meaning target alone
-SEEDS="${SEEDS:-42}"          # seed(s) per held-out subject; e.g. "42 43 44" to average out training instability
+SEEDS="${SEEDS:-42 2 10 95}"  # default seeds per held-out subject; override SEEDS="42" (single seed) or SEEDS="42 43 44" (multiple seeds) to average out training instability
 
 # Built once and reused from cache across every held-out subject: the montage, the meaning target and
 # the processed bundle are all subject-independent, so only the first subject pays for them.

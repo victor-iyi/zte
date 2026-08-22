@@ -26,9 +26,7 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--experiments', default='res/experiments', help='Experiments directory.')
-    parser.add_argument(
-        '--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-    )
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     sub = parser.add_subparsers(dest='command', required=True)
 
     sub.add_parser('list', help='List runs with sizes and completeness.')
@@ -73,18 +71,14 @@ def parse_arguments() -> argparse.Namespace:
         help='res/ subtrees to include (default: experiments cache benchmark explorer). Missing ones are skipped.',
     )
     s.add_argument('--res', default='res', help='The res/ root to snapshot from.')
-    s.add_argument(
-        '--out', default=None, help='Output .zip path (point at Drive to upload directly).'
-    )
+    s.add_argument('--out', default=None, help='Output .zip path (point at Drive to upload directly).')
     s.add_argument(
         '--note',
         default=None,
         type=str,
         help='Free-text note stored in the archive PROVENANCE metadata.',
     )
-    s.add_argument(
-        '--move', action='store_true', help='Delete the archived subtrees after a successful zip.'
-    )
+    s.add_argument('--move', action='store_true', help='Delete the archived subtrees after a successful zip.')
     s.add_argument(
         '--skip-synthetic',
         action='store_true',
@@ -97,9 +91,7 @@ def parse_arguments() -> argparse.Namespace:
         help='Extract a run/snapshot archive (e.g. on your machine). Use --dest res for a snapshot.',
     )
     u.add_argument('archive', help='Path to a .zip produced by zip / snapshot.')
-    u.add_argument(
-        '--dest', default='res/experiments', help='Where to extract (use res for a snapshot).'
-    )
+    u.add_argument('--dest', default='res/experiments', help='Where to extract (use res for a snapshot).')
 
     d = sub.add_parser('delete', help='Delete run directories.')
     d.add_argument('names', nargs='+', help='Run names to delete.')
