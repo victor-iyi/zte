@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -33,14 +34,22 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--out', type=Path, default=Path('res/explorer/thought_space_explorer.html'))
     parser.add_argument(
         '--kind',
-        choices=['explorer', 'atlas', 'both'],
+        choices=['explorer', 'atlas', 'both', 'levels'],
         default='explorer',
-        help='Which interactive HTML(s) to emit: the Thought-Space Explorer, the Neuron Atlas, or both.',
+        help='Which view to emit: the Thought-Space Explorer, the Neuron Atlas, both, or the three-level '
+        'alignment atlas as plotly figure JSON.',
     )
     parser.add_argument(
         '--atlas',
         action='store_true',
         help='Shorthand for --kind atlas (emit the Neuron Atlas instead of the explorer).',
+    )
+    parser.add_argument(
+        '--root',
+        type=str,
+        default=None,
+        help='Corpus root a `--kind levels` run rebuilds its dataset from when the run wrote no bundle, which is '
+        'every run trained with --data-cache.',
     )
     parser.add_argument('--dims', type=int, choices=[2, 3], default=3)
     parser.add_argument('--max-points', type=int, default=6000)
@@ -133,6 +142,150 @@ def _from_run(args: argparse.Namespace) -> dict:
         'title': f'ZTE Thought-Space Explorer - {run_dir.name}',
         'atlas_title': f'ZTE Neuron Atlas - {run_dir.name}',
     }
+
+
+def _dataset_for(args: argparse.Namespace, run_dir: Path, ckpt: Path) -> Any:
+    """The dataset a run was trained on: its own bundle when it wrote one, else rebuilt from its config.
+
+    Note:
+        `zte-run` writes `<run_dir>/bundle` only when `--data-cache` is absent, and the Drive mirror excludes it --
+        so a run from any real session has no bundle beside it and has to name its corpus instead.
+    """
+    from zte.cli.support.sources import dataset_for_config
+    from zte.config import ZTEConfig
+    from zte.data.dataset import ZuCoDataset
+    from zte.training.checkpoint import CheckpointManager
+
+    bundle = run_dir / 'bundle'
+    if (bundle / 'meta.json').is_file():
+        return ZuCoDataset.load(bundle)
+
+    if not getattr(args, 'root', None):
+        raise FileNotFoundError(
+            f'{run_dir.name} carries no bundle -- a run trained with --data-cache does not write one, and the '
+            'Drive mirror excludes it. Name the corpus with --root so the dataset can be rebuilt.'
+        )
+
+    config = ZTEConfig.from_dict(CheckpointManager.load(ckpt, map_location='cpu')['config'])
+    return dataset_for_config(args, config.dataset)
+
+
+def _level_atlas(args: argparse.Namespace) -> Path:
+    """Projects one run's sub-word, word and sentence vectors into a single space and writes the figure JSON.
+
+    Note:
+        All three come out of `ZTEModel.project`, so they genuinely share one 768-dimensional space rather than
+        being three unrelated pictures placed side by side. A per-level projection would say nothing about whether
+        a word lands near the sentence that contains it, which is the only question the picture is asked.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments (uses `--run`, `--out`, `--max-points`, `--seed`).
+
+    Returns:
+        Path: The written figure-JSON file.
+    """
+    import json
+
+    import torch
+
+    from zte.alignment import LevelPairs, LevelPoints, build_atlas, contrastive_figure, contrastive_geometry
+    from zte.data.torch_dataset import ZuCoTorchDataset, collate_sentences
+    from zte.device import resolve_device
+    from zte.inference.embed import ZTEEmbedder
+
+    run_dir = Path(args.run)
+    ckpt = run_dir / 'checkpoints' / 'best.pt'
+    if not ckpt.exists():
+        ckpt = run_dir / 'checkpoints' / 'last.pt'
+    dataset = _dataset_for(args, run_dir, ckpt)
+    embedder = ZTEEmbedder.from_checkpoint(ckpt, dataset, device=resolve_device(args.device))
+
+    torch_ds = ZuCoTorchDataset(dataset)
+    texts, words = torch_ds.ordered_texts(), torch_ds.ordered_words()
+
+    rows = min(len(torch_ds), max(int(args.max_points) // 8, 8))
+    batch = collate_sentences([torch_ds[i] for i in range(rows)])
+    device = next(embedder.model.parameters()).device
+    batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+
+    model = embedder.model.eval()
+    n_sub = int(embedder.config.objective.token_sub_tokens)
+    with torch.no_grad():
+        word_hidden = model.token_hidden(batch)
+        valid = model.pooling_mask(batch)
+        word_vec = model.project(word_hidden)
+        sent_vec = model.project(model._pool_tokens(model.contextualize(word_hidden, valid), valid))  # noqa: SLF001
+        sub_vec = model.project(model.sub_token_hidden(batch, n_sub)) if model.uses_raw else None
+
+    text_id = batch['sentence_text_id'].tolist()
+    subjects = [str(s) for s in batch['subject'].tolist()]
+    levels = [
+        LevelPoints(
+            level='sentence',
+            vectors=sent_vec.cpu().numpy(),
+            labels=[texts[t] if 0 <= t < len(texts) else '' for t in text_id],
+            subjects=subjects,
+        )
+    ]
+    positive_ids = [np.asarray(text_id)]
+
+    content = batch['content_id'].cpu().numpy()
+    flat_words, flat_labels, flat_subjects, word_ids = [], [], [], []
+    for row, tid in enumerate(text_id):
+        row_words = words[tid] if 0 <= tid < len(words) else []
+        for col in range(int(valid[row].sum())):
+            flat_words.append(word_vec[row, col].cpu().numpy())
+            flat_labels.append(row_words[col] if col < len(row_words) else '')
+            flat_subjects.append(subjects[row])
+            word_ids.append(int(content[row, col]))
+    if flat_words:
+        levels.append(
+            LevelPoints(level='word', vectors=np.stack(flat_words), labels=flat_labels, subjects=flat_subjects)
+        )
+        positive_ids.append(np.asarray(word_ids))
+
+    if sub_vec is not None:
+        flat_sub, sub_labels, sub_subjects, sub_ids = [], [], [], []
+        for row, tid in enumerate(text_id):
+            row_words = words[tid] if 0 <= tid < len(words) else []
+            for col in range(int(valid[row].sum())):
+                label = row_words[col] if col < len(row_words) else ''
+                for slot in range(n_sub):
+                    flat_sub.append(sub_vec[row, col, slot].cpu().numpy())
+                    sub_labels.append(f'{label}#{slot}')
+                    sub_subjects.append(subjects[row])
+                    sub_ids.append(int(content[row, col]) * n_sub + slot)
+        if flat_sub:
+            levels.append(
+                LevelPoints(level='token', vectors=np.stack(flat_sub), labels=sub_labels, subjects=sub_subjects)
+            )
+            positive_ids.append(np.asarray(sub_ids))
+
+    payload = build_atlas(levels, max_points_per_level=int(args.max_points), seed=int(args.seed))
+    payload['run'] = run_dir.name
+
+    # The same vectors answer the other half of the question: what the contrastive term actually bought at each
+    # level. Positives are what the loss called a positive -- the sentence text, the word slot, the word-piece slot.
+    pairs = [
+        LevelPairs(level=points.level, vectors=points.vectors, positive_ids=ids, subjects=np.asarray(points.subjects))
+        for points, ids in zip(levels, positive_ids, strict=True)
+        if len(np.unique(ids)) > 1
+    ]
+    if pairs:
+        report = contrastive_geometry(pairs, seed=int(args.seed))
+        payload['contrastive'] = report
+        payload['figures']['contrastive'] = contrastive_figure(report)
+    out = args.out if args.out.suffix == '.json' else args.out.with_suffix('.json')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload), encoding='utf-8')
+    _LOG.info(
+        'Three-level atlas from %s: %s -> %s',
+        run_dir.name,
+        ', '.join(f'{p.level} {len(p.vectors)}' for p in levels),
+        out,
+    )
+
+    return out
 
 
 def _quick_config(include_eye_tracking: bool, root: str) -> object:
@@ -258,6 +411,9 @@ def main() -> None:
     configure_logging(args.log_level)
 
     kind = 'atlas' if getattr(args, 'atlas', False) else args.kind
+    if kind == 'levels':
+        print(str(_level_atlas(args).resolve()))
+        return
 
     from zte.evaluation.interactive import thought_space_explorer_html
 
