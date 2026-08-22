@@ -152,16 +152,16 @@ uv run zte-colab sweep   plan|next|status --drive <root>    # the campaign, what
 uv run zte-colab mirror  --drive <root> --direction up      # move a session between the VM and Drive
 ```
 
-| subcommand | answers | the notebook uses it for |
-| --- | --- | --- |
-| `env` | which interpreter, accelerator and machine, and the environment every run wants | §2 wiring the kernel, §3 the hardware report |
-| `session` | where this dated session reads and writes on Drive | §4, and the env vars every later `!uv run` inherits |
-| `runs` | every run on Drive and locally, its checkpoints and its held-out headline | `find_runs()`, `resolve_ckpt()`, §10c |
-| `arms` | which configs are trainable, labelled by their own header comment | the §7a and §8 dropdowns |
-| `readings` | one decode's readings, scored, beside the five-clause verdict | §8d |
-| `panels` | the study's charts, drawn once, as figure JSON | §10b |
-| `sweep` | the campaign as an ordered plan, which runs already landed, and the next one to train | the alignment notebooks' §7 |
-| `mirror` | what moved between the VM and Drive, and what was deliberately left | §11, `mirror_to_drive()` / `restore_from_drive()` |
+| subcommand | answers                                                                               | the notebook uses it for                            |
+| ---------- | ------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `env`      | which interpreter, accelerator and machine, and the environment every run wants       | §2 wiring the kernel, §3 the hardware report        |
+| `session`  | where this dated session reads and writes on Drive                                    | §4, and the env vars every later `!uv run` inherits |
+| `runs`     | every run on Drive and locally, its checkpoints and its held-out headline             | `find_runs()`, `resolve_ckpt()`, §10c               |
+| `arms`     | which configs are trainable, labelled by their own header comment                     | the §7a and §8 dropdowns                            |
+| `readings` | one decode's readings, scored, beside the five-clause verdict                         | §8d                                                 |
+| `panels`   | the study's charts, drawn once, as figure JSON                                        | §10b                                                |
+| `sweep`    | the campaign as an ordered plan, which runs already landed, and the next one to train | the alignment notebooks' §7                         |
+| `mirror`   | what moved between the VM and Drive, and what was deliberately left                   | §11, `mirror_to_drive()` / `restore_from_drive()`   |
 
 `env` returns the environment as **data** rather than applying it: a notebook kernel's `!` subprocesses inherit the kernel's environment, so the kernel is where those defaults have to land. Each one fixes a failure that is silent rather than loud — a `module://` matplotlib backend that crashes a headless subprocess, a block-buffered stdout that makes a multi-hour run look hung, a CUDA allocator that fragments on the few very large blocks a raw-EEG batch asks for.
 
@@ -311,3 +311,32 @@ One operational gate applies to the `token` level specifically. Its notebook run
 quoted, exactly as the length oracle is read at the sentence level. A sub-word piece count is a brain-free
 signature large enough to out-retrieve the best encoder this project has trained, so a token-level headline that
 does not clear that floor is not evidence of decoding. See [`EVALUATION.md`](EVALUATION.md).
+
+## The results audit — one notebook, no training
+
+[`notebooks/audits/zte_results_audit.ipynb`](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/audits/zte_results_audit.ipynb)
+is standalone: upload it on its own, or open it from the badge, and it clones the repo itself. It trains nothing
+and writes nothing into a run directory — it reads the corpus and the checkpoints already on Drive, and hands back
+one zip to unpack into `res/audits/`.
+
+Three parts, and the first is the one that decides something:
+
+| Part | What it answers                                                                            | Needs                | Roughly     |
+| ---- | ------------------------------------------------------------------------------------------ | -------------------- | ----------- |
+| A    | How much of sentence identity does *spelling* give away, on the real 700-sentence gallery? | the corpus only      | minutes     |
+| B    | Where does each trained encoder sit against that floor, and against sentence length?       | a checkpoint per run | ~5 min each |
+| C    | Everything above, zipped and downloaded                                                    | —                    | seconds     |
+
+Part A is `zte-audit --root <corpus> --piece-oracle`, and it needs **no checkpoint**: the piece oracle is a property
+of the corpus, not of any model, so it can be run before a token-level arm exists. That is the point of it — if
+spelling alone resolves the gallery, a sub-word alignment level cannot produce an interpretable retrieval number,
+and a fortnight of A100 time is better spent elsewhere.
+
+Part B adds each run's own held-out Top-1 through `zte-rebaseline --piece-oracle`, which turns the oracle's
+`not measured` into a verdict.
+
+Leave `RESUME_DATE` at `None`. It selects only where the audit *writes*: the corpus path is shared and never
+date-stamped, and the run discovery walks every dated session newest-first regardless.
+
+Read `alignment_coverage` before anything else in the block. It is the fraction of ZuCo words that matched their
+own reference text, and below about 0.99 the piece counts are partly wrong and the bits are not trustworthy.
