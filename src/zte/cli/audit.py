@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from zte.cli.support.datasets import synthetic_root
 from zte.cli.support.io import write_json
@@ -31,6 +32,19 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='Fabricate a small schema-faithful tree and audit it.',
     )
+    parser.add_argument(
+        '--piece-oracle',
+        action='store_true',
+        dest='piece_oracle',
+        help='Also score the sub-word piece signatures the gallery gives away. Model-free like the rest of this '
+        'audit -- it reads the corpus, not a checkpoint -- so it answers what a token-level arm would have to '
+        'clear before one is trained.',
+    )
+    parser.add_argument(
+        '--tokenizer',
+        default=None,
+        help="Tokeniser the piece oracle spells the gallery with. Defaults to the decoder's own LM.",
+    )
     parser.add_argument('--out', type=Path, default='docs/confound_audit.md', help='Output Markdown path.')
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
 
@@ -50,6 +64,47 @@ def _dataset_config(args: argparse.Namespace) -> DatasetConfig:
     return cfg
 
 
+def _piece_oracle(dataset: ZuCoDataset, cfg: DatasetConfig, tokenizer: str | None) -> dict[str, Any]:
+    """Scores what the gallery's sub-word piece signatures give away, with no model involved.
+
+    Note:
+        The oracle is a property of the corpus, not of any encoder, so it needs no checkpoint and answers the
+        question a token-level arm has to answer before it is worth training: how much of sentence identity does
+        spelling hand over for free.
+    """
+    from zte.config import DecoderConfig
+    from zte.data.targets.tokens import build_token_alignment
+    from zte.data.torch_dataset import ZuCoTorchDataset
+    from zte.evaluation.audit.rebaseline import piece_profile_report
+
+    torch_ds = ZuCoTorchDataset(dataset)
+    source = tokenizer or DecoderConfig().lm_source
+    alignment = build_token_alignment(
+        torch_ds.ordered_texts(),
+        torch_ds.ordered_words(),
+        source,
+        cache_dir=str(Path(cfg.cache_dir) / 'tokens'),
+    )
+    block = piece_profile_report(alignment.word_pieces)
+    block['tokenizer'] = source
+    block['alignment_coverage'] = alignment.coverage
+    block['n_gallery'] = int(alignment.word_pieces.shape[0])
+    _LOG.info(
+        'Piece oracle over %d gallery sentences (%s, coverage %.3f): gate %s at Top-1 %.4f (%.2f bits), '
+        'ceiling %s at Top-1 %.4f.',
+        block['n_gallery'],
+        source,
+        alignment.coverage,
+        block['gate_signature'],
+        block['gate_top1'],
+        block['gate_bits'],
+        block['ceiling_signature'],
+        block['ceiling_top1'],
+    )
+
+    return block
+
+
 def main() -> None:
     """Entry point for the `zte-audit` console script."""
     args = parse_arguments()
@@ -61,6 +116,8 @@ def main() -> None:
     dataset = ZuCoDataset(cfg).build(show_progress=False)
 
     report = confound_report(dataset.words)
+    if args.piece_oracle:
+        report['piece_oracle'] = _piece_oracle(dataset, cfg, args.tokenizer)
     out = args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_markdown(report), encoding='utf-8')

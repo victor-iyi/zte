@@ -26,10 +26,11 @@ NOTEBOOKS: Final[tuple[Path, ...]] = (
     REPO / 'notebooks' / 'alignments' / 'zte_token.ipynb',
     REPO / 'notebooks' / 'alignments' / 'zte_word.ipynb',
     REPO / 'notebooks' / 'alignments' / 'zte_sentence.ipynb',
+    REPO / 'notebooks' / 'audits' / 'zte_results_audit.ipynb',
 )
 """Every shipped notebook, each of which Colab opens with an interpreter older than the venv."""
 
-ALIGNMENT: Final[tuple[Path, ...]] = NOTEBOOKS[3:]
+ALIGNMENT: Final[tuple[Path, ...]] = NOTEBOOKS[3:6]
 """The three level notebooks, which differ only in which unit their contrastive term pulls at."""
 
 # The kernel renders payloads that `zte-colab` printed; it never computes with ZTE. `pandas` and `plotly` are
