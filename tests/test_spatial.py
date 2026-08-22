@@ -7,6 +7,7 @@ integration into the ZTE frontends (shape preservation, opt-in activation, check
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -301,3 +302,85 @@ def test_spatial_checkpoint_roundtrip(small_dataset: ZuCoDataset) -> None:
     clone.eval()
     with torch.no_grad():
         torch.testing.assert_close(model(batch, contextual=True), clone(batch, contextual=True))
+
+
+# ---- The geometry a number was actually computed under ---- #
+
+
+def _encoding(model: Any) -> SphericalHarmonicEncoding:
+    """The harmonic encoding inside a built model, typed so the attribute chain is checkable."""
+    return cast('SphericalHarmonicEncoding', model.frontend.spatial_mixer.pos)
+
+
+def test_the_approximate_flag_travels_with_the_basis_it_describes() -> None:
+    """The harmonic basis is checkpointed, so the flag has to be too, or a loaded module misreports its own geometry.
+
+    Note:
+        A VM without the montage CSV builds the placeholder cap, then `load_state_dict` overwrites the basis with
+        the trained one. A flag left on the freshly built module would say `approximate` about numbers computed
+        under the exact montage -- the warning that cries wolf, on a project where flagging an approximation is a
+        binding rule.
+    """
+    import tempfile
+
+    import torch
+
+    from zte.config import ModelConfig
+    from zte.models.embedding import build_model
+
+    torch.manual_seed(0)
+    config = ModelConfig(
+        frontend='raw_conformer',
+        embed_dim=32,
+        hidden_dim=16,
+        n_layers=2,
+        n_heads=2,
+        conformer_filters=8,
+        factored=False,
+        subject_adapter=False,
+        spatial_encoding='spherical_harmonics',
+        spatial_harmonic_degree=4,
+    )
+    csv = Path(tempfile.mkdtemp()) / 'montage.csv'
+    rng = np.random.default_rng(0)
+    xyz = rng.standard_normal((16, 3))
+    xyz /= np.linalg.norm(xyz, axis=1, keepdims=True)
+    csv.write_text('channel,x,y,z\n' + '\n'.join(f'{i},{x:.6f},{y:.6f},{z:.6f}' for i, (x, y, z) in enumerate(xyz)))
+
+    exact = build_model(config, raw_shape=(16, 24), n_channels=16, montage_csv=str(csv)).eval()
+    loaded = build_model(config, raw_shape=(16, 24), n_channels=16, montage_csv=None).eval()
+
+    assert _encoding(loaded).approximate_geometry is True
+    assert _encoding(exact).approximate_geometry is False
+
+    loaded.load_state_dict(exact.state_dict())
+
+    assert _encoding(loaded).approximate_geometry is False, 'the flag must follow the basis'
+    assert torch.equal(_encoding(loaded).harmonics, _encoding(exact).harmonics)
+
+    # A run genuinely built without a montage, with no checkpoint behind it, stays flagged.
+    fresh = build_model(config, raw_shape=(16, 24), n_channels=16, montage_csv=None).eval()
+    assert _encoding(fresh).approximate_geometry is True
+
+
+def test_the_montage_is_staged_from_the_store_rather_than_rebuilt_per_machine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is written outside any run directory, so the per-run Drive mirror never carries it to the next VM."""
+    from zte.cli.support.provision import apply_spatial
+    from zte.config import ZTEConfig
+    from zte.data.cache import ARTIFACT_SUBDIR
+
+    store = tmp_path / 'store'
+    monkeypatch.setenv('ZTE_CACHE_REMOTE', str(store))
+
+    seeded = store / ARTIFACT_SUBDIR / 'montage_gsn105.csv'
+    seeded.parent.mkdir(parents=True)
+    seeded.write_text('channel,x,y,z\n' + '\n'.join(f'{i},0.0,0.0,1.0' for i in range(105)))
+
+    local = tmp_path / 'res' / 'montage_gsn105.csv'
+    config = ZTEConfig()
+    apply_spatial(config, 'exact', montage_out=local)
+
+    assert config.dataset.montage_csv == str(local)
+    assert local.read_text() == seeded.read_text(), 'the staged montage must be the one the store holds'

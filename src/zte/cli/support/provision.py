@@ -105,13 +105,23 @@ def apply_spatial(
     config.model.spatial_encoding = _SPATIAL_ENCODING[choice]  # type: ignore[assignment]
     if choice in _EXACT_SPATIAL:
         try:
+            from zte.data.cache import fetch_artifact, publish_artifact
             from zte.data.montage.montage import DEFAULT_MONTAGE, build_montage_csv
 
-            path = build_montage_csv(montage_out, montage=montage_name or DEFAULT_MONTAGE, zuco105=True)
+            # The montage is written outside any run directory, so the per-run Drive mirror never sees it and a
+            # fresh VM would rebuild it -- or, with `mne` absent, silently degrade to the placeholder cap.
+            staged = fetch_artifact(montage_out)
+            path = (
+                montage_out
+                if staged
+                else build_montage_csv(montage_out, montage=montage_name or DEFAULT_MONTAGE, zuco105=True)
+            )
+            publish_artifact(path)
             config.dataset.montage_csv = str(path)
             _LOG.info(
-                'Provisioned exact montage -> %s (spatial_encoding=%s).',
+                'Provisioned exact montage -> %s (%s, spatial_encoding=%s).',
                 path,
+                'staged from the persistent store' if staged else 'built here',
                 config.model.spatial_encoding,
             )
         except ImportError:

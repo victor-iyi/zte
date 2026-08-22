@@ -62,15 +62,21 @@ def test_apply_spatial_attention_uses_learned_scheme(monkeypatch: pytest.MonkeyP
     assert cfg.dataset.montage_csv == 'm.csv'
 
 
-def test_apply_spatial_exact_without_mne_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing `mne` degrades `exact` to the approximate cap rather than crashing the run."""
+def test_apply_spatial_exact_without_mne_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing `mne` degrades `exact` to the approximate cap rather than crashing the run.
+
+    Note:
+        Written to `tmp_path` deliberately. The provisioner now stages an existing montage rather than rebuilding
+        it, so pointing at the default would pass or fail on whether this machine happens to carry one.
+    """
 
     def boom(*_a: object, **_k: object) -> Path:
         raise ImportError('no mne')
 
     monkeypatch.setattr('zte.data.montage.montage.build_montage_csv', boom)
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
     cfg = ZTEConfig()
-    provision.apply_spatial(cfg, 'exact')
+    provision.apply_spatial(cfg, 'exact', montage_out=tmp_path / 'montage_gsn105.csv')
     assert cfg.model.spatial_encoding == 'spherical_harmonics'  # still on...
     assert cfg.dataset.montage_csv is None  # ...but coordinate-free
 

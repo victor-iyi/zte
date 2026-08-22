@@ -351,6 +351,10 @@ class SphericalHarmonicEncoding(nn.Module):
         approximate_geometry (bool): Whether the underlying coordinates were the approximate fallback.
     """
 
+    harmonics: torch.Tensor
+    degrees: torch.Tensor
+    approximate: torch.Tensor
+
     def __init__(
         self,
         geometry: ScalpGeometry,
@@ -372,16 +376,24 @@ class SphericalHarmonicEncoding(nn.Module):
         self.n_channels = geometry.n_channels
         self.l_max = int(l_max)
         self.out_dim = int(out_dim)
-        self.approximate_geometry = bool(geometry.approximate)
-
         harmonics = geometry.spherical_harmonics(self.l_max).astype(np.float32)
         self.register_buffer('harmonics', torch.from_numpy(harmonics), persistent=True)
         degrees = torch.from_numpy(degree_of_column(self.l_max)).long()
         self.register_buffer('degrees', degrees, persistent=True)
 
+        # Persistent, and beside the basis it describes: the basis is restored from a checkpoint whatever montage
+        # the loading machine happens to have, so a flag left on the freshly built module would report the geometry
+        # this process could find rather than the geometry the numbers were computed under.
+        self.register_buffer('approximate', torch.tensor(bool(geometry.approximate)), persistent=True)
+
         n_deg = self.l_max + 1
         self.log_scale = nn.Parameter(torch.zeros(n_deg), requires_grad=learnable)
         self.proj = nn.Linear(n_harmonics(self.l_max), self.out_dim)
+
+    @property
+    def approximate_geometry(self) -> bool:
+        """Whether the harmonic basis in use was built from a placeholder cap rather than a real montage."""
+        return bool(self.approximate.item())
 
     def forward(self) -> torch.Tensor:
         """Returns the per-channel positional encoding.
@@ -389,8 +401,8 @@ class SphericalHarmonicEncoding(nn.Module):
         Returns:
             torch.Tensor: `(n_channels, out_dim)` electrode positional encoding on the module's device/dtype.
         """
-        gains = torch.exp(self.log_scale)[self.degrees]  # type: ignore[index]  # (n_harmonics,)
-        scaled = self.harmonics * gains[None, :]  # type: ignore[operator]  # (n_channels, n_harmonics)
+        gains = torch.exp(self.log_scale)[self.degrees]  # (n_harmonics,)
+        scaled = self.harmonics * gains[None, :]  # (n_channels, n_harmonics)
         return self.proj(scaled)
 
     def extra_repr(self) -> str:
