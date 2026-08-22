@@ -195,6 +195,7 @@ class Trainer:
                     break
         except KeyboardInterrupt:
             self._wall_seconds += time.perf_counter() - self._wall_start
+            self._wall_start = time.perf_counter()
             done = len(self.history['train_loss']) + self._start_epoch - 1
             _LOG.warning(
                 'Paused at epoch %d/%d. Progress saved to %s. Resume with --resume.',
@@ -209,6 +210,9 @@ class Trainer:
             self._restore_signal_handlers(previous)
 
         self._wall_seconds += time.perf_counter() - self._wall_start
+        # Closes the interval as well as banking it. `provenance()` adds whatever has elapsed since this mark, so a
+        # start left standing would count the whole of training a second time in every manifest it writes.
+        self._wall_start = time.perf_counter()
         self._log_hparams()
         if self.writer is not None:
             self.writer.close()
