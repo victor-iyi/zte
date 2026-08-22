@@ -84,7 +84,7 @@ FULL_CFG="${FULL_CFG:-experiments/flagship/zte_raw_aligned.yaml}"   # the raw-co
 CTRL_CFG="${CTRL_CFG:-experiments/benchmark/baseline_skipgram_loso.yaml}"  # skip-gram control arm
 SPATIAL="${SPATIAL:-exact}"   # build + wire the true ZuCo-105 electrode montage (needs `mne`; degrades gracefully)
 MEANING="${MEANING:-keep}"    # leave each config's own meaning target alone
-SEEDS="${SEEDS:-42 2 10 95}"          # seed(s) per held-out subject; e.g. "42 43 44" to average out training instability
+SEEDS="${SEEDS:-42 2 10 95}"  # default seeds per held-out subject; override SEEDS="42" (single seed) or SEEDS="42 43 44" (multiple seeds) to average out training instability
 
 # Built once and reused from cache across every held-out subject: the montage, the meaning target and
 # the processed bundle are all subject-independent, so only the first subject pays for them.

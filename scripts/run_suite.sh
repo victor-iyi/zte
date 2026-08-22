@@ -63,7 +63,7 @@ export PYTHONUNBUFFERED=1
 # Configuration
 # --------------------------------------------------------------------------- #
 ROOT="${1:-res/data/zuco_extracted}"      # data root (positional arg 1)
-SEEDS="${SEEDS:-42 2 10 95}"                       # fixed seed(s); override e.g. SEEDS="42 43"
+SEEDS="${SEEDS:-42 2 10 95}"              # default seeds; override e.g. SEEDS="42" (single seed) or SEEDS="42 43 44" (multiple seeds)
 PY="${PY:-.venv/bin/python}"              # project venv interpreter
 [ -x "${PY}" ] || PY="python"             # Colab / system python fallback
 OUT_ROOT="${OUT_ROOT:-res/experiments}"   # where zte-run catalogues each run (a Drive path persists everything)

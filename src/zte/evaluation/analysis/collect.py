@@ -547,7 +547,7 @@ def _fold_frame(runs: pd.DataFrame) -> pd.DataFrame:
         )
         if c in folds.columns
     ]
-    return folds[keep].reset_index(drop=True)
+    return folds[keep].reset_index(drop=True)  # type: ignore[return-value]
 
 
 def _scores(record: dict[str, Any]) -> dict[str, Any]:
