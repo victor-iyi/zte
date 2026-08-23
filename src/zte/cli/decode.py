@@ -13,8 +13,9 @@ import numpy as np
 import pandas as pd
 import torch
 
-from zte.cli.support.io import write_json
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config
+from zte.cli.support.done import add_force_argument, checkpoint_digest, is_done, mark_done, signature
+from zte.cli.support.io import read_json, write_json
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config, dataset_key
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab
@@ -204,6 +205,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--run-name', type=str, default=None, dest='run_name')
+    add_force_argument(parser)
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
@@ -1239,21 +1241,48 @@ def main() -> None:
     payload = CheckpointManager.load(args.ckpt, map_location='cpu')
     config = ZTEConfig.from_dict(payload['config'])
     options = options_from_args(args, config)
-    dataset = dataset_for_config(args, config.dataset)
 
-    decoder = ZTEDecoder.from_checkpoint(args.ckpt, dataset, device=resolve_device(args.device))
     out_dir = Path(args.out) if args.out else Path(args.ckpt).resolve().parent.parent / 'evaluation'
-    result = decode_evaluation(
-        decoder,
-        dataset,
-        split_indices(dataset, config, args.split),
-        split=args.split,
-        config=config,
-        options=options,
-        out_dir=out_dir,
-        run_name=args.run_name or config.run_name,
+    artifacts = [out_dir / 'generation.json', out_dir / 'generation.jsonl']
+    if options.capacity:
+        artifacts.append(out_dir / 'capacity.json')
+    sig = signature(
+        args,
+        tool='decode',
+        extra={'ckpt_sha256': checkpoint_digest(args.ckpt), 'dataset': dataset_key(config.dataset)},
+        ignore=('ckpt', 'run_name'),
     )
+
+    # Decided before the dataset is built and the LM is loaded, which is where the hours go: this decodes a
+    # checkpoint rather than training one, so identical weights and identical options give the decode on disk.
+    if is_done(artifacts, sig, force=args.force):
+        result = _existing_decode(artifacts)
+    else:
+        dataset = dataset_for_config(args, config.dataset)
+        decoder = ZTEDecoder.from_checkpoint(args.ckpt, dataset, device=resolve_device(args.device))
+        result = decode_evaluation(
+            decoder,
+            dataset,
+            split_indices(dataset, config, args.split),
+            split=args.split,
+            config=config,
+            options=options,
+            out_dir=out_dir,
+            run_name=args.run_name or config.run_name,
+        )
+        mark_done(artifacts, sig)
+
     _report(result, config, options)
+
+
+def _existing_decode(artifacts: Sequence[Path]) -> dict[str, Any]:
+    """Reassembles the scored blocks of a finished decode from the files it wrote."""
+    result: dict[str, Any] = dict(read_json(artifacts[0]))
+    capacity = next((a for a in artifacts if a.name == 'capacity.json'), None)
+    if capacity is not None:
+        result['capacity'] = read_json(capacity).get('capacity')
+
+    return result
 
 
 def _report(result: dict[str, Any], config: ZTEConfig, options: DecodeOptions) -> None:

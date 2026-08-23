@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from zte.cli.support.datasets import synthetic_root
+from zte.cli.support.done import add_force_argument, is_done, mark_done, signature
 from zte.cli.support.io import write_json
+from zte.cli.support.sources import dataset_key
 from zte.config import DatasetConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.evaluation.audit.confound import confound_report, render_markdown
@@ -46,6 +48,7 @@ def parse_arguments() -> argparse.Namespace:
         help="Tokeniser the piece oracle spells the gallery with. Defaults to the decoder's own LM.",
     )
     parser.add_argument('--out', type=Path, default='docs/confound_audit.md', help='Output Markdown path.')
+    add_force_argument(parser)
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
 
     return parser.parse_args()
@@ -110,18 +113,28 @@ def main() -> None:
     args = parse_arguments()
     configure_logging(args.log_level)
 
-    # Build the word table exactly as a training run would.
     cfg = _dataset_config(args)
+
+    # Checked before the build, which is the expensive half: this audit reads the corpus rather than a model, so
+    # an unchanged corpus and unchanged options give the report already on disk.
+    out: Path = args.out
+    artifacts = (out, out.with_suffix('.json'))
+    sig = signature(args, tool='audit', extra={'dataset': dataset_key(cfg, bool(args.synthetic))}, ignore=('config',))
+    if is_done(artifacts, sig, force=args.force):
+        print(out)
+        return
+
+    # Build the word table exactly as a training run would.
     _LOG.info('Building dataset from %s ...', cfg.root)
     dataset = ZuCoDataset(cfg).build(show_progress=False)
 
     report = confound_report(dataset.words)
     if args.piece_oracle:
         report['piece_oracle'] = _piece_oracle(dataset, cfg, args.tokenizer)
-    out = args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_markdown(report), encoding='utf-8')
     write_json(out.with_suffix('.json'), report)
+    mark_done(artifacts, sig)
 
     # Headline the decisive task<->stimulus overlap.
     ts = report['task_stimulus']

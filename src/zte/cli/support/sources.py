@@ -130,6 +130,27 @@ def dataset_for_config(args: argparse.Namespace, dataset: DatasetConfig) -> ZuCo
     return ZuCoDataset(config).build()
 
 
+def dataset_key(dataset: DatasetConfig, synthetic: bool = False) -> str:
+    """The processed bundle's cache key: what the data *is*, independent of where it is read from.
+
+    Note:
+        Location and serialisation settings are excluded from the key, so the same recording keys identically on a
+        workstation and on a Colab VM whose Drive path differs. Synthetic never shares a key with real ZuCo.
+
+    Args:
+        dataset (DatasetConfig): The dataset config to key.
+        synthetic (bool, optional): Key against the synthetic tree rather than real ZuCo. Defaults to False.
+
+    Returns:
+        str: A readable prefix plus a config digest.
+    """
+    from zte.data.dataset import ZuCoDataset
+
+    probe = dataclasses.replace(dataset, root=SYNTHETIC_ROOT if synthetic else PENDING_ROOT)
+
+    return ZuCoDataset(probe)._cache_key()  # noqa: SLF001
+
+
 def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | None:
     """Reports which cache layer already holds this dataset's processed bundle, without copying it.
 
@@ -141,10 +162,8 @@ def bundle_is_cached(dataset: DatasetConfig, synthetic: bool = False) -> str | N
         str | None: `'local'`, `'persistent'`, or `None` when the bundle still has to be built.
     """
     from zte.data.cache import BundleStore
-    from zte.data.dataset import ZuCoDataset
 
-    probe = dataclasses.replace(dataset, root=SYNTHETIC_ROOT if synthetic else PENDING_ROOT)
-    key = ZuCoDataset(probe)._cache_key()  # noqa: SLF001
+    key = dataset_key(dataset, synthetic)
     return BundleStore.create(dataset.cache_dir, dataset.cache_remote).has(key)
 
 

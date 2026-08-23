@@ -6,7 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config
+from zte.cli.support.done import add_force_argument, checkpoint_digest, is_done, mark_done, signature
+from zte.cli.support.io import read_json
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config, dataset_key
 from zte.config import ZTEConfig
 from zte.logging_utils import configure_logging, get_logger
 from zte.parallax.study import PARALLAX_TASKS, cell_name, derive_eval_config, resolve_transfer_holdout
@@ -58,6 +60,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     transfer.add_argument('--n-boot', type=int, default=2000, dest='n_boot', help='Bootstrap resamples behind each CI.')
     transfer.add_argument('--seed', type=int, default=0)
     transfer.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
+    add_force_argument(transfer)
 
     report = sub.add_parser(
         'report',
@@ -122,6 +125,27 @@ def run_transfer(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     eval_config = derive_eval_config(config, args.eval_task)
+
+    # A cell is one checkpoint scored on one task: same weights, same eval task, same bootstrap, same cell. The
+    # guard sits before the build so a re-run costs a hash rather than a multi-GB stage and an embedding pass.
+    cell_dir = Path(args.out) / cell_name(train_task, args.eval_task, args.seed)
+    artifacts = (cell_dir / 'transfer.json', cell_dir / 'embeddings.npz')
+    sig = signature(
+        args,
+        tool='parallax-transfer',
+        extra={
+            'ckpt_sha256': checkpoint_digest(args.ckpt),
+            'dataset': dataset_key(eval_config.dataset),
+            'holdout': holdout,
+        },
+        ignore=('ckpt', 'holdout'),
+    )
+    if is_done(artifacts, sig, force=args.force):
+        existing = dict(read_json(artifacts[0]))
+        _log_cell(cell_dir, existing)
+
+        return existing
+
     eval_dataset = dataset_for_config(args, eval_config.dataset)
 
     embedder = ZTEEmbedder.from_checkpoint(args.ckpt, eval_dataset, device=resolve_device(args.device))
@@ -167,7 +191,6 @@ def run_transfer(args: argparse.Namespace) -> dict[str, Any]:
         provenance=provenance,
     )
 
-    cell_dir = Path(args.out) / cell_name(train_task, args.eval_task, args.seed)
     write_cell(
         cell_dir,
         report,
@@ -177,6 +200,14 @@ def run_transfer(args: argparse.Namespace) -> dict[str, Any]:
         n_words=n_words,
         texts=texts,
     )
+    mark_done(artifacts, sig)
+    _log_cell(cell_dir, report)
+
+    return report
+
+
+def _log_cell(cell_dir: Path, report: dict[str, Any]) -> None:
+    """Logs one transfer cell's headline, whether it was just scored or read back from disk."""
     held = report.get('held_out') or {}
     _LOG.info(
         'Cell %s: rank percentile %s (CI %s), novel stimuli %s, %s queries.',
@@ -186,7 +217,6 @@ def run_transfer(args: argparse.Namespace) -> dict[str, Any]:
         report.get('novel_stimuli'),
         report.get('n_queries'),
     )
-    return report
 
 
 def run_report(args: argparse.Namespace) -> dict[str, Any]:

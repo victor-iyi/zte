@@ -5,6 +5,7 @@
 - `zte.cli.support.datasets` -- the shared synthetic-dataset bootstrap.
 - `zte.cli.support.render` -- dependency-free Markdown table rendering.
 - `zte.cli.support.io` -- small JSON read/write helpers.
+- `zte.cli.support.done` -- the skip-if-done guard the measurement commands share.
 """
 
 from __future__ import annotations

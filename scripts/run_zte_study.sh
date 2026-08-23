@@ -304,7 +304,8 @@ if has_stage rebaseline; then
   for dir in "${OUT_ROOT}"/*/; do
     ckpt="${dir}checkpoints/best.pt"
     [ -f "${ckpt}" ] || continue
-    [ -f "${dir}rebaseline/rebaseline.json" ] && continue      # already audited; resume skips it
+    # An audit already written from this exact checkpoint is skipped by the command itself, which -- unlike a
+    # file-exists test -- redoes the ones whose checkpoint has since trained further.
     banner "rebaseline $(basename "${dir}")"
     "${PY}" -m zte.cli.rebaseline --ckpt "${ckpt}" "${REBASE_SRC[@]}" \
       --holdout "${HOLDOUT}" --length-tol 1 --oracle-tol 0,1,2,4 --out "${dir}rebaseline" \

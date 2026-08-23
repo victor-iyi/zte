@@ -8,8 +8,9 @@ from typing import Any, Literal
 
 import numpy as np
 
-from zte.cli.support.io import write_json
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config
+from zte.cli.support.done import add_force_argument, checkpoint_digest, is_done, mark_done, signature
+from zte.cli.support.io import read_json, write_json
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config, dataset_key
 from zte.config import ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.device import DeviceKind, resolve_device
@@ -79,6 +80,7 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
+    add_force_argument(parser)
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
     return parser.parse_args()
 
@@ -263,21 +265,35 @@ def main() -> None:
 
     payload = CheckpointManager.load(args.ckpt, map_location='cpu')
     config = ZTEConfig.from_dict(payload['config'])
-    dataset = dataset_for_config(args, config.dataset)
 
     out_dir = Path(args.out) if args.out else default_out_dir(args.ckpt)
-    report = run_rebaseline(
-        args.ckpt,
-        dataset,
-        out_dir=out_dir,
-        holdout=args.holdout,
-        length_tol=args.length_tol,
-        oracle_tols=tuple(int(t) for t in str(args.oracle_tol).split(',') if t.strip()),
-        n_boot=args.n_boot,
-        seed=args.seed,
-        device=args.device,
-        piece_oracle=args.piece_oracle,
+    artifacts = (out_dir / 'rebaseline.json', out_dir / 'rebaseline.md')
+    sig = signature(
+        args,
+        tool='rebaseline',
+        extra={'ckpt_sha256': checkpoint_digest(args.ckpt), 'dataset': dataset_key(config.dataset)},
+        ignore=('ckpt',),
     )
+
+    # Decided before the dataset is built, which is the multi-GB half of this command: nothing here retrains, so
+    # the same weights re-scored the same way give the audit already on disk.
+    if is_done(artifacts, sig, force=args.force):
+        report = read_json(artifacts[0])
+    else:
+        dataset = dataset_for_config(args, config.dataset)
+        report = run_rebaseline(
+            args.ckpt,
+            dataset,
+            out_dir=out_dir,
+            holdout=args.holdout,
+            length_tol=args.length_tol,
+            oracle_tols=tuple(int(t) for t in str(args.oracle_tol).split(',') if t.strip()),
+            n_boot=args.n_boot,
+            seed=args.seed,
+            device=args.device,
+            piece_oracle=args.piece_oracle,
+        )
+        mark_done(artifacts, sig)
 
     if piece := report.get('piece_oracle'):
         _LOG.info(
