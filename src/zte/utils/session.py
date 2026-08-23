@@ -1,5 +1,6 @@
 """The dated Colab session layout on Drive, and finding runs and checkpoints across sessions."""
 
+import dataclasses
 import datetime
 import re
 from collections.abc import Sequence
@@ -13,7 +14,7 @@ from zte.utils.archive import is_synthetic_run
 _LOG = get_logger('utils.session')
 
 # `drive` is slower per epoch but leaves nothing to mirror when the VM is reclaimed mid-run.
-type WriteMode = Literal['local+mirror', 'drive']
+type WriteMode = Literal['auto', 'local+mirror', 'drive']
 """Whether long runs write to the VM disk and mirror afterwards, or straight to Drive."""
 
 # The one shared folder a session mounts: the dated runs, the prepared bundles and the raw archives all hang off it.
@@ -65,7 +66,7 @@ class DriveSession:
         drive_root: str | Path = DEFAULT_DRIVE_ROOT,
         *,
         run_date: str | None = None,
-        write_mode: WriteMode = 'local+mirror',
+        write_mode: WriteMode = 'auto',
         make_dirs: bool = True,
     ) -> Self:
         """Opens today's session, or reopens an earlier one so its runs can be resumed.
@@ -74,7 +75,8 @@ class DriveSession:
             drive_root (str | Path, optional): The mounted-Drive root. Defaults to `DEFAULT_DRIVE_ROOT`.
             run_date (str | None, optional): An existing session folder to resume, e.g. `'2026-08-13'`.
                 Defaults to None, which starts today's and leaves `resumed` false.
-            write_mode (WriteMode, optional): Where long runs write. Defaults to `'local+mirror'`.
+            write_mode (WriteMode, optional): Where long runs write. Defaults to `'auto'`, which writes to Drive
+                when it is mounted -- a Colab VM's disk cannot hold a twelve-fold sweep -- and locally otherwise.
             make_dirs (bool, optional): Create the session's Drive directories. Defaults to True.
 
         Returns:
@@ -86,6 +88,17 @@ class DriveSession:
             resumed=run_date is not None,
             write_mode=write_mode,
         )
+        if write_mode == 'auto':
+            # Drive mounted means Colab, where the runs of a twelve-fold sweep are ~27 GB against a disk that also
+            # has to hold an 11-24 GB dataset bundle. Off Colab the local disk is the fast, sane default.
+            resolved: WriteMode = 'drive' if session.drive_mounted else 'local+mirror'
+            session = dataclasses.replace(session, write_mode=resolved)
+            _LOG.info(
+                'Storage: writing runs to %s (write_mode=auto resolved to %r; Drive mounted: %s).',
+                session.out_root,
+                resolved,
+                session.drive_mounted,
+            )
         if make_dirs:
             for directory in (session.drive_runs, session.drive_analysis, session.drive_archives):
                 # An unmounted Drive is a normal state off Colab, so report it through `created` instead of raising.
@@ -149,8 +162,15 @@ class DriveSession:
 
     @property
     def prepared_local(self) -> Path:
-        """The local staging copy of the prepared-bundle store."""
-        return Path(DEFAULT_PREPARED_LOCAL)
+        """The local staging copy of the prepared-bundle store, on the roomiest local volume this machine has.
+
+        Note:
+            A bundle is 11 GB for one task and 24 for SR+NR, and the checkout's own `res/` sits on the boot volume,
+            which on a Colab GPU runtime is often not the largest disk attached. `ZTE_SCRATCH_DIR` pins it.
+        """
+        from zte.data.cache import scratch_root
+
+        return scratch_root(DEFAULT_PREPARED_LOCAL)
 
     @property
     def prepared_drive(self) -> Path:

@@ -43,8 +43,30 @@ def _atomic_save(state: dict[str, Any], path: Path) -> None:
         torch.save(state, tmp)
         os.replace(tmp, path)
     except OSError:
-        tmp.unlink(missing_ok=True)
-        torch.save(state, path)  # a mount that forbids rename still gets a checkpoint
+        # A mount that forbids rename-over -- Drive's FUSE layer among them -- still gets a checkpoint, but never
+        # by writing over the good one: the previous file is moved aside first, so a kill mid-write costs the epoch
+        # rather than the run. Writing straight to `path` here would truncate the only copy that existed.
+        previous = path.with_name(f'.{path.name}.prev')
+        try:
+            if path.is_file():
+                previous.unlink(missing_ok=True)
+                shutil.move(str(path), str(previous))
+            shutil.move(str(tmp), str(path))
+            previous.unlink(missing_ok=True)
+        except OSError as exc:
+            # Losing this epoch's checkpoint costs an epoch; raising would cost the run, and a multi-day sweep is exactly
+            # where a transient mount hiccup happens. The previous checkpoint is put back and `--resume` restarts from it.
+            _LOG.warning(
+                'Could not write %s (%r); the previous checkpoint is kept and this epoch is not saved.',
+                path.name,
+                exc,
+            )
+            if previous.is_file() and not path.is_file():
+                shutil.move(str(previous), str(path))
+        finally:
+            tmp.unlink(missing_ok=True)
+            if path.is_file():
+                previous.unlink(missing_ok=True)
 
 
 def _atomic_copy(src: Path, dst: Path) -> None:

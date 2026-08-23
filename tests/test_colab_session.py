@@ -89,7 +89,7 @@ def test_only_an_explicit_date_counts_as_resuming(tmp_path: Path) -> None:
 
 def test_write_mode_decides_where_runs_are_written(tmp_path: Path) -> None:
     """`drive` writes into the session folder; `local+mirror` writes locally, and both back up to Drive."""
-    mirrored = DriveSession.create(tmp_path, run_date='2026-08-13', make_dirs=False)
+    mirrored = DriveSession.create(tmp_path, run_date='2026-08-13', write_mode='local+mirror', make_dirs=False)
     direct = DriveSession.create(tmp_path, run_date='2026-08-13', write_mode='drive', make_dirs=False)
 
     assert mirrored.out_root == mirrored.local_runs
@@ -250,3 +250,25 @@ def test_find_checkpoint_returns_none_for_an_untrained_run(tmp_path: Path) -> No
     local.mkdir()
 
     assert find_checkpoint('never_trained', [local, tmp_path / 'gone']) is None
+
+
+def test_auto_write_mode_follows_the_machine_it_is_running_on(tmp_path: Path) -> None:
+    """A Colab VM's disk cannot hold a twelve-fold sweep; a workstation's wants the fast local disk.
+
+    Note:
+        Drive being mounted is what distinguishes them, so `auto` resolves on that and records what it chose --
+        a run that silently wrote 27 GB to the wrong volume is the failure this replaces.
+    """
+    (tmp_path / 'ZuCo Dataset').mkdir()
+    on_colab = DriveSession.create(tmp_path, run_date='2026-08-13', write_mode='auto', make_dirs=False)
+
+    assert on_colab.drive_mounted is True
+    assert on_colab.write_mode == 'drive'
+    assert on_colab.out_root == on_colab.drive_runs, 'runs must not touch the VM disk when Drive is there'
+
+    elsewhere = DriveSession.create(tmp_path / 'not_mounted', run_date='2026-08-13', write_mode='auto', make_dirs=False)
+
+    assert elsewhere.drive_mounted is False
+    assert elsewhere.write_mode == 'local+mirror'
+    assert elsewhere.out_root == elsewhere.local_runs, 'off Colab the local disk is primary'
+    assert elsewhere.as_dict()['write_mode'] == 'local+mirror', 'the payload must carry what was resolved'

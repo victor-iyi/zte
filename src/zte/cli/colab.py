@@ -680,7 +680,13 @@ def parse_arguments() -> argparse.Namespace:
 
     session = sub.add_parser('session', parents=[common, drive], help="This session's Drive folders and env vars.")
     session.add_argument('--resume-date', default=None, help="Reopen an earlier session, e.g. '2026-08-13'.")
-    session.add_argument('--write-mode', default='local+mirror', choices=('local+mirror', 'drive'))
+    session.add_argument(
+        '--write-mode',
+        default='auto',
+        choices=('auto', 'local+mirror', 'drive'),
+        help="Where long runs write. 'auto' writes to Drive when it is mounted, because a Colab VM's disk cannot "
+        'hold a twelve-fold sweep beside an 11-24 GB dataset bundle, and locally otherwise.',
+    )
     session.add_argument('--create', action=argparse.BooleanOptionalAction, default=True)
 
     runs = sub.add_parser('runs', parents=[common, drive], help='Every run on Drive and locally, with checkpoints.')

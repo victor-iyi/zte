@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
+import shutil
+import time
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +15,7 @@ import pandas as pd
 import pytest
 
 from zte.config import DatasetConfig, MissingConfig
+from zte.data import cache
 from zte.data.cache import REMOTE_ENV_VAR, REQUIRED_ENTRY_FILES, BundleStore
 from zte.data.dataset import ZuCoDataset
 
@@ -333,3 +337,170 @@ def test_build_falls_back_past_an_unreadable_bundle(synthetic_dir: Path, tmp_pat
     assert len(rebuilt.sentences) == n_sentences
     reread = ZuCoDataset(dataclasses.replace(config)).build(show_progress=False)
     assert len(reread.sentences) == n_sentences
+
+
+# ---- Disk budget: a twelve-fold sweep must not fill the volume ---- #
+
+
+def _seed_entry(root: Path, key: str, payload: bytes = b'x') -> Path:
+    """A complete cache entry, so the store counts it as present."""
+    entry = root / key
+    entry.mkdir(parents=True, exist_ok=True)
+    for name in cache.REQUIRED_ENTRY_FILES:
+        (entry / name).write_bytes(payload)
+    return entry
+
+
+def test_staging_evicts_the_least_recently_used_bundle_rather_than_filling_the_disk(tmp_path: Path) -> None:
+    """A ZuCo raw bundle is 11 GB for one task and 24 for SR+NR, and a campaign needs four task sets.
+
+    Note:
+        Nothing evicted them, so a long sweep filled the volume and every later run died on a full disk rather
+        than on a bad number.
+    """
+    remote = tmp_path / 'remote'
+    store = cache.BundleStore(local=tmp_path / 'local', remote=remote)
+    for key in ('oldest', 'middle', 'newest'):
+        _seed_entry(store.local, key)
+        _seed_entry(remote, key)
+    for age, key in enumerate(('newest', 'middle', 'oldest')):
+        stamp = time.time() - (age + 1) * 100
+        os.utime(store.local / key / 'meta.json', (stamp, stamp))
+
+    assert [p.name for p in store.staged()] == ['oldest', 'middle', 'newest']
+
+    # Ask for more than the volume can spare, so the budget has to bite.
+    need = shutil.disk_usage(store.local).free / 1e9 + 1.0
+    removed = store.make_room(need, keep='newest')
+
+    assert removed == ['oldest', 'middle'], 'eviction must run least-recently-used first'
+    assert [p.name for p in store.staged()] == ['newest'], 'the entry in use is never evicted'
+
+
+def test_an_entry_the_store_cannot_restage_is_never_evicted(tmp_path: Path) -> None:
+    """A local entry is rebuildable in principle, but rebuilding a ZuCo bundle is a multi-GB extraction."""
+    remote = tmp_path / 'remote'
+    store = cache.BundleStore(local=tmp_path / 'local', remote=remote)
+    _seed_entry(store.local, 'only_local')
+    _seed_entry(store.local, 'also_remote')
+    _seed_entry(remote, 'also_remote')
+
+    removed = store.make_room(shutil.disk_usage(store.local).free / 1e9 + 1.0)
+
+    assert removed == ['also_remote']
+    assert (store.local / 'only_local').is_dir(), 'an entry with no complete remote copy must survive'
+
+
+def test_the_headroom_is_configurable_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A machine with a different disk needs a different budget, and an unreadable value must not crash a run."""
+    monkeypatch.setenv(cache.FREE_SPACE_ENV_VAR, '3.5')
+    assert cache.min_free_gb() == pytest.approx(3.5)
+
+    monkeypatch.setenv(cache.FREE_SPACE_ENV_VAR, 'not-a-number')
+    assert cache.min_free_gb() == pytest.approx(cache.MIN_FREE_GB)
+
+    monkeypatch.delenv(cache.FREE_SPACE_ENV_VAR)
+    assert cache.min_free_gb() == pytest.approx(cache.MIN_FREE_GB)
+
+
+def test_staging_a_bundle_makes_room_before_it_copies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The eviction has to run on the staging path, not merely exist -- that is where the disk fills."""
+    remote = tmp_path / 'remote'
+    store = cache.BundleStore(local=tmp_path / 'local', remote=remote)
+    _seed_entry(remote, 'wanted')
+
+    asked: list[tuple[float, str | None]] = []
+    original = cache.BundleStore.make_room
+
+    def spy(self: cache.BundleStore, need_gb: float, *, keep: str | None = None) -> list[str]:
+        asked.append((need_gb, keep))
+        return original(self, need_gb, keep=keep)
+
+    monkeypatch.setattr(cache.BundleStore, 'make_room', spy)
+    staged = store.find('wanted')
+
+    assert staged is not None and staged.is_dir(), 'the bundle must still be staged'
+    assert asked, 'staging must ask for room before copying gigabytes onto the volume'
+    assert asked[0][1] == 'wanted', 'the entry being staged must never be the one evicted'
+
+
+# ---- Choosing the volume the bundle is staged on ---- #
+
+
+def test_the_bundle_cache_moves_to_a_roomier_volume_when_one_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bundle is 11-24 GB and the checkout sits on the boot volume, which is not always the largest disk here."""
+    roomy = tmp_path / 'scratch'
+    roomy.mkdir()
+    default = tmp_path / 'res' / 'cache' / 'prepared'
+
+    monkeypatch.setattr(cache, 'SCRATCH_CANDIDATES', (str(roomy),))
+    monkeypatch.setattr(
+        cache, '_free_gb', lambda path: 400.0 if roomy in Path(path).parents or Path(path) == roomy else 30.0
+    )
+
+    chosen = cache.scratch_root(default)
+
+    assert chosen == roomy / 'zte-cache'
+    assert chosen.is_dir(), 'only the chosen directory is created'
+
+
+def test_a_volume_that_is_barely_roomier_is_not_worth_moving_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging is a multi-GB copy, so a few spare gigabytes elsewhere does not justify paying for it."""
+    other = tmp_path / 'other'
+    other.mkdir()
+    default = tmp_path / 'res' / 'cache' / 'prepared'
+
+    monkeypatch.setattr(cache, 'SCRATCH_CANDIDATES', (str(other),))
+    monkeypatch.setattr(cache, '_free_gb', lambda path: 35.0 if Path(path) == other else 30.0)
+
+    assert cache.scratch_root(default) == default
+
+
+def test_probing_candidates_creates_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A laptop must not collect `zte-cache` directories on every volume the scan happens to look at."""
+    looked_at = tmp_path / 'looked-at'
+    looked_at.mkdir()
+    default = tmp_path / 'res' / 'cache' / 'prepared'
+
+    monkeypatch.setattr(cache, 'SCRATCH_CANDIDATES', (str(looked_at), '/definitely/not/here'))
+    monkeypatch.setattr(cache, '_free_gb', lambda path: 30.0)
+
+    assert cache.scratch_root(default) == default
+    assert list(looked_at.iterdir()) == [], 'a candidate that lost must be left untouched'
+
+
+def test_the_scratch_directory_can_be_pinned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A machine whose layout the scan cannot guess needs one env var, not a code change."""
+    pinned = tmp_path / 'pinned'
+    monkeypatch.setenv(cache.SCRATCH_ENV_VAR, str(pinned))
+
+    chosen = cache.scratch_root(tmp_path / 'res' / 'cache' / 'prepared')
+
+    assert chosen == pinned
+    assert chosen.is_dir()
+
+
+def test_the_headroom_never_claims_most_of_a_small_scratch_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Colab scratch disk is fixed and can be far smaller than the boot volume it was sized against.
+
+    Note:
+        A flat reserve big enough for a 200 GB disk would make a 40 GB one unusable rather than safe, so the
+        headroom is capped at a share of the volume it is actually reserving on.
+    """
+    monkeypatch.delenv(cache.FREE_SPACE_ENV_VAR, raising=False)
+    monkeypatch.setattr(cache, '_total_gb', lambda path: 40.0)
+
+    scaled = cache.min_free_gb(tmp_path)
+
+    assert scaled == pytest.approx(40.0 * cache.MAX_HEADROOM_SHARE)
+    assert scaled < cache.MIN_FREE_GB, 'a small volume must reserve less than the flat figure'
+
+    monkeypatch.setattr(cache, '_total_gb', lambda path: 400.0)
+    assert cache.min_free_gb(tmp_path) == pytest.approx(cache.MIN_FREE_GB), 'a large volume keeps the flat figure'
+    assert cache.min_free_gb() == pytest.approx(cache.MIN_FREE_GB), 'naming no volume returns it unscaled'

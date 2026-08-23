@@ -84,6 +84,40 @@ Colab runtimes are ephemeral, so a long real run needs its checkpoints on Drive.
 
 ---
 
+## Re-running a finished step
+
+`--resume` covers training. Everything *after* it — the confound audit, the decode, the length rebaseline, a
+parallax transfer cell — skips itself on a re-run when the artifacts on disk were built from the same inputs, so a
+notebook can be re-run top to bottom and only the unfinished work costs anything.
+
+`zte-audit`, `zte-decode`, `zte-rebaseline` and `zte-parallax transfer` each write a hidden record beside their
+first artifact (`.zte-done-<artifact>.json`) holding what it was built from: every option they were given, the
+checkpoint's SHA-256, and the dataset's bundle key. The next invocation compares, and rebuilds unless everything
+matches:
+
+| What moved since the artifact was written              | On the next run                                    |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| nothing                                                | skipped, and its headline is logged again from disk |
+| the checkpoint — another epoch, another arm            | rebuilt                                            |
+| any option — a seed, a control, a tolerance, a split   | rebuilt                                            |
+| the data — different tasks, subjects, representation   | rebuilt                                            |
+| an artifact deleted, or half-written by a killed cell  | rebuilt                                            |
+| only the path the raw data was read from               | skipped                                            |
+| `--force`                                              | rebuilt                                            |
+
+Two of those rows carry the reasoning. **The raw path is deliberately not part of the identity**: the data is keyed
+by its bundle key, which excludes location, so one recording keys identically whether it was read from
+`/content/drive/...` or from a local extract, and a re-mounted Drive does not invalidate a day of audits. And **an
+artifact with no record is rebuilt rather than trusted** — one written before this existed, or copied in from
+somewhere else, cannot say what produced it, and serving a stale number as a fresh one is the failure this exists
+to prevent.
+
+The record mirrors to Drive with the artifacts it describes, so a fresh runtime reaches the same answer without
+re-measuring anything. The guard decides before the dataset is staged and before any model is loaded, which is
+where the minutes go: a skipped decode costs a checkpoint hash.
+
+---
+
 ## Combine and compare all runs
 
 ```sh
@@ -340,3 +374,47 @@ date-stamped, and the run discovery walks every dated session newest-first regar
 
 Read `alignment_coverage` before anything else in the block. It is the fraction of ZuCo words that matched their
 own reference text, and below about 0.99 the piece counts are partly wrong and the bits are not trustworthy.
+
+## Where things are stored, and why it differs by machine
+
+A twelve-fold sweep does not fit on a Colab VM's disk if everything stays local. The numbers, measured from Drive:
+
+| What                                                             |     Size | Times             |
+| ---------------------------------------------------------------- | -------: | ----------------- |
+| a prepared raw bundle, one task (`NR`)                           |  11.3 GB | once per task set |
+| a prepared raw bundle, `SR+NR`                                   | ~23.6 GB | once              |
+| all four task sets the campaign needs                            |   ~60 GB | —                 |
+| one run's checkpoints (5 x 90.6 MB) plus figures and TensorBoard |  ~0.5 GB | x54 runs = ~27 GB |
+
+Two mechanisms keep that inside the disk, and both pick their behaviour from the machine.
+
+**Runs follow `write_mode`, which defaults to `auto`.** With Drive mounted — that is, on Colab — runs are written
+straight to Drive and the VM's disk never holds them. Off Colab, `auto` resolves to `local+mirror` and the local
+disk is primary, which is what a workstation wants. `zte-colab session --write-mode` still takes `local+mirror` or
+`drive` explicitly, and the resolved value is printed and carried in the session payload as `write_mode`.
+
+Writing checkpoints onto a FUSE mount needs care: Drive can refuse `os.replace`, and the fallback used to write
+straight over the file it was replacing, so a kill mid-write destroyed the only good copy. It now moves the
+previous checkpoint aside first, and a write that fails outright keeps that previous file and logs rather than
+raising — losing an epoch on day nine of a campaign is recoverable, losing the run is not.
+
+**The bundle is staged on the roomiest local volume, not necessarily the checkout's.** `res/cache/prepared` sits
+on whatever disk the repo was cloned onto, and on a Colab GPU runtime that boot volume is often not the largest
+one attached. `DriveSession.prepared_local` now scans `/content`, `/var/scratch`, `/scratch`, `/mnt/disks/local`
+and `/tmp`, and moves the cache to whichever beats the default by more than one SR+NR bundle (20 GB) — a smaller
+gain is not worth a multi-GB copy. Nothing is created on a candidate that loses, and `ZTE_SCRATCH_DIR` pins the
+choice outright on a machine whose layout the scan cannot guess.
+
+A scratch volume is **fixed in size and does not survive the machine**, and both are fine here. It only ever holds
+a staging copy of the persistent store, so losing it costs a re-stage and never a result — nothing durable is
+written there. Runs, checkpoints and evaluation go to Drive under `write_mode: auto`, never to scratch. Being
+fixed is why the headroom scales: a flat 12 GB reserve sized for a boot volume would make a 40 GB scratch unusable
+rather than safe, so the reserve is capped at 15% of the volume it is actually reserving on. If the chosen volume
+has less free space than an SR+NR bundle needs, that is said at selection time rather than at 80% of a copy.
+
+**The prepared bundle stays local, and is evicted rather than accumulated.** It is memory-mapped and read at
+random per batch, so serving it over Drive would be unusably slow; it has to be on the fast disk. What changed is
+that staging a bundle now frees room for it first, removing least-recently-used entries until the incoming one
+fits with `ZTE_MIN_FREE_GB` (default 12 GB) still free. Only an entry the persistent store holds *complete* is
+evictable — anything that would have to be rebuilt from the multi-GB extraction stays put, and the shortfall is
+reported instead. In practice the disk holds the one bundle in use rather than all four.

@@ -6,12 +6,18 @@ import dataclasses
 import json
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
 
 from zte.config import DatasetConfig, TrainConfig, ZTEConfig
 from zte.training.checkpoint import CheckpointManager
 from zte.utils.mirror import mirror_file, mirror_tree
+
+
+def _refuse(*_args: object, **_kwargs: object) -> None:
+    """Stands in for a mount that forbids the operation."""
+    raise OSError('mount forbids this')
 
 
 def test_path_fields_are_stored_as_strings(tmp_path: Path) -> None:
@@ -381,3 +387,42 @@ def test_a_recovered_mount_resets_the_failure_count(tmp_path: Path) -> None:
 
     assert manager.mirror_failures == 0
     assert (drive / 'checkpoints' / 'best.pt').is_file()
+
+
+def test_a_mount_that_forbids_rename_never_truncates_the_checkpoint_it_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drive's FUSE layer can refuse `os.replace`, and the old fallback wrote straight over the only good copy.
+
+    Note:
+        `write_mode='drive'` puts every checkpoint of a twelve-fold sweep on that mount, so the fallback is the
+        path a reclaimed VM actually takes. A kill mid-write must cost the epoch, never the run.
+    """
+    from zte.training import checkpoint as ckpt_mod
+
+    path = tmp_path / 'last.pt'
+    torch.save({'epoch': 1}, path)
+    monkeypatch.setattr(ckpt_mod.os, 'replace', _refuse)
+
+    ckpt_mod._atomic_save({'epoch': 2}, path)
+
+    assert torch.load(path, weights_only=False)['epoch'] == 2, 'the new checkpoint must land'
+    assert not list(tmp_path.glob('.*.tmp')), 'no temp file may be left behind'
+    assert not list(tmp_path.glob('.*.prev')), 'no shadow copy may be left behind'
+
+
+def test_a_failed_write_keeps_the_previous_checkpoint_instead_of_killing_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient mount hiccup on day nine of a campaign must cost one epoch, not thirty hours."""
+    from zte.training import checkpoint as ckpt_mod
+
+    path = tmp_path / 'last.pt'
+    torch.save({'epoch': 7}, path)
+    monkeypatch.setattr(ckpt_mod.os, 'replace', _refuse)
+    monkeypatch.setattr(ckpt_mod.shutil, 'move', _refuse)
+
+    ckpt_mod._atomic_save({'epoch': 8}, path)  # must not raise
+
+    assert path.is_file(), 'the previous checkpoint must survive a failed write'
+    assert torch.load(path, weights_only=False)['epoch'] == 7
