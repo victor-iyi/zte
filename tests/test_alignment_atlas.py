@@ -1,13 +1,20 @@
 """The cross-level atlas, the contrastive geometry report and the cross-level comparison table."""
 
+import argparse
 import json
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
+import torch
 
 from zte.alignment import atlas, compare, contrastive
+from zte.cli import visualize
+from zte.config import ModelConfig, ObjectiveConfig, ZTEConfig
+from zte.data.dataset import ZuCoDataset
+from zte.models.embedding import build_model
 
 # --------------------------------------------------------------------------- #
 # Fixtures
@@ -444,3 +451,78 @@ def test_the_package_exports_resolve_lazily() -> None:
 
     with pytest.raises(AttributeError):
         _ = alignment.no_such_export
+
+
+# --------------------------------------------------------------------------- #
+# The level atlas: how it is batched is not part of the answer
+# --------------------------------------------------------------------------- #
+
+
+def _atlas_run(run_dir: Path, dataset: ZuCoDataset) -> Path:
+    """A run directory carrying a raw-frontend checkpoint and its bundle -- the two things the atlas reads."""
+    config = ZTEConfig(
+        model=ModelConfig(frontend='raw_conformer', embed_dim=16, hidden_dim=16, conformer_filters=8, n_layers=1),
+        objective=ObjectiveConfig(token_sub_tokens=2),
+    )
+    raw = dataset.raw_eeg
+    assert raw is not None, 'the atlas needs the raw path: build the dataset with representation both or raw'
+    model = build_model(config.model, raw_shape=(raw.shape[1], raw.shape[2]))
+
+    (run_dir / 'checkpoints').mkdir(parents=True, exist_ok=True)
+    payload = {'config': config.to_dict(), 'model': model.state_dict(), 'epoch': 1, 'step': 1}
+    torch.save(payload, run_dir / 'checkpoints' / 'best.pt')
+    dataset.save(run_dir / 'bundle')
+
+    return run_dir
+
+
+def _atlas_levels(
+    run_dir: Path, out: Path, per_forward: int, monkeypatch: pytest.MonkeyPatch
+) -> list[atlas.LevelPoints]:
+    """Builds the level atlas and returns the points it drew, before any projection touches them."""
+    import zte.alignment
+
+    captured: list[list[atlas.LevelPoints]] = []
+    real = zte.alignment.build_atlas
+
+    def capture(levels: Any, **kwargs: Any) -> dict[str, Any]:
+        captured.append(list(levels))
+        return real(levels, **kwargs)
+
+    monkeypatch.setattr(zte.alignment, 'build_atlas', capture)
+    args = argparse.Namespace(
+        run=str(run_dir),
+        out=out,
+        root=None,
+        synthetic=False,
+        max_points=64,
+        dims=3,
+        seed=0,
+        device='cpu',
+        batch_size=per_forward,
+    )
+    visualize._level_atlas(args)  # noqa: SLF001
+
+    return captured[0]
+
+
+def test_the_atlas_does_not_depend_on_how_many_sentences_share_a_forward(
+    small_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chunking is a memory measure, not a modelling one: same points, same order, same vectors.
+
+    Note:
+        The intra-word attention is quadratic in the raw window and linear in the sentences batched with it, so the
+        atlas embeds in chunks. Nothing crosses a sentence boundary, and this is what says so.
+    """
+    run_dir = _atlas_run(tmp_path / 'run', small_dataset)
+    one_forward = _atlas_levels(run_dir, tmp_path / 'whole.json', 1000, monkeypatch)
+    many_forwards = _atlas_levels(run_dir, tmp_path / 'chunked.json', 2, monkeypatch)
+
+    assert [level.level for level in one_forward] == [level.level for level in many_forwards]
+    assert {level.level for level in one_forward} == {'sentence', 'word', 'token'}
+
+    for whole, chunked in zip(one_forward, many_forwards, strict=True):
+        assert whole.labels == chunked.labels, f'{whole.level}: the points moved or were reordered'
+        assert whole.subjects == chunked.subjects
+        assert np.allclose(whole.vectors, chunked.vectors, atol=1e-5)

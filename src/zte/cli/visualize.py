@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,12 @@ import pandas as pd
 from zte.logging_utils import configure_logging, get_logger
 
 _LOG = get_logger('cli.visualize')
+
+# A raw frontend self-attends over 350 time steps for every word of every sentence in the batch, which measures at
+# roughly 0.24 GiB of attention per sentence -- so one forward over the 500 sentences `--max-points 4000` asks for
+# wants 118 GiB and dies on any GPU. Eight keeps the peak near 2 GiB and makes it independent of `--max-points`.
+ATLAS_SENTENCES_PER_FORWARD: Final[int] = 8
+"""Sentences embedded per forward pass when building the three-level atlas."""
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -53,6 +59,14 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument('--dims', type=int, choices=[2, 3], default=3)
     parser.add_argument('--max-points', type=int, default=6000)
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=ATLAS_SENTENCES_PER_FORWARD,
+        dest='batch_size',
+        help='Sentences per forward pass for `--kind levels`. Raise it on a large GPU for speed; it batches the '
+        'work and does not change a single vector.',
+    )
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
@@ -204,62 +218,69 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     texts, words = torch_ds.ordered_texts(), torch_ds.ordered_words()
 
     rows = min(len(torch_ds), max(int(args.max_points) // 8, 8))
-    batch = collate_sentences([torch_ds[i] for i in range(rows)])
     device = next(embedder.model.parameters()).device
-    batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
-
     model = embedder.model.eval()
     n_sub = int(embedder.config.objective.token_sub_tokens)
-    with torch.no_grad():
-        word_hidden = model.token_hidden(batch)
-        valid = model.pooling_mask(batch)
-        word_vec = model.project(word_hidden)
-        sent_vec = model.project(model._pool_tokens(model.contextualize(word_hidden, valid), valid))  # noqa: SLF001
-        sub_vec = model.project(model.sub_token_hidden(batch, n_sub)) if model.uses_raw else None
+    per_forward = max(int(getattr(args, 'batch_size', ATLAS_SENTENCES_PER_FORWARD)), 1)
 
-    text_id = batch['sentence_text_id'].tolist()
-    subjects = [str(s) for s in batch['subject'].tolist()]
+    sent_chunks: list[np.ndarray] = []
+    text_id: list[int] = []
+    subjects: list[str] = []
+    flat_words, flat_labels, flat_subjects, word_ids = [], [], [], []
+    flat_sub, sub_labels, sub_subjects, sub_ids = [], [], [], []
+
+    # Chunked because the intra-word attention is quadratic in the 350-step window and linear in the sentences
+    # handed to it at once. Nothing here crosses a sentence boundary -- the frontend sees one word token at a time
+    # and the sentence transformer is masked to its own row -- so the vectors are the ones one forward would give.
+    for start in range(0, rows, per_forward):
+        batch = collate_sentences([torch_ds[i] for i in range(start, min(start + per_forward, rows))])
+        batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+        sent_vec, word_vec, sub_vec, valid = _atlas_vectors(model, batch, n_sub)
+
+        chunk_ids = batch['sentence_text_id'].tolist()
+        chunk_subjects = [str(s) for s in batch['subject'].tolist()]
+        content = batch['content_id'].cpu().numpy()
+        sent_chunks.append(sent_vec)
+        text_id += chunk_ids
+        subjects += chunk_subjects
+
+        for row, tid in enumerate(chunk_ids):
+            row_words = words[tid] if 0 <= tid < len(words) else []
+            for col in range(int(valid[row].sum())):
+                label = row_words[col] if col < len(row_words) else ''
+                flat_words.append(word_vec[row, col])
+                flat_labels.append(label)
+                flat_subjects.append(chunk_subjects[row])
+                word_ids.append(int(content[row, col]))
+
+                if sub_vec is None:
+                    continue
+
+                for slot in range(n_sub):
+                    flat_sub.append(sub_vec[row, col, slot])
+                    sub_labels.append(f'{label}#{slot}')
+                    sub_subjects.append(chunk_subjects[row])
+                    sub_ids.append(int(content[row, col]) * n_sub + slot)
+
     levels = [
         LevelPoints(
             level='sentence',
-            vectors=sent_vec.cpu().numpy(),
+            vectors=np.concatenate(sent_chunks) if sent_chunks else np.zeros((0, 0), dtype=np.float32),
             labels=[texts[t] if 0 <= t < len(texts) else '' for t in text_id],
             subjects=subjects,
         )
     ]
     positive_ids = [np.asarray(text_id)]
 
-    content = batch['content_id'].cpu().numpy()
-    flat_words, flat_labels, flat_subjects, word_ids = [], [], [], []
-    for row, tid in enumerate(text_id):
-        row_words = words[tid] if 0 <= tid < len(words) else []
-        for col in range(int(valid[row].sum())):
-            flat_words.append(word_vec[row, col].cpu().numpy())
-            flat_labels.append(row_words[col] if col < len(row_words) else '')
-            flat_subjects.append(subjects[row])
-            word_ids.append(int(content[row, col]))
     if flat_words:
         levels.append(
             LevelPoints(level='word', vectors=np.stack(flat_words), labels=flat_labels, subjects=flat_subjects)
         )
         positive_ids.append(np.asarray(word_ids))
 
-    if sub_vec is not None:
-        flat_sub, sub_labels, sub_subjects, sub_ids = [], [], [], []
-        for row, tid in enumerate(text_id):
-            row_words = words[tid] if 0 <= tid < len(words) else []
-            for col in range(int(valid[row].sum())):
-                label = row_words[col] if col < len(row_words) else ''
-                for slot in range(n_sub):
-                    flat_sub.append(sub_vec[row, col, slot].cpu().numpy())
-                    sub_labels.append(f'{label}#{slot}')
-                    sub_subjects.append(subjects[row])
-                    sub_ids.append(int(content[row, col]) * n_sub + slot)
-        if flat_sub:
-            levels.append(
-                LevelPoints(level='token', vectors=np.stack(flat_sub), labels=sub_labels, subjects=sub_subjects)
-            )
-            positive_ids.append(np.asarray(sub_ids))
+    if flat_sub:
+        levels.append(LevelPoints(level='token', vectors=np.stack(flat_sub), labels=sub_labels, subjects=sub_subjects))
+        positive_ids.append(np.asarray(sub_ids))
 
     payload = build_atlas(levels, max_points_per_level=int(args.max_points), seed=int(args.seed))
     payload['run'] = run_dir.name
@@ -286,6 +307,25 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     )
 
     return out
+
+
+def _atlas_vectors(model: Any, batch: dict[str, Any], n_sub: int) -> tuple[Any, Any, Any, Any]:
+    """Embeds one chunk of sentences at all three levels, with the mask saying which word slots are real."""
+    import torch
+
+    with torch.no_grad():
+        word_hidden = model.token_hidden(batch)
+        valid = model.pooling_mask(batch)
+        word_vec = model.project(word_hidden)
+        sent_vec = model.project(model._pool_tokens(model.contextualize(word_hidden, valid), valid))  # noqa: SLF001
+        sub_vec = model.project(model.sub_token_hidden(batch, n_sub)) if model.uses_raw else None
+
+    return (
+        sent_vec.cpu().numpy(),
+        word_vec.cpu().numpy(),
+        None if sub_vec is None else sub_vec.cpu().numpy(),
+        valid.cpu().numpy(),
+    )
 
 
 def _quick_config(include_eye_tracking: bool, root: str) -> object:

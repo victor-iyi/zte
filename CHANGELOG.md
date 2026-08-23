@@ -4,6 +4,28 @@
 
 ### Added
 
+- **The steps after training are not redone on a re-run.** `zte-audit`, `zte-decode`, `zte-rebaseline` and
+  `zte-parallax transfer` record what each artifact was built from — every option, the checkpoint's SHA-256 and the
+  dataset's bundle key — beside it as `.zte-done-<artifact>.json`, and skip when nothing has moved, so a notebook
+  re-run top to bottom costs only its unfinished work. The decision comes before the bundle is staged and before a
+  model loads, so a finished step re-runs in the time it takes to hash a checkpoint, and its headline is logged
+  again from disk rather than left blank. Anything that would change the number rebuilds it: a checkpoint trained
+  further, a changed option, different data, a deleted or half-written artifact, or an artifact carrying no record
+  at all. The raw path is deliberately not part of the identity, so a re-mounted Drive does not invalidate a day of
+  audits; `--force` on any of the four rebuilds regardless.
+- **`write_mode: auto`, and it is now the default** (`zte-colab session --write-mode`). Runs are written straight to
+  Drive when Drive is mounted, and to the local disk otherwise: a twelve-fold sweep is ~27 GB of checkpoints, which
+  a Colab VM cannot hold beside an 11-24 GB dataset bundle, while a workstation wants the fast local disk. The
+  resolved value is logged and carried in the session payload.
+- **The bundle cache picks the roomiest local volume.** `res/cache/prepared` lives on whatever disk the checkout
+  is on, which on a Colab GPU runtime is often not the largest attached; `zte.data.cache.scratch_root` scans
+  `/content`, `/var/scratch`, `/scratch`, `/mnt/disks/local` and `/tmp` and moves the cache to any that beats the
+  default by more than 20 GB. Probing creates nothing on the candidates it rejects, and `ZTE_SCRATCH_DIR` pins it.
+- **The local bundle cache now evicts rather than accumulates.** Staging an entry first frees room for it, removing
+  least-recently-used entries until the incoming one fits with `ZTE_MIN_FREE_GB` (default 12 GB) still free. Only an
+  entry the persistent store holds complete is evictable, so nothing that would need rebuilding from the multi-GB
+  extraction is ever deleted; a shortfall is reported instead. `BundleStore.staged()` and `make_room()` are public.
+
 - **Decoder menu capacity — the readout that can be proved.** `zte.evaluation.audit.capacity` certifies the largest
   $K$-way menu a decoder serves: given the held-out reading and $K$ candidate sentences, does it score the one
   actually read above every distractor? Accuracy is the exact expectation over uniformly drawn distractors
@@ -108,6 +130,12 @@
 
 ### Fixed
 
+- **The three-level atlas embedded every sentence in one forward and died on any GPU.** `zte-visualize --kind
+  levels` collated `--max-points // 8` sentences — 500 at the documented `--max-points 4000` — into a single pass,
+  and the raw conformer self-attends over its 350-step window for every word token in that batch: a 118 GiB
+  allocation against an 80 GB card. It now embeds in chunks of eight sentences, which puts the peak near 2 GiB and
+  makes it independent of `--max-points`. Nothing crosses a sentence boundary, so the vectors are the ones a single
+  forward produced; `--batch-size` raises the chunk for speed on a large GPU and changes no number.
 - **The length projector was fitted in the wrong frame.** `objective.length_projection` fitted its word-count basis
   on the *raw* training rows and subtracted it from the *post-processed* (whitened, all-but-the-top) rows, so the
   basis did not describe the space it was removed from. The real-data signature was length leakage **rising**:
