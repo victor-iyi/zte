@@ -393,6 +393,10 @@ straight to Drive and the VM's disk never holds them. Off Colab, `auto` resolves
 disk is primary, which is what a workstation wants. `zte-colab session --write-mode` still takes `local+mirror` or
 `drive` explicitly, and the resolved value is printed and carried in the session payload as `write_mode`.
 
+`zte-colab mirror` takes the same three modes and the same `auto` default, because the mode decides which side of
+the mirror is local: a session that wrote straight to Drive has its runs there already, so the mirror reports that
+source and destination are one directory instead of pushing an empty `res/experiments` over the catalogue.
+
 Writing checkpoints onto a FUSE mount needs care: Drive can refuse `os.replace`, and the fallback used to write
 straight over the file it was replacing, so a kill mid-write destroyed the only good copy. It now moves the
 previous checkpoint aside first, and a write that fails outright keeps that previous file and logs rather than

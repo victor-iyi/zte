@@ -17,6 +17,10 @@ _LOG = get_logger('utils.session')
 type WriteMode = Literal['auto', 'local+mirror', 'drive']
 """Whether long runs write to the VM disk and mirror afterwards, or straight to Drive."""
 
+# One tuple behind every `--write-mode`, so a command cannot refuse a mode another command hands it.
+WRITE_MODES: Final[tuple[WriteMode, ...]] = ('auto', 'local+mirror', 'drive')
+"""Every accepted write mode, in the order a command lists them."""
+
 # The one shared folder a session mounts: the dated runs, the prepared bundles and the raw archives all hang off it.
 DEFAULT_DRIVE_ROOT: Final[str] = '/gdrive/My Drive/Sharables/ZTE'
 """Mounted-Drive root holding every dated session folder."""

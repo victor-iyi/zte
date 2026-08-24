@@ -37,7 +37,15 @@ from zte.evaluation.interactive import generation_payload
 from zte.logging_utils import configure_logging, get_logger
 from zte.utils.env import accelerator_info, env_defaults, machine_resources, project_root
 from zte.utils.mirror import mirror_tree
-from zte.utils.session import DEFAULT_DRIVE_ROOT, DriveSession, RunRef, discover_runs, every_session, find_checkpoint
+from zte.utils.session import (
+    DEFAULT_DRIVE_ROOT,
+    WRITE_MODES,
+    DriveSession,
+    RunRef,
+    discover_runs,
+    every_session,
+    find_checkpoint,
+)
 
 _LOG = get_logger('cli.colab')
 
@@ -624,7 +632,10 @@ def _mirror(args: argparse.Namespace) -> dict[str, Any]:
     """Copies a session between the VM's disk and Drive, skipping what is rebuildable."""
     session = DriveSession.create(args.drive, run_date=args.date, write_mode=args.write_mode, make_dirs=False)
     remote = session.session_dir / args.sub
-    local = Path(args.local) if args.local else session.local_runs
+
+    # Where the runs are is what `write_mode` decides, so a session that wrote straight to Drive resolves to the
+    # Drive folder and trips the copy-onto-itself guard below instead of pushing an empty `res/experiments` over it.
+    local = Path(args.local) if args.local else session.out_root
     source, destination = (local, remote) if args.direction == 'up' else (remote, local)
 
     payload: dict[str, Any] = {
@@ -683,7 +694,7 @@ def parse_arguments() -> argparse.Namespace:
     session.add_argument(
         '--write-mode',
         default='auto',
-        choices=('auto', 'local+mirror', 'drive'),
+        choices=WRITE_MODES,
         help="Where long runs write. 'auto' writes to Drive when it is mounted, because a Colab VM's disk cannot "
         'hold a twelve-fold sweep beside an 11-24 GB dataset bundle, and locally otherwise.',
     )
@@ -746,8 +757,18 @@ def parse_arguments() -> argparse.Namespace:
     mirror.add_argument('--direction', default='up', choices=('up', 'down'))
     mirror.add_argument('--date', default=None, help='Session date; defaults to today.')
     mirror.add_argument('--sub', default='experiments', help="Folder under the session, e.g. 'experiments'.")
-    mirror.add_argument('--local', default=None, help='Local side of the mirror.')
-    mirror.add_argument('--write-mode', default='local+mirror', choices=('local+mirror', 'drive'))
+    mirror.add_argument(
+        '--local',
+        default=None,
+        help='Local side of the mirror; defaults to wherever `--write-mode` says this session wrote its runs.',
+    )
+    mirror.add_argument(
+        '--write-mode',
+        default='auto',
+        choices=WRITE_MODES,
+        help='The mode the session was opened with, resolved the same way here; a session that wrote straight to '
+        'Drive has nothing to mirror and says so rather than reporting a backup.',
+    )
 
     return parser.parse_args()
 

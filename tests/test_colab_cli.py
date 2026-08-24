@@ -20,6 +20,7 @@ from zte.cli.colab import (
     _mirror,
     _panels,
     main,
+    parse_arguments,
     read_capacity_artifact,
     read_decode_artifacts,
 )
@@ -30,6 +31,7 @@ from zte.evaluation.analysis import Study, panel_builders
 from zte.evaluation.audit.capacity import CLAUSE_NAMES, capacity_report
 from zte.logging_utils import configure_logging
 from zte.utils.env import env_defaults, machine_resources, set_env
+from zte.utils.session import WRITE_MODES
 
 
 @pytest.fixture(autouse=True)
@@ -609,6 +611,34 @@ def test_a_mirror_onto_itself_says_so_rather_than_reporting_a_backup(tmp_path: P
     assert (payload['copied'], payload['failed']) == (0, 0)
     assert payload['exclude_files'] == ['ckpt_epoch*.pt']
     assert sorted(p.name for p in remote.iterdir()) == ['run.txt']
+
+
+@pytest.mark.parametrize('mode', WRITE_MODES)
+def test_every_mode_a_session_opens_with_is_a_mode_the_mirror_accepts(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The notebook hands the mirror the mode it opened the session with, so refusing one of them ends the run."""
+    for command in ('session', 'mirror'):
+        monkeypatch.setattr('sys.argv', ['zte-colab', command, '--write-mode', mode])
+
+        assert parse_arguments().write_mode == mode
+
+
+def test_a_session_that_wrote_straight_to_drive_has_nothing_to_mirror(tmp_path: Path) -> None:
+    """`auto` resolves to Drive when Drive is mounted, so the runs are already there and the mirror says so."""
+    drive = tmp_path / 'drive'
+    remote = drive / '2026-08-13' / 'experiments'
+    remote.mkdir(parents=True)
+    (remote / 'run.txt').write_text('trained', encoding='utf-8')
+    args = argparse.Namespace(
+        drive=drive, date='2026-08-13', write_mode='auto', sub='experiments', local=None, direction='up'
+    )
+
+    payload = _mirror(args)
+
+    assert payload['skipped_reason'] == 'source and destination are the same directory'
+    assert payload['src'] == payload['dst'] == str(remote)
+    assert (payload['copied'], payload['failed']) == (0, 0)
 
 
 def test_a_mirror_from_a_source_that_is_not_there_names_the_source(tmp_path: Path) -> None:

@@ -298,6 +298,36 @@ def test_the_contrastive_figure_draws_one_interval_per_level() -> None:
     assert json.loads(json.dumps(figure, allow_nan=False)) == figure
 
 
+def test_a_level_with_no_positive_pair_is_named_rather_than_drawn_at_zero() -> None:
+    """An unscored level is left off the bars and named under the title; a zero-length bar would claim a measurement."""
+    rng = np.random.default_rng(5)
+    report = contrastive.contrastive_geometry(
+        [
+            contrastive.LevelPairs(
+                level='word', vectors=rng.normal(size=(20, 5)), positive_ids=np.repeat(np.arange(5), 4)
+            ),
+            contrastive.LevelPairs(level='sentence', vectors=rng.normal(size=(20, 5)), positive_ids=np.arange(20)),
+        ]
+    )
+    figure = atlas.contrastive_figure(report)
+
+    assert report['levels']['sentence']['positive_negative_gap'] is None
+    assert list(figure['data'][0]['y']) == ['word']
+    assert 'sentence' in figure['layout']['title']['text']
+
+
+def test_a_report_no_level_could_score_yields_no_figure_at_all() -> None:
+    """With no positive pair anywhere there is nothing to draw, and an empty picture would still read as a result."""
+    rng = np.random.default_rng(6)
+    report = contrastive.contrastive_geometry(
+        [contrastive.LevelPairs(level='word', vectors=rng.normal(size=(8, 4)), positive_ids=np.arange(8))]
+    )
+
+    assert report['widest_gap'] is None
+    with pytest.raises(ValueError, match='carry no positive pair'):
+        atlas.contrastive_figure(report)
+
+
 # --------------------------------------------------------------------------- #
 # The cross-level comparison table
 # --------------------------------------------------------------------------- #
@@ -526,3 +556,23 @@ def test_the_atlas_does_not_depend_on_how_many_sentences_share_a_forward(
         assert whole.labels == chunked.labels, f'{whole.level}: the points moved or were reordered'
         assert whole.subjects == chunked.subjects
         assert np.allclose(whole.vectors, chunked.vectors, atol=1e-5)
+
+
+def test_the_atlas_draws_a_stimulus_with_every_reading_of_it(
+    small_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sampled sentences span the subjects, which is what gives the contrastive geometry a pair to score.
+
+    Note:
+        Sentences are ordered subject-major, so the first N of them are one person's readings -- on real ZuCo no
+        two share a stimulus, every level is then unscorable and the gap figure has nothing to draw.
+    """
+    run_dir = _atlas_run(tmp_path / 'run', small_dataset)
+    out = tmp_path / 'atlas.json'
+    levels = _atlas_levels(run_dir, out, 8, monkeypatch)
+    sentence = next(level for level in levels if level.level == 'sentence')
+    payload = json.loads(out.read_text())
+
+    assert sentence.subjects is not None and len(set(sentence.subjects)) > 1, 'one subject: no positive pair exists'
+    assert payload['contrastive']['levels']['sentence']['positive_negative_gap'] is not None
+    assert 'contrastive' in payload['figures']

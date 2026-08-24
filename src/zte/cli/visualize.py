@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Final
 
@@ -217,7 +218,7 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     torch_ds = ZuCoTorchDataset(dataset)
     texts, words = torch_ds.ordered_texts(), torch_ds.ordered_words()
 
-    rows = min(len(torch_ds), max(int(args.max_points) // 8, 8))
+    selected = _atlas_sentences(torch_ds, min(len(torch_ds), max(int(args.max_points) // 8, 8)), int(args.seed))
     device = next(embedder.model.parameters()).device
     model = embedder.model.eval()
     n_sub = int(embedder.config.objective.token_sub_tokens)
@@ -232,8 +233,8 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     # Chunked because the intra-word attention is quadratic in the 350-step window and linear in the sentences
     # handed to it at once. Nothing here crosses a sentence boundary -- the frontend sees one word token at a time
     # and the sentence transformer is masked to its own row -- so the vectors are the ones one forward would give.
-    for start in range(0, rows, per_forward):
-        batch = collate_sentences([torch_ds[i] for i in range(start, min(start + per_forward, rows))])
+    for start in range(0, len(selected), per_forward):
+        batch = collate_sentences([torch_ds[i] for i in selected[start : start + per_forward]])
         batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
         sent_vec, word_vec, sub_vec, valid = _atlas_vectors(model, batch, n_sub)
 
@@ -295,7 +296,17 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     if pairs:
         report = contrastive_geometry(pairs, seed=int(args.seed))
         payload['contrastive'] = report
-        payload['figures']['contrastive'] = contrastive_figure(report)
+
+        # `widest_gap` is None exactly when no level had an anchor with both a positive and a negative, and a
+        # figure of nothing is worse than none: the report still travels, saying per level that it was unscored.
+        if report['widest_gap'] is not None:
+            payload['figures']['contrastive'] = contrastive_figure(report)
+        else:
+            _LOG.warning(
+                'No level carried a positive pair, so the contrastive figure is omitted; the atlas still '
+                'carries the per-level report with its unscored levels marked.'
+            )
+
     out = args.out if args.out.suffix == '.json' else args.out.with_suffix('.json')
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload), encoding='utf-8')
@@ -307,6 +318,34 @@ def _level_atlas(args: argparse.Namespace) -> Path:
     )
 
     return out
+
+
+def _atlas_sentences(torch_ds: Any, budget: int, seed: int) -> list[int]:
+    """Picks up to `budget` sentences a whole stimulus at a time, so every reading of a chosen one travels with it.
+
+    Note:
+        The dataset is ordered subject-major, so the first `budget` sentences are one person's readings; no two of
+        them share a stimulus, and the contrastive geometry then has no positive pair to score at any level.
+    """
+    by_stimulus: dict[str, list[int]] = defaultdict(list)
+    for index, key in enumerate(torch_ds.stimulus_keys):
+        by_stimulus[key].append(index)
+
+    keys = sorted(by_stimulus)
+    rng = np.random.default_rng(seed)
+    picked: list[int] = []
+
+    # A stimulus that does not fit is skipped rather than ending the walk, so a smaller one can still use the room.
+    for position in rng.permutation(len(keys)):
+        readings = by_stimulus[keys[int(position)]]
+        if picked and len(picked) + len(readings) > budget:
+            continue
+
+        picked.extend(readings)
+        if len(picked) >= budget:
+            break
+
+    return sorted(picked[:budget])
 
 
 def _atlas_vectors(model: Any, batch: dict[str, Any], n_sub: int) -> tuple[Any, Any, Any, Any]:

@@ -130,6 +130,23 @@
 
 ### Fixed
 
+- **`zte-colab mirror` refused the write mode the session was opened with.** Its `--write-mode` predated `auto` and
+  accepted only `local+mirror` and `drive`, so a notebook that opened its session with the new default and handed
+  the same value to the mirror died on `argument --write-mode: invalid choice: 'auto'` — after the training cell had
+  finished, which is the worst place to lose a cell. Both commands now read their choices from one `WRITE_MODES`
+  tuple and default to `auto`. The mode also decides which side of the mirror is local: it is `session.out_root`
+  rather than always `res/experiments`, so a session that wrote straight to Drive reports that source and
+  destination are one directory instead of copying an empty local tree over the Drive catalogue.
+- **The three-level atlas drew one subject, so its contrastive geometry had nothing to measure and the run died
+  writing the figure.** `zte-visualize --kind levels` took the *first* `--max-points // 8` sentences of a
+  subject-major dataset — on real ZuCo, 500 readings by one person, no two of them the same stimulus. Every level
+  therefore had an anchor with no positive pair, reported `None` for its gap as designed, and `contrastive_figure`
+  raised `TypeError: float() argument must be a string or a real number, not 'NoneType'` before the atlas JSON was
+  written, taking the notebook cell that reads it down with it. Sentences are now drawn a whole stimulus at a time,
+  so every subject's reading of a chosen sentence travels with it and the levels carry the cross-subject positives
+  the geometry scores. A level that still cannot be scored is named under the figure's title instead of drawn as a
+  bar at zero — a zero-length bar claims the term bought nothing, which is a different statement from nothing having
+  been measured — and a report in which no level could be scored omits the figure, keeping the per-level report.
 - **The three-level atlas embedded every sentence in one forward and died on any GPU.** `zte-visualize --kind
   levels` collated `--max-points // 8` sentences — 500 at the documented `--max-points 4000` — into a single pass,
   and the raw conformer self-attends over its 350-step window for every word token in that batch: a 118 GiB

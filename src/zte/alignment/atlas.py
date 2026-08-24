@@ -220,10 +220,11 @@ def contrastive_figure(report: dict[str, Any]) -> FigureJSON:
         report (dict[str, Any]): A `zte.alignment.contrastive.contrastive_geometry` payload.
 
     Returns:
-        FigureJSON: One horizontal bar per level, with asymmetric error bars from the bootstrap CI.
+        FigureJSON: One horizontal bar per scored level, with asymmetric error bars from the bootstrap CI; a
+            level whose anchors carried no positive pair is named under the title rather than drawn.
 
     Raises:
-        ValueError: If the report carries no level blocks.
+        ValueError: If the report carries no level blocks, or if no level could be scored.
         ImportError: If plotly is not installed.
     """
     blocks = report.get('levels') or {}
@@ -231,25 +232,35 @@ def contrastive_figure(report: dict[str, Any]) -> FigureJSON:
     if not ordered:
         raise ValueError('The contrastive report carries no level blocks; nothing to draw.')
 
+    # An unscorable level reports `None` rather than a fabricated zero, and a bar of length zero would read as
+    # "the term bought nothing here" -- a different claim from "nothing was measured here".
+    scored = [(level, block) for level, block in ordered if block.get('positive_negative_gap') is not None]
+    unscored = [level for level, block in ordered if block.get('positive_negative_gap') is None]
+    if not scored:
+        raise ValueError(
+            f'No level of the contrastive report could be scored ({", ".join(unscored)}): the vectors carry no '
+            'positive pair, so there is no gap to draw.'
+        )
+
     go = _go()
-    gaps = [float(block['positive_negative_gap']) for _, block in ordered]
-    los = [float(block['positive_negative_gap_ci'][0]) for _, block in ordered]
-    his = [float(block['positive_negative_gap_ci'][1]) for _, block in ordered]
+    gaps = [float(block['positive_negative_gap']) for _, block in scored]
+    los = [float(block['positive_negative_gap_ci'][0]) for _, block in scored]
+    his = [float(block['positive_negative_gap_ci'][1]) for _, block in scored]
     hover = [
         f'<b>{level}</b><br>gap: {gap:.3f} [{lo:.3f}, {hi:.3f}]'
         f'<br>alignment (mean positive cosine): {_show(block.get("alignment"))}'
         f'<br>uniformity: {_show(block.get("uniformity"))}'
         f'<br>effective rank: {_show(block.get("effective_rank"))}'
         f' / {block.get("embed_dim", "?")}'
-        for (level, block), gap, lo, hi in zip(ordered, gaps, los, his, strict=True)
+        for (level, block), gap, lo, hi in zip(scored, gaps, los, his, strict=True)
     ]
 
     fig = go.Figure(
         go.Bar(
             x=gaps,
-            y=[level for level, _ in ordered],
+            y=[level for level, _ in scored],
             orientation='h',
-            marker={'color': [LEVEL_COLOURS[level] for level, _ in ordered]},
+            marker={'color': [LEVEL_COLOURS[level] for level, _ in scored]},
             error_x={
                 'type': 'data',
                 'symmetric': False,
@@ -262,14 +273,19 @@ def contrastive_figure(report: dict[str, Any]) -> FigureJSON:
             hoverinfo='text',
         )
     )
+    title = 'What the contrastive term bought: positive minus negative cosine, per level'
+    if unscored:
+        missing = ', '.join(unscored)
+        title += f'<br><span style="font-size:11px">not drawn -- no positive pair was sampled at: {missing}</span>'
+
     fig.add_vline(x=0.0, line={'width': 1, 'dash': 'dot', 'color': '#888888'})
     fig.update_layout(
-        title='What the contrastive term bought: positive minus negative cosine, per level',
+        title=title,
         xaxis_title='mean positive cosine - mean negative cosine (95% bootstrap CI)',
         yaxis_title='',
         height=320,
         template='plotly_white',
-        margin={'l': 90, 'r': 30, 't': 60, 'b': 60},
+        margin={'l': 90, 'r': 30, 't': 80 if unscored else 60, 'b': 60},
         font={'family': 'system-ui, -apple-system, Segoe UI, sans-serif', 'size': 12},
         showlegend=False,
     )
