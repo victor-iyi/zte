@@ -9,7 +9,11 @@ back to a deterministic hash target that carries no semantics.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 
@@ -17,6 +21,14 @@ from zte.data.cache import fetch_artifact, publish_artifact
 from zte.logging_utils import get_logger
 
 _LOG = get_logger('data.text')
+
+# A sentence that cannot fill its pool inside the requested tolerance is widened one word / two pieces at a time,
+# rather than handed fewer negatives -- a short pool silently reweights that anchor's contribution to the loss.
+_LENGTH_WIDEN_STEP: Final[int] = 1
+"""Words added to a sentence's length tolerance each time its candidate set is too thin."""
+
+_PIECE_WIDEN_STEP: Final[int] = 2
+"""Sub-word pieces added to a sentence's piece tolerance each time its candidate set is too thin."""
 
 # Substrings that mark a decoder / generative LLM -> use the hf mean-pool backend, not sentence-transformers.
 _DECODER_HINTS: tuple[str, ...] = (
@@ -192,7 +204,12 @@ def mine_hard_negatives(texts: list[str], text_matrix: np.ndarray, k: int = 8) -
 
     Sentences are ranked by `surface_overlap - semantic_cosine`, so they look alike but mean different things.
     Co-locating them in a CLIP batch forces the encoder to represent meaning rather than surface form. The O(n^2) scan
-    is cheap on ZuCo's few hundred unique sentences and is cached with the text matrix.
+    is recomputed per run -- cheap on ZuCo's few hundred unique sentences, and never cached.
+
+    Note:
+        Nothing here constrains word count, so a mined negative is routinely a different length from its anchor. On
+        this gallery word count alone carries 5.14 of the 9.45 bits needed to name a sentence, so such a negative is
+        separable by counting rather than by meaning. Use `mine_matched_hard_negatives` when that matters.
 
     Args:
         texts (list[str]): Unique sentence strings (row `i` aligns with `text_matrix[i]`).
@@ -224,3 +241,146 @@ def mine_hard_negatives(texts: list[str], text_matrix: np.ndarray, k: int = 8) -
         top = np.argpartition(-score, kk - 1)[:kk]
         out[i, :kk] = top[np.argsort(-score[top])]
     return out
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class MatchedNegatives:
+    """A mined hard-negative table together with how far the matching had to bend to fill it."""
+
+    table: np.ndarray
+    """`(n, k)` int64 hard-negative sentence ids, `-1` padded -- the same contract `mine_hard_negatives` returns."""
+
+    widened: np.ndarray
+    """`(n,)` bool: this sentence could not fill `k` negatives inside the requested tolerance."""
+
+    length_gap: int
+    """Largest word-count difference between any mined negative and its anchor; above `length_tol` only where a
+    sentence had to widen."""
+
+    piece_gap: int
+    """Largest total-piece difference between any mined negative and its anchor; `-1` when no piece table was given."""
+
+    @property
+    def n_widened(self) -> int:
+        """How many sentences fell back to a wider tolerance -- above zero, part of the table is unmatched."""
+        return int(self.widened.sum())
+
+
+def _bag_reorder(left: Sequence[str], right: Sequence[str]) -> float:
+    """Share of the anchor's word multiset the candidate reuses, scaled by how much of the anchor's order it breaks."""
+    if not left or not right:
+        return 0.0
+
+    span = max(len(left), len(right))
+    shared = sum((Counter(left) & Counter(right)).values()) / span
+    agree = sum(1 for a, b in zip(left, right, strict=False) if a == b) / span
+
+    return shared * (1.0 - agree)
+
+
+def _admissible(lengths: np.ndarray, totals: np.ndarray | None, i: int, length_tol: int, piece_tol: int) -> np.ndarray:
+    """Boolean mask of the sentences whose length -- and, with a piece table, spelling budget -- match sentence `i`."""
+    mask = np.abs(lengths - lengths[i]) <= length_tol
+    if totals is not None:
+        mask &= np.abs(totals - totals[i]) <= piece_tol
+    mask[i] = False
+
+    return mask
+
+
+def mine_matched_hard_negatives(
+    texts: list[str],
+    text_matrix: np.ndarray,
+    *,
+    k: int = 8,
+    length_tol: int = 1,
+    word_pieces: np.ndarray | None = None,
+    piece_tol: int = 2,
+    bag_weight: float = 1.0,
+) -> MatchedNegatives:
+    """Mines hard negatives that match their anchor's length and spelling budget, so only the meaning differs.
+
+    A candidate must sit inside `length_tol` words of the anchor and, when `word_pieces` is supplied, inside
+    `piece_tol` of its total sub-word count. Survivors are then ranked by
+    `surface_overlap + bag_weight * reordered_bag_overlap - semantic_cosine`: surface-similar, built from the anchor's
+    own words in a different order, and meaning-distinct. "The dog bit the man" against "the man bit the dog" is the
+    negative this scores highest, and it is the one that isolates role and syntax from bag-of-content.
+
+    Note:
+        Word count carries 5.14 of the 9.45 bits needed to name a sentence on the ZuCo gallery and the sub-word
+        budget carries more, so an unmatched negative can be rejected by counting and prices no semantics at all.
+        A sentence with too few admissible candidates has its tolerance widened rather than its pool shortened, and
+        `MatchedNegatives.widened` says which sentences that happened to.
+
+    Args:
+        texts (list[str]): Unique sentence strings; row `i` aligns with `text_matrix[i]`.
+        text_matrix (np.ndarray): L2-normalised sentence embeddings `(n, dim)`.
+        k (int, optional): Negatives mined per sentence. Defaults to 8.
+        length_tol (int, optional): Words a negative may differ from its anchor by. Defaults to 1.
+        word_pieces (np.ndarray | None, optional): `TokenAlignment.word_pieces`, an `(n, max_words)` sub-word-count
+            table zero-padded past the end of a sentence. Defaults to None, which matches on length alone.
+        piece_tol (int, optional): Total sub-word pieces a negative may differ from its anchor by. Defaults to 2.
+        bag_weight (float, optional): Weight of the reordered-bag term in the ranking. Defaults to 1.0.
+
+    Returns:
+        MatchedNegatives: The `(n, k)` table and the diagnostics that say whether it stayed matched.
+
+    Raises:
+        ValueError: If `word_pieces` does not have one row per sentence.
+    """
+    n = len(texts)
+    words = [t.lower().split() for t in texts]
+    tokens = [set(w) for w in words]
+    lengths = np.fromiter((len(w) for w in words), dtype=np.int64, count=n)
+
+    totals: np.ndarray | None = None
+    if word_pieces is not None:
+        # `zte.data` must not import `zte.evaluation` at module scope, so the shared signature helper is deferred.
+        from zte.evaluation.audit.rebaseline import piece_signatures
+
+        if len(word_pieces) != n:
+            raise ValueError(f'word_pieces has {len(word_pieces)} rows for {n} sentences.')
+        totals = np.asarray(piece_signatures(word_pieces, 'total'), dtype=np.int64)
+
+    sem = np.asarray(text_matrix, dtype=np.float32) @ np.asarray(text_matrix, dtype=np.float32).T
+    table = np.full((n, k), -1, dtype=np.int64)
+    widened = np.zeros(n, dtype=bool)
+    kk = min(k, max(n - 1, 0))
+    length_span = int(lengths.max() - lengths.min()) if n else 0
+    piece_span = 0 if totals is None else int(totals.max() - totals.min())
+
+    for i in range(n):
+        if kk <= 0 or not tokens[i]:
+            continue
+
+        # Widen this one sentence until its pool can be filled; the loop terminates because at the full span every
+        # other sentence is admissible, and `kk` never exceeds `n - 1`.
+        l_tol, p_tol = int(length_tol), int(piece_tol)
+        mask = _admissible(lengths, totals, i, l_tol, p_tol)
+        while int(mask.sum()) < kk and (l_tol < length_span or p_tol < piece_span):
+            widened[i] = True
+            l_tol += _LENGTH_WIDEN_STEP
+            p_tol += _PIECE_WIDEN_STEP
+            mask = _admissible(lengths, totals, i, l_tol, p_tol)
+
+        cand = np.flatnonzero(mask)
+        if cand.size == 0:
+            continue
+
+        ti, wi = tokens[i], words[i]
+        jac = np.fromiter((len(ti & tokens[j]) / max(len(ti | tokens[j]), 1) for j in cand), dtype=np.float32)
+        bag = np.fromiter((_bag_reorder(wi, words[j]) for j in cand), dtype=np.float32)
+
+        # Surface-similar, built from the anchor's own words in a different order, and semantically distinct.
+        score = jac + float(bag_weight) * bag - sem[i, cand]
+        take = cand[np.argsort(-score, kind='stable')[:kk]]
+        table[i, : take.size] = take
+
+    picked = table >= 0
+    anchors = np.broadcast_to(np.arange(n)[:, None], table.shape)
+    length_gap = int(np.abs(lengths[table[picked]] - lengths[anchors[picked]]).max()) if picked.any() else 0
+    piece_gap = -1
+    if totals is not None and picked.any():
+        piece_gap = int(np.abs(totals[table[picked]] - totals[anchors[picked]]).max())
+
+    return MatchedNegatives(table=table, widened=widened, length_gap=length_gap, piece_gap=piece_gap)

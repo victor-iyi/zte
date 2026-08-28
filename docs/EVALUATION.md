@@ -369,6 +369,27 @@ Two consequences are enforced in code rather than left to a reviewer:
 Like the length oracle, the piece oracle trains nothing and stops no run. What it gates is the sentence you are
 allowed to write, and the cross-level table below, which refuses a token row that does not carry it.
 
+### The two effective ranks, and why they disagree by an order of magnitude
+
+Two different `effective_rank_ratio` values exist for the same checkpoint, and confusing them has already produced a
+wrong reading.
+
+| where | computed over | `align_sentence_combined_loZAB_s42` |
+| --- | --- | --- |
+| `scoreboard.effective_rank_ratio` | every held-out reading (8400 rows × 768) | **0.297** — about 228 directions |
+| `alignment.contrastive_geometry`'s `eff-rank` column | that level's own vectors only (**492** sentence rows × 768) | **0.031** — about 24 directions |
+
+The contrastive table's number is measured on **fewer samples than dimensions**. `effective_rank` is
+$\exp(H)$ of the normalised singular-value spectrum, and at $n < d$ that estimator is bounded above by $n - 1$ and
+biased downward besides. The per-level sample counts differ too — the sentence level contributes one vector per
+sentence while the token level contributes four per word — so the ratios are not comparable *across* levels either,
+and the fact that they rise with sample count (sentence 0.031 < word 0.064 < token 0.085) is what that bias looks
+like.
+
+**Read `scoreboard.effective_rank_ratio` for any capacity or collapse claim.** The contrastive column is a
+within-level diagnostic printed beside alignment and uniformity so that a tight alignment reached by collapsing is
+visible; it is not the model's capacity, and "effective rank 24 of 768" is not a statement about this encoder.
+
 ## Comparing the three alignment levels (`zte.alignment.compare`)
 
 A token-level, a word-level and a sentence-level encoder are three different objectives scored over the same
@@ -406,6 +427,97 @@ The contract the table enforces:
 The mandatory floor is level-specific because only the token level introduces a *new* free channel. The word and
 sentence levels sit on the length oracle documented above, and `oracle_floor` takes one for them too — it is
 optional there, not absent.
+
+## The granularity ablation as a command (`zte-levels`)
+
+`cross_level_table` had no driver: the three-level comparison could be built in Python but not produced from a
+checkout. `zte-levels` is that driver. It **loads no model and re-scores no query** — every number is read from an
+artifact already on disk — then groups the runs by alignment level, aggregates across LOSO folds, and prints each
+level against the floor it has to clear.
+
+```sh
+uv run zte-levels --root <session>/experiments --pattern 'align_*' --out <out>/levels
+```
+
+Three properties are worth knowing before reading its table:
+
+- **The spread is a sample (n−1) standard deviation, and the interval is a bootstrap over fold means.** Both describe
+  variation *between subjects*. At *n* = 12 the population form under-reports the spread by about 4%.
+- **The Top-*k* tail pools every fold's queries into one exact binomial**, which readings from twelve different
+  subjects are only approximately independent trials of. The table says so where it prints the tail.
+- **A level with no measured floor renders as `floor not measured`, never as a pass.** The renderer refuses to issue
+  a verdict it cannot support, and names what is missing.
+
+Both galleries are printed deliberately: the unstratified one is what a naive report quotes, and the
+length-stratified twin beside it is the honest cell.
+
+## The anchor-calibration curve (`zte-calibrate`)
+
+The deployment metric: **held-out rank percentile as a function of how many labelled sentences a new reader has
+supplied**, with the encoder frozen and nothing retrained. Full design, algebra and controls:
+[`CALIBRATION.md`](CALIBRATION.md).
+
+What makes it readable as evidence rather than as a demonstration:
+
+- **Three arms on one identical gallery** — `uncalibrated`, `calibrated`, and `shuffled`, the last fitting the same
+  map on a derangement of the anchor pairings. The result is `calibrated − shuffled`, reported as a *paired*
+  per-draw difference with an interval (`margin_over_shuffled_ci`). A curve that does not beat its own shuffled
+  control is not a calibration result, and `verdict[family].beats_shuffled` records it.
+- **Anchors leave both the query set and the gallery.** An anchor left in the gallery lets the fitted map place a
+  sentence it was trained on next to itself, which manufactures the entire effect. Anchor count 0 is therefore
+  re-scored on each *reduced* gallery, so the columns compared are the same problem.
+- **`underdetermined`, `degraded_fits` and `saturated`** travel per point. A ridge map fitted on 10 anchors in 768
+  dimensions is interpolating; a degraded fit returns `None` and logs rather than silently becoming an identity.
+
+**This is not the existing `anchor_calibration_lift`.** That diagnostic measures *cohesion* — mean cosine between
+same-word cross-subject centroids — at word level, and discards its fitted map without ever applying it to a scored
+embedding. A cohesion lift is not evidence that retrieval moves, and the two have never been connected here.
+
+## The temporal latency profile (`zte-lens encode --temporal`)
+
+**Diagnostic. Nothing here is a headline**, and `peak_in_n400_window` gates nothing.
+
+The instrument is occlusion, not attention. `RawConformer` builds its attentive temporal pool only under
+`conformer_temporal_pool: attention`, which no live config sets, so those weights do not exist in any trained
+checkpoint; the inner transformer runs with `need_weights=False` and the package registers no forward hooks.
+Retraining with attentive pooling would produce a different model, not an explanation of this one.
+
+So a time span of the raw window is zeroed, the reading re-embedded, and the cosine displacement of the sentence
+vector recorded — a counterfactual rather than a weight. Bins are reported in **milliseconds from word onset**
+(`raw_window` samples at `SAMPLING_RATE_HZ = 500.0`, so 350 samples is 700 ms), with a bootstrap interval per bin and
+a **null band**: a same-width occlusion at a random offset, so the profile has a floor rather than being a bare chart
+of drops.
+
+The caveat travels in the payload and the rendered report: ZuCo word windows come from eye-tracking segmentation and
+overlap their neighbours, so a peak in 300–500 ms is *consistent with* an N400 and is not proof of one. The profile
+needs a raw-input checkpoint; a band-power run writes none.
+
+**A scalp map needs a real montage.** Every live config in this repository runs on the approximate Fibonacci
+geometry, which makes a per-channel topography a picture of array indices rather than of brain regions. The
+condition for a regional claim is the checkpoint's own `approximate_geometry` flag reading `False` — see
+[`SPATIAL_ENCODING.md`](SPATIAL_ENCODING.md).
+
+## The evidence board (`zte-evidence`)
+
+The board assembles every measured claim beside the brain-free floor it has to clear, reading the artifacts each
+audit already wrote. **It recomputes nothing**, so it cannot disagree with the runs it describes.
+
+```sh
+uv run zte-evidence --roots <session>/analysis/evidence_suite --out <out>/board
+```
+
+Three rules are enforced in code rather than by review, and each is mutation-tested:
+
+1. **A claim with no floor is `not measured`**, never a result. There is no path by which an unfloored number
+   becomes a headline.
+2. **The interval must clear the floor, not the point estimate.** A point estimate above a floor with an interval
+   straddling it is the shape every retracted result in this project had.
+3. **A missing artifact is named in `missing`, not dropped.** A silently absent row reads as a claim nobody made,
+   which is how a gap becomes an implied pass.
+
+`Claim.headline_safe()` is the single predicate deciding whether a row may be quoted on its own; the rendered
+document lists the rows that pass it, and says plainly when none do. Top-*k* renders as a hit count over the queries
+actually scored, and a hit count too thin to resolve a difference carries that caveat whatever the verdict says.
 
 ## `train.eval_profile` — which blocks a run computes
 

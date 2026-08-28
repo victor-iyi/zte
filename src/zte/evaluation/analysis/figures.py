@@ -33,6 +33,7 @@ CONDITION_COLOURS: dict[str, str] = {
     'null_prefix': '#8896ab',
     'phase': '#9a8c98',
     'noise': '#6d6875',
+    'noise_prefix': '#59546b',
     'shuffled_z': '#5c677d',
     'length_only': '#b08968',
     'mismatch': '#4a5759',

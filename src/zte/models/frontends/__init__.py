@@ -2,6 +2,7 @@
 
 - `zte.models.frontends.band_power` - flat and band-family-routed MLPs over band-power vectors.
 - `zte.models.frontends.raw_conformer` - Conformer encoder over raw EEG windows.
+- `zte.models.frontends.eegnet` - the EEGNet and DeepConvNet convolutional baselines over raw EEG windows.
 
 `build_frontend` selects the frontend named by `config.frontend` and wires in the electrode positional-encoding mixer
 when enabled.
@@ -9,11 +10,14 @@ when enabled.
 
 from __future__ import annotations
 
+from typing import get_args
+
 from torch import nn
 
-from zte.config import ModelConfig
+from zte.config import FrontendName, ModelConfig
 from zte.logging_utils import get_logger
 from zte.models.frontends.band_power import BandPowerMLP, BandRoutedMLP
+from zte.models.frontends.eegnet import DeepConvNet, EEGNet
 from zte.models.frontends.raw_conformer import RawConformer, _largest_divisor
 from zte.models.spatial import SpatialAttention, SpatialChannelMixer, resolve_geometry
 
@@ -22,6 +26,8 @@ _LOG = get_logger('models.frontends')
 __all__ = [
     'BandPowerMLP',
     'BandRoutedMLP',
+    'DeepConvNet',
+    'EEGNet',
     'RawConformer',
     '_largest_divisor',
     'build_frontend',
@@ -88,9 +94,10 @@ def build_frontend(
     Args:
         config (ModelConfig): Model configuration.
         in_dim (int | None): Flattened band-power size (required for `band_power_mlp`).
-        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (required for `raw_conformer`).
-        n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`. For
-            `raw_conformer` this defaults to `raw_shape[0]`; for `band_power_mlp` it must be supplied (with
+        raw_shape (tuple[int, int] | None): `(n_channels, time_steps)` raw window shape (required for every raw
+            frontend: `raw_conformer`, `eegnet` and `deep_conv_net`).
+        n_channels (int | None): EEG channel count, used to build electrode geometry for `spatial_encoding`. For the
+            raw frontends this defaults to `raw_shape[0]`; for `band_power_mlp` it must be supplied (with
             `bp_features_per_channel`) for spatial encoding to activate.
         bp_features_per_channel (int | None): Band-power features per channel (the electrode-token width) for
             `band_power_mlp` spatial encoding.
@@ -100,33 +107,76 @@ def build_frontend(
         nn.Module: An initialised frontend module exposing `out_dim`.
 
     Raises:
-        ValueError: If the dimensions required by the chosen frontend are absent.
+        ValueError: If `config.frontend` names no known frontend, or the dimensions the chosen one requires are absent.
     """
-    if config.frontend == 'band_power_mlp':
-        if in_dim is None:
-            raise ValueError('band_power_mlp frontend requires in_dim (n_bp_features * n_channels).')
-        # Band-family routing needs the (n_bp, n_channels) layout and a whole number of bands.
-        if getattr(config, 'band_routing', False):
-            from zte.data.schema import BANDS
+    match config.frontend:
+        case 'band_power_mlp':
+            return _build_band_power(config, in_dim, n_channels, bp_features_per_channel, montage_csv)
 
-            if n_channels and bp_features_per_channel and bp_features_per_channel % len(BANDS) == 0:
-                return BandRoutedMLP(in_dim, config, n_channels, bp_features_per_channel)
-            _LOG.warning(
-                'band_routing requested but layout is unknown (bp_per_channel=%s, n_channels=%s); '
-                'using the flat band-power MLP.',
-                bp_features_per_channel,
-                n_channels,
-            )
-        mixer = build_spatial_mixer(config, bp_features_per_channel or 0, n_channels, montage_csv)
-        return BandPowerMLP(
-            in_dim,
-            config,
-            spatial=mixer,
-            n_channels=n_channels,
-            bp_features_per_channel=bp_features_per_channel,
+        case 'raw_conformer':
+            channels, time_steps, mixer = _raw_parts(config, raw_shape, n_channels, montage_csv)
+            return RawConformer(channels, time_steps, config, spatial=mixer)
+
+        case 'eegnet':
+            channels, time_steps, mixer = _raw_parts(config, raw_shape, n_channels, montage_csv)
+            return EEGNet(channels, time_steps, config, spatial=mixer)
+
+        case 'deep_conv_net':
+            channels, time_steps, mixer = _raw_parts(config, raw_shape, n_channels, montage_csv)
+            return DeepConvNet(channels, time_steps, config, spatial=mixer)
+
+        case unknown:
+            known = ', '.join(repr(name) for name in get_args(FrontendName.__value__))
+            raise ValueError(f'Unknown frontend {unknown!r}; expected one of {known}.')
+
+
+def _build_band_power(
+    config: ModelConfig,
+    in_dim: int | None,
+    n_channels: int | None,
+    bp_features_per_channel: int | None,
+    montage_csv: str | None,
+) -> nn.Module:
+    """Builds the flat or band-family-routed band-power MLP, with electrode geometry when the layout is known."""
+    if in_dim is None:
+        raise ValueError('band_power_mlp frontend requires in_dim (n_bp_features * n_channels).')
+
+    # Band-family routing needs the (n_bp, n_channels) layout and a whole number of bands.
+    if getattr(config, 'band_routing', False):
+        from zte.data.schema import BANDS
+
+        if n_channels and bp_features_per_channel and bp_features_per_channel % len(BANDS) == 0:
+            return BandRoutedMLP(in_dim, config, n_channels, bp_features_per_channel)
+
+        _LOG.warning(
+            'band_routing requested but layout is unknown (bp_per_channel=%s, n_channels=%s); '
+            'using the flat band-power MLP.',
+            bp_features_per_channel,
+            n_channels,
         )
+
+    mixer = build_spatial_mixer(config, bp_features_per_channel or 0, n_channels, montage_csv)
+
+    return BandPowerMLP(
+        in_dim,
+        config,
+        spatial=mixer,
+        n_channels=n_channels,
+        bp_features_per_channel=bp_features_per_channel,
+    )
+
+
+def _raw_parts(
+    config: ModelConfig,
+    raw_shape: tuple[int, int] | None,
+    n_channels: int | None,
+    montage_csv: str | None,
+) -> tuple[int, int, nn.Module | None]:
+    """Unpacks the raw window shape and builds the electrode mixer shared by every raw frontend."""
     if raw_shape is None:
-        raise ValueError('raw_conformer frontend requires raw_shape (n_channels, time_steps).')
+        raise ValueError(f'{config.frontend} frontend requires raw_shape (n_channels, time_steps).')
+
     raw_channels, time_steps = raw_shape
     mixer = build_spatial_mixer(config, time_steps, n_channels or raw_channels, montage_csv)
-    return RawConformer(raw_channels, time_steps, config, spatial=mixer)
+
+    return raw_channels, time_steps, mixer

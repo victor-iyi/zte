@@ -76,6 +76,19 @@ DEFAULT_MIN_PREFIX_KL: Final[float] = DecoderConfig().min_prefix_kl
 CAPACITY_ARTIFACT: Final[str] = 'capacity.json'
 """Filename `zte-decode --capacity` leaves beside the generation artifacts."""
 
+# One reader per audit would be seven near-identical builders. The kernel needs the parsed JSON and the paired
+# Markdown, so the kind selects the filenames and nothing else -- the payload is whatever that audit wrote.
+AUDIT_ARTIFACTS: Final[dict[str, tuple[str, ...]]] = {
+    'evidence': ('evidence.json', 'evidence.md'),
+    'levels': ('levels.json', 'levels.md'),
+    'calibration': ('calibration.json', 'calibration.md'),
+    'temporal': ('temporal.json', 'temporal.md'),
+    'oracle': ('confound_audit.json', 'confound_audit.md'),
+    'transfer': ('PARALLAX.json', 'PARALLAX.md'),
+    'rebaseline': ('rebaseline.json', 'rebaseline.md'),
+}
+"""Audit kind -> the JSON and Markdown filenames `zte-colab audit` reads, in that order."""
+
 
 def _venv_versions() -> dict[str, str]:
     """The interpreter and package version every `!uv run` command actually executes with."""
@@ -628,6 +641,74 @@ def _sweep(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def read_audit_artifact(kind: str, directory: str | Path, *, markdown: bool = True) -> dict[str, Any]:
+    """Reads one audit's JSON, and optionally its Markdown, into a payload the notebook renders.
+
+    Note:
+        Nothing is recomputed. Each audit already decided its own verdicts against its own floors, and a number
+        re-derived here would be one the run's report does not carry. A missing artifact comes back with
+        `found: False` and the path that was looked for, because a blank cell reads as a pass.
+
+    Args:
+        kind (str): Which audit to read -- a key of `AUDIT_ARTIFACTS`.
+        directory (str | Path): Directory the audit wrote its pair into.
+        markdown (bool, optional): Also return the rendered Markdown, for inline display. Defaults to True.
+
+    Returns:
+        dict[str, Any]: `kind`, `directory`, `json_path`, `markdown_path`, `found`, `payload` and `markdown`.
+
+    Raises:
+        ValueError: If `kind` names no known audit.
+    """
+    if kind not in AUDIT_ARTIFACTS:
+        raise ValueError(f'Unknown audit kind {kind!r}; expected one of {", ".join(sorted(AUDIT_ARTIFACTS))}.')
+
+    out_dir = Path(directory)
+    json_name, md_name = AUDIT_ARTIFACTS[kind]
+    json_path, md_path = out_dir / json_name, out_dir / md_name
+
+    # Some audits write into a per-subject subdirectory the caller cannot name in advance -- `zte-lens` lands in
+    # `<out>/<run>_<subject>_<index>/`. One level down, newest first, so a notebook cell names the parent.
+    if not json_path.is_file():
+        nested = sorted(out_dir.glob(f'*/{json_name}'), key=lambda p: p.stat().st_mtime, reverse=True)
+        if nested:
+            json_path = nested[0]
+            md_path = json_path.parent / md_name
+
+    payload: dict[str, Any] = {
+        'kind': kind,
+        'directory': str(out_dir),
+        'json_path': str(json_path),
+        'markdown_path': str(md_path),
+        'found': json_path.is_file(),
+        'payload': None,
+        'markdown': None,
+    }
+    if not json_path.is_file():
+        _LOG.warning('No %s artifact at %s.', kind, json_path)
+
+        return payload
+
+    payload['payload'] = json.loads(json_path.read_text(encoding='utf-8'))
+    if markdown and md_path.is_file():
+        payload['markdown'] = md_path.read_text(encoding='utf-8')
+
+    return payload
+
+
+def _audit(args: argparse.Namespace) -> dict[str, Any]:
+    """Reads the audit artifacts named by `--kind` out of one directory."""
+    kinds = (
+        [k.strip() for k in str(args.kind).split(',') if k.strip()] if args.kind != 'all' else sorted(AUDIT_ARTIFACTS)
+    )
+
+    return {
+        'directory': str(args.source),
+        'kinds': kinds,
+        'audits': {kind: read_audit_artifact(kind, args.source, markdown=args.markdown) for kind in kinds},
+    }
+
+
 def _mirror(args: argparse.Namespace) -> dict[str, Any]:
     """Copies a session between the VM's disk and Drive, skipping what is rebuildable."""
     session = DriveSession.create(args.drive, run_date=args.date, write_mode=args.write_mode, make_dirs=False)
@@ -753,6 +834,20 @@ def parse_arguments() -> argparse.Namespace:
         help='Where the next run writes; also searched for runs this VM finished but has not mirrored yet.',
     )
 
+    audit = sub.add_parser('audit', parents=[common], help="Read an audit's JSON and Markdown pair for rendering.")
+    audit.add_argument('--from', dest='source', required=True, type=Path, help='Directory the audit wrote into.')
+    audit.add_argument(
+        '--kind',
+        default='evidence',
+        help=f'Audit to read, comma-separated, or `all`. One of: {", ".join(sorted(AUDIT_ARTIFACTS))}.',
+    )
+    audit.add_argument(
+        '--markdown',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Also return the rendered Markdown, so a cell can display the report inline.',
+    )
+
     mirror = sub.add_parser('mirror', parents=[common, drive], help='Copy this session between the VM and Drive.')
     mirror.add_argument('--direction', default='up', choices=('up', 'down'))
     mirror.add_argument('--date', default=None, help='Session date; defaults to today.')
@@ -807,6 +902,8 @@ def main() -> None:
             payload = _panels(args)
         case 'sweep':
             payload = _sweep(args)
+        case 'audit':
+            payload = _audit(args)
         case 'mirror':
             payload = _mirror(args)
         case unknown:  # pragma: no cover -- argparse rejects any verb that has no subparser

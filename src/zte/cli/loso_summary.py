@@ -77,13 +77,18 @@ def collect_folds(experiments: str | Path) -> list[dict[str, Any]]:
 
 
 def _stats(values: list[float]) -> dict[str, float]:
-    """Mean/std/min/max of a list, tolerating non-finite entries (dropped)."""
+    """Mean/std/min/max of a list, tolerating non-finite entries (dropped).
+
+    Note:
+        The spread is the n-1 sample sd: twelve folds are a sample of the subjects a clinical claim has to
+        generalise to, and a population sd under-reports it by about 4% at that n.
+    """
     finite = [v for v in values if not math.isnan(v)]
     if not finite:
         return {'mean': float('nan'), 'std': float('nan'), 'min': float('nan'), 'max': float('nan')}
     return {
         'mean': statistics.mean(finite),
-        'std': statistics.pstdev(finite) if len(finite) > 1 else 0.0,
+        'std': statistics.stdev(finite) if len(finite) > 1 else 0.0,
         'min': min(finite),
         'max': max(finite),
     }

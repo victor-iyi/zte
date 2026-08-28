@@ -255,7 +255,7 @@ Metrics are implemented in pure stdlib + numpy in `zte.evaluation.generation` (B
 
 ### The seven controls, and why each exists
 
-All seven decode through the **identical** path — same weights, same greedy loop, same detokenisation, same `max_new_tokens`. Only $z$ changes.
+All eight decode through the **identical** path — same weights, same greedy loop, same detokenisation, same `max_new_tokens`. Only $z$ changes.
 
 | Control       | What it substitutes                                                                                 | What it rules out                                                                                                                       |
 | ------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -263,9 +263,22 @@ All seven decode through the **identical** path — same weights, same greedy lo
 | `null_prefix` | $P = P_\text{null}$                                                                                 | the pure LM prior with no bridge at all                                                                                                 |
 | `phase`       | phase-scrambled raw windows through the same frozen encoder                                         | spectral-envelope artefacts that survive scrambling                                                                                     |
 | `noise`       | mean/variance-matched Gaussian through the identical frozen encoder                                 | anything explainable by the signal's first two moments                                                                                  |
+| `noise_prefix` | a mean/variance-matched Gaussian $z$ fed **straight into the bridge**                              | **the reality check.** `noise` still goes through the encoder; this one skips it entirely, so what it scores is the LM's prior plus the bridge |
 | `shuffled_z`  | another reading's whole conditioning bundle, by **unstratified** derangement                        | the bridge and the LM working without the encoder — the "feed it shuffled EEG embeddings" control, stated directly                      |
 | `length_only` | the **length-conditional** mean $z$, with the pointer schedule kept and the per-word content zeroed | **the one the ZuCo arithmetic demands.** It has the word count and nothing else, so a headline that beats it beat it on lexical content |
 | `mismatch`    | another held-out reading's bundle, by **length-stratified derangement**                             | dependence on *which* brain — and it neutralises the 5.14-bit length confound                                                           |
+
+`noise_prefix` is the arm that answers the literature's question directly. It is drawn with `noise_matched`
+against the real $z$ cloud — matched per-feature mean and variance — rather than from a standard normal, because an
+off-manifold $\mathcal{N}(0, I)$ prefix is a trivially weak control that would let the decoder look good for the
+wrong reason. If the EEG-conditioned decode does not beat it on content metrics, then content-metric scores of
+generated text measure the language model's prior, not neural decoding — which is a claim about how the field
+evaluates, and a more useful one than a weak positive.
+
+Adding it **tightens** the gate rather than loosening it: `verdict['generation_above_controls']` ANDs over the
+pre-registered controls, and a control that is unavailable or skipped **fails** its clause. Every shipped decoder
+config lists `noise_prefix` explicitly; a config written before it existed inherits it through the
+`DecoderConfig.generation_controls` default.
 
 Plus one positive control, `oracle`: the true sentence embedding through the identical bridge and LM. It bounds the achievable score. It will look good (expect BLEU-4 15–45) and it says **nothing** about EEG.
 

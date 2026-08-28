@@ -179,6 +179,54 @@ The **retrieval-and-honesty layer** is the implemented fix, layered on top of th
 
 The stack is carried by the flagship CLIP configs, `experiments/flagship/zte_raw_aligned.yaml` (geometry-fixed spherical-harmonic recipe) and `experiments/flagship/clip_e5_raw.yaml` (the raw-conformer arm); `experiments/benchmark/baseline_skipgram_loso.yaml` runs the same levers under skip-gram as the control. The spatial-attention + FiLM + shrunk-`content_dim` A/B (`experiments/archive/exp7_sota_geom_invariance.yaml`) is archived — it scored 0.0 with permutation *p*=1.0 on held-out ZAB, so it is a recorded failed arm rather than an active comparison. The win condition stays honest: a **rank distribution left of the permutation null** and a **positive content-lift-over-raw on the held-out subject**, not a headline top-1 (EEG single-word retrieval is the hardest non-invasive setting).
 
+## Lever: the standard EEG architectures as controls
+
+**Idea.** Swap the raw conformer for **EEGNet** and **DeepConvNet** and run them through the identical InfoNCE
+pipeline. The objective never sees the frontend, so only the encoder changes.
+
+**Why.** An ablation against a band-power MLP does not answer whether the conformer is the right architecture. The
+established EEG deep-learning baselines do, and if none of the three clears the length-oracle floor, the honest
+conclusion is that the readout is confound-bound for all of them and architecture is not the binding constraint —
+which is a more useful statement than a ranking inside the noise.
+
+**Config:** `model.frontend: eegnet | deep_conv_net`, with `eegnet_f1` / `eegnet_depth` / `eegnet_kernel` /
+`eegnet_dropout` and `deepconv_filters` / `deepconv_kernel`. Arms: `experiments/benchmark/eegnet_clip.yaml` and
+`deepconvnet_clip.yaml`, each a one-lever change against `experiments/alignment/sentence/combined.yaml`.
+
+**Code:** `models/frontends/eegnet.py::EEGNet`, `::DeepConvNet`; dispatched by the `match` in
+`models/frontends/__init__.py::build_frontend`, which now raises on an unknown name instead of silently
+constructing a conformer.
+
+### Four deviations from the published architectures
+
+These are departures a reviewer will ask about, so they are recorded rather than buried.
+
+**Group normalisation replaces batch normalisation.** Both published nets use `BatchNorm2d`. This pipeline's
+frontend contract passes **no mask** — padded word slots arrive as all-zero windows and are discarded downstream —
+so batch statistics fitted over them would make a word's embedding depend on which words shared its batch. Both
+classes use per-token `GroupNorm(1, F)` instead. These are therefore EEGNet and DeepConvNet *with a normalisation
+swap*, not bit-exact reimplementations; a literal `BatchNorm` would need a masked frontend path, not a one-line
+change.
+
+**DeepConvNet's temporal kernel defaults to 5, not 10.** At the live `raw_window: 350` a four-block stack with the
+original kernel of 10 underflows before the last block, so 5 is what makes the published depth reachable at this
+window length at all. `deepconv_kernel` exposes it.
+
+**`eegnet_kernel` defaults to the published 64, which means something different here.** The original defines it at
+128 Hz, where 64 samples is half a second. ZuCo raw is 500 Hz, so 64 samples is **128 ms**. The faithful
+translation would be 250, at roughly four times the compute. The configs ship 64 and the knob is exposed; this is
+a defensible choice, not an obviously correct one.
+
+**DeepConvNet's sub-word path is weaker than the conformer's.** Its pooling stack leaves about two time steps at
+the 350-sample window, so `sub_tokens(x, 4)` cannot return four genuinely distinct intra-word spans — some repeat.
+That is a property of the architecture's aggressive pooling rather than a bug, and it means a token-level number
+from DeepConvNet is not comparable to one from the conformer.
+
+One more thing a benchmark run must not do silently: **EEGNet's depthwise `Conv2d(F1, F1·D, (C, 1))` is already a
+spatial filter over electrodes.** Stacking `spatial_encoding: spherical_harmonics` in front of it double-counts the
+geometry, so the constructor logs a warning when both are on. Treat that combination as an explicit ablation, never
+a default.
+
 ## Lever: token-level lexical alignment
 
 **The measurement that forced it.** On real ZuCo, cross-subject *word* retrieval sits at Top-1 0.0040 against a

@@ -178,6 +178,7 @@ class DecoderConfig(PathFields):
         'null_prefix',
         'phase',
         'noise',
+        'noise_prefix',
         'shuffled_z',
         'length_only',
         'mismatch',
@@ -185,7 +186,8 @@ class DecoderConfig(PathFields):
     """Brain-independent controls decoded through the identical path; the headline is a paired delta against all.
     `shuffled_z` deranges the conditioning vectors after the encoder, so it isolates the bridge from the encoder;
     `length_only` keeps the word count and destroys everything else, which is the control the 5.14-bit length
-    confound demands."""
+    confound demands; `noise_prefix` hands the bridge a moment-matched vector no encoder produced, which is what
+    isolates the frozen LM's own prior."""
 
     n_permutations: int = 1000
     """Permutations for the generation null, which shuffles the hypothesis-to-reference pairing."""

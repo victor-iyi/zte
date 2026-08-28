@@ -349,24 +349,62 @@ uv run zte-rebaseline --ckpt <ckpt> --root "<ZuCo>" --out <audit> --piece-oracle
 Each level has its own front door — `notebooks/alignments/zte_sentence.ipynb`, `zte_word.ipynb`, `zte_token.ipynb`
 — and the token notebook scores the piece oracle before it renders anything.
 
+## The resolution limit — what the campaign measured
+
+The campaign ran. Twelve folds per level, seed 42, audited 2026-08-24; the numbers and the ZuCo piece-oracle table
+are in [`RESULTS.md`](RESULTS.md#the-three-alignment-levels-on-real-zuco-2026-08-22-twelve-fold-loso-seed-42). The
+finding, stated as measured:
+
+**No alignment level clears its brain-free floor.** Length-stratified rank percentile reaches 0.9238 ± 0.0079
+(sentence), 0.9203 ± 0.0143 (word) and 0.9286 ± 0.0063 (token) against a ±1-word length oracle at 0.9525.
+
+**The order runs the wrong way.** `token` leads on every column — rank percentile, Top-1, significant folds, bit
+budget — and `token` is the arm with the most exposure to the channel the oracle table prices at 9.309 of the
+9.4512 bits needed to name a sentence. When the most confound-adjacent arm wins a granularity ablation, the
+ablation has measured the confound.
+
+**A single integer out-retrieves every arm.** On the real gallery the word count alone retrieves 53 of 700 and the
+total sub-word piece count 71, against the best arm's 33 length-stratified and 15 unstratified. The ordered
+per-word piece profile retrieves 661.
+
+This is the claim the study is entitled to make, and it is a limit rather than a failure: **sub-word structure is
+not recoverable from non-invasive EEG on ZuCo, because any apparent recovery is bounded above by what the spelling
+gives away for free.** A token-level retrieval headline on a gallery of this size is uninterpretable unless the
+piece oracle is reported beside it — which is why `zte-rebaseline --piece-oracle` scores all four signatures and
+`zte-levels` refuses to render a level's verdict without its floor.
+
+### What the null does not settle
+
+The pre-registration below anticipated a token-vs-word null. What landed is broader — a null across all three
+levels against a brain-free floor — and three instruments that would separate its causes have still not been run:
+
+- a probe for fixation length and piece count off the word hidden, token arm versus sentence arm;
+- a gallery stratified on **total piece count** rather than on word count;
+- noise-filling the padding tail, which distinguishes "the sub-words carry nothing" from "the padding boundary
+  carried everything".
+
+Until those run, the null is a statement about the readout's separability from length and spelling, not a proof
+that intra-word EEG slices are empty.
+
 ## What is not claimed
 
-Stated before the runs, so the reading of the results is pre-committed.
+Stated before the runs, so the reading of the results is pre-committed. Kept verbatim, with what has since been
+measured marked.
 
-- **No token-level number exists.** The objective, its target builder, its oracle and its refusal are built and
-  tested offline against synthetic data. Not one arm of the campaign has trained on real ZuCo. Nothing in this
-  document is a result.
-- **The piece-oracle table is measured on a matched-statistics corpus, not on ZuCo's own gallery.** It establishes
-  the size of the channel and the design constraint that follows from it. The ZuCo figure is produced by
-  `zte-rebaseline --piece-oracle` against a real checkpoint, and that is the number a token-level headline is read
-  against.
-- **The 26 hits in 700 belong to the word level alone, and are themselves stale.** `docs/RESULTS.md` requires
-  the exp16 sweep to be re-measured after the length-projection fix, so the anchor is provisional; the word arm's
-  own combined run re-measures it. It is the anchor the other two levels are read against —
-  a measured number the study did not produce, and not evidence about either of the arms that have yet to run.
-- **A null is a finding, and a likely one.** If the token level does not beat the word level while clearing its
-  piece oracle, the honest statement is that intra-word EEG slices carry no recoverable cross-reader sub-word
-  content on ZuCo — a publishable negative, and one worth reporting plainly.
+- ~~**No token-level number exists.**~~ **Measured.** Twelve folds per level on real ZuCo; see above.
+- **The piece-oracle table below is measured on a matched-statistics corpus, not on ZuCo's own gallery.** It
+  establishes the size of the channel and the design constraint that follows from it. The ZuCo figure is produced
+  by `zte-rebaseline --piece-oracle` against a real checkpoint, and that is the number a token-level headline is
+  read against. **That figure now exists** and is larger than the matched-corpus estimate: `total` gates at Top-1
+  0.1014 (71 of 700) where the matched corpus predicted 62.
+- ~~**The 26 hits in 700 belong to the word level alone, and are themselves stale.**~~ **Withdrawn as a comparand.**
+  "26 of 700" is a back-conversion of the rounded rate 0.0371 at `RESULTS.md`; no run reports a hit count of 26, and
+  it travels with no binomial tail, no confidence interval and no length-stratified twin. It also sits below the
+  53-hit word-count oracle. It is not an anchor and must not be quoted as one.
+- ~~**A null is a finding, and a likely one.**~~ **The null landed, and is broader than registered.** Registered
+  for the token level against the word level; measured across all three levels against a brain-free floor. That
+  widening is recorded here rather than edited into the original clause, because a pre-registration that is revised
+  to match the outcome is not a pre-registration.
 - **Nothing here is a generation claim.** The readout is closed-set retrieval over the sentence gallery, and the
   bit budget has not moved: an encoder supplying a handful of bits of sentence identity does not become a text
   generator by aligning at a finer grain.

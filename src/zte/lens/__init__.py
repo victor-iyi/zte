@@ -2,6 +2,7 @@
 
 - `zte.lens.saliency` -- reading selection, occlusion saliency, the neighbour gallery, and `lens_report`.
 - `zte.lens.trace` -- the greedy decode trace for decoder checkpoints.
+- `zte.lens.temporal` -- the temporal occlusion latency profile over the word-locked raw window.
 - `zte.lens.page` -- the self-contained HTML page rendered from one `lens.json`.
 """
 
@@ -14,6 +15,7 @@ __all__ = [
     'lens_report',
     'neighbors',
     'select_reading',
+    'temporal_saliency',
     'word_saliency',
 ]
 
@@ -38,6 +40,10 @@ def __getattr__(name: str) -> object:
         from zte.lens.trace import decode_trace
 
         return decode_trace
+    if name == 'temporal_saliency':
+        from zte.lens.temporal import temporal_saliency
+
+        return temporal_saliency
     if name == 'build_lens_page':
         # Resolved by name so importing the analysis core never requires the page renderer to be importable.
         from importlib import import_module

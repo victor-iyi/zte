@@ -41,6 +41,46 @@ Insertion points: `zte.models.objectives.SentenceClipObjective` (`_sentence_vect
 
 Random distractors let the encoder win on surface form. `zte.data.targets.text.mine_hard_negatives` ranks, per sentence, the others by `surface_overlap − semantic_cosine` — high word-token Jaccard (they *look* alike) but low frozen-text cosine (they *mean* different things) — and `SemanticHardNegativeSampler` co-locates each anchor with those hard negatives (and its cross-subject positives) in the same batch. Verified: for "the cat sat on the mat", the miner picks "the dog sat on the rug" and rejects a semantically-identical paraphrase. Toggle with `objective.semantic_hard_negatives`, `objective.hard_negative_pool`.
 
+### Matching the negative on length and spelling
+
+Ranking by `surface_overlap − semantic_cosine` is the right criterion over the wrong candidate set. It imposes **no
+length constraint**, and on this corpus word count carries 5.14 of the 9.45 bits needed to name a sentence — so a
+mined negative can still be told from its anchor by counting words, which teaches the encoder nothing it did not
+already get for free.
+
+`objective.hard_negative_strategy` selects the candidate set before that ranking runs:
+
+| value | a candidate must … | when to use it |
+| --- | --- | --- |
+| `surface` | nothing — every other sentence is admissible | the original behaviour, and the default |
+| `length_matched` | sit within `hard_negative_length_tol` words of the anchor | when only the word-count channel matters |
+| `piece_matched` | also sit within `hard_negative_piece_tol` of the anchor's **total sub-word count** | the sub-word budget as well as the word count |
+
+`mine_matched_hard_negatives` adds one more term to the ranking: multiset overlap scaled by positional
+*disagreement*, so "the man bit the dog" scores high against "the dog bit the man" while an identical sentence
+scores zero. That is the negative which isolates role and syntax from bag-of-content — same length, same piece
+profile, same vocabulary, different meaning.
+
+A sentence that cannot fill its pool inside the tolerance **widens rather than returning fewer**, and every widening
+is counted in the returned diagnostic, so a table that quietly degraded to unmatched negatives is one number away
+rather than invisible. Piece totals come from the run's own token alignment; if the tokeniser will not load, the
+pipeline warns loudly that the sub-word budget is **not** controlled and falls back to length matching alone.
+
+### Reaching the loss, not just the batch
+
+`semantic_hard_negatives` alone is *batch composition*: it raises the chance the hard negative is present in the
+denominator. `objective.hard_negative_in_loss` goes further and narrows the full-gallery denominator to the anchor's
+own mined negatives.
+
+The narrowing runs **after** the existing band / task / split masking, never instead of it, and three properties are
+enforced: the anchor's own text always survives, because a softmax with no numerator is not a loss; a mined negative
+that is out-of-band or held out never enters; and an anchor whose mined negatives are all inadmissible falls back to
+the wider denominator rather than facing a softmax containing only its own answer. `gallery_min_candidates` does
+*not* widen a mined pool — a mined pool is thin on purpose.
+
+All four knobs default off, so every existing run stays byte-identical. The matched pair is
+`experiments/alignment/sentence/hardneg.yaml` against `combined.yaml`, differing in exactly those four lines.
+
 ## Config surface
 
 | Key                                                        | Meaning                                                                                                                                 |
@@ -51,6 +91,9 @@ Random distractors let the encoder win on surface form. `zte.data.targets.text.m
 | `objective.text_query_prefix`                              | Instruction prefix (E5 wants `"query: "`; empty for BGE/Qwen).                                                                          |
 | `objective.clip_temperature`                               | Initial CLIP temperature; the log-scale is learnable + clamped.                                                                         |
 | `objective.semantic_hard_negatives` / `hard_negative_pool` | Surface-similar / meaning-distinct in-batch negatives.                                                                                  |
+| `objective.hard_negative_strategy`                          | Candidate set for mining: `surface` / `length_matched` / `piece_matched`.                                                               |
+| `objective.hard_negative_length_tol` / `hard_negative_piece_tol` | Word-count and total-sub-word-count tolerances a matched candidate must satisfy.                                                   |
+| `objective.hard_negative_in_loss`                           | Narrow the full-gallery denominator to the mined negatives, rather than only seeding the batch.                                        |
 | `objective.cross_subject_positives`                        | Keep `true` — same-sentence readings co-occur as multi-positives.                                                                       |
 
 VICReg / adversary / whiten / all_but_top / csls / eval-hardening keys are inherited from the skip-gram baseline (`experiments/benchmark/baseline_skipgram_loso.yaml`) and stay on as auxiliaries.

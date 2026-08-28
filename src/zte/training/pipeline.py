@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from zte.config import ObjectiveConfig, ZTEConfig
+from zte.config import RAW_FRONTENDS, ObjectiveConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, make_dataloader
 from zte.device import DeviceSpec, auto_num_workers, resolve_device, seed_everything
@@ -177,15 +177,18 @@ def run_training(
     if obj.name in {'clip', 'decode'} and callable(attach_text):
         head = getattr(objective, 'clip_head', None)
         text_matrix = _text_matrix(config, ordered_texts, device, fallback_dim=_head_width(head))
-        _attach_text_target(attach_text, text_matrix, ordered_texts, train_td.split_text_ids, text_tasks)
-        if obj.semantic_hard_negatives:
-            from zte.data.targets.text import mine_hard_negatives
 
-            clip_hard_negs = mine_hard_negatives(ordered_texts, text_matrix, k=obj.hard_negative_pool)
-            _LOG.info(
-                'Mined %d semantic-hard negatives per sentence (surface-similar, meaning-distinct).',
-                obj.hard_negative_pool,
-            )
+        # Mined before attaching, because under `hard_negative_in_loss` the table is part of the gallery denominator.
+        if obj.semantic_hard_negatives:
+            clip_hard_negs = _mine_hard_negatives(config, train_td, ordered_texts, text_matrix)
+        _attach_text_target(
+            attach_text,
+            text_matrix,
+            ordered_texts,
+            train_td.split_text_ids,
+            text_tasks,
+            clip_hard_negs if obj.hard_negative_in_loss else None,
+        )
 
     # Wire the loaders: static shapes pad every batch alike so XLA compiles a single graph.
     pad_to = _static_pad_length(config.train.static_shapes, device, train_td, val_td)
@@ -258,6 +261,7 @@ def _attach_text_target(
     texts: list[str],
     split_text_ids: list[int],
     text_tasks: torch.Tensor | None = None,
+    hard_negatives: np.ndarray | None = None,
 ) -> None:
     """Attaches the frozen gallery, handing the extras to the objectives whose signature accepts them.
 
@@ -266,12 +270,91 @@ def _attach_text_target(
     """
     matrix = torch.from_numpy(text_matrix)
     params = inspect.signature(attach).parameters
-    if 'text_lengths' in params:
-        kwargs = {'text_tasks': text_tasks} if 'text_tasks' in params else {}
-        attach(matrix, text_word_counts(texts), split_text_ids, **kwargs)
+    if 'text_lengths' not in params:
+        attach(matrix)
         return
 
-    attach(matrix)
+    kwargs: dict[str, Any] = {}
+    if 'text_tasks' in params:
+        kwargs['text_tasks'] = text_tasks
+    if 'text_hard_negatives' in params and hard_negatives is not None:
+        kwargs['text_hard_negatives'] = torch.from_numpy(hard_negatives)
+
+    attach(matrix, text_word_counts(texts), split_text_ids, **kwargs)
+
+
+def _mine_hard_negatives(
+    config: ZTEConfig, train_td: ZuCoTorchDataset, texts: list[str], text_matrix: np.ndarray
+) -> np.ndarray:
+    """Mines the `(n_text, k)` hard-negative table the CLIP sampler -- and optionally the gallery -- reads.
+
+    Note:
+        `surface` is the historical miner and constrains nothing; the matched strategies hold word count, and
+        `piece_matched` the sub-word budget too, so a negative cannot be rejected by counting instead of by meaning.
+    """
+    from zte.data.targets.text import mine_hard_negatives, mine_matched_hard_negatives
+
+    obj = config.objective
+    match obj.hard_negative_strategy:
+        case 'surface':
+            _LOG.info(
+                'Mined %d surface hard negatives per sentence (surface-similar, meaning-distinct, NOT '
+                'length-matched -- a negative of another length is separable by counting words).',
+                obj.hard_negative_pool,
+            )
+
+            return mine_hard_negatives(texts, text_matrix, k=obj.hard_negative_pool)
+        case 'piece_matched':
+            word_pieces = _piece_counts(config, train_td)
+        case _:
+            word_pieces = None
+
+    mined = mine_matched_hard_negatives(
+        texts,
+        text_matrix,
+        k=obj.hard_negative_pool,
+        length_tol=obj.hard_negative_length_tol,
+        word_pieces=word_pieces,
+        piece_tol=obj.hard_negative_piece_tol,
+    )
+    _LOG.info(
+        'Mined %d %s hard negatives per sentence: worst length gap %d words, worst piece gap %s, %d of %d sentences '
+        'needed a widened tolerance.',
+        obj.hard_negative_pool,
+        obj.hard_negative_strategy,
+        mined.length_gap,
+        'n/a' if mined.piece_gap < 0 else str(mined.piece_gap),
+        mined.n_widened,
+        len(texts),
+    )
+
+    return mined.table
+
+
+def _piece_counts(config: ZTEConfig, train_td: ZuCoTorchDataset) -> np.ndarray | None:
+    """Returns the `(n_text, max_words)` sub-word-count table, or `None` when its tokeniser cannot be loaded."""
+    from zte.data.targets.tokens import build_token_alignment
+
+    obj = config.objective
+    source = obj.token_source or config.decoder.lm_source
+    try:
+        alignment = build_token_alignment(
+            train_td.ordered_texts(),
+            train_td.ordered_words(),
+            source,
+            max_length=obj.token_max_length,
+            cache_dir=str(Path(config.dataset.cache_dir) / 'tokens'),
+        )
+    except (RuntimeError, ValueError) as exc:
+        _LOG.warning(
+            'Piece-matched hard negatives need the tokeniser %r, which would not load (%r); falling back to length '
+            'matching alone, so the sub-word budget is NOT controlled in this run.',
+            source,
+            exc,
+        )
+        return None
+
+    return alignment.word_pieces
 
 
 def _load_source(config: ZTEConfig, device: DeviceSpec) -> EncoderSource | None:
@@ -622,11 +705,11 @@ def _shapes(dataset: ZuCoDataset, config: ZTEConfig) -> tuple[int | None, tuple[
     raw_shape = None if dataset.raw_eeg is None else (int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2]))
     if config.model.frontend == 'band_power_mlp' and in_dim is None:
         raise ValueError('band_power_mlp frontend needs band-power features in the dataset.')
-    if config.model.frontend == 'raw_conformer' and raw_shape is None:
-        raise ValueError('raw_conformer frontend needs raw EEG in the dataset.')
+    if config.model.frontend in RAW_FRONTENDS and raw_shape is None:
+        raise ValueError(f'{config.model.frontend} frontend needs raw EEG in the dataset.')
     # The masked-reconstruct head predicts the per-token input, so its width follows the frontend.
     recon_dim = in_dim
-    if config.model.frontend == 'raw_conformer' and raw_shape is not None:
+    if config.model.frontend in RAW_FRONTENDS and raw_shape is not None:
         recon_dim = raw_shape[0] * raw_shape[1]
     return in_dim, raw_shape, recon_dim
 
@@ -674,7 +757,7 @@ def _channel_shape(
         `(n_channels, bp_features_per_channel)`. Either value is `None` when it cannot be determined,
         which disables spatial encoding; the raw frontend always has `None` band-power width.
     """
-    if config.model.frontend == 'raw_conformer':
+    if config.model.frontend in RAW_FRONTENDS:
         return (raw_shape[0] if raw_shape is not None else None), None
     bp = dataset.band_power_raw
     if bp is None:

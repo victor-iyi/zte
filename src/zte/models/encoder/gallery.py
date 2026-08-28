@@ -29,13 +29,18 @@ class GalleryContrast(nn.Module):
     Attributes:
         band (int): Half-width in words of the length-matched denominator; 0 uses the whole gallery.
         within_task (bool): Restrict every anchor's denominator to texts of its own task (needs `attach_tasks`).
+        hard_negatives_only (bool): Narrow each anchor's denominator to its mined hard negatives (needs
+            `attach_hard_negatives`).
     """
 
     lengths: torch.Tensor | None
     admissible: torch.Tensor | None
     tasks: torch.Tensor | None
+    hard_negatives: torch.Tensor | None
 
-    def __init__(self, band: int = 0, min_candidates: int = 32, within_task: bool = False) -> None:
+    def __init__(
+        self, band: int = 0, min_candidates: int = 32, within_task: bool = False, hard_negatives_only: bool = False
+    ) -> None:
         """Builds the scorer.
 
         Args:
@@ -44,14 +49,18 @@ class GalleryContrast(nn.Module):
                 Defaults to 32.
             within_task (bool, optional): Score each anchor against same-task texts only; task and stimulus are fully
                 confounded on ZuCo, so a cross-task distractor is separable by task alone. Defaults to False.
+            hard_negatives_only (bool, optional): Cut each anchor's denominator down to the negatives mined for it,
+                so the softmax is decided between the anchor and the sentences chosen to be hard. Defaults to False.
         """
         super().__init__()
         self.band = int(band)
         self.min_candidates = int(min_candidates)
         self.within_task = bool(within_task)
+        self.hard_negatives_only = bool(hard_negatives_only)
         self.register_buffer('lengths', None, persistent=False)
         self.register_buffer('admissible', None, persistent=False)
         self.register_buffer('tasks', None, persistent=False)
+        self.register_buffer('hard_negatives', None, persistent=False)
 
     def attach_lengths(self, lengths: torch.Tensor) -> None:
         """Attaches the `(n_texts,)` word count of every gallery text.
@@ -69,6 +78,15 @@ class GalleryContrast(nn.Module):
                 no anchor and so never enters a denominator).
         """
         self.tasks = tasks.long()
+
+    def attach_hard_negatives(self, table: torch.Tensor) -> None:
+        """Attaches the `(n_texts, k)` mined hard-negative table the `hard_negatives_only` denominator reads.
+
+        Args:
+            table (torch.Tensor): Long hard-negative gallery rows per gallery text, `-1` padded where a sentence has
+                fewer than `k` mined negatives.
+        """
+        self.hard_negatives = table.long()
 
     def restrict_to(self, text_ids: Sequence[int], n_texts: int) -> None:
         """Limits the denominator to the texts actually read in the training split.
@@ -107,6 +125,38 @@ class GalleryContrast(nn.Module):
                 included, because a softmax with no numerator is not a loss. Under `within_task` an anchor whose
                 same-task band is too thin is dropped instead of widened, marked by an all-`False` row.
         """
+        own = text_id.clamp(0, n_texts - 1)
+
+        return self._narrow_to_hard(self._band_mask(text_id, n_texts), own)
+
+    # Deliberately applied after the band widening rather than inside it: `min_candidates` exists to stop a thin band
+    # making the loss trivial, whereas a mined pool is thin on purpose and must not be widened back out.
+    def _narrow_to_hard(self, mask: torch.Tensor, own: torch.Tensor) -> torch.Tensor:
+        """Cuts each anchor's denominator down to its own mined hard negatives, keeping its own text as the answer."""
+        if not self.hard_negatives_only or self.hard_negatives is None:
+            return mask
+
+        device = mask.device
+        rows = torch.arange(mask.shape[0], device=device)
+        mined = self.hard_negatives.to(device)[own]  # (n_anchors, k), -1 padded
+        picked = mined >= 0
+        hard = torch.zeros_like(mask)
+        if bool(picked.any()):
+            hard[rows[:, None].expand_as(mined)[picked], mined[picked]] = True
+
+        # An anchor whose mined negatives are all inadmissible -- held out, out of band, wrong task -- keeps its wider
+        # denominator rather than facing a softmax containing nothing but its own answer.
+        active = mask.any(dim=1)
+        narrowed = mask & hard
+        keep = active & (narrowed.sum(dim=1) > 0)
+        out = torch.where(keep[:, None], narrowed, mask)
+        out[rows, own] = True
+        out[~active] = False
+
+        return out
+
+    def _band_mask(self, text_id: torch.Tensor, n_texts: int) -> torch.Tensor:
+        """Returns the length-banded, split-restricted, optionally task-matched denominator mask."""
         device = text_id.device
         own = text_id.clamp(0, n_texts - 1)
         allowed = (
@@ -232,14 +282,17 @@ def build_gallery_contrast(config: object, n_texts: int) -> GalleryContrast | No
 
     band = int(getattr(config, 'gallery_length_band', 0))
     within_task = bool(getattr(config, 'within_task_negatives', False))
+    hard_only = bool(getattr(config, 'hard_negative_in_loss', False))
     _LOG.info(
-        'Gallery contrast on: %d texts in the denominator, length band %s%s.',
+        'Gallery contrast on: %d texts in the denominator, length band %s%s%s.',
         n_texts,
         f'+/-{band} words' if band > 0 else 'off (whole gallery)',
         ', same-task candidates only' if within_task else '',
+        ', narrowed to each anchor mined hard negatives' if hard_only else '',
     )
     return GalleryContrast(
         band=band,
         min_candidates=int(getattr(config, 'gallery_min_candidates', 32)),
         within_task=within_task,
+        hard_negatives_only=hard_only,
     )

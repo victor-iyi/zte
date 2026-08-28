@@ -36,6 +36,16 @@ The same occlusion, over space instead of time: electrode groups are zeroed and 
 
 When the checkpoint was trained without a montage, `channel_saliency` is `null` and the page drops the scalp panel with a note saying why — it does not invent a layout.
 
+### The latency profile (`--temporal`)
+
+The same occlusion again, this time *within* a word: the raw window is split into contiguous bins, each is zeroed in turn, and the cosine displacement of the sentence vector recorded. Bins are reported in **milliseconds from word onset** — `raw_window` samples at 500 Hz, so the shipped 350-sample window is 700 ms — with a bootstrap interval per bin, aggregated across many words and readings so a single word's quirk is not a profile.
+
+A **null band** travels with it: a same-width occlusion at a random offset, so the curve has a floor rather than being a bare chart of drops. `above_null` is recorded per bin.
+
+**Why occlusion and not attention.** The obvious instrument would be the conformer's own temporal attention. It does not exist in any trained checkpoint: `RawConformer` builds `attn_pool` only under `conformer_temporal_pool: attention`, which no live config sets, and its inner transformer runs with `need_weights=False` while the package registers no forward hooks. Retraining with attentive pooling would produce a *different model*, which could not then be compared to the mean-pool runs as if it were the same one. Occlusion works on every checkpoint that exists, and it measures a counterfactual rather than a weight.
+
+`peak_in_n400_window` reports whether the strongest bin falls in 300–500 ms. **It gates nothing**, and the caveat is carried in the payload and the rendered report: ZuCo word windows come from eye-tracking segmentation and overlap their neighbours, so a peak in that band is *consistent with* an N400 and is not proof of one. The profile needs a raw-input checkpoint; on a band-power run it logs a warning and writes nothing rather than writing an empty artifact.
+
 ### The neighborhood
 
 The reading's embedding is scored by cosine against the gallery of embedded readings and the top-k neighbors are listed, each with its text, cosine, subject, and an `is_true_sentence` flag. Two rules keep this honest, and both are mutation-tested:

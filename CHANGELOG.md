@@ -4,6 +4,42 @@
 
 ### Added
 
+- **The evidence board — `zte-evidence`.** One command assembles every measured claim beside the brain-free floor it
+  has to clear, reading the artifact each audit already wrote and **recomputing nothing**, so the board cannot
+  disagree with the runs it describes. Three rules are enforced in code and mutation-tested: a claim with no floor
+  renders `not measured` and can never be a headline; the confidence *interval* must clear the floor, not the point
+  estimate; and a missing artifact is named in `missing` rather than dropped, because a silently absent row reads as
+  a claim nobody made. `Claim.headline_safe()` is the single predicate deciding whether a row may be quoted alone,
+  and the rendered document says plainly when none may be. Top-*k* renders as a hit count over the queries actually
+  scored, and a count too thin to resolve a difference carries that caveat whatever the verdict says.
+- **The anchor-calibration curve — `zte-calibrate`.** The deployment measurement: held-out rank percentile against
+  the number of labelled sentences a new reader has supplied, with the encoder frozen and nothing retrained. Two map
+  families bracket what any affine calibration can buy (`procrustes`, rotation only; `ridge`, strictly more
+  expressive), fitted from the reader's anchor readings onto the cross-subject prototype. Three arms are scored on
+  one identical reduced gallery — `uncalibrated`, `calibrated` and `shuffled`, the last fitting the same map on a
+  derangement of the anchor pairings — so the result is `calibrated − shuffled` as a *paired* per-draw difference,
+  not a lift over zero. Every anchor stimulus leaves both the query set and the gallery. A thin fit returns `None`
+  and logs rather than silently becoming an identity. See [`docs/CALIBRATION.md`](docs/CALIBRATION.md).
+- **The granularity ablation as a command — `zte-levels`.** `cross_level_table` had no driver; this is it. It loads
+  no model and re-scores no query, groups already-evaluated runs by alignment level, aggregates across LOSO folds
+  with a **sample** (n−1) standard deviation and a bootstrap over fold means, and prints each level against its
+  floor. A level with no measured floor renders as `floor not measured`, never as a pass.
+- **`noise_prefix` — the decoder reality check.** A mean/variance-matched Gaussian **z** fed straight into the
+  bridge, skipping the encoder entirely, so what it scores is the language model's prior plus the bridge. The
+  existing `noise` control matches the *encoder input*; this one isolates the question the field's generation
+  numbers actually turn on. Matched moments rather than a standard normal, because an off-manifold prefix is a
+  trivially weak control. It is in `DecoderConfig.generation_controls` by default and named explicitly by every
+  shipped decoder config, which **tightens** the verdict gate — an unavailable control fails its clause.
+- **The temporal latency profile — `zte-lens encode --temporal`.** Occlusion within the word: a time span of the raw
+  window is zeroed, the reading re-embedded, and the cosine displacement recorded, reported in milliseconds from
+  word onset with a bootstrap interval per bin and a random-offset **null band**. Occlusion rather than attention
+  because no trained checkpoint has an attentive temporal pool — `conformer_temporal_pool` is `mean` in every live
+  config — and a counterfactual is the better instrument regardless. `peak_in_n400_window` is reported and gates
+  nothing: ZuCo word windows are eye-tracking-segmented and overlap their neighbours, so a peak in that band is
+  consistent with an N400 and is not proof of one.
+- **`notebooks/tbme/zte_tbme.ipynb` — the evidence suite.** Eight experiments and the board, standalone on Colab,
+  resumable, mirrored to Drive. Sections 7, 8, 9, 12 and 14 read checkpoints and cost minutes; the rest train.
+
 - **The steps after training are not redone on a re-run.** `zte-audit`, `zte-decode`, `zte-rebaseline` and
   `zte-parallax transfer` record what each artifact was built from — every option, the checkpoint's SHA-256 and the
   dataset's bundle key — beside it as `.zte-done-<artifact>.json`, and skip when nothing has moved, so a notebook

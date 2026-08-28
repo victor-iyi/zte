@@ -78,6 +78,9 @@ zte-parallax = 'zte.cli.parallax:main'
 zte-analyze = 'zte.cli.analyze:main'
 zte-studio = 'zte.cli.studio:main'
 zte-colab = 'zte.cli.colab:main'
+zte-calibrate = 'zte.cli.calibrate:main'
+zte-levels = 'zte.cli.levels:main'
+zte-evidence = 'zte.cli.evidence:main'
 
 [build-system]
 requires = ['hatchling']

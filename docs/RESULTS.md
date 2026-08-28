@@ -161,6 +161,65 @@ The two findings behind the qualifiers, stated as measured:
 **Stale pending re-measurement.** All three parallax encoders ran with `length_projection: true`, which was fitted
 in the wrong frame — see [Measurement corrections](#measurement-corrections).
 
+## The three alignment levels on real ZuCo (2026-08-22, twelve-fold LOSO, seed 42)
+
+The granularity ablation: one contrastive term, moved between the pooled sentence vector, the single fixated word and
+four fixed intra-word slices, with nothing else changed. Twelve folds each, `train_fitted` post-processing, scored on
+the **length-stratified** gallery (chance Top-1 0.0285). Spread is the sample standard deviation across folds.
+
+| level | folds | rank percentile (mean ± sd) | vs. length oracle | Top-1 (mean ± sd) | hits/700 | folds *p* < 0.05 | bits from EEG |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sentence` | 12 | 0.9238 ± 0.0079 | −0.0287 | 0.0406 ± 0.0093 | 28 | 5/12 | 1.81 |
+| `word` | 12 | 0.9203 ± 0.0143 | −0.0322 | 0.0417 ± 0.0100 | 29 | 7/12 | 1.74 |
+| `token` | 12 | 0.9286 ± 0.0063 | −0.0239 | 0.0475 ± 0.0085 | 33 | 10/12 | 2.02 |
+
+The length-only oracle at ±1 word reaches rank percentile **0.9525** on the same gallery. **No level clears it**, and
+the ordering does not favour the level the design predicted: `token` is nominally highest on every column.
+
+### The sub-word piece oracle, measured on ZuCo's own gallery
+
+Four brain-free signatures scored as retrieval oracles over the real 700-sentence SR+NR gallery — no model, no
+training, nothing but the reference spelling. Tokeniser `Qwen/Qwen2.5-0.5B`; word-to-text alignment coverage 0.99993,
+so the piece counts are trustworthy. Naming one sentence out of 700 costs $\log_2 700 = 9.4512$ bits.
+
+| signature | what it is told | Top-1 | hits/700 | bits of the 9.4512 | unique fraction |
+| --- | --- | --- | --- | --- | --- |
+| `words` | the word count | 0.0757 | 53 | 5.145 | 0.016 |
+| `total` | the total sub-word piece count | 0.1014 | 71 | 5.579 | 0.023 |
+| `multiset` | the piece counts, order destroyed | 0.7386 | 517 | 8.816 | 0.583 |
+| `profile` | the ordered per-word piece counts | 0.9443 | 661 | 9.309 | 0.914 |
+
+`total` is the gate this repository's design can actually reach, because `objective.token_sub_tokens` is a fixed
+constant per word and never the count of pieces the reference spells that word in. `profile` is the ceiling a design
+that sized a word's EEG by its own piece count would have handed over, and it resolves 661 of 700 sentences on its
+own.
+
+### What this measures
+
+**Every level is out-retrieved by a single integer.** The best of the three retrieves 33 of 700 length-stratified and
+15 of 700 unstratified; the word count alone retrieves 53, and the total sub-token count 71. The encoders are not
+competing with chance, they are competing with spelling, and they lose to it by a factor of two to five.
+
+**The ordering is the confound signature, not a win.** `token` leads on rank percentile, on Top-1, on the number of
+significant folds and on the bit budget — and the token level is precisely the arm with the most exposure to the
+channel the oracle table shows is worth 9.309 of the 9.4512 bits. A granularity ablation in which the most
+confound-adjacent arm wins is evidence about the confound, not about sub-word neural content.
+
+**The pre-registered null lands, and it is broader than what was registered.** `docs/ALIGNMENT_LEVELS.md` pre-registered
+a null for the token level against the word level. What was measured is a null across all three levels against a
+brain-free floor. The honest statement is: *on ZuCo, cross-reader sentence identity recoverable from EEG does not
+exceed what the reference spelling gives away for free, at any of the three granularities tried.*
+
+**This does not say the EEG is empty.** The bit budget puts 1.74–2.02 bits of sentence identity in the embeddings
+against the 9.4512 needed, and the parallax matrix above shows a code that reaches a never-seen subject reading
+never-seen sentences at rank percentile ~0.95. It says the *readout* is not yet separable from length and spelling on
+this gallery, which is a statement about measurement power as much as about the signal.
+
+The anchor these arms were designed to be read against — `exp16_residual_off` at held-out Top-1 0.0371, restated
+across the docs as "26 of 700" — is a back-conversion of a rounded rate, carries no hit count, no binomial tail and no
+confidence interval, is not length-stratified, and is marked stale below. It sits **below the 53-hit word-count
+oracle on this same page**. It should not be quoted as a comparand again.
+
 ## Measurement corrections
 
 Corrections to the *measuring instrument*, not to the numbers. Nothing in the tables above has been edited; what

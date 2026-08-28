@@ -31,7 +31,16 @@ from zte.training.checkpoint import CheckpointManager
 _LOG = get_logger('cli.decode')
 
 # Every control decodes through the identical path; only the conditioning vector or the prefix changes.
-CONTROLS: tuple[str, ...] = ('mean_prefix', 'null_prefix', 'phase', 'noise', 'shuffled_z', 'length_only', 'mismatch')
+CONTROLS: tuple[str, ...] = (
+    'mean_prefix',
+    'null_prefix',
+    'phase',
+    'noise',
+    'noise_prefix',
+    'shuffled_z',
+    'length_only',
+    'mismatch',
+)
 SPLITS: tuple[str, ...] = ('test', 'test_seen_stim', 'val', 'train')
 
 # The capacity gallery rows are stimulus prototypes rather than readings, so they need a subject label that no
@@ -328,6 +337,45 @@ def noise_transform(seed: int = 0) -> Callable[[dict[str, Any]], dict[str, Any]]
     return apply
 
 
+def noise_prefix_z(z: np.ndarray, *, seed: int = 0) -> np.ndarray:
+    """Draws one synthetic conditioning vector per reading, matched to the real cloud's per-feature moments.
+
+    This is the decoder reality check. `noise` destroys the encoder's *input* and still pushes it through the frozen
+    encoder, so the bridge is handed a vector the encoder produced; here the bridge is handed a vector no brain and no
+    encoder ever touched, and whatever the frozen LM still writes from it is the language prior alone.
+
+    Args:
+        z (np.ndarray): The split's real conditioning vectors `(n, z_dim)`.
+        seed (int, optional): Draw seed, so a reported control can be recomputed. Defaults to 0.
+
+    Returns:
+        np.ndarray: Surrogate conditioning vectors `(n, z_dim)`, float32.
+
+    Raises:
+        ValueError: If no surrogate can be drawn that differs from `z` -- an empty or non-finite batch, or a cloud
+            with no per-feature variance to match. Falling back to `z` there would decode the real prefix under a
+            control's name and report its delta of exactly zero as a check that ran.
+    """
+    from zte.training.metrics import noise_matched
+
+    rows = np.asarray(z, dtype=np.float32)
+    if rows.ndim != 2 or rows.size == 0:
+        raise ValueError(f'noise_prefix needs a non-empty (n, z_dim) conditioning matrix; got shape {rows.shape}.')
+    if not bool(np.isfinite(rows).all()):
+        raise ValueError('noise_prefix cannot match the moments of a conditioning matrix holding non-finite values.')
+
+    # Matched per-feature mean and variance, never N(0, I): a prefix drawn off the conditioning manifold is a
+    # trivially weak control the decoder beats on geometry rather than on the brain.
+    noise = noise_matched(rows, seed=seed).astype(np.float32)
+    if np.array_equal(noise, rows):
+        raise ValueError(
+            'noise_prefix drew a surrogate identical to the conditioning vectors, so the arm would decode the real '
+            'prefix under a control name. The cloud has no per-feature variance left to match.'
+        )
+
+    return noise
+
+
 def mismatch_partners(
     n_words: np.ndarray, content_ids: np.ndarray, *, length_tol: int = 1, seed: int = 0
 ) -> np.ndarray:
@@ -553,6 +601,14 @@ def _controls(
         _LOG.info('Control %r ...', name)
         if name == 'null_prefix':
             out[name] = free_prefix(decoder.null_prefix(n), content=False)
+        elif name == 'noise_prefix':
+            try:
+                surrogate_z = noise_prefix_z(readings.z, seed=opts.seed)
+            except ValueError as exc:
+                unavailable[name] = str(exc)
+                _LOG.warning('Control %r could not run: %s. It fails its verdict clause.', name, unavailable[name])
+                continue
+            out[name] = free_prefix(decoder.prefix_from_z(surrogate_z), content=False)
         elif name in {'mean_prefix', 'length_only'}:
             train = train if train is not None else _train_conditioning(decoder, dataset, config, opts)
             if train is None:

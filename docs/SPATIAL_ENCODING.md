@@ -32,6 +32,69 @@ where $\gamma = \arccos(a^\top b)$ is the great‑circle angle between electrode
 
 The harmonics are *exact* for any electrode coordinates. All approximation lives in the coordinates (see below), never in the encoding.
 
+## Why not a graph network, and why not 2-D interpolation
+
+The three standard ways to give a model electrode geometry are a graph neural network over an adjacency matrix, a
+projection onto a 2-D scalp image, and a positional code on the sphere. They differ in what they assume and in what
+survives a cap that sits two centimetres off.
+
+| | what it needs | what a head rotation does to it | what an electrode shift does to it | is it exact? |
+| --- | --- | --- | --- | --- |
+| **GNN over an electrode graph** | a hand-chosen adjacency or $k$-NN threshold | nothing, but only because the graph already discarded orientation | changes the edge set, so the learned filters index different neighbours | no -- the graph is a discretisation of the geometry, chosen before training |
+| **2-D interpolation / topographic image** | an azimuthal projection to a plane | changes the image, because the projection has a pole | moves a sample between grid cells, and interpolation invents values between electrodes | no -- the projection distorts area and angle away from its centre |
+| **Spherical harmonics** | electrode coordinates on $S^2$ | mixes harmonics within a degree by a Wigner-D matrix, never across degrees | moves a point on the sphere; the code is a continuous function of that point | yes -- exact for any coordinates |
+
+Three consequences follow, and they are the reason the spatial encoder is a contribution rather than a preprocessing
+step.
+
+**A graph throws away the quantity the problem is about.** An adjacency matrix records *which* electrodes are
+neighbours, not *how far apart* they are or *in which direction*. Two caps whose $k$-NN graphs are isomorphic but
+whose inter-electrode distances differ by a centimetre are indistinguishable to a GNN, and the threshold that built
+the graph is a hyperparameter chosen before any data is seen. The harmonic code has no threshold: the addition
+theorem above makes the inner product between two electrodes' codes an exact function of their geodesic separation,
+so distance is in the representation rather than in a preprocessing decision.
+
+**A 2-D projection has a pole, and the scalp does not.** Every azimuthal or stereographic projection of a sphere onto
+a plane distorts, and the distortion grows with angular distance from the projection centre. On a 105-channel EGI net
+that means occipital and frontal electrodes are represented on a different effective scale than central ones, and a
+convolution kernel that is isotropic in the image is anisotropic on the head. Interpolating onto a grid compounds it
+by manufacturing values at positions where nothing was measured -- a smoothness prior imposed silently, before the
+model gets a vote. The harmonics are defined on the sphere itself, so there is no pole and no interpolation.
+
+**Electrode shift is a continuity property, not a robustness trick.** The clinical case this project exists for is a
+person whose cap is placed by a carer, differently each day. Under a shift, a GNN's edge set changes discretely and a
+grid sample jumps cells; the harmonic code moves continuously, because $Y_\ell^m$ is a smooth function of position
+and degree $\ell$ bounds how fast it can vary. The learnable per-degree gains are what make that a *learnable*
+kernel of scalp distance: the model chooses how much weight to give coarse dipolar structure ($\ell = 1$) against
+fine local structure ($\ell = 6$), rather than having that choice frozen into an adjacency threshold or a grid
+resolution.
+
+The cost is that the harmonics need coordinates, which a graph does not. That is a real dependency and the next
+section is about what happens when it is unmet.
+
+## What the shipped runs actually used
+
+**Every live configuration in this repository runs on the approximate geometry.** No config under
+`experiments/flagship/`, `experiments/decoder/`, `experiments/parallax/` or `experiments/alignment/` sets
+`dataset.montage_csv`, so `resolve_geometry` falls back to the Fibonacci cap, logs it, and sets `approximate=True`.
+That flag is a **persistent** buffer beside the harmonic basis, so it travels inside the checkpoint and reports the
+geometry the numbers were computed under rather than whatever the loading machine can find. Read
+`SphericalHarmonicEncoding.approximate_geometry`; never re-derive it from the config.
+
+What this costs, precisely:
+
+- The mathematical properties above **still hold** -- the Fibonacci cap is a set of genuine, well-separated points on
+  $S^2$, so rotation structure, geodesic locality and the addition theorem are exact for *those* points.
+- What is lost is the **correspondence to a real head**. Harmonic column $c$ describes a point on a sphere that is not
+  where electrode $c$ was. So the encoding is a usable, geometry-shaped inductive bias, and **any per-channel scalp
+  claim from such a run is positionally meaningless** -- a topographic map of channel importance from an
+  `approximate=True` checkpoint shows which array indices mattered, not which brain regions.
+
+A scalp topography is therefore only interpretable from a run trained with `dataset.montage_csv` pointed at a real
+montage, exported as in *Getting exact coordinates* below. `resolve_geometry` also swallows a malformed CSV -- it
+catches `ValueError`, `KeyError` and `FileNotFoundError`, warns, and falls back -- so a run can look configured for a
+real montage and silently be on the cap. Check the checkpoint's flag, not the YAML.
+
 ## How it is wired in
 
 `zte.models.spatial` provides:

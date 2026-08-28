@@ -375,6 +375,47 @@ date-stamped, and the run discovery walks every dated session newest-first regar
 Read `alignment_coverage` before anything else in the block. It is the fraction of ZuCo words that matched their
 own reference text, and below about 0.99 the piece counts are partly wrong and the bits are not trustworthy.
 
+## The evidence suite — eight experiments and one board
+
+[`notebooks/tbme/zte_tbme.ipynb`](https://colab.research.google.com/github/victor-iyi/zte/blob/main/notebooks/tbme/zte_tbme.ipynb)
+is standalone in the same way: upload it on its own and it clones the repo. It runs the experiments that together
+decide what the programme is entitled to claim, and ends with `zte-evidence`, which assembles every measured number
+beside the brain-free floor it has to clear.
+
+| §  | Experiment                     | What it settles                                                            | Trains?  | Roughly    |
+| -- | ------------------------------ | -------------------------------------------------------------------------- | -------- | ---------- |
+| 6  | Granularity ablation           | Does sentence, word or token alignment recover anything spelling does not? | optional | ~110 GPU-h |
+| 7  | Passage confound               | Is cross-subject retrieval semantics, or memorised passages?               | no       | ~30 min    |
+| 8  | Decoder reality check          | Does generated text carry the EEG, or the LM's prior?                      | no       | ~40 min    |
+| 9  | Anchor calibration             | What does a new reader gain from a few labelled sentences?                 | **no**   | ~20 min    |
+| 10 | Semantic hard negatives        | Does punishing length- and piece-matched confusions raise retrieval?       | yes      | ~4 h       |
+| 11 | Architecture benchmark         | Does the conformer beat EEGNet and DeepConvNet, identical pipeline?        | yes      | ~7 h       |
+| 12 | Physiological interpretability | *When* in the word, and *where* on the scalp, does the readout come from?  | no       | ~15 min    |
+| 13 | Twelve-fold LOSO               | The population number, mean ± sd                                           | yes      | ~110 GPU-h |
+| ★  | The evidence board             | Every claim, its floor, its verdict                                        | no       | seconds    |
+
+**Sections 7, 8, 9, 12 and ★ read checkpoints and cost minutes — start there.** The rest train.
+
+Everything lands under one root, `<session>/analysis/evidence_suite`, which is also the only thing the board reads:
+
+```sh
+uv run zte-evidence --roots '<session>/analysis/evidence_suite' --out <out>/board
+```
+
+Three commands in that notebook are new and are documented in their own pages: `zte-levels`
+([`EVALUATION.md`](EVALUATION.md)), `zte-calibrate` ([`CALIBRATION.md`](CALIBRATION.md)) and `zte-evidence`
+([`EVALUATION.md`](EVALUATION.md)). `zte-lens encode --temporal` is in [`LENS.md`](LENS.md).
+
+Two things the notebook will tell you but that are worth knowing before you open it:
+
+- **Section 12 measures occlusion, not attention.** No trained checkpoint has an attentive temporal pool, so the
+  conformer's temporal attention weights do not exist to be plotted. Occlusion works on every checkpoint and
+  measures a counterfactual instead.
+- **A scalp map needs a real montage.** Every live config runs on the approximate Fibonacci geometry, so a
+  topography from those runs shows array indices rather than brain regions. Section 12 trains one arm with
+  `--spatial exact` for that reason; the condition for a regional claim is the checkpoint's own
+  `approximate_geometry` flag reading `False`.
+
 ## Where things are stored, and why it differs by machine
 
 A twelve-fold sweep does not fit on a Colab VM's disk if everything stays local. The numbers, measured from Drive:

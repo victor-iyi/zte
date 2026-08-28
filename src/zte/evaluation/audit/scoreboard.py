@@ -797,10 +797,17 @@ def _binom_tail_p(hits: int, n: int, p_chance: float) -> float:
     if n <= 0 or not np.isfinite(p_chance) or p_chance <= 0.0 or hits <= 0:
         return 1.0
 
-    from math import comb
+    from math import exp, lgamma, log
 
     p = min(float(p_chance), 1.0)
-    below = sum(comb(n, i) * p**i * (1.0 - p) ** (n - i) for i in range(min(hits, n + 1)))
+    if p >= 1.0:
+        return 1.0
+
+    # Summed through the log pmf: pooling twelve folds of 700 queries overflows the binomial coefficient alone.
+    log_p, log_q, log_n = log(p), log(1.0 - p), lgamma(n + 1)
+    below = sum(
+        exp(log_n - lgamma(i + 1) - lgamma(n - i + 1) + i * log_p + (n - i) * log_q) for i in range(min(hits, n + 1))
+    )
     return float(np.clip(1.0 - below, 0.0, 1.0))
 
 

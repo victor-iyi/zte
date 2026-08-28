@@ -18,6 +18,7 @@ from zte.config.model import ModelConfig
 from zte.config.objective import ObjectiveConfig
 from zte.config.train import TrainConfig
 from zte.config.types import (
+    RAW_FRONTENDS,
     Conditioning,
     EvidenceSchedule,
     FrontendName,
@@ -38,6 +39,7 @@ from zte.config.types import (
 )
 
 __all__: list[str] = [
+    'RAW_FRONTENDS',
     'Conditioning',
     'DatasetConfig',
     'DecoderConfig',

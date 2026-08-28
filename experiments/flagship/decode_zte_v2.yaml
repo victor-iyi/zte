@@ -242,6 +242,7 @@ decoder:
   - null_prefix
   - phase
   - noise
+  - noise_prefix
   - shuffled_z
   - length_only
   - mismatch

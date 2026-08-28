@@ -221,6 +221,27 @@ class ObjectiveConfig:
     hard_negative_pool: int = 8
     """Number of semantic-hard negatives mined per sentence (used only when `semantic_hard_negatives`)."""
 
+    # ZuCo's eye-tracking segmentation hands the model a sentence's word count for nothing, and that count alone
+    # carries 5.14 of the 9.45 bits needed to name a sentence -- so a negative of a different length is rejected by
+    # counting and prices no semantics at all.
+    hard_negative_strategy: Literal['surface', 'length_matched', 'piece_matched'] = 'surface'
+    """How a mined negative is matched to its anchor: `surface` constrains nothing, `length_matched` holds word count
+    inside `hard_negative_length_tol`, `piece_matched` also holds the total sub-word count."""
+
+    hard_negative_length_tol: int = 1
+    """Words a matched negative may differ from its anchor by; widened per sentence when too few candidates exist."""
+
+    # The spelling budget is the second free channel: the per-sentence sub-word total resolves a sentence on this
+    # gallery without reading any EEG, so a length-matched negative spelled in a different number of pieces still is.
+    hard_negative_piece_tol: int = 2
+    """Total sub-word pieces a `piece_matched` negative may differ from its anchor by."""
+
+    # Seeding a batch with hard negatives only raises the chance one is present; narrowing the denominator is what
+    # makes the lazy semantic mistake cost anything.
+    hard_negative_in_loss: bool = False
+    """Narrow each anchor's full-gallery denominator to its own mined negatives, not just its batch. Needs
+    `semantic_hard_negatives` for the table and `gallery_weight > 0` for the term it narrows."""
+
     # -- Token-level lexical alignment (the word-content gap) ------------------------------- #
     lexical_weight: float = 0.0
     """Weight of the token-level loss aligning each word's EEG against that word's frozen text embedding (0 disables).

@@ -12,15 +12,24 @@ from typing import TYPE_CHECKING
 # checker follows these instead, which a `__getattr__` returning `object` would otherwise erase.
 if TYPE_CHECKING:
     from zte.alignment.atlas import DISCLAIMER, LEVELS, LevelPoints, build_atlas, contrastive_figure
-    from zte.alignment.compare import LevelRetrieval, cross_level_table, render_markdown, token_oracle_floor
+    from zte.alignment.compare import (
+        FoldSeries,
+        LevelRetrieval,
+        UnmeasuredLevel,
+        cross_level_table,
+        render_markdown,
+        token_oracle_floor,
+    )
     from zte.alignment.contrastive import LevelPairs, contrastive_geometry
 
 __all__ = [
     'DISCLAIMER',
     'LEVELS',
+    'FoldSeries',
     'LevelPairs',
     'LevelPoints',
     'LevelRetrieval',
+    'UnmeasuredLevel',
     'build_atlas',
     'contrastive_figure',
     'contrastive_geometry',
@@ -31,7 +40,9 @@ __all__ = [
 
 _ATLAS_EXPORTS = frozenset({'DISCLAIMER', 'LEVELS', 'LevelPoints', 'build_atlas', 'contrastive_figure'})
 _CONTRASTIVE_EXPORTS = frozenset({'LevelPairs', 'contrastive_geometry'})
-_COMPARE_EXPORTS = frozenset({'LevelRetrieval', 'cross_level_table', 'render_markdown', 'token_oracle_floor'})
+_COMPARE_EXPORTS = frozenset(
+    {'FoldSeries', 'LevelRetrieval', 'UnmeasuredLevel', 'cross_level_table', 'render_markdown', 'token_oracle_floor'}
+)
 
 
 def __getattr__(name: str) -> object:

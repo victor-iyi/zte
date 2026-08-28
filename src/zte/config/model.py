@@ -10,7 +10,9 @@ class ModelConfig:
     """ZTE encoder architecture."""
 
     frontend: FrontendName = 'band_power_mlp'
-    """`'band_power_mlp'` for band-power vectors or `'raw_conformer'` for raw time-series windows."""
+    """`'band_power_mlp'` for band-power vectors, or `'raw_conformer'` / `'eegnet'` / `'deep_conv_net'` for raw
+    time-series windows. The last two are the standard convolutional EEG baselines, run through the identical
+    pipeline so their numbers are comparable with the conformer's."""
 
     embed_dim: int = 768
     """Output embedding dimensionality; 768 keeps it plug-compatible with the frozen LLM space used downstream."""
@@ -140,3 +142,35 @@ class ModelConfig:
     band_routing: bool = False
     """Encode theta/gamma (lexical-semantic) and alpha/beta (attention/state) through separate pathways, so invariance
     pressure can be applied asymmetrically instead of over one flat vector. Band-power frontend only."""
+
+    # -- Convolutional baselines --------------------------------------------- #
+    eegnet_f1: int = 8
+    """Temporal filters in EEGNet's first block -- the `F1` of the published EEGNet-8,2. Read only by
+    `frontend='eegnet'`, so it changes nothing for any other frontend."""
+
+    eegnet_depth: int = 2
+    """Spatial projections EEGNet learns per temporal filter -- the depth multiplier `D`, giving `F1 * D` feature
+    maps after the depthwise electrode convolution. Read only by `frontend='eegnet'`."""
+
+    eegnet_kernel: int = 64
+    """Length of EEGNet's first temporal convolution. 64 is the published value, defined at 128 Hz; at ZuCo's 500 Hz
+    it spans 128 ms, so raise it towards half the sampling rate to keep the published half-second band-pass."""
+
+    eegnet_dropout: float = 0.25
+    """Dropout inside EEGNet's two blocks. Kept separate from `dropout` because the published value (0.25 across
+    subjects, 0.5 within) is far above what the rest of this encoder runs at."""
+
+    deepconv_filters: tuple[int, ...] = (25, 50, 100, 200)
+    """Filter width of each DeepConvNet block; its length is the block count. The published four blocks are tuned for
+    1000+ sample windows, so a short `dataset.raw_window` may need fewer -- construction raises rather than pooling
+    the time axis down to nothing. Read only by `frontend='deep_conv_net'`."""
+
+    deepconv_kernel: int = 5
+    """Temporal convolution length in every DeepConvNet block. Each block consumes `deepconv_kernel - 1` time steps,
+    which is what bounds how many blocks a given raw window can carry."""
+
+    deepconv_pool: int = 3
+    """Max-pool factor after every DeepConvNet block, clamped per block to what the surviving time axis can divide."""
+
+    deepconv_dropout: float = 0.5
+    """Dropout before each DeepConvNet block after the first, at the published value."""

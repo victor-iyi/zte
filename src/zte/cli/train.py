@@ -38,7 +38,11 @@ def parse_arguments() -> argparse.Namespace:
         choices=['skipgram', 'cbow', 'masked', 'cpc', 'clip', 'decode'],
         default=None,
     )
-    parser.add_argument('--frontend', choices=['band_power_mlp', 'raw_conformer'], default=None)
+    parser.add_argument(
+        '--frontend',
+        choices=['band_power_mlp', 'raw_conformer', 'eegnet', 'deep_conv_net'],
+        default=None,
+    )
     parser.add_argument('--representation', choices=['band_power', 'raw', 'both'], default=None)
     parser.add_argument('--embed-dim', type=int, default=None)
     parser.add_argument('--epochs', type=int, default=None)

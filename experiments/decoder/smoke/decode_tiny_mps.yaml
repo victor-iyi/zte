@@ -213,6 +213,7 @@ decoder:
   - null_prefix
   - phase
   - noise
+  - noise_prefix
   - mismatch
   n_permutations: 100
   rescore_gallery: true

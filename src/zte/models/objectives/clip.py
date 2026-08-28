@@ -71,6 +71,7 @@ class SentenceClipObjective(_ObjectiveBase):
         text_lengths: torch.Tensor | None = None,
         split_text_ids: Sequence[int] | None = None,
         text_tasks: torch.Tensor | None = None,
+        text_hard_negatives: torch.Tensor | None = None,
     ) -> None:
         """Attaches the frozen `(n_sentences, text_dim)` L2-normalised text-embedding matrix.
 
@@ -83,6 +84,9 @@ class SentenceClipObjective(_ObjectiveBase):
                 full-gallery term against its own held-out sentences as negatives.
             text_tasks (torch.Tensor | None): Long `(n_sentences,)` task per gallery text, needed only for the
                 same-task denominator of `within_task_negatives`.
+            text_hard_negatives (torch.Tensor | None): Long `(n_sentences, k)` mined hard negatives per gallery text.
+                Batch composition alone only raises the chance a hard negative is present; under
+                `hard_negative_in_loss` this table narrows the denominator, which is what prices the mistake.
         """
         self.text_matrix = text_matrix  # buffer: moves with .to(device), never trained
         self.clip_head = nn.Linear(self._embed_dim, int(text_matrix.shape[1]))
@@ -97,6 +101,8 @@ class SentenceClipObjective(_ObjectiveBase):
             self.gallery.restrict_to(split_text_ids, n_texts)
         if text_tasks is not None:
             self.gallery.attach_tasks(text_tasks)
+        if text_hard_negatives is not None:
+            self.gallery.attach_hard_negatives(text_hard_negatives)
 
     def _sentence_vectors(self, model: ZTEModel, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
         """Pools each sentence's word-EEG tokens into one contextual sentence embedding `(B, embed_dim)`.

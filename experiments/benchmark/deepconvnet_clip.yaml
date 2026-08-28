@@ -1,0 +1,203 @@
+# deepconvnet_clip -- the DeepConvNet control the flagship sentence-level encoder must beat.
+# Byte-identical to experiments/alignment/sentence/combined.yaml except model.frontend and the deepconv_* knobs it
+# turns on, so any difference is attributable to the token encoder and nothing else.
+#
+# Lever: the four-block DeepConvNet replaces the raw conformer. Four maxpool-3 blocks over the 350-step window leave
+# a length-2 time axis, which is the shallowest the published depth survives -- a shorter dataset.raw_window needs
+# fewer entries in deepconv_filters, and construction raises rather than pooling the axis away.
+#
+# Note: spatial_encoding stays spherical_harmonics to keep the matched pair honest, which stacks it on the first
+# block's electrode filter. The frontend logs a warning saying so; read this arm as double-spatial by construction.
+# The first block holds a (filters, n_channels, time_steps) activation per word, so grad_checkpoint stays on and
+# train.batch_size may still need lowering on a 16 GB GPU.
+dataset:
+  root: res/data/zuco_extracted
+  tasks:
+  - SR
+  - NR
+  subjects: null
+  granularity: word
+  representation: raw
+  band_power_measures:
+  - TRT
+  include_eye_tracking: false
+  eye_tracking_measures:
+  - FFD
+  - GD
+  - GPT
+  - TRT
+  - n_fixations
+  - mean_pupil
+  bands:
+  - t1
+  - t2
+  - a1
+  - a2
+  - b1
+  - b2
+  - g1
+  - g2
+  raw_field: rawEEG
+  raw_window: 350
+  time_bins: 1
+  normalize: riemannian
+  normalizer_fit: train
+  montage_csv: res/montage_gsn105.csv
+  bandpass: null
+  raw_align: euclidean
+  raw_align_fit: all
+  subject_signature: true
+  missing:
+    method: mask_only
+    knn_neighbors: 5
+    iterative_max_iter: 10
+    interpolate_method: linear
+    add_missing_indicator: true
+  include_omitted: true
+  min_words: 1
+  max_words: null
+  cache_dir: res/cache
+  cache_format: npz
+model:
+  frontend: deep_conv_net
+  embed_dim: 768
+  hidden_dim: 256
+  n_layers: 4
+  n_heads: 8
+  dropout: 0.1
+  conformer_filters: 40
+  conformer_temporal_kernel: 25
+  pos_encoding: rope
+  max_positions: 512
+  spatial_encoding: spherical_harmonics
+  spatial_harmonic_degree: 6
+  spatial_mix: true
+  spatial_encoding_learnable: true
+  spatial_attn_freqs: 8
+  pool: attention
+  subject_conditioning: false
+  subject_film: false
+  subject_adapter: true
+  subject_adapter_width: 128
+  subject_adapter_spatial: true
+  n_subjects: 12
+  n_tasks: 3
+  grad_checkpoint: true
+  projection_hidden: 512
+  factored: true
+  content_dim: 384
+  band_routing: false
+  deepconv_filters:
+  - 25
+  - 50
+  - 100
+  - 200
+  deepconv_kernel: 5
+  deepconv_pool: 3
+  deepconv_dropout: 0.5
+  residual_coding: false
+  residual_layers: 1
+  residual_gate: 1.0
+  residual_predict_weight: 1.0
+objective:
+  name: clip
+  temperature: 0.07
+  context_window: 2
+  mask_ratio: 0.5
+  masked_target: latent
+  ema_decay: 0.999
+  ema_decay_end: 0.9999
+  teacher_variance_floor: 0.0001
+  cpc_steps: 4
+  variance_weight: 1.0
+  covariance_weight: 1.0
+  variance_target: 1.0
+  anisotropy_weight: 1.0
+  whiten: true
+  cross_subject_positives: true
+  meaning_positives: true
+  subject_adversary_weight: 0.05
+  identity_orthogonality_weight: 1.0
+  stimulus_adversary_weight: 0.3
+  meaning_distill_weight: 1.0
+  meaning_source: null
+  meaning_dim: 768
+  hard_negatives: false
+  hard_negative_keys:
+  - subject
+  - task
+  behaviour_weight: 0.5
+  behaviour_targets:
+  - TRT
+  - regression_time
+  - is_omitted
+  all_but_top: 1
+  csls_neighbors: 10
+  subject_adversary_warmup_ratio: 0.3
+  alignment_weight: 0.1
+  tau_plus: 0.1
+  data2vec_aux_weight: 0.5
+  meaning_contextual: bert-base-uncased
+  meaning_context_layer: 8
+  eval_phase_shuffle: false
+  eval_seen_novel: true
+  eval_freq_matched: true
+  text_source: intfloat/e5-base-v2
+  text_backend: sentence-transformers
+  text_query_prefix: 'query: '
+  clip_temperature: 0.07
+  semantic_hard_negatives: true
+  hard_negative_pool: 8
+  lexical_weight: 0.0
+  lexical_reader_weight: 0.0
+  lexical_temperature: 0.07
+  lexical_source: null
+  lexical_max_tokens: 4096
+  lexical_same_subject_negatives: true
+  consensus_weight: 1.0
+  consensus_gallery_weight: 0.5
+  consensus_word_weight: 0.25
+  consensus_decay: 0.99
+  consensus_min_readers: 2
+  consensus_temperature: 0.07
+  consensus_gallery_size: 1024
+  gallery_weight: 1.0
+  gallery_length_band: 2
+  gallery_min_candidates: 32
+  length_projection: true
+  token_sub_tokens: 4
+  token_temperature: 0.07
+  token_source: null
+  token_max_tokens: 4096
+  token_same_subject_negatives: true
+  token_max_length: 96
+  token_weight: 0.0
+  token_reader_weight: 0.0
+train:
+  epochs: 40
+  batch_size: 128
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  grad_accum_steps: 1
+  grad_clip: 1.0
+  device: auto
+  precision: auto
+  num_workers: -1
+  static_shapes: auto
+  split: by_subject_loso
+  val_fraction: 0.1
+  test_fraction: 0.1
+  loso_holdout_subject: ZAB
+  seed: 42
+  deterministic: true
+  log_every: 10
+  eval_every: 1
+  ckpt_dir: res/checkpoints
+  ckpt_keep_last: 3
+  tensorboard: true
+  drive_backup_dir: null
+  compile_model: false
+  eval_profile: sweep
+run_name: benchmark_deepconvnet_clip

@@ -67,7 +67,8 @@ A complete leave-one-subject-out sweep of `clip_e5_bandpower` (meaning off) over
 
 - **Pooled retrieval swings 0.0015 → 0.131 across folds** (mean 0.061 ± 0.052) — but this is mostly training instability, not generalisation. Convergence was **bimodal: 5/12 folds trained to a healthy subject-invariant code, 3/12 collapsed** (pooled < 0.01, subject identity never removed). A single seed per fold cannot separate "hard subject" from "unlucky seed" — hence the new `SEEDS="42 43 44"` option on `scripts/run_loso.sh`.
 - **Held-out retrieval — the honest headline — is essentially chance.** On the genuinely never-seen subject, Top-1 lift over chance is **+0.0017 ± 0.0030** (6/12 folds at or below chance). The correct match does rank around the 91st percentile on average, so *weak* signal exists, but it is nowhere near Top-1. The model does **not** yet retrieve a stranger's sentence.
-- **What *does* generalise honestly:** held-out **category decode** beats chance in 10/12 folds (0.64 vs 0.54), and **anchor calibration helps in 12/12** (cohesion lift +0.04 … +0.16) — a new brain can be snapped into the shared frame from ~12 anchor words without retraining. That anchor result is the most promising lever for the decoder roadmap.
+- **What *does* generalise honestly:** held-out **category decode** beats chance in 10/12 folds (0.64 vs 0.54), and **anchor calibration lifts cohesion in 12/12** (+0.04 … +0.16) from ~12 anchor words without retraining.
+  **Read that second one carefully.** It is a *cohesion* lift — the mean cosine between same-word cross-subject centroids — measured at **word** level by `honesty.anchor_calibration_lift`, whose fitted Procrustes map is discarded and has never been applied to a scored embedding. It is **not** evidence that Top-*k* or rank percentile moves, and the two have never been connected in this repository. `zte-calibrate` is the experiment that actually asks the retrieval question, with a shuffled-anchor control and the anchors removed from the gallery; see [`../docs/CALIBRATION.md`](../docs/CALIBRATION.md).
 
 ### What is still open
 
@@ -225,6 +226,16 @@ never enter `generation_above_controls`.
 | Config                   | What it controls for                                                                           |
 | ------------------------ | ---------------------------------------------------------------------------------------------- |
 | `baseline_skipgram_loso` | The previous SOTA recipe (skip-gram + the full invariance stack). Answers "did CLIP earn it?". |
+| `eegnet_clip`            | **EEGNet** through the identical InfoNCE pipeline. Answers "is the conformer the right encoder?". |
+| `deepconvnet_clip`       | **DeepConvNet** through the identical InfoNCE pipeline, the deeper convolutional standard.       |
+
+Both architecture arms are one-lever changes against `alignment/sentence/combined.yaml` — only `model.frontend`
+moves. Four deviations from the published networks are forced by this pipeline and are recorded in
+[`../docs/METHODS.md`](../docs/METHODS.md): group normalisation in place of batch normalisation (the frontend gets no
+mask, so batch statistics would be fitted over padded slots), DeepConvNet's temporal kernel at 5 rather than 10 (10
+underflows at `raw_window: 350`), `eegnet_kernel` at the published 64 which is 128 ms at ZuCo's 500 Hz rather than
+the half-second the original intends, and a sub-word path on DeepConvNet that its pooling makes weaker than the
+conformer's. Neither has been trained on real ZuCo; they are synthetic-smoke-validated only.
 
 The text-encoder A/B that used to sit here (E5 vs Qwen vs BGE vs MPNet) is in [`archive/`](archive/README.md): every arm was band-power and none reached *p* < 0.07 on the held-out board.
 
@@ -283,6 +294,38 @@ the models. Results land beside every other run on Drive under `Sharables/ZTE/<d
 0.9507/0.9647/0.9715 and SR→NR 0.9515/0.9577/0.9591, length-stratified ~0.92–0.93, at healed effective rank
 (0.41–0.46) — while the certified exact-length prototype menu stays at chance and the TSR diagonal is an in-task null
 (Top-1 at chance, permutation *p* = 0.998). Numbers and the honest wording: [`../docs/RESULTS.md`](../docs/RESULTS.md).
+
+## `alignment/` — the three levels, and what they measured
+
+One directory per alignment level, four arms each, differing only in which unit the contrastive term pulls at. Design
+and the pre-registration: [`alignment/README.md`](alignment/README.md) and
+[`../docs/ALIGNMENT_LEVELS.md`](../docs/ALIGNMENT_LEVELS.md).
+
+**Measured 2026-08-22, audited 2026-08-24 (twelve-fold LOSO, seed 42, train-fitted post-processing,
+length-stratified gallery):**
+
+| level      | rank percentile (mean ± sd) | vs. length oracle | Top-1 (mean ± sd) | hits/700 |
+| ---------- | --------------------------- | ----------------- | ----------------- | -------- |
+| `sentence` | 0.9238 ± 0.0079             | −0.0287           | 0.0406 ± 0.0093   | 28       |
+| `word`     | 0.9203 ± 0.0143             | −0.0322           | 0.0417 ± 0.0100   | 29       |
+| `token`    | 0.9286 ± 0.0063             | −0.0239           | 0.0475 ± 0.0085   | 33       |
+
+**No level clears the ±1-word length oracle at 0.9525**, and `token` — the arm most exposed to the spelling channel
+— is nominally highest, which is the confound signature rather than a win. On the same gallery the word count alone
+retrieves 53 and the total sub-word piece count 71. The full reading, and what the null does and does not settle:
+[`../docs/RESULTS.md`](../docs/RESULTS.md#the-three-alignment-levels-on-real-zuco-2026-08-22-twelve-fold-loso-seed-42).
+
+`sentence/hardneg.yaml` is the matched pair against `sentence/combined.yaml`, flipping only the hard-negative
+strategy: candidates restricted to sentences matched on word count and sub-word piece budget, mined by
+surface-overlap-minus-semantic-cosine as before, and narrowing the loss denominator rather than only the batch. A win
+here is a higher **length-stratified** rank percentile whose interval clears the floor — not a higher unstratified
+Top-1, which is where length lives.
+
+Reproduce the table with `zte-levels`, which loads no model and re-scores no query:
+
+```sh
+uv run zte-levels --root '<session>/experiments' --pattern 'align_*' --out <out>/levels
+```
 
 ## `archive/` — retired, kept for the record
 

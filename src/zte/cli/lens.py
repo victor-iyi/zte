@@ -3,11 +3,16 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config
 from zte.config import ZTEConfig
 from zte.logging_utils import configure_logging, get_logger
+
+if TYPE_CHECKING:
+    from zte.data.dataset import ZuCoDataset
+    from zte.inference.embed import ZTEEmbedder
+    from zte.lens.saliency import Reading
 
 _LOG = get_logger('cli.lens')
 
@@ -84,9 +89,29 @@ def _add_reading_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_output_args(parser: argparse.ArgumentParser) -> None:
-    """Adds the device and rendering flags shared by both subcommands."""
+    """Adds the device, rendering and temporal-profile flags shared by both subcommands."""
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--html', action='store_true', help='Also render LENS.html beside lens.json.')
+    parser.add_argument(
+        '--temporal',
+        action='store_true',
+        help='Also write temporal.json/temporal.md: the occlusion latency profile over the raw window. '
+        'Raw-input checkpoints only.',
+    )
+    parser.add_argument(
+        '--temporal-bins',
+        type=int,
+        default=14,
+        dest='temporal_bins',
+        help='Contiguous time bins the raw window is split into for the temporal profile.',
+    )
+    parser.add_argument(
+        '--temporal-sentences',
+        type=int,
+        default=12,
+        dest='temporal_sentences',
+        help="Readings the temporal profile aggregates over, from --index onwards through the subject's readings.",
+    )
 
 
 def resolve_subject(config: ZTEConfig, requested: str | None) -> str:
@@ -143,6 +168,86 @@ def write_lens_json(report: dict[str, Any], out: Path, run_name: str, subject: s
     target.mkdir(parents=True, exist_ok=True)
     path = target / 'lens.json'
     path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+
+    return path
+
+
+def temporal_readings(
+    dataset: ZuCoDataset, subject: str, index: int, contains: str | None, limit: int
+) -> list[Reading]:
+    """Collects up to `limit` of the subject's readings from `--index` onwards, so the profile is not one sentence.
+
+    Args:
+        dataset (ZuCoDataset): The built dataset.
+        subject (str): Subject whose readings are profiled.
+        index (int): First reading to take, in the dataset's deterministic order.
+        contains (str | None): The `--contains` filter, applied exactly as the single-reading selection applies it.
+        limit (int): Most readings to take; the subject may have fewer.
+
+    Returns:
+        list[Reading]: The selected readings, in dataset order.
+    """
+    from zte.lens.saliency import select_reading
+
+    readings: list[Reading] = []
+    for offset in range(max(int(limit), 1)):
+        try:
+            readings.append(select_reading(dataset, subject, index + offset, contains))
+        except ValueError:
+            break
+
+    return readings
+
+
+def write_temporal(
+    embedder: ZTEEmbedder,
+    dataset: ZuCoDataset,
+    subject: str,
+    args: argparse.Namespace,
+    target: Path,
+) -> Path | None:
+    """Profiles when in the raw window the embedding is built, writing `temporal.json` and `temporal.md`.
+
+    Args:
+        embedder (ZTEEmbedder): The loaded encoder.
+        dataset (ZuCoDataset): The built dataset the readings live in.
+        subject (str): The subject whose readings are profiled.
+        args (argparse.Namespace): The parsed arguments, for the reading selection and the profile's knobs.
+        target (Path): The lens directory the artifacts are written into.
+
+    Returns:
+        Path | None: The written `temporal.json`, or `None` when this checkpoint has no time axis to profile.
+
+    Raises:
+        SystemExit: If the subject has no readings, or the profile comes back without its disclaimer.
+    """
+    from zte.lens.saliency import DISCLAIMER
+    from zte.lens.temporal import render_markdown, temporal_saliency
+
+    readings = temporal_readings(dataset, subject, int(args.index), args.contains, int(args.temporal_sentences))
+    if not readings:
+        raise SystemExit(f'Subject {subject!r} has no reading to profile, so there is no temporal profile to write.')
+
+    profile = temporal_saliency(
+        embedder,
+        dataset,
+        readings,
+        n_bins=int(args.temporal_bins),
+        ckpt_path=Path(args.ckpt),
+    )
+    if profile is None:
+        _LOG.warning('Temporal profile not written: this checkpoint reads no raw time axis.')
+        return None
+
+    if profile.get('disclaimer') != DISCLAIMER:
+        raise SystemExit(
+            'Refusing to write a temporal profile without its disclaimer -- the lens is an inspection surface, '
+            'and every artifact must say so.'
+        )
+
+    path = target / 'temporal.json'
+    path.write_text(json.dumps(profile, indent=2), encoding='utf-8')
+    (target / 'temporal.md').write_text(render_markdown(profile), encoding='utf-8')
 
     return path
 
@@ -240,6 +345,11 @@ def run_lens(args: argparse.Namespace, mode: str) -> Path:
 
     json_path = write_lens_json(report, Path(args.out), config.run_name, subject, int(args.index))
     _LOG.info('Lens written to %s.', json_path)
+
+    if args.temporal:
+        temporal_path = write_temporal(embedder, dataset, subject, args, json_path.parent)
+        if temporal_path is not None:
+            _LOG.info('Temporal profile written to %s.', temporal_path)
 
     if args.html:
         html_path = render_page(json_path)

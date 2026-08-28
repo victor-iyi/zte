@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 type Granularity = Literal['word', 'sentence']
 """Token granularity. Only `'word'` is implemented; use `ZTEEmbedder(level='sentence')` for pooled sentences."""
@@ -67,8 +67,13 @@ type LMDtype = Literal['auto', 'float32', 'float16', 'bfloat16']
 """Precision the frozen LM's weights are loaded at. `auto` inherits the encoder's, so the two halves always agree;
 naming one of the others pins it, and either way the checkpoint's own stored dtype never decides."""
 
-type FrontendName = Literal['band_power_mlp', 'raw_conformer']
-"""Per-token encoder: an MLP over band-power vectors or a conformer over raw time-series windows."""
+type FrontendName = Literal['band_power_mlp', 'raw_conformer', 'eegnet', 'deep_conv_net']
+"""Per-token encoder: an MLP over band-power vectors, or a conformer / EEGNet / DeepConvNet over raw windows."""
+
+# What splits the frontends is which tensor a batch must carry, not which architecture is named: everything here
+# reads `batch['raw']` windows and reconstructs `n_channels * time_steps`, everything else reads band-power vectors.
+RAW_FRONTENDS: Final[frozenset[FrontendName]] = frozenset({'raw_conformer', 'eegnet', 'deep_conv_net'})
+"""The frontend names that consume raw EEG windows rather than band-power vectors."""
 
 type PoolName = Literal['mean', 'attention', 'cls']
 """How token embeddings are pooled into a sentence embedding."""

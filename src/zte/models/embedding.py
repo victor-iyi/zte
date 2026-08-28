@@ -12,7 +12,7 @@ from typing import Any, cast
 import torch
 from torch import nn
 
-from zte.config import ModelConfig, ObjectiveName
+from zte.config import RAW_FRONTENDS, ModelConfig, ObjectiveName
 from zte.models.encoder.residual import PredictiveResidual, build_predictive_residual
 from zte.models.frontends import _largest_divisor, build_frontend
 from zte.models.heads import ProjectionHead
@@ -86,7 +86,7 @@ class ZTEModel(nn.Module):
         """
         super().__init__()
         self.config = config
-        self.uses_raw = config.frontend == 'raw_conformer'
+        self.uses_raw = config.frontend in RAW_FRONTENDS
         self.frontend = build_frontend(
             config,
             in_dim,
@@ -225,7 +225,7 @@ class ZTEModel(nn.Module):
         if not callable(frontend_sub):
             raise NotImplementedError(
                 f'Frontend {self.config.frontend!r} exposes no intra-word sub-token path; the sub-word alignment '
-                "level needs a raw-window frontend ('raw_conformer')."
+                f'level needs a raw-window frontend ({", ".join(sorted(RAW_FRONTENDS))}).'
             )
 
         x = self.select_input(batch)
