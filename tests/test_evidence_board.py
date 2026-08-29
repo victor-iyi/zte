@@ -1,11 +1,14 @@
 """Tests that the evidence board refuses to call an unfloored or underpowered number a result."""
 
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from zte.cli.evidence import collect_artifacts
+from zte.cli.evidence import collect_artifacts, inputs_digest
+from zte.cli.evidence import main as evidence_main
 from zte.evaluation.audit.evidence import (
     MIN_RESOLVABLE_HITS,
     Claim,
@@ -391,3 +394,85 @@ def test_a_shallower_artifact_wins_over_a_deeper_one(tmp_path: Path) -> None:
     _, where = collect_artifacts([tmp_path], depth=4)
 
     assert where['levels'] == str(tmp_path / 'levels' / 'levels.json')
+
+
+def _levels(root: Path, body: str = '{"levels": []}') -> Path:
+    """Writes a levels artifact under `root` and returns it."""
+    directory = root / 'levels'
+    directory.mkdir(exist_ok=True)
+    payload = directory / 'levels.json'
+    payload.write_text(body, encoding='utf-8')
+
+    return payload
+
+
+def test_the_board_is_not_rebuilt_when_nothing_it_reads_has_changed(tmp_path: Path) -> None:
+    """Re-running the suite must not repeat work; the stamp is what makes the whole notebook re-runnable."""
+    _levels(tmp_path)
+
+    assert inputs_digest(collect_artifacts([tmp_path])[1]) == inputs_digest(collect_artifacts([tmp_path])[1])
+
+
+def test_a_rewritten_artifact_invalidates_the_board(tmp_path: Path) -> None:
+    """A board that recomputes nothing cannot notice a new audit on its own -- the digest is what notices."""
+    payload = _levels(tmp_path)
+    before = inputs_digest(collect_artifacts([tmp_path])[1])
+
+    payload.write_text('{"levels": [], "note": "re-run with one more fold"}', encoding='utf-8')
+
+    assert inputs_digest(collect_artifacts([tmp_path])[1]) != before
+
+
+def test_a_newly_run_audit_invalidates_the_board(tmp_path: Path) -> None:
+    """An audit that had never run adds a claim, so the board must rebuild rather than serve the old row set."""
+    _levels(tmp_path)
+    before = inputs_digest(collect_artifacts([tmp_path])[1])
+
+    (tmp_path / 'calibration').mkdir()
+    (tmp_path / 'calibration' / 'calibration.json').write_text('{"curve": []}', encoding='utf-8')
+
+    assert inputs_digest(collect_artifacts([tmp_path])[1]) != before
+
+
+def _build_board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Runs `zte-evidence` over `tmp_path` the way the notebook does, and returns the written JSON."""
+    out = tmp_path / 'board'
+    monkeypatch.setattr(
+        sys, 'argv', ['zte-evidence', '--roots', str(tmp_path), '--out', str(out), '--log-level', 'ERROR']
+    )
+    evidence_main()
+
+    return out / 'evidence.json'
+
+
+def test_rerunning_the_board_does_not_rewrite_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole notebook's re-runnability rests on this: a second pass must serve, not rebuild."""
+    _levels(tmp_path)
+    board = _build_board(tmp_path, monkeypatch)
+    stamp = board.stat().st_mtime_ns
+
+    _build_board(tmp_path, monkeypatch)
+
+    assert board.stat().st_mtime_ns == stamp, 'the board was rewritten though nothing it reads had changed'
+
+
+def test_the_board_rebuilds_when_an_audit_it_reads_is_re_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard must be wired into the stamp, not merely available -- a stale board is worse than a slow one."""
+    payload = _levels(tmp_path)
+    board = _build_board(tmp_path, monkeypatch)
+    stamp = board.stat().st_mtime_ns
+
+    payload.write_text('{"levels": [], "note": "one more fold"}', encoding='utf-8')
+    _build_board(tmp_path, monkeypatch)
+
+    assert board.stat().st_mtime_ns != stamp, 'the board served a stale copy after its input changed'
+
+
+def test_the_digest_ignores_mtime_so_a_drive_mirror_does_not_invalidate_it(tmp_path: Path) -> None:
+    """Mirroring a session to Drive resets every mtime; a digest reading them would rebuild the whole board after."""
+    payload = _levels(tmp_path)
+    before = inputs_digest(collect_artifacts([tmp_path])[1])
+
+    os.utime(payload, (0, 0))
+
+    assert inputs_digest(collect_artifacts([tmp_path])[1]) == before

@@ -1,6 +1,7 @@
 """Assembles the evidence board from the audits that have already run."""
 
 import argparse
+import hashlib
 from pathlib import Path
 from typing import Any, Final
 
@@ -76,6 +77,23 @@ def _find(roots: list[Path], patterns: tuple[str, ...], depth: int) -> Path | No
     return None
 
 
+def inputs_digest(sources: dict[str, str]) -> str:
+    """Fingerprints the artifacts a board was built from -- paths and sizes, never mtimes, which mirroring resets.
+
+    Args:
+        sources (dict[str, str]): Claim family -> the artifact path it was read from.
+
+    Returns:
+        str: A hex digest that changes whenever a source is added, removed, replaced or rewritten.
+    """
+    parts = [
+        f'{family}:{path}:{Path(path).stat().st_size if Path(path).is_file() else -1}'
+        for family, path in sorted(sources.items())
+    ]
+
+    return hashlib.sha256('\n'.join(parts).encode('utf-8')).hexdigest()
+
+
 def collect_artifacts(roots: list[Path], depth: int = 3) -> tuple[dict[str, Any], dict[str, str]]:
     """Finds and parses one artifact per claim family.
 
@@ -116,14 +134,22 @@ def main() -> None:
     artifacts = (out_dir / 'evidence.json', out_dir / 'evidence.md')
     roots = [Path(r) for r in args.roots]
 
-    sig = signature(args, tool='evidence', extra={'roots': [str(r) for r in roots]})
+    # The search runs first so the stamp can fingerprint what was actually found. Anything cheaper -- the root
+    # paths, the flags -- would serve yesterday's board after a new audit landed, which is the one failure a
+    # board that recomputes nothing cannot detect on its own.
+    payloads, where = collect_artifacts(roots, depth=args.depth)
+    sig = signature(
+        args,
+        tool='evidence',
+        extra={'roots': [str(r) for r in roots], 'inputs_sha256': inputs_digest(where)},
+        ignore=('roots',),
+    )
     if is_done(artifacts, sig, force=args.force):
-        _LOG.info('Evidence board already current at %s.', artifacts[0])
+        _LOG.info('Evidence board already current at %s; no artifact it reads has changed.', artifacts[0])
         print(artifacts[1])
 
         return
 
-    payloads, where = collect_artifacts(roots, depth=args.depth)
     board = evidence_report(
         levels=payloads.get('levels'),
         piece_audit=payloads.get('resolution_limit'),

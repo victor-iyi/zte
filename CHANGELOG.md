@@ -4,6 +4,24 @@
 
 ### Added
 
+- **`zte-lens` skips a lens it has already built.** It was the one expensive command with no `.zte-done` stamp, so
+  every re-run repeated the occlusion passes -- channel saliency over ten electrode groups, and with `--temporal` a
+  latency profile over every bin of every word of twelve readings. The stamp is decided before the dataset is built
+  and covers the checkpoint's SHA-256, the dataset key and every flag, so adding `--temporal` or `--html` to a
+  previous invocation correctly rebuilds while an identical one returns in the time it takes to hash a checkpoint.
+- **`zte-evidence` and `zte-levels` fingerprint what they read, not just how they were called.** Both aggregate
+  other commands' artifacts, so a stamp over flags alone would serve yesterday's board after a new audit landed.
+  The record now covers the resolved artifacts' names and sizes -- never mtimes, which a Drive mirror resets -- so a
+  new fold, a re-run audit or a newly written calibration rebuilds them on its own and neither ever needs `--force`.
+- **`zte-loso-summary --experiments` takes several roots, and accepts run directories.** It previously took one
+  directory and globbed `*/evaluation/metrics.json` under it, which meant a sweep root pooled every arm trained into
+  it: folds are keyed on the holdout alone, so three alignment levels averaged into one trend. Naming the run
+  directories of a single arm is now expressible, matching `zte-analyze`'s existing shape.
+- **`zte-audit --config` and `--root` compose.** They were mutually exclusive though the body already handled both.
+  `--config` decides which dataset is built -- representation, window, tasks, and so the bundle key -- while
+  `--root` says where the files are; with `--root` alone the defaults built a band-power/128-sample dataset that
+  keyed nowhere near a prepared raw bundle and re-parsed every archive.
+
 - **The evidence board — `zte-evidence`.** One command assembles every measured claim beside the brain-free floor it
   has to clear, reading the artifact each audit already wrote and **recomputing nothing**, so the board cannot
   disagree with the runs it describes. Three rules are enforced in code and mutation-tested: a claim with no floor

@@ -25,9 +25,12 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    src = parser.add_mutually_exclusive_group()
-    src.add_argument('--config', type=str, help='Experiment YAML; builds the dataset it defines.')
-    src.add_argument('--root', type=str, help='Directory of ZuCo .mat files to audit directly.')
+    # Orthogonal, and composable: `--config` says which dataset to build -- representation, window, tasks, and so
+    # the bundle key that decides whether a prepared cache is hit -- while `--root` says where the files are. Given
+    # only `--root`, the defaults build a `band_power`/`rw128` dataset that keys nowhere near a prepared `raw`
+    # bundle and re-parses every archive.
+    parser.add_argument('--config', type=str, help='Experiment YAML; audits the dataset it defines.')
+    parser.add_argument('--root', type=str, help='Directory of ZuCo .mat files, overriding the config root.')
 
     parser.add_argument(
         '--synthetic',

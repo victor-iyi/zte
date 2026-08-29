@@ -183,6 +183,37 @@ def test_no_decoder_run_cell_passes_the_closed_set_split_flag(notebook: Path) ->
     assert not offenders, f'{offenders} run a decoder arm with --loso-holdout; name train.loso_holdout_subject instead'
 
 
+# Producer -> consumer ordering. Cells run top to bottom exactly once, so a table built before the audit that
+# feeds it renders as unmeasured and is never rebuilt -- silently, because every command still exits zero.
+ARTIFACT_ORDER: Final[tuple[tuple[str, str, str], ...]] = (
+    ('zte-rebaseline', 'zte-levels', "zte-levels reads each fold's floor from <run>/rebaseline/rebaseline.json"),
+    ('zte-levels', 'zte-evidence', 'the evidence board reads levels.json'),
+    ('zte-calibrate', 'zte-evidence', 'the evidence board reads calibration.json'),
+    ('zte-decode', 'zte-evidence', 'the evidence board reads generation.json'),
+    ('zte-parallax report', 'zte-evidence', 'the evidence board reads PARALLAX.json'),
+)
+"""`(producer, consumer, why)` triples every notebook must run in that order."""
+
+
+@pytest.mark.parametrize('notebook', NOTEBOOKS, ids=lambda p: p.name)
+def test_every_artifact_is_written_before_the_cell_that_reads_it(notebook: Path) -> None:
+    """A consumer that runs first renders an empty result and is never re-run, because nothing exits non-zero."""
+    first: dict[str, int] = {}
+    for cell, source in _code_cells(notebook):
+        for command in _shell_commands(source):
+            for tool in {p for pair in ARTIFACT_ORDER for p in pair[:2]}:
+                if command.startswith(f'uv run {tool}') and tool not in first:
+                    first[tool] = cell
+
+    inverted = [
+        f'{consumer} (cell {first[consumer]}) runs before {producer} (cell {first[producer]}): {why}'
+        for producer, consumer, why in ARTIFACT_ORDER
+        if producer in first and consumer in first and first[consumer] < first[producer]
+    ]
+
+    assert not inverted, f'{notebook.name} reads an artifact before writing it: {inverted}'
+
+
 # ---- The gateway's own render-only contract ---- #
 
 

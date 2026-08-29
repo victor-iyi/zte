@@ -6,15 +6,20 @@ import argparse
 import json
 import math
 import statistics
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from zte.logging_utils import configure_logging, get_logger
 
+# A run records its scoreboard here, so this is both what a sweep root is globbed for and what marks a
+# path as already being a run directory rather than a root holding several.
+_METRICS: Final[str] = 'evaluation/metrics.json'
+"""Where a run records the metrics a LOSO fold row is read from, relative to the run directory."""
+
 _LOG = get_logger('cli.loso_summary')
 
-# A fold whose POOLED retrieval lands below this never learned a subject-invariant sentence code; the
-# 2026-07-24 sweep split cleanly into converged (>=0.10) and collapsed (<0.01) folds at seed 42.
+# Folds with POOLED retrieval below this failed to learn a subject-invariant sentence code; folds tend to either converge (>=0.10) or collapse (<0.01).
 _CONVERGED_FLOOR: float = 0.10
 _COLLAPSED_CEIL: float = 0.01
 
@@ -60,11 +65,37 @@ def _fold_row(metrics: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def collect_folds(experiments: str | Path) -> list[dict[str, Any]]:
-    """Reads every LOSO fold under an experiments directory into honest rows, sorted by held-out subject."""
-    root = Path(experiments)
+def fold_metrics(experiments: str | Path | Sequence[str | Path]) -> list[Path]:
+    """Every fold's `metrics.json` under one or more roots, each of which may be a sweep root or a run directory.
+
+    Note:
+        Naming run directories one by one is how a sweep of one arm is summarised without averaging in its
+        siblings: a sweep root holds every arm trained into it, and this command keys folds on the holdout
+        alone, so a shared root would silently pool three alignment levels into one trend.
+
+    Args:
+        experiments (str | Path | Sequence[str | Path]): Sweep roots, run directories, or a mix.
+
+    Returns:
+        list[Path]: The `evaluation/metrics.json` paths found, deduplicated and sorted.
+    """
+    roots = [experiments] if isinstance(experiments, str | Path) else list(experiments)
+    found: set[Path] = set()
+    for entry in roots:
+        root = Path(entry)
+        if (direct := root / _METRICS).is_file():
+            found.add(direct.resolve())
+            continue
+
+        found.update(path.resolve() for path in root.glob(f'*/{_METRICS}'))
+
+    return sorted(found)
+
+
+def collect_folds(experiments: str | Path | Sequence[str | Path]) -> list[dict[str, Any]]:
+    """Reads every LOSO fold under one or more roots into honest rows, sorted by held-out subject."""
     rows: list[dict[str, Any]] = []
-    for metrics_path in sorted(root.glob('*/evaluation/metrics.json')):
+    for metrics_path in fold_metrics(experiments):
         try:
             metrics = json.loads(metrics_path.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError) as exc:
@@ -168,15 +199,17 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         '--experiments',
+        nargs='+',
         type=str,
-        default='res/experiments/loso',
-        help='Directory holding the per-fold LOSO run folders.',
+        default=['res/experiments/loso'],
+        help='Sweep roots holding per-fold run folders, or the run folders themselves. Name them one by one to '
+        'summarise a single arm: folds are keyed on the holdout alone, so a shared root pools every arm in it.',
     )
     parser.add_argument(
         '--out',
         type=str,
         default=None,
-        help='Markdown output path (default: <experiments>/LOSO_SUMMARY.md). A .csv is written alongside.',
+        help='Markdown output path (default: <first --experiments>/LOSO_SUMMARY.md). A .csv is written alongside.',
     )
     parser.add_argument('--log-level', default='INFO')
     return parser.parse_args()
@@ -188,10 +221,11 @@ def main() -> None:
     configure_logging(args.log_level)
     rows = collect_folds(args.experiments)
     if not rows:
-        raise SystemExit(f'No LOSO folds found under {args.experiments} (need evaluation/metrics.json).')
+        named = ', '.join(str(path) for path in args.experiments)
+        raise SystemExit(f'No LOSO folds found under {named} (need {_METRICS}).')
 
     summary = summarise(rows)
-    out = Path(args.out) if args.out else Path(args.experiments) / 'LOSO_SUMMARY.md'
+    out = Path(args.out) if args.out else Path(args.experiments[0]) / 'LOSO_SUMMARY.md'
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_markdown(rows, summary), encoding='utf-8')
     _write_csv(rows, out.with_suffix('.csv'))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from zte.cli.loso_summary import collect_folds, summarise
+from zte.cli.loso_summary import collect_folds, fold_metrics, summarise
 
 
 def _fold(directory: Path, holdout: str, pooled: float, held_top1: float, cat_above: bool) -> None:
@@ -66,3 +66,36 @@ def test_non_loso_runs_are_ignored(tmp_path: Path) -> None:
         encoding='utf-8',
     )
     assert collect_folds(tmp_path) == []
+
+
+def _arm(root: Path, arm: str, holdout: str) -> Path:
+    """Writes one fold of a named arm and returns its run directory."""
+    run = root / f'{arm}_lo{holdout}_s42'
+    _fold(root, holdout, 0.05, 0.01, True)
+    (root / f'exp8_clip_e5_lo{holdout}').rename(run)
+
+    return run
+
+
+def test_naming_run_directories_summarises_one_arm_without_pooling_its_siblings(tmp_path: Path) -> None:
+    """Folds are keyed on the holdout alone, so a shared sweep root would average three levels into one trend."""
+    sentence = [_arm(tmp_path, 'align_sentence_combined', h) for h in ('ZAB', 'ZDM')]
+    _arm(tmp_path, 'align_token_combined', 'ZGW')
+
+    assert len(collect_folds(sentence)) == 2
+    assert len(collect_folds(tmp_path)) == 3
+
+
+def test_a_run_directory_is_read_directly_rather_than_globbed_under(tmp_path: Path) -> None:
+    """A sweep root holds run folders; a run folder holds its own metrics, and both must be accepted."""
+    run = _arm(tmp_path, 'align_word_combined', 'ZAB')
+
+    assert fold_metrics(run) == [(run / 'evaluation' / 'metrics.json').resolve()]
+    assert fold_metrics(tmp_path) == [(run / 'evaluation' / 'metrics.json').resolve()]
+
+
+def test_the_same_run_named_twice_is_counted_once(tmp_path: Path) -> None:
+    """A root and one of its run folders may both be passed; the fold behind them is still one fold."""
+    run = _arm(tmp_path, 'align_sentence_combined', 'ZAB')
+
+    assert len(collect_folds([tmp_path, run])) == 1

@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config
+from zte.cli.support.done import add_force_argument, checkpoint_digest, is_done, mark_done, signature
+from zte.cli.support.sources import add_data_source_args, add_extract_dir, dataset_for_config, dataset_key
 from zte.config import ZTEConfig
 from zte.logging_utils import configure_logging, get_logger
 
@@ -112,6 +113,7 @@ def _add_output_args(parser: argparse.ArgumentParser) -> None:
         dest='temporal_sentences',
         help="Readings the temporal profile aggregates over, from --index onwards through the subject's readings.",
     )
+    add_force_argument(parser)
 
 
 def resolve_subject(config: ZTEConfig, requested: str | None) -> str:
@@ -308,6 +310,27 @@ def run_lens(args: argparse.Namespace, mode: str) -> Path:
     elif not holdout:
         _LOG.warning('The checkpoint names no LOSO holdout, so every subject here is a training brain.')
 
+    # Decided before the dataset is built and before a single occlusion pass runs, which together are the whole
+    # cost of this command. The lens recomputes nothing about the model, so the same weights inspected the same
+    # way give the artifacts already on disk.
+    target = Path(args.out) / f'{config.run_name}_{subject}_{int(args.index)}'
+    artifacts = [target / 'lens.json']
+    if args.temporal:
+        artifacts += [target / 'temporal.json', target / 'temporal.md']
+    if args.html:
+        artifacts.append(target / 'LENS.html')
+
+    sig = signature(
+        args,
+        tool=f'lens-{mode}',
+        extra={'ckpt_sha256': checkpoint_digest(args.ckpt), 'dataset': dataset_key(config.dataset)},
+        ignore=('ckpt',),
+    )
+    if is_done(artifacts, sig, force=args.force):
+        _LOG.info('Lens already built at %s from these weights and flags.', artifacts[0])
+
+        return artifacts[0]
+
     dataset = dataset_for_config(args, config.dataset)
 
     try:
@@ -354,6 +377,8 @@ def run_lens(args: argparse.Namespace, mode: str) -> Path:
     if args.html:
         html_path = render_page(json_path)
         _LOG.info('Page written to %s.', html_path)
+
+    mark_done(artifacts, sig)
 
     return json_path
 

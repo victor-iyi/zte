@@ -74,12 +74,20 @@ section is about what happens when it is unmet.
 
 ## What the shipped runs actually used
 
-**Every live configuration in this repository runs on the approximate geometry.** No config under
-`experiments/flagship/`, `experiments/decoder/`, `experiments/parallax/` or `experiments/alignment/` sets
-`dataset.montage_csv`, so `resolve_geometry` falls back to the Fibonacci cap, logs it, and sets `approximate=True`.
-That flag is a **persistent** buffer beside the harmonic basis, so it travels inside the checkpoint and reports the
-geometry the numbers were computed under rather than whatever the loading machine can find. Read
-`SphericalHarmonicEncoding.approximate_geometry`; never re-derive it from the config.
+**The configs name a montage they do not create.** Nearly every live arm — flagship, decoder, parallax, alignment
+and benchmark alike — sets `dataset.montage_csv: res/montage_gsn105.csv`. But `res/` is generated and gitignored, so
+on a fresh machine that file does not exist: `resolve_geometry` warns, falls back to the Fibonacci cap and sets
+`approximate=True`. **A run launched without `--spatial exact` therefore looks configured for a real montage and
+silently is not.**
+
+`zte-run --spatial exact` is what builds the CSV, through `mne`, and publishes it to the persistent artifact store so
+later sessions stage the same file rather than rebuilding a possibly different one. Every arm the evidence-suite
+notebook trains passes it.
+
+`approximate` is a **persistent** buffer beside the harmonic basis, so it travels inside the checkpoint and reports
+the geometry the numbers were computed under rather than whatever the loading machine can find. Read
+`SphericalHarmonicEncoding.approximate_geometry`; never re-derive it from the config, which says only what was asked
+for and not what was found.
 
 What this costs, precisely:
 
@@ -90,10 +98,14 @@ What this costs, precisely:
   claim from such a run is positionally meaningless** -- a topographic map of channel importance from an
   `approximate=True` checkpoint shows which array indices mattered, not which brain regions.
 
-A scalp topography is therefore only interpretable from a run trained with `dataset.montage_csv` pointed at a real
-montage, exported as in *Getting exact coordinates* below. `resolve_geometry` also swallows a malformed CSV -- it
-catches `ValueError`, `KeyError` and `FileNotFoundError`, warns, and falls back -- so a run can look configured for a
-real montage and silently be on the cap. Check the checkpoint's flag, not the YAML.
+A scalp topography is therefore only interpretable from a run whose checkpoint records `approximate=False`.
+`resolve_geometry` swallows a malformed CSV as readily as a missing one -- it catches `ValueError`, `KeyError` and
+`FileNotFoundError`, warns, and falls back. Check the checkpoint's flag, not the YAML.
+
+**A fallback warning at load time is not a corrupted analysis.** `harmonics`, `degrees` and `approximate` are all
+persistent buffers, so `load_state_dict` restores the geometry the model was trained with even when the CSV is absent
+on the machine doing the loading. You will see the warning while the module is constructed; the loaded model still
+carries its trained basis.
 
 ## How it is wired in
 

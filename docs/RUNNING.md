@@ -90,7 +90,8 @@ Colab runtimes are ephemeral, so a long real run needs its checkpoints on Drive.
 parallax transfer cell — skips itself on a re-run when the artifacts on disk were built from the same inputs, so a
 notebook can be re-run top to bottom and only the unfinished work costs anything.
 
-`zte-audit`, `zte-decode`, `zte-rebaseline` and `zte-parallax transfer` each write a hidden record beside their
+`zte-audit`, `zte-decode`, `zte-rebaseline`, `zte-calibrate`, `zte-lens`, `zte-parallax transfer`, `zte-levels`
+and `zte-evidence` each write a hidden record beside their
 first artifact (`.zte-done-<artifact>.json`) holding what it was built from: every option they were given, the
 checkpoint's SHA-256, and the dataset's bundle key. The next invocation compares, and rebuilds unless everything
 matches:
@@ -103,6 +104,14 @@ matches:
 | the data — different tasks, subjects, representation   | rebuilt                                            |
 | an artifact deleted, or half-written by a killed cell  | rebuilt                                            |
 | only the path the raw data was read from               | skipped                                            |
+
+The two that aggregate go further. `zte-levels` and `zte-evidence` read other commands' artifacts rather than a
+checkpoint, so their record fingerprints the **contents** of what they read -- file names and sizes, never mtimes,
+which a Drive mirror resets. A new fold, a re-run audit or a newly written calibration rebuilds them on its own, so
+neither ever needs `--force` and passing it only repeats work the record exists to skip.
+
+Two commands are deliberately unguarded: `zte-parallax report` and `zte-loso-summary` are pure readers that rewrite
+their summary in about a second. Everything that costs GPU time or minutes of scoring is guarded.
 | `--force`                                              | rebuilt                                            |
 
 Two of those rows carry the reasoning. **The raw path is deliberately not part of the identity**: the data is keyed
@@ -411,10 +420,11 @@ Two things the notebook will tell you but that are worth knowing before you open
 - **Section 12 measures occlusion, not attention.** No trained checkpoint has an attentive temporal pool, so the
   conformer's temporal attention weights do not exist to be plotted. Occlusion works on every checkpoint and
   measures a counterfactual instead.
-- **A scalp map needs a real montage.** Every live config runs on the approximate Fibonacci geometry, so a
-  topography from those runs shows array indices rather than brain regions. Section 12 trains one arm with
-  `--spatial exact` for that reason; the condition for a regional claim is the checkpoint's own
-  `approximate_geometry` flag reading `False`.
+- **A scalp map needs the montage to exist, not just to be named.** Nearly every config already sets
+  `dataset.montage_csv: res/montage_gsn105.csv`, but `res/` is gitignored, so on a fresh VM the file is absent and
+  `resolve_geometry` silently falls back to the approximate cap. `--spatial exact` builds it; the notebook passes it
+  on every arm it trains. The condition for a regional claim is the checkpoint's own `approximate_geometry` flag
+  reading `False`, never the YAML.
 
 ## Where things are stored, and why it differs by machine
 

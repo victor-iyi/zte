@@ -86,6 +86,7 @@ AUDIT_ARTIFACTS: Final[dict[str, tuple[str, ...]]] = {
     'oracle': ('confound_audit.json', 'confound_audit.md'),
     'transfer': ('PARALLAX.json', 'PARALLAX.md'),
     'rebaseline': ('rebaseline.json', 'rebaseline.md'),
+    'lens': ('lens.json', 'lens.md'),
 }
 """Audit kind -> the JSON and Markdown filenames `zte-colab audit` reads, in that order."""
 
