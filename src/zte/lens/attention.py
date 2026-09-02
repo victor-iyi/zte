@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import numpy as np
 import torch
@@ -150,7 +150,7 @@ def attention_modules(model: nn.Module) -> tuple[nn.Module | None, list[nn.Modul
     transformer = getattr(frontend, 'transformer', None)
     temporal: list[nn.Module] = []
     if isinstance(transformer, nn.TransformerEncoder):
-        temporal = [layer.self_attn for layer in transformer.layers]  # type: ignore[arg-type]
+        temporal = [cast('nn.TransformerEncoderLayer', layer).self_attn for layer in transformer.layers]
     else:
         frontend_name = type(frontend).__name__ if frontend is not None else 'none'
         reasons['temporal'] = f'the {frontend_name} frontend has no intra-word transformer over the raw window.'
@@ -582,18 +582,24 @@ def write_figures(report: dict[str, Any], target: Path) -> dict[str, str | None]
 
     Args:
         report (dict[str, Any]): An `attention_profile` payload.
-        target (Path): The directory the PNGs are written into.
+        target (Path): The directory the figures are written into, each as a PNG and a vector PDF.
 
     Returns:
-        dict[str, str | None]: `temporal` and `topomap`, each the written path or `None`, plus `topomap_reason`
-            when the scalp map was declined.
+        dict[str, str | None]: `temporal` and `topomap`, each the written PNG path or `None`, `temporal_pdf` and
+            `topomap_pdf` beside them, plus `topomap_reason` when the scalp map was declined.
     """
     import matplotlib
 
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    written: dict[str, str | None] = {'temporal': None, 'topomap': None, 'topomap_reason': None}
+    written: dict[str, str | None] = {
+        'temporal': None,
+        'temporal_pdf': None,
+        'topomap': None,
+        'topomap_pdf': None,
+        'topomap_reason': None,
+    }
     target.mkdir(parents=True, exist_ok=True)
 
     temporal = report.get('temporal')
@@ -601,6 +607,7 @@ def write_figures(report: dict[str, Any], target: Path) -> dict[str, str | None]
         path = target / 'attention_temporal.png'
         _draw_temporal(plt, temporal, path, report.get('subject', ''))
         written['temporal'] = str(path)
+        written['temporal_pdf'] = str(path.with_suffix('.pdf'))
 
     spatial = report.get('spatial')
     if not spatial:
@@ -618,11 +625,19 @@ def write_figures(report: dict[str, Any], target: Path) -> dict[str, str | None]
         path = target / 'attention_topomap.png'
         _draw_topomaps(plt, spatial, path, report.get('subject', ''))
         written['topomap'] = str(path)
+        written['topomap_pdf'] = str(path.with_suffix('.pdf'))
 
     if written['topomap_reason']:
         _LOG.warning('Scalp map not drawn: %s', written['topomap_reason'])
 
     return written
+
+
+def _save(plt: Any, fig: Any, path: Path) -> None:
+    """Writes a figure as the raster `path` and, beside it, the vector PDF a journal figure is set from."""
+    fig.savefig(path, dpi=160)
+    fig.savefig(path.with_suffix('.pdf'))
+    plt.close(fig)
 
 
 def _draw_temporal(plt: Any, temporal: dict[str, Any], path: Path, subject: str) -> None:
@@ -650,8 +665,7 @@ def _draw_temporal(plt: Any, temporal: dict[str, Any], path: Path, subject: str)
     ax.set_xlim(float(times[0]), float(times[-1]))
     ax.legend(loc='upper right', fontsize=8, frameon=False)
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+    _save(plt, fig, path)
 
 
 def _draw_topomaps(plt: Any, spatial: dict[str, Any], path: Path, subject: str) -> None:
@@ -720,8 +734,7 @@ def _draw_topomaps(plt: Any, spatial: dict[str, Any], path: Path, subject: str) 
 
     fig.suptitle(f'Channel-mixer attention received per electrode, subject {subject} (whole word window)')
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+    _save(plt, fig, path)
 
 
 def render_markdown(report: dict[str, Any], figures: dict[str, str | None] | None = None) -> str:

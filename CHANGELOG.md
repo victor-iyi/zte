@@ -12,8 +12,9 @@
   attention received per electrode -- each for the correctly retrieved readings, the rest, and all, with bootstrap
   intervals over readings and an interval on the correct - incorrect N400 mass. The scalp map is declined on the
   approximate geometry, the electrode weights are stated to carry no latency axis, and every artifact carries the
-  lens disclaimer plus a caveat that a weight is not a counterfactual. `notebooks/tbme/zte_attention.ipynb` drives
-  it over the evidence suite's sentence-level folds; `zte-colab audit --kind attention` reads the result.
+  lens disclaimer plus a caveat that a weight is not a counterfactual. Each figure is written as a PNG and a vector
+  PDF. `notebooks/tbme/zte_attention.ipynb` drives it over the evidence suite's sentence-level folds, zips every
+  artifact for a browser download, and `zte-colab audit --kind attention` reads the result.
 
 - **`zte-lens` skips a lens it has already built.** It was the one expensive command with no `.zte-done` stamp, so
   every re-run repeated the occlusion passes -- channel saliency over ten electrode groups, and with `--temporal` a

@@ -481,8 +481,10 @@ def test_cli_writes_the_profile_its_prose_and_its_figures(raw_dataset: ZuCoDatas
     assert len(report['provenance']['ckpt_sha256']) == 64
     assert report['figures']['temporal'] == str(target / 'attention_temporal.png')
     assert report['figures']['topomap'] == str(target / 'attention_topomap.png')
-    assert (target / 'attention_temporal.png').stat().st_size > 0
-    assert (target / 'attention_topomap.png').stat().st_size > 0
+    assert report['figures']['temporal_pdf'] == str(target / 'attention_temporal.pdf')
+    assert report['figures']['topomap_pdf'] == str(target / 'attention_topomap.pdf')
+    for name in ('attention_temporal.png', 'attention_temporal.pdf', 'attention_topomap.png', 'attention_topomap.pdf'):
+        assert (target / name).stat().st_size > 0, name
     assert DISCLAIMER in (target / 'attention.md').read_text(encoding='utf-8')
 
     stamp = path.stat().st_mtime_ns

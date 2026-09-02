@@ -97,7 +97,8 @@ uv run zte-lens encode --ckpt res/experiments/<run>/checkpoints/best.pt \
 # The same reading through a decoder checkpoint; refuses a checkpoint with no decoder.
 uv run zte-lens decode --ckpt <decoder-ckpt> --root <data> --contains "movie" --out res/analysis/lens --html
 
-# The encoder's own attention over the held-out subject's readings: attention.json, attention.md and the two PNGs.
+# The encoder's own attention over the held-out subject's readings: attention.json, attention.md and the two
+# figures, each as a PNG and a vector PDF.
 uv run zte-lens attention --ckpt <encoder-ckpt> --root <data> --correct-top-k 1 --batch-size 4 --out res/analysis/attention
 ```
 
