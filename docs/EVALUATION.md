@@ -477,10 +477,12 @@ embedding. A cohesion lift is not evidence that retrieval moves, and the two hav
 
 **Diagnostic. Nothing here is a headline**, and `peak_in_n400_window` gates nothing.
 
-The instrument is occlusion, not attention. `RawConformer` builds its attentive temporal pool only under
-`conformer_temporal_pool: attention`, which no live config sets, so those weights do not exist in any trained
-checkpoint; the inner transformer runs with `need_weights=False` and the package registers no forward hooks.
-Retraining with attentive pooling would produce a different model, not an explanation of this one.
+The instrument is occlusion, with attention read beside it. `RawConformer` builds its attentive temporal *pool* only
+under `conformer_temporal_pool: attention`, which no live config sets, so those weights do not exist in any trained
+checkpoint and retraining with them would produce a different model. The intra-word transformer's self-attention and
+the electrode mixer's attention do exist in every trained model; `zte-lens attention` reads them through forward
+hooks (`docs/LENS.md`) as a descriptive companion — attention received per time step and per electrode, split by
+whether the reading was retrieved — and it carries its own caveat that a weight is not a counterfactual.
 
 So a time span of the raw window is zeroed, the reading re-embedded, and the cosine displacement of the sentence
 vector recorded — a counterfactual rather than a weight. Bins are reported in **milliseconds from word onset**

@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`zte-lens attention` — the encoder's own attention, read through forward hooks.** A post-hoc pass over one
+  subject's readings (the checkpoint's holdout by default) with `register_forward_pre_hook` /
+  `register_forward_hook` on the electrode mixer's and the intra-word transformer's `nn.MultiheadAttention`, in
+  `eval()` under `no_grad`. It writes `attention.json`, `attention.md`, a matplotlib temporal curve of attention
+  received per time step over the 700 ms word window with the 300-500 ms band marked, and an `mne` scalp map of
+  attention received per electrode -- each for the correctly retrieved readings, the rest, and all, with bootstrap
+  intervals over readings and an interval on the correct - incorrect N400 mass. The scalp map is declined on the
+  approximate geometry, the electrode weights are stated to carry no latency axis, and every artifact carries the
+  lens disclaimer plus a caveat that a weight is not a counterfactual. `notebooks/tbme/zte_attention.ipynb` drives
+  it over the evidence suite's sentence-level folds; `zte-colab audit --kind attention` reads the result.
+
 - **`zte-lens` skips a lens it has already built.** It was the one expensive command with no `.zte-done` stamp, so
   every re-run repeated the occlusion passes -- channel saliency over ten electrode groups, and with `--temporal` a
   latency profile over every bin of every word of twelve readings. The stamp is decided before the dataset is built

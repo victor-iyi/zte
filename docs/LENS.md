@@ -42,9 +42,26 @@ The same occlusion again, this time *within* a word: the raw window is split int
 
 A **null band** travels with it: a same-width occlusion at a random offset, so the curve has a floor rather than being a bare chart of drops. `above_null` is recorded per bin.
 
-**Why occlusion and not attention.** The obvious instrument would be the conformer's own temporal attention. It does not exist in any trained checkpoint: `RawConformer` builds `attn_pool` only under `conformer_temporal_pool: attention`, which no live config sets, and its inner transformer runs with `need_weights=False` while the package registers no forward hooks. Retraining with attentive pooling would produce a *different model*, which could not then be compared to the mean-pool runs as if it were the same one. Occlusion works on every checkpoint that exists, and it measures a counterfactual rather than a weight.
+**Why occlusion first, and attention beside it.** The obvious instrument would be the conformer's own attention. Two different weights hide in that idea. The attentive temporal *pool* (`attn_pool`) exists only under `conformer_temporal_pool: attention`, which no live config sets, so those weights are in no trained checkpoint and retraining with them would produce a *different model*. The intra-word transformer's self-attention, and the electrode mixer's, are in every trained model, and `zte-lens attention` reads them (below). Occlusion stays the primary instrument because it measures a counterfactual rather than a weight; the attention read-out is the descriptive companion.
 
 `peak_in_n400_window` reports whether the strongest bin falls in 300–500 ms. **It gates nothing**, and the caveat is carried in the payload and the rendered report: ZuCo word windows come from eye-tracking segmentation and overlap their neighbours, so a peak in that band is *consistent with* an N400 and is not proof of one. The profile needs a raw-input checkpoint; on a band-power run it logs a warning and writes nothing rather than writing an empty artifact.
+
+### The attention read-out (`zte-lens attention`)
+
+The encoder's own attention, read post hoc through PyTorch forward hooks, over every reading of one subject — the checkpoint's held-out subject by default. Nothing is retrained: the frozen model runs in `eval()` under `no_grad`, a pre-hook on each `nn.MultiheadAttention` forces `need_weights=True, average_attn_weights=False`, and a forward hook reduces the `(words, heads, queries, keys)` weights it returns. Two modules are hooked:
+
+| module | attends over | what is kept |
+| --- | --- | --- |
+| `SpatialChannelMixer.attn` — the electrode mixer | the electrodes, each a key described by its whole raw trace | attention **received** per electrode, mean over heads and queries |
+| `RawConformer.transformer` — the intra-word transformer | the raw window's time steps | attention received per time step, per layer |
+
+**Why received, and why the last layer.** With mean temporal pooling the word vector is $h = \frac{1}{T}\sum_q \sum_k A_{qk} v_k = \sum_k a_k v_k$ with $a_k = \frac{1}{T}\sum_q A_{qk}$, so the column mean of the last layer's attention matrix is exactly the weight each time step's value carries into the word. It sums to one over the window; uniform attention is $1/T$. Curves are averaged over a reading's words, then bootstrapped over readings.
+
+**Grouping.** Each reading is ranked against the *other* subjects' readings exactly as `held_out_retrieval` ranks it; a reading whose sentence ranks within `--correct-top-k` (default 1) is `correct`, the rest `incorrect`, and `all` is reported too. The selection is unstratified and post-processing-free, is stamped `postprocess_fit: none`, and is never a retrieval result — the scoreboard and the length audit own that number. The payload carries, per group and per layer, the mean curve with a percentile-bootstrap band, the **N400 mass** (the share of the last layer's received attention inside 300–500 ms, against the uniform share) with its interval, the peak latency, and a bootstrap interval on the correct − incorrect mass difference. The scalp half carries the per-electrode mean and band, the ten most attended electrodes, and the mass per montage region.
+
+**What the scalp map cannot say.** The mixer's weights have no latency axis — each electrode is one key described by its entire window — so the topography is attention received across the whole word, and the N400 restriction applies to the temporal curve alone. The map is drawn only when the checkpoint's own `approximate_geometry` flag is `False`; on the coordinate-free cap it would show array indices, not regions, and the artifact says so instead. `mne.viz.plot_topomap` draws it when `mne` is installed, the in-house projection otherwise.
+
+The artifact carries `ATTENTION_CAVEAT` beside the disclaimer: a weight is a description of what the model computed, not why its output moved, and the eye-tracking segmentation caveat applies unchanged. Checkpoints without an intra-word transformer (EEGNet, DeepConvNet) or without a mixer report that side as absent with the reason, and a band-power checkpoint writes nothing.
 
 ### The neighborhood
 
@@ -79,7 +96,12 @@ uv run zte-lens encode --ckpt res/experiments/<run>/checkpoints/best.pt \
 
 # The same reading through a decoder checkpoint; refuses a checkpoint with no decoder.
 uv run zte-lens decode --ckpt <decoder-ckpt> --root <data> --contains "movie" --out res/analysis/lens --html
+
+# The encoder's own attention over the held-out subject's readings: attention.json, attention.md and the two PNGs.
+uv run zte-lens attention --ckpt <encoder-ckpt> --root <data> --correct-top-k 1 --batch-size 4 --out res/analysis/attention
 ```
+
+`attention` writes into `<out>/<run_name>_<subject>_attention/` and takes `--subject`, `--correct-top-k`, `--batch-size` (the per-head weights are quadratic in the raw window, so it stays small), `--max-readings`, `--seed` and `--device`. On Colab, `notebooks/tbme/zte_attention.ipynb` drives it over the evidence suite's sentence-level folds.
 
 Both subcommands accept `--root`, `--bundle` or `--synthetic` as the data source, `--subject` / `--index` / `--contains` to pick the reading, `--top-k` for the neighborhood size, and `--device`. `decode` adds `--max-new-tokens`. Output lands in `<out>/<run_name>_<subject>_<index>/lens.json`, with `LENS.html` beside it when `--html` is passed.
 

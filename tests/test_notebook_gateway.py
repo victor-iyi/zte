@@ -29,6 +29,7 @@ NOTEBOOKS: Final[tuple[Path, ...]] = (
     REPO / 'notebooks' / 'audits' / 'zte_results_audit.ipynb',
     # Appended, never inserted: `ALIGNMENT` below is a positional slice of this tuple.
     REPO / 'notebooks' / 'tbme' / 'zte_tbme.ipynb',
+    REPO / 'notebooks' / 'tbme' / 'zte_attention.ipynb',
 )
 """Every shipped notebook, each of which Colab opens with an interpreter older than the venv."""
 

@@ -83,6 +83,7 @@ AUDIT_ARTIFACTS: Final[dict[str, tuple[str, ...]]] = {
     'levels': ('levels.json', 'levels.md'),
     'calibration': ('calibration.json', 'calibration.md'),
     'temporal': ('temporal.json', 'temporal.md'),
+    'attention': ('attention.json', 'attention.md'),
     'oracle': ('confound_audit.json', 'confound_audit.md'),
     'transfer': ('PARALLAX.json', 'PARALLAX.md'),
     'rebaseline': ('rebaseline.json', 'rebaseline.md'),

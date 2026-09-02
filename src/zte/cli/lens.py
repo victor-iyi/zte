@@ -60,6 +60,49 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     _add_output_args(decode)
 
+    attention = sub.add_parser(
+        'attention',
+        help="Read the encoder's own attention over one subject's readings: when in the word, and where on the "
+        'scalp, split by whether retrieval succeeded. Raw-input checkpoints only.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    attention.add_argument('--ckpt', type=str, required=True, help='Checkpoint (best.pt/last.pt) to inspect through.')
+    attention.add_argument(
+        '--out', type=Path, required=True, help='Directory the attention directory is written under.'
+    )
+    add_data_source_args(attention, include_bundle=True, include_synthetic=True)
+    add_extract_dir(attention)
+    attention.add_argument(
+        '--subject',
+        type=str,
+        default=None,
+        help="Subject whose readings are profiled. Defaults to the checkpoint's LOSO holdout.",
+    )
+    attention.add_argument(
+        '--correct-top-k',
+        type=int,
+        default=1,
+        dest='correct_top_k',
+        help="A reading counts as retrieved when its sentence ranks within this cut-off among other subjects' readings.",
+    )
+    attention.add_argument(
+        '--batch-size',
+        type=int,
+        default=4,
+        dest='batch_size',
+        help='Readings per hooked forward pass; the per-head weights are quadratic in the raw window.',
+    )
+    attention.add_argument(
+        '--max-readings',
+        type=int,
+        default=0,
+        dest='max_readings',
+        help='Cap on readings run through the hooks, retrieved ones first; 0 profiles every reading of the subject.',
+    )
+    attention.add_argument('--seed', type=int, default=0, help='Seed for the bootstrap intervals.')
+    attention.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
+    add_force_argument(attention)
+
     return parser.parse_args(argv)
 
 
@@ -383,11 +426,94 @@ def run_lens(args: argparse.Namespace, mode: str) -> Path:
     return json_path
 
 
+def run_attention(args: argparse.Namespace) -> Path:
+    """Profiles the encoder's attention over one subject's readings and writes `attention.json` with its figures.
+
+    Args:
+        args (argparse.Namespace): The parsed `attention` arguments.
+
+    Returns:
+        Path: The written `attention.json` path.
+
+    Raises:
+        SystemExit: If the subject cannot be resolved, the checkpoint has no raw time axis to read attention
+            over, or the profile comes back without its disclaimer.
+    """
+    from zte.training.checkpoint import CheckpointManager
+
+    payload = CheckpointManager.load(args.ckpt, map_location='cpu')
+    config = ZTEConfig.from_dict(payload['config'])
+    subject = resolve_subject(config, args.subject)
+    holdout = config.train.loso_holdout_subject
+    if holdout and subject != str(holdout):
+        _LOG.warning('Subject %s is a TRAINING brain for this checkpoint (holdout: %s).', subject, holdout)
+    elif not holdout:
+        _LOG.warning('The checkpoint names no LOSO holdout, so every subject here is a training brain.')
+
+    # Decided before the dataset is built: the gallery embed and the hooked pass are the whole cost of this command.
+    target = Path(args.out) / f'{config.run_name}_{subject}_attention'
+    artifacts = [target / 'attention.json', target / 'attention.md']
+    sig = signature(
+        args,
+        tool='lens-attention',
+        extra={'ckpt_sha256': checkpoint_digest(args.ckpt), 'dataset': dataset_key(config.dataset)},
+        ignore=('ckpt',),
+    )
+    if is_done(artifacts, sig, force=args.force):
+        _LOG.info('Attention profile already built at %s from these weights and flags.', artifacts[0])
+
+        return artifacts[0]
+
+    dataset = dataset_for_config(args, config.dataset)
+
+    from zte.device import resolve_device
+    from zte.inference.embed import ZTEEmbedder
+    from zte.lens.attention import DISCLAIMER, attention_profile, render_markdown, write_figures
+
+    embedder = ZTEEmbedder.from_checkpoint(args.ckpt, dataset, device=resolve_device(args.device))
+    try:
+        report = attention_profile(
+            embedder,
+            dataset,
+            subject,
+            correct_top_k=int(args.correct_top_k),
+            batch_size=int(args.batch_size),
+            max_readings=int(args.max_readings),
+            seed=int(args.seed),
+            ckpt_path=Path(args.ckpt),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    if report is None:
+        raise SystemExit(f'{args.ckpt} reads no raw time axis, so there is no attention to profile.')
+
+    if report.get('disclaimer') != DISCLAIMER:
+        raise SystemExit(
+            'Refusing to write an attention profile without its disclaimer -- the lens is an inspection surface, '
+            'and every artifact must say so.'
+        )
+
+    target.mkdir(parents=True, exist_ok=True)
+    figures = write_figures(report, target)
+    report['figures'] = figures
+    artifacts[0].write_text(json.dumps(report, indent=2), encoding='utf-8')
+    artifacts[1].write_text(render_markdown(report, figures), encoding='utf-8')
+    _LOG.info('Attention profile written to %s.', artifacts[0])
+
+    mark_done(artifacts, sig)
+
+    return artifacts[0]
+
+
 def main() -> None:
     """Dispatches the `zte-lens` subcommands."""
     args = parse_arguments()
     configure_logging(args.log_level)
-    run_lens(args, args.command)
+    if args.command == 'attention':
+        run_attention(args)
+    else:
+        run_lens(args, args.command)
 
 
 if __name__ == '__main__':
