@@ -96,14 +96,14 @@ first artifact (`.zte-done-<artifact>.json`) holding what it was built from: eve
 checkpoint's SHA-256, and the dataset's bundle key. The next invocation compares, and rebuilds unless everything
 matches:
 
-| What moved since the artifact was written              | On the next run                                    |
-| ------------------------------------------------------ | -------------------------------------------------- |
-| nothing                                                | skipped, and its headline is logged again from disk |
-| the checkpoint — another epoch, another arm            | rebuilt                                            |
-| any option — a seed, a control, a tolerance, a split   | rebuilt                                            |
-| the data — different tasks, subjects, representation   | rebuilt                                            |
-| an artifact deleted, or half-written by a killed cell  | rebuilt                                            |
-| only the path the raw data was read from               | skipped                                            |
+| What moved since the artifact was written             | On the next run                                     |
+| ----------------------------------------------------- | --------------------------------------------------- |
+| nothing                                               | skipped, and its headline is logged again from disk |
+| the checkpoint — another epoch, another arm           | rebuilt                                             |
+| any option — a seed, a control, a tolerance, a split  | rebuilt                                             |
+| the data — different tasks, subjects, representation  | rebuilt                                             |
+| an artifact deleted, or half-written by a killed cell | rebuilt                                             |
+| only the path the raw data was read from              | skipped                                             |
 
 The two that aggregate go further. `zte-levels` and `zte-evidence` read other commands' artifacts rather than a
 checkpoint, so their record fingerprints the **contents** of what they read -- file names and sizes, never mtimes,
@@ -229,9 +229,11 @@ to be read from a Drive mirror. `tables/*.csv` carries every frame behind it. Se
 
 ## The paper's schematics
 
-`scripts/build_schematics.py` renders the method figures a manuscript is set from, each as PNG (300 dpi) and SVG
-at IEEE column widths (`--formats pdf,png,svg` adds a vector PDF), with a `contact_sheet.png` to pick variations
-from. Twenty-nine are data-free, drawn to the idioms of the Transformer, ResNet, CLIP, Conformer, EEGNet and
+`zte-schematics` (also `scripts/build_schematics.py`, the same command kept beside the other artifact builders)
+renders the method figures a manuscript is set from, each as PNG (300 dpi) and SVG at IEEE column widths
+(`--formats pdf,png,svg` adds a vector PDF), with a `contact_sheet.png` to pick variations from. On Colab, §7 of
+`notebooks/tbme/zte_attention.ipynb` runs it over the session's real `attention.json` and `PARALLAX.json` and
+packs the figures into the notebook's download archive. Twenty-nine are data-free, drawn to the idioms of the Transformer, ResNet, CLIP, Conformer, EEGNet and
 Prefix-Tuning figures (tensor slabs with dimensions on their edges, plates for repetition, routed residual lanes,
 snowflakes on frozen modules, a similarity square whose same-sentence positives form blocks), and each family ships
 variants to choose between:
@@ -249,8 +251,8 @@ verified against the checkpoint (an unverified one is refused), and the cross-ta
 `PARALLAX.json`.
 
 ```sh
-uv run python scripts/build_schematics.py --list
-uv run python scripts/build_schematics.py --out res/figures/schematics \
+uv run zte-schematics --list
+uv run zte-schematics --out res/figures/schematics \
     --attention <suite>/attention/<run>_ZAB_attention/attention.json --parallax <suite>/transfer/PARALLAX.json
 ```
 
@@ -422,17 +424,17 @@ is standalone in the same way: upload it on its own and it clones the repo. It r
 decide what the programme is entitled to claim, and ends with `zte-evidence`, which assembles every measured number
 beside the brain-free floor it has to clear.
 
-| §  | Experiment                     | What it settles                                                            | Trains?  | Roughly    |
-| -- | ------------------------------ | -------------------------------------------------------------------------- | -------- | ---------- |
-| 6  | Granularity ablation           | Does sentence, word or token alignment recover anything spelling does not? | optional | ~110 GPU-h |
-| 7  | Passage confound               | Is cross-subject retrieval semantics, or memorised passages?               | no       | ~30 min    |
-| 8  | Decoder reality check          | Does generated text carry the EEG, or the LM's prior?                      | no       | ~40 min    |
-| 9  | Anchor calibration             | What does a new reader gain from a few labelled sentences?                 | **no**   | ~20 min    |
-| 10 | Semantic hard negatives        | Does punishing length- and piece-matched confusions raise retrieval?       | yes      | ~4 h       |
-| 11 | Architecture benchmark         | Does the conformer beat EEGNet and DeepConvNet, identical pipeline?        | yes      | ~7 h       |
-| 12 | Physiological interpretability | *When* in the word, and *where* on the scalp, does the readout come from?  | no       | ~15 min    |
-| 13 | Twelve-fold LOSO               | The population number, mean ± sd                                           | yes      | ~110 GPU-h |
-| ★  | The evidence board             | Every claim, its floor, its verdict                                        | no       | seconds    |
+| §   | Experiment                     | What it settles                                                            | Trains?  | Roughly    |
+| --- | ------------------------------ | -------------------------------------------------------------------------- | -------- | ---------- |
+| 6   | Granularity ablation           | Does sentence, word or token alignment recover anything spelling does not? | optional | ~110 GPU-h |
+| 7   | Passage confound               | Is cross-subject retrieval semantics, or memorised passages?               | no       | ~30 min    |
+| 8   | Decoder reality check          | Does generated text carry the EEG, or the LM's prior?                      | no       | ~40 min    |
+| 9   | Anchor calibration             | What does a new reader gain from a few labelled sentences?                 | **no**   | ~20 min    |
+| 10  | Semantic hard negatives        | Does punishing length- and piece-matched confusions raise retrieval?       | yes      | ~4 h       |
+| 11  | Architecture benchmark         | Does the conformer beat EEGNet and DeepConvNet, identical pipeline?        | yes      | ~7 h       |
+| 12  | Physiological interpretability | *When* in the word, and *where* on the scalp, does the readout come from?  | no       | ~15 min    |
+| 13  | Twelve-fold LOSO               | The population number, mean ± sd                                           | yes      | ~110 GPU-h |
+| ★   | The evidence board             | Every claim, its floor, its verdict                                        | no       | seconds    |
 
 **Sections 7, 8, 9, 12 and ★ read checkpoints and cost minutes — start there.** The rest train.
 

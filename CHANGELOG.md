@@ -11,7 +11,7 @@
   `--resume` a run whose `last.pt` carries the placeholder cap (a trained basis cannot be repaired by a flag; the
   fix is a new `--name`), and refuses to continue past training if the encoder it built is approximate. Every run
   records what it trained on under `electrode_geometry` in `manifest.json` and in its README.
-- **`scripts/build_schematics.py` — the paper's figures, drawn from code.** The `zte.evaluation.schematics` package
+- **`zte-schematics` — the paper's figures, drawn from code.** The `zte.evaluation.schematics` package
   (one module per family over a shared style module) renders twenty-nine data-free schematics in the idioms of the
   Transformer, ResNet, CLIP, Conformer, EEGNet and Prefix-Tuning figures: the encoder as a pipeline, a column and
   a minimal overview, one rotary transformer block, the conformer frontend as feature-map slabs, the two towers
@@ -22,7 +22,9 @@
   window and the eye-tracker segmentation. Three more read an artifact: the attention scalp map and temporal
   curve from an `attention.json` whose montage was verified against the checkpoint, and the transfer heatmap from
   a `PARALLAX.json`. Each is written as PNG and SVG at IEEE column widths from one validated role palette, with a
-  contact sheet to pick from.
+  contact sheet to pick from. `scripts/build_schematics.py` is the same command; §7 of
+  `notebooks/tbme/zte_attention.ipynb` runs it over the session's real artifacts and packs the figures into the
+  download archive.
 - **`zte-colab geometry --ckpt` — what head a checkpoint was trained on.** Reads the harmonic basis, its degree and
   the placeholder flag straight from the checkpoint's buffers, then reports whether a montage on this machine
   reproduces that basis; `topomap_readable` is the conjunction a scalp figure needs, and `reason` says why not.

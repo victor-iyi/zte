@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from zte.cli.schematics import parse_arguments, run
 from zte.data.montage.montage import packaged_montage_csv
 from zte.evaluation.schematics import (
     SCHEMATICS,
@@ -130,3 +131,23 @@ def test_the_transfer_heatmap_reads_the_parallax_cells(tmp_path: Path) -> None:
     empty.write_text(json.dumps({'tasks': tasks, 'cells': {}}), encoding='utf-8')
     with pytest.raises(ValueError, match='no transfer cells'):
         transfer_heatmap_figure(empty)
+
+
+def test_the_cli_renders_the_named_schematics_and_the_artifact_figures(tmp_path: Path) -> None:
+    """`zte-schematics` writes the requested formats for every named figure, the artifact figures, and the sheet."""
+    attention = tmp_path / 'attention.json'
+    attention.write_text(json.dumps(_attention_payload()), encoding='utf-8')
+    out = tmp_path / 'figures'
+    args = parse_arguments(
+        ['--out', str(out), '--only', 'loso_ring,word_window', '--formats', 'png', '--attention', str(attention)]
+    )
+
+    written = run(args)
+
+    names = sorted(path.name for path in written)
+    assert names == sorted(
+        ['loso_ring.png', 'word_window.png', 'attention_topomap.png', 'attention_temporal.png', 'contact_sheet.png']
+    )
+    assert all(path.stat().st_size > 0 for path in written)
+    assert parse_arguments(['--no-contact-sheet']).no_contact_sheet is True
+    assert parse_arguments([]).formats == 'png,svg'

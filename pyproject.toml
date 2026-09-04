@@ -81,6 +81,7 @@ zte-colab = 'zte.cli.colab:main'
 zte-calibrate = 'zte.cli.calibrate:main'
 zte-levels = 'zte.cli.levels:main'
 zte-evidence = 'zte.cli.evidence:main'
+zte-schematics = 'zte.cli.schematics:main'
 
 [build-system]
 requires = ['hatchling']
