@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 import torch
@@ -335,6 +336,35 @@ def resolve_geometry(n_channels: int, montage_csv: str | Path | None = None) -> 
     return ScalpGeometry.fibonacci_fallback(n_channels)
 
 
+# The buffer stores the basis in float32, so a basis rebuilt from the same CSV differs from it by that cast alone;
+# two montages that are not the same file differ by orders of magnitude more.
+HARMONIC_MATCH_ATOL: Final[float] = 1e-5
+"""Absolute tolerance under which a rebuilt harmonic basis counts as the checkpointed one."""
+
+
+def harmonics_match(harmonics: np.ndarray, geometry: ScalpGeometry, l_max: int) -> bool:
+    """Whether `geometry` reproduces a checkpointed harmonic basis, electrode for electrode.
+
+    The basis is a deterministic function of the electrode coordinates, so equality here proves the coordinates are
+    the ones the checkpoint was trained under -- the only evidence a scalp map drawn on them can rest on.
+
+    Args:
+        harmonics (np.ndarray): `(n_channels, (l_max + 1) ** 2)` basis as a checkpoint stores it.
+        geometry (ScalpGeometry): Candidate coordinates in the checkpoint's channel order.
+        l_max (int): Maximum harmonic degree the basis was built to.
+
+    Returns:
+        bool: `True` when the rebuilt basis equals `harmonics` to within the float32 cast.
+    """
+    stored = np.asarray(harmonics, dtype=np.float64)
+    if stored.ndim != 2 or stored.shape != (geometry.n_channels, n_harmonics(l_max)):
+        return False
+
+    rebuilt = geometry.spherical_harmonics(l_max).astype(np.float32).astype(np.float64)
+
+    return bool(np.allclose(stored, rebuilt, atol=HARMONIC_MATCH_ATOL, rtol=0.0))
+
+
 # -- nn.Module: electrode positional encoding ------------------------------- #
 class SphericalHarmonicEncoding(nn.Module):
     """Fixed-geometry, learnable-projection spherical-harmonic positional encoding for electrodes.
@@ -394,6 +424,17 @@ class SphericalHarmonicEncoding(nn.Module):
     def approximate_geometry(self) -> bool:
         """Whether the harmonic basis in use was built from a placeholder cap rather than a real montage."""
         return bool(self.approximate.item())
+
+    def matches_geometry(self, geometry: ScalpGeometry) -> bool:
+        """Whether `geometry` reproduces the basis this module carries, so a map drawn on it is drawn on the right head.
+
+        Args:
+            geometry (ScalpGeometry): Candidate electrode coordinates in this module's channel order.
+
+        Returns:
+            bool: `True` when the basis rebuilt from `geometry` equals the checkpointed one.
+        """
+        return harmonics_match(self.harmonics.detach().cpu().numpy(), geometry, self.l_max)
 
     def forward(self) -> torch.Tensor:
         """Returns the per-channel positional encoding.
@@ -459,12 +500,18 @@ class SpatialChannelMixer(nn.Module):
         self.feat_dim = int(feat_dim)
         self.mix = bool(mix)
         self.grad_checkpoint = bool(grad_checkpoint)
-        self.approximate_geometry = bool(geometry.approximate)
         self.pos = SphericalHarmonicEncoding(geometry, l_max, feat_dim, learnable=learnable)
         if self.mix:
             self.norm = nn.LayerNorm(feat_dim)
             heads = _largest_divisor(feat_dim, n_heads)
             self.attn = nn.MultiheadAttention(feat_dim, heads, dropout=dropout, batch_first=True)
+
+    # Read through the encoding rather than stored at construction: `load_state_dict` replaces the basis with the
+    # trained one, and a flag frozen at build time would describe the montage this machine found, not that basis.
+    @property
+    def approximate_geometry(self) -> bool:
+        """Whether the basis in use was built from the placeholder cap; follows the checkpoint, not this machine."""
+        return self.pos.approximate_geometry
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Injects electrode geometry into a per-channel feature tensor.

@@ -1,6 +1,5 @@
 """Occlusion saliency and the neighbour gallery for one reading -- an inspection surface, never an evaluation."""
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -12,6 +11,7 @@ from zte.data.dataset import ZuCoDataset
 from zte.data.schema import N_CHANNELS
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, collate_sentences
 from zte.inference.embed import ZTEEmbedder
+from zte.lens.montage import azimuthal_xy, load_montage_csv
 from zte.logging_utils import get_logger
 from zte.utils.provenance import git_info
 
@@ -186,51 +186,6 @@ def word_saliency(embedder: ZTEEmbedder, dataset: ZuCoDataset, reading: Reading)
     }
 
 
-def _load_montage(path: str, n_channels: int) -> tuple[list[str], list[str], np.ndarray] | None:
-    """Reads a `channel,x,y,z,label,region` montage CSV, or `None` when it is missing or misaligned."""
-    file = Path(path)
-    if not file.is_file():
-        _LOG.warning('Channel saliency skipped: montage CSV %s does not exist.', path)
-        return None
-
-    rows: dict[int, tuple[float, float, float, str, str]] = {}
-    try:
-        with file.open(encoding='utf-8') as fh:
-            for row in csv.DictReader(fh):
-                rows[int(row['channel'])] = (
-                    float(row['x']),
-                    float(row['y']),
-                    float(row['z']),
-                    str(row.get('label') or f'ch{int(row["channel"]):03d}'),
-                    str(row.get('region') or 'unassigned'),
-                )
-    except (KeyError, ValueError, OSError) as exc:
-        _LOG.warning('Channel saliency skipped: could not parse montage CSV %s (%r).', path, exc)
-        return None
-
-    if sorted(rows) != list(range(n_channels)):
-        _LOG.warning(
-            'Channel saliency skipped: montage %s covers %d channels but the data has %d.', path, len(rows), n_channels
-        )
-        return None
-
-    labels = [rows[c][3] for c in range(n_channels)]
-    regions = [rows[c][4] for c in range(n_channels)]
-    xyz = np.array([rows[c][:3] for c in range(n_channels)], dtype=np.float64)
-
-    return labels, regions, xyz
-
-
-def _azimuthal_xy(xyz: np.ndarray) -> np.ndarray:
-    """Top-down azimuthal-equidistant projection of scalp coordinates: vertex at the origin, nose (+y) up."""
-    unit = xyz / np.clip(np.linalg.norm(xyz, axis=1, keepdims=True), 1e-8, None)
-    theta = np.arccos(np.clip(unit[:, 2], -1.0, 1.0))
-    planar = np.hypot(unit[:, 0], unit[:, 1])
-    scale = np.where(planar > 1e-9, theta / np.clip(planar, 1e-9, None), 0.0)
-
-    return np.stack([unit[:, 0] * scale, unit[:, 1] * scale], axis=1)
-
-
 def channel_saliency(
     embedder: ZTEEmbedder,
     dataset: ZuCoDataset,
@@ -272,10 +227,11 @@ def channel_saliency(
             _LOG.warning('Channel saliency skipped: the band-power layout cannot address individual channels.')
             return None
 
-    montage = _load_montage(dataset.config.montage_csv, n_channels)
+    montage = load_montage_csv(dataset.config.montage_csv, n_channels)
     if montage is None:
+        _LOG.warning('Channel saliency skipped: no usable montage at %s.', dataset.config.montage_csv)
         return None
-    labels, regions, xyz = montage
+    labels, regions, xyz = montage.labels, montage.regions, montage.xyz
 
     # Region membership in first-appearance order, so the map reads anterior -> posterior like the montage does.
     region_names = list(dict.fromkeys(regions))
@@ -319,7 +275,7 @@ def channel_saliency(
     return {
         'labels': labels,
         'regions': regions,
-        'xy': _azimuthal_xy(xyz).tolist(),
+        'xy': azimuthal_xy(xyz).tolist(),
         'xyz': xyz.tolist(),
         'scores': np.clip(scores, 0.0, None).tolist(),
         'method': method,

@@ -33,7 +33,9 @@ DEFAULT_NULL_DRAWS: Final[int] = 8
 CAVEAT: Final[str] = (
     'ZuCo word windows are eye-tracking-segmented, so a window starts at a fixation and overlaps the '
     'neighbouring words. A peak in the 300-500 ms band is therefore consistent with an N400 and is not '
-    'evidence of one: it is a causal contribution of samples, not a component.'
+    'evidence of one: it is a causal contribution of samples, not a component. The same segmentation smears any '
+    'fixed post-onset latency across neighbouring windows, so a flat profile is what it predicts for a '
+    'latency-bound component rather than evidence against one.'
 )
 """The physiological caveat every temporal artifact carries, so no bin can be read as a component."""
 

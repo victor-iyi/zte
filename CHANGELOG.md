@@ -4,6 +4,35 @@
 
 ### Added
 
+- **The ZuCo-105 montage ships with the package, and `--spatial exact` means it.** `zte/data/montage/gsn_hydrocel_105.csv`
+  holds the 105 retained GSN-HydroCel electrodes in native EGI order, byte-identical to what `mne` rebuilds, so
+  `build_montage_csv` serves the default request from it when `mne` is absent and a fresh checkout trains on real
+  coordinates. `zte-run --spatial exact` now refuses to train when provisioning left no montage wired, refuses to
+  `--resume` a run whose `last.pt` carries the placeholder cap (a trained basis cannot be repaired by a flag; the
+  fix is a new `--name`), and refuses to continue past training if the encoder it built is approximate. Every run
+  records what it trained on under `electrode_geometry` in `manifest.json` and in its README.
+- **`scripts/build_schematics.py` — the paper's figures, drawn from code.** The `zte.evaluation.schematics` package
+  (one module per family over a shared style module) renders twenty-nine data-free schematics in the idioms of the
+  Transformer, ResNet, CLIP, Conformer, EEGNet and Prefix-Tuning figures: the encoder as a pipeline, a column and
+  a minimal overview, one rotary transformer block, the conformer frontend as feature-map slabs, the two towers
+  and the multi-positive square with same-sentence blocks, the pooled-versus-strict gallery, the three alignment
+  levels, the LOSO ring and fold strip, the closed retrieval gallery, the real GSN-105 montage, the harmonic basis
+  and kernel on that head, SPD covariance transport, the signature adapter with gains drawn on the head, the
+  frozen-LM prefix bridge with its parameter counts and its eight-control ladder, the presence mask, one word
+  window and the eye-tracker segmentation. Three more read an artifact: the attention scalp map and temporal
+  curve from an `attention.json` whose montage was verified against the checkpoint, and the transfer heatmap from
+  a `PARALLAX.json`. Each is written as PNG and SVG at IEEE column widths from one validated role palette, with a
+  contact sheet to pick from.
+- **`zte-colab geometry --ckpt` — what head a checkpoint was trained on.** Reads the harmonic basis, its degree and
+  the placeholder flag straight from the checkpoint's buffers, then reports whether a montage on this machine
+  reproduces that basis; `topomap_readable` is the conjunction a scalp figure needs, and `reason` says why not.
+- **The attention lens proves its electrode positions.** `zte.lens.montage.resolve_checkpoint_montage` tries the CSV
+  the checkpoint names, the same file staged from the persistent store, and the packaged montage, and uses a
+  candidate only when the spherical-harmonic basis rebuilt from it equals the checkpointed one to within its
+  float32 cast. A file that exists but describes a different head is refused. `attention.json` records
+  `montage_source`, `montage_path`, `montage_verified` and `montage_reason`; the scalp figure gains an `all` panel
+  beside `correct`, `incorrect` and their difference; and the artifact schema is `zte.lens.attention/2`, so a
+  profile written by the earlier code is rebuilt rather than served from its done stamp.
 - **`zte-lens attention` — the encoder's own attention, read through forward hooks.** A post-hoc pass over one
   subject's readings (the checkpoint's holdout by default) with `register_forward_pre_hook` /
   `register_forward_hook` on the electrode mixer's and the intra-word transformer's `nn.MultiheadAttention`, in
@@ -195,6 +224,18 @@
   new knob in `docs/SUBJECT_ALIGNMENT.md`; the capacity readout in `experiments/README.md`.
 
 ### Fixed
+
+- **`SpatialChannelMixer.approximate_geometry` reported the build machine, not the checkpoint.** The mixer stored the
+  flag at construction, while its encoding's `approximate` buffer is restored by `load_state_dict`. On a VM without
+  the montage CSV the lens therefore rebuilt the model on the placeholder cap, loaded the trained basis, and read the
+  stale flag: a checkpoint trained on the real montage was reported as approximate and its scalp map declined, which
+  is how the twelve 2026-08-29 folds came to be described as trained on the placeholder. The mixer now delegates to
+  the encoding's buffer, so the flag follows the basis wherever the checkpoint is loaded. Run
+  `zte-colab geometry --ckpt` on those checkpoints before retraining anything.
+- **The temporal caveat says what fixation-locked windows predict.** Beside the standing warning that a peak in
+  300-500 ms is consistent with an N400 and not evidence of one, every temporal and attention artifact now states
+  that the same segmentation smears a fixed post-onset latency across neighbouring windows, so a flat profile is the
+  expected reading of this corpus for a latency-bound component rather than evidence against it.
 
 - **`zte-colab mirror` refused the write mode the session was opened with.** Its `--write-mode` predated `auto` and
   accepted only `local+mirror` and `drive`, so a notebook that opened its session with the new default and handed

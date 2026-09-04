@@ -227,6 +227,37 @@ uv run zte-analyze --experiments "/gdrive/My Drive/Sharables/ZTE/2026-08-14/expe
 to be read from a Drive mirror. `tables/*.csv` carries every frame behind it. Section 9c of
 `notebooks/zte_colab.ipynb` runs the same thing and renders the panels inline.
 
+## The paper's schematics
+
+`scripts/build_schematics.py` renders the method figures a manuscript is set from, each as PNG (300 dpi) and SVG
+at IEEE column widths (`--formats pdf,png,svg` adds a vector PDF), with a `contact_sheet.png` to pick variations
+from. Twenty-nine are data-free, drawn to the idioms of the Transformer, ResNet, CLIP, Conformer, EEGNet and
+Prefix-Tuning figures (tensor slabs with dimensions on their edges, plates for repetition, routed residual lanes,
+snowflakes on frozen modules, a similarity square whose same-sentence positives form blocks), and each family ships
+variants to choose between:
+
+| Family (`--only` names)                                                                                                                                                   | What it shows                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `encoder_pipeline`, `encoder_pipeline_vertical`, `encoder_overview_minimal`, `encoder_stack`, `transformer_block`, `conformer_frontend`, `conformer_frontend_compact`     | the encoder end to end, as a column, one rotary block, the conformer as feature-map slabs         |
+| `two_tower`, `two_tower_compact`, `alignment_square`, `alignment_square_pooled_vs_strict`, `three_levels`, `loso_ring`, `loso_fold_strip`, `retrieval_gallery`            | the objective, the multi-positive square, the three levels, the LOSO protocol, the closed gallery |
+| `montage_map`, `montage_map_labels`, `harmonic_basis`, `harmonic_kernel`, `harmonic_code_on_head`, `covariance_transport`, `transport_manifold_only`, `signature_adapter` | the real GSN-105 head, the harmonic basis and kernel on it, SPD transport, the signature adapter  |
+| `decoder_bridge`, `decoder_bridge_compact`, `decoder_controls_ladder`                                                                                                     | the frozen-LM prefix path with its parameter counts, and the eight-control verdict                |
+| `presence_mask`, `word_window`, `eye_segmentation`                                                                                                                        | gaze-order tokens and skipped words, one fixated window, the eye-tracker as segmenter             |
+
+Three more read an artifact: the attention scalp map and temporal curve from an `attention.json` whose montage was
+verified against the checkpoint (an unverified one is refused), and the cross-task transfer heatmap from a
+`PARALLAX.json`.
+
+```sh
+uv run python scripts/build_schematics.py --list
+uv run python scripts/build_schematics.py --out res/figures/schematics \
+    --attention <suite>/attention/<run>_ZAB_attention/attention.json --parallax <suite>/transfer/PARALLAX.json
+```
+
+The drawing code lives in `zte.evaluation.schematics`; every colour is assigned by role from one validated palette
+(EEG blue, frozen text orange, objective aqua, controls red; a single-hue ramp for magnitude and a blue-red ramp with
+a neutral midpoint for signed maps), so the same entity keeps its colour across every figure.
+
 ## The Colab notebooks
 
 Two notebooks, and they are not versions of each other.
@@ -420,11 +451,13 @@ Two things the notebook will tell you but that are worth knowing before you open
 - **Section 12 measures occlusion, not attention.** No trained checkpoint has an attentive temporal pool, so the
   conformer's temporal attention weights do not exist to be plotted. Occlusion works on every checkpoint and
   measures a counterfactual instead.
-- **A scalp map needs the montage to exist, not just to be named.** Nearly every config already sets
-  `dataset.montage_csv: res/montage_gsn105.csv`, but `res/` is gitignored, so on a fresh VM the file is absent and
-  `resolve_geometry` silently falls back to the approximate cap. `--spatial exact` builds it; the notebook passes it
-  on every arm it trains. The condition for a regional claim is the checkpoint's own `approximate_geometry` flag
-  reading `False`, never the YAML.
+- **A scalp map needs the montage the checkpoint was trained on, not just a file of that name.** Nearly every config
+  sets `dataset.montage_csv: res/montage_gsn105.csv`, and `res/` is gitignored, so `--spatial exact` provisions it —
+  from the persistent store, from `mne`, or from the copy shipped inside the package — and the notebook passes it on
+  every arm it trains. A run that asks for exact coordinates and would train, or resume, on the placeholder cap now
+  stops instead. The condition for a regional claim is the checkpoint's own `approximate_geometry` flag reading
+  `False` *and* a montage that rebuilds its basis, which `zte-colab geometry --ckpt` checks and `zte-lens attention`
+  verifies before drawing; never the YAML.
 
 ## Where things are stored, and why it differs by machine
 

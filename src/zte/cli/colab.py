@@ -799,6 +799,14 @@ def parse_arguments() -> argparse.Namespace:
     readings.add_argument('--pick', default=None, help='Exact reading indices, comma-separated.')
     readings.add_argument('--metrics', default=','.join(DEFAULT_READING_METRICS))
 
+    geometry = sub.add_parser(
+        'geometry',
+        parents=[common],
+        help="A checkpoint's electrode geometry: placeholder cap or real montage, read from its own buffers, and "
+        'whether a montage on this machine reproduces that basis so a scalp map can be drawn on it.',
+    )
+    geometry.add_argument('--ckpt', required=True, type=Path, help='A best.pt / last.pt checkpoint.')
+
     capacity = sub.add_parser('capacity', parents=[common], help="A decode run's certified K-way menu capacity.")
     capacity.add_argument('--from', dest='source', required=True, type=Path, help='A zte-decode --out directory.')
     capacity.add_argument('--score', default=HEADLINE_SCORE, help='Score family to read.')
@@ -908,6 +916,10 @@ def main() -> None:
             payload = _audit(args)
         case 'mirror':
             payload = _mirror(args)
+        case 'geometry':
+            from zte.lens.montage import checkpoint_geometry
+
+            payload = checkpoint_geometry(args.ckpt)
         case unknown:  # pragma: no cover -- argparse rejects any verb that has no subparser
             raise SystemExit(f'unhandled zte-colab subcommand {unknown!r}')
 

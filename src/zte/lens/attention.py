@@ -17,7 +17,8 @@ from zte.data.schema import SAMPLING_RATE_HZ
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, collate_sentences
 from zte.evaluation.audit.scoreboard import _bootstrap_ci
 from zte.inference.embed import ZTEEmbedder
-from zte.lens.saliency import DISCLAIMER, _azimuthal_xy, _load_montage
+from zte.lens.montage import CheckpointMontage, azimuthal_xy, resolve_checkpoint_montage
+from zte.lens.saliency import DISCLAIMER
 from zte.lens.temporal import CAVEAT as SEGMENTATION_CAVEAT
 from zte.lens.temporal import N400_WINDOW_MS
 from zte.logging_utils import get_logger
@@ -483,7 +484,7 @@ def attention_profile(
     from zte.training.init import file_sha256
 
     return {
-        'schema': 'zte.lens.attention/1',
+        'schema': 'zte.lens.attention/2',
         'sampling_rate_hz': float(SAMPLING_RATE_HZ),
         'raw_window_samples': window,
         'window_ms': _ms(window),
@@ -545,10 +546,26 @@ def _spatial_block(
     n_channels = int(received.shape[1])
     blocks = {name: _spatial_group(received[mask], seed) for name, mask in groups.items() if mask.any()}
 
+    # The flag and the basis are read off the loaded encoding, so they describe the checkpoint rather than whatever
+    # montage this machine happens to hold; a CSV is only used once it provably rebuilds that basis.
     mixer = getattr(embedder.model.frontend, 'spatial_mixer', None)
+    encoding = getattr(mixer, 'pos', None)
     approximate = bool(getattr(mixer, 'approximate_geometry', True))
-    montage = _load_montage(dataset.config.montage_csv, n_channels) if dataset.config.montage_csv else None
-    labels, regions, xyz = montage if montage is not None else ([f'ch{c:03d}' for c in range(n_channels)], None, None)
+    montage: CheckpointMontage | None
+    reason: str | None
+    if encoding is None:
+        montage, reason = None, 'the checkpoint carries no spherical-harmonic electrode basis.'
+    else:
+        montage, reason = resolve_checkpoint_montage(
+            encoding.harmonics.detach().cpu().numpy(),
+            int(encoding.l_max),
+            approximate,
+            dataset.config.montage_csv,
+            n_channels,
+        )
+    labels = montage.montage.labels if montage is not None else [f'ch{c:03d}' for c in range(n_channels)]
+    regions = montage.montage.regions if montage is not None else None
+    xyz = montage.montage.xyz if montage is not None else None
 
     for block in blocks.values():
         mean = np.asarray(block['mean'])
@@ -566,9 +583,13 @@ def _spatial_block(
         'n_heads': n_heads,
         'labels': labels,
         'regions': regions,
-        'xy': None if xyz is None else _azimuthal_xy(xyz).tolist(),
+        'xy': None if xyz is None else azimuthal_xy(xyz).tolist(),
         'xyz': None if xyz is None else xyz.tolist(),
         'approximate_geometry': approximate,
+        'montage_source': None if montage is None else montage.source,
+        'montage_path': None if montage is None else str(montage.montage.path),
+        'montage_verified': montage is not None,
+        'montage_reason': reason,
         'has_time_axis': False,
         'groups': blocks,
     }
@@ -618,7 +639,9 @@ def write_figures(report: dict[str, Any], target: Path) -> dict[str, str | None]
             'not regions.'
         )
     elif spatial.get('xyz') is None:
-        written['topomap_reason'] = 'no montage CSV was readable, so the electrodes have no scalp positions.'
+        written['topomap_reason'] = (
+            spatial.get('montage_reason') or 'no montage CSV was readable, so the electrodes have no scalp positions.'
+        )
     elif int(spatial.get('n_channels', 0)) < _MIN_TOPOMAP_CHANNELS:
         written['topomap_reason'] = f'fewer than {_MIN_TOPOMAP_CHANNELS} electrodes.'
     else:
@@ -672,14 +695,12 @@ def _draw_topomaps(plt: Any, spatial: dict[str, Any], path: Path, subject: str) 
     """Correct, incorrect and their difference on the scalp: mne's topomap when importable, the in-house map otherwise."""
     groups = spatial['groups']
     panels: list[tuple[str, np.ndarray]] = [
-        (name, np.asarray(groups[name]['mean'])) for name in ('correct', 'incorrect') if name in groups
+        (name, np.asarray(groups[name]['mean'])) for name in ('all', 'correct', 'incorrect') if name in groups
     ]
     if 'correct' in groups and 'incorrect' in groups:
         panels.append(
             ('correct - incorrect', np.asarray(groups['correct']['mean']) - np.asarray(groups['incorrect']['mean']))
         )
-    if not panels:
-        panels = [('all', np.asarray(groups['all']['mean']))]
 
     xyz = np.asarray(spatial['xyz'], dtype=np.float64)
     labels = list(spatial['labels'])
@@ -802,11 +823,20 @@ def render_markdown(report: dict[str, Any], figures: dict[str, str | None] | Non
 
     spatial = report.get('spatial')
     if spatial:
+        if spatial['approximate_geometry']:
+            geometry = 'approximate cap -- array indices, not regions'
+        elif spatial.get('montage_verified'):
+            geometry = (
+                f'exact montage, verified against the checkpoint basis ({spatial.get("montage_source")}: '
+                f'`{spatial.get("montage_path")}`)'
+            )
+        else:
+            geometry = f'exact montage, but unmapped -- {spatial.get("montage_reason")}'
         lines += [
             f'## Where on the scalp: attention received per electrode ({spatial["n_channels"]} channels, '
             f'{spatial.get("n_heads")} heads, whole word window)',
             '',
-            f'Geometry: **{"approximate cap -- array indices, not regions" if spatial["approximate_geometry"] else "exact montage"}**. '
+            f'Geometry: **{geometry}**. '
             f'Uniform attention is {_fmt(1.0 / spatial["n_channels"], 4)} per electrode. The mixer attends over '
             "electrodes with the whole window as each electrode's features, so this map has no latency axis.",
             '',

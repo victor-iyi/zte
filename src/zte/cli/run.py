@@ -364,6 +364,9 @@ def _run(args: argparse.Namespace) -> None:
     run_dir = Path(args.out_root) / config.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Before the fast path: a complete run trained on the placeholder cap must not be reported as exact by resuming.
+    _refuse_placeholder_resume(run_dir, config, args)
+
     # Fast resume: a fully-complete run is skipped instantly, without reloading the (large) bundle.
     if args.resume and not args.force and _run_is_complete(run_dir, config, args):
         _LOG.info('Resume: %r already complete (all stages done); skipping.', config.run_name)
@@ -427,6 +430,7 @@ def _run(args: argparse.Namespace) -> None:
 
     # 1b) Provision --spatial / --meaning after the bundle, so the GloVe file can be vocab-restricted.
     _apply_provisioning(config, args, dataset)
+    _refuse_unprovisioned_montage(config, args)
     config.to_yaml(run_dir / 'config.yaml')  # now includes the provisioned montage / meaning target
     _mirror_to_drive(run_dir, args, 'prepare')
 
@@ -442,6 +446,9 @@ def _run(args: argparse.Namespace) -> None:
 
     artifacts = run_training(config, dataset, resume=args.resume)
     config.to_yaml(run_dir / 'config.yaml')
+    # Recorded from the trained encoder itself, so a run says which head its electrode code was computed on.
+    manifest['electrode_geometry'] = _electrode_geometry(artifacts.trainer.model, config)
+    _refuse_placeholder_training(manifest['electrode_geometry'], config, args)
     manifest['final_train_loss'] = artifacts.history['train_loss'][-1] if artifacts.history['train_loss'] else None
     # Code state, hardware, schedule and library versions: without them a number cannot be placed.
     manifest['provenance'] = artifacts.trainer.provenance()
@@ -563,6 +570,82 @@ def _apply_provisioning(config: ZTEConfig, args: argparse.Namespace, dataset: Zu
     if words is not None and 'word' in getattr(words, 'columns', []):
         vocab = {w.lower() for w in words['word'].dropna().astype(str) if w}
     provision_from_args(config, args, vocab=vocab)
+
+
+# The spatial choices that promise real electrode coordinates; a run that asked for them must never train on the
+# placeholder cap unnoticed, because a scalp map from such a run is positionally meaningless.
+_EXACT_SPATIAL: Final[frozenset[str]] = frozenset({'exact', 'attention'})
+
+
+def _exact_geometry_requested(config: ZTEConfig, args: argparse.Namespace) -> bool:
+    """Whether this encoder run asked `--spatial` for real electrode coordinates."""
+    return config.train.mode == 'encoder' and getattr(args, 'spatial', 'keep') in _EXACT_SPATIAL
+
+
+def _electrode_geometry(model: Any, config: ZTEConfig) -> dict[str, Any]:
+    """The electrode geometry the built encoder computes under, as the manifest records it."""
+    mixer = getattr(getattr(model, 'frontend', None), 'spatial_mixer', None)
+    approximate = getattr(mixer, 'approximate_geometry', None)
+
+    return {
+        'spatial_encoding': config.model.spatial_encoding,
+        'montage_csv': config.dataset.montage_csv,
+        'approximate': None if approximate is None else bool(approximate),
+    }
+
+
+def _refuse_placeholder_resume(run_dir: Path, config: ZTEConfig, args: argparse.Namespace) -> None:
+    """Stops `--resume` from continuing a run trained on the placeholder cap when exact coordinates were asked for.
+
+    `load_state_dict` restores the trained basis whatever montage this machine holds, so `--spatial exact` cannot
+    repair a run already trained on the cap; continuing would keep the placeholder and report the request as met.
+    """
+    last = run_dir / 'checkpoints' / 'last.pt'
+    if not (args.resume and _exact_geometry_requested(config, args) and last.is_file()):
+        return
+
+    from zte.lens.montage import checkpoint_geometry
+
+    if checkpoint_geometry(last).get('approximate_geometry') is not True:
+        return
+
+    raise SystemExit(
+        f'{last} was trained on the approximate coordinate-free cap, and --spatial {args.spatial} cannot change a '
+        'trained basis: resuming would keep the placeholder geometry. Train a new run under a new --name, or drop '
+        '--spatial to resume this one as it is.'
+    )
+
+
+def _refuse_unprovisioned_montage(config: ZTEConfig, args: argparse.Namespace) -> None:
+    """Stops a run that asked for exact coordinates but has no montage wired after provisioning."""
+    if _exact_geometry_requested(config, args) and not config.dataset.montage_csv:
+        raise SystemExit(
+            f'--spatial {args.spatial} could not provision electrode coordinates, so training would fall back to the '
+            'approximate cap. Point --montage-out at a montage CSV, or install `mne` to build one.'
+        )
+
+
+def _refuse_placeholder_training(geometry: dict[str, Any], config: ZTEConfig, args: argparse.Namespace) -> None:
+    """Stops a run that asked for exact coordinates but whose trained encoder carries the placeholder cap."""
+    if _exact_geometry_requested(config, args) and geometry.get('approximate') is True:
+        raise SystemExit(
+            f'--spatial {args.spatial} was requested but the trained encoder carries the approximate coordinate-free '
+            f'cap (montage_csv={geometry.get("montage_csv")!r}); the checkpoints are kept, and no scalp claim from '
+            'them is positionally meaningful.'
+        )
+
+
+def _describe_geometry(geometry: dict[str, Any] | None) -> str:
+    """One README line for the electrode geometry a run trained under."""
+    if geometry is None:
+        return 'not recorded'
+    match geometry.get('approximate'):
+        case None:
+            return f'none (spatial encoding `{geometry.get("spatial_encoding")}`)'
+        case True:
+            return '**approximate placeholder cap** -- no scalp claim from this run is positionally meaningful'
+        case _:
+            return f'**exact montage** (`{geometry.get("montage_csv")}`)'
 
 
 def _last_completed_epoch(ckpt_dir: Path) -> int:
@@ -745,6 +828,7 @@ def _render_run_readme(config: ZTEConfig, manifest: dict[str, Any], run_dir: Pat
         f'| representation: **{config.dataset.representation}** | tasks: {list(config.dataset.tasks)}',
         f'- embed_dim {config.model.embed_dim} | hidden {config.model.hidden_dim} | '
         f'layers {config.model.n_layers} | epochs {config.train.epochs} | split {config.train.split}',
+        f'- Electrode geometry: {_describe_geometry(manifest.get("electrode_geometry"))}',
         '',
         '## Data',
         '',

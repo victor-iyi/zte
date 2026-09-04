@@ -197,6 +197,20 @@ which is a more useful statement than a ranking inside the noise.
 `models/frontends/__init__.py::build_frontend`, which now raises on an unknown name instead of silently
 constructing a conformer.
 
+### How the baselines are adapted to a retrieval pipeline
+
+Both nets are published as classifiers, so the same surgery is applied to each. The classification head — the dense
+layer over the flattened feature map and its softmax — is removed. What remains is the convolutional trunk, and its
+flattened output ($F_1 D \cdot \lfloor T/32 \rfloor = 16 \cdot 10 = 160$ for EEGNet-8,2 and $200 \cdot 2 = 400$ for
+the four-block DeepConvNet at the 350-sample window) is lifted by one linear layer to the encoder's token width,
+`hidden_dim = 256`: exactly where the conformer hands over its own token. From that point the path is shared and
+unchanged — the electrode mixer in front of the trunk, the four-layer rotary contextualiser, the masked attention
+pool, and the `Linear(256, 512) -> GELU -> Dropout -> Linear(512, 768)` projection whose unit-norm output the
+objective scores. The baselines therefore replace the *token encoder* alone; the sentence-level machinery, the loss,
+the seed and the step budget are byte-identical to the flagship arm, which is what makes Table VI a matched
+comparison. Sub-word tokens are read the way the conformer's are: the linear lift is applied to the trunk's output
+restricted to one of four contiguous spans, so every span is read by the same weights as the whole word.
+
 ### Four deviations from the published architectures
 
 These are departures a reviewer will ask about, so they are recorded rather than buried.

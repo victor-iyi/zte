@@ -62,12 +62,33 @@ def test_apply_spatial_attention_uses_learned_scheme(monkeypatch: pytest.MonkeyP
     assert cfg.dataset.montage_csv == 'm.csv'
 
 
+def test_apply_spatial_exact_ships_the_packaged_montage_without_mne(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without `mne`, `exact` still wires real coordinates: the ZuCo-105 montage ships with the package."""
+    from zte.data.montage.montage import packaged_montage_csv
+
+    def no_mne(*_args: object, **_kwargs: object) -> object:
+        raise ImportError('no mne')
+
+    monkeypatch.setattr('zte.data.montage.montage.zuco105_labels', no_mne)
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    cfg = ZTEConfig()
+    out = tmp_path / 'montage_gsn105.csv'
+
+    provision.apply_spatial(cfg, 'exact', montage_out=out)
+
+    assert cfg.model.spatial_encoding == 'spherical_harmonics'
+    assert cfg.dataset.montage_csv == str(out)
+    assert out.read_bytes() == packaged_montage_csv().read_bytes()
+
+
 def test_apply_spatial_exact_without_mne_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing `mne` degrades `exact` to the approximate cap rather than crashing the run.
+    """A montage the package does not ship degrades `exact` to the approximate cap when `mne` is missing.
 
     Note:
-        Written to `tmp_path` deliberately. The provisioner now stages an existing montage rather than rebuilding
-        it, so pointing at the default would pass or fail on whether this machine happens to carry one.
+        Written to `tmp_path` deliberately. The provisioner stages an existing montage rather than rebuilding it,
+        so pointing at the default would pass or fail on whether this machine happens to carry one.
     """
 
     def boom(*_a: object, **_k: object) -> Path:

@@ -841,3 +841,48 @@ def test_env_reports_the_interpreter_the_venv_actually_runs(
 
     assert set(payload) == {'root', 'env', 'accelerator', 'plan', 'resources', 'venv'}
     assert payload['venv']['python'] == platform.python_version()
+
+
+def test_geometry_reads_a_checkpoint_and_says_whether_a_scalp_map_can_be_drawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`geometry` reports the checkpoint's own flag and whether a montage on this machine reproduces its basis."""
+    import torch
+
+    from zte.config import ModelConfig, ZTEConfig
+    from zte.data.montage.montage import packaged_montage_csv
+    from zte.models.embedding import build_model
+
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    config = ZTEConfig(
+        run_name='geometry_test',
+        model=ModelConfig(
+            frontend='raw_conformer',
+            embed_dim=16,
+            hidden_dim=16,
+            n_layers=1,
+            n_heads=2,
+            conformer_filters=8,
+            factored=False,
+            subject_adapter=False,
+            spatial_encoding='spherical_harmonics',
+            spatial_harmonic_degree=2,
+        ),
+    )
+    named = tmp_path / 'res' / 'montage_gsn105.csv'
+    named.parent.mkdir()
+    named.write_bytes(packaged_montage_csv().read_bytes())
+    torch.manual_seed(0)
+    model = build_model(config.model, raw_shape=(105, 32), n_channels=105, montage_csv=str(named))
+    ckpt = tmp_path / 'best.pt'
+    torch.save({'config': config.to_dict(), 'model': model.state_dict(), 'extra': {'montage_csv': str(named)}}, ckpt)
+    named.unlink()
+    monkeypatch.setattr('sys.argv', ['zte-colab', 'geometry', '--ckpt', str(ckpt)])
+
+    main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['run_name'] == 'geometry_test' and payload['has_harmonic_basis'] is True
+    assert payload['approximate_geometry'] is False and payload['n_channels'] == 105 and payload['l_max'] == 2
+    assert payload['montage_source'] == 'packaged' and payload['topomap_readable'] is True
+    assert payload['montage_csv'] == str(named) and payload['reason'] is None

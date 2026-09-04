@@ -74,20 +74,30 @@ section is about what happens when it is unmet.
 
 ## What the shipped runs actually used
 
-**The configs name a montage they do not create.** Nearly every live arm — flagship, decoder, parallax, alignment
-and benchmark alike — sets `dataset.montage_csv: res/montage_gsn105.csv`. But `res/` is generated and gitignored, so
-on a fresh machine that file does not exist: `resolve_geometry` warns, falls back to the Fibonacci cap and sets
-`approximate=True`. **A run launched without `--spatial exact` therefore looks configured for a real montage and
-silently is not.**
+**The configs name a montage a fresh checkout does not have.** Nearly every live arm — flagship, decoder, parallax,
+alignment and benchmark alike — sets `dataset.montage_csv: res/montage_gsn105.csv`, and `res/` is generated and
+gitignored. A run launched without `--spatial exact` on a machine without that file warns, falls back to the
+Fibonacci cap and sets `approximate=True`: **it looks configured for a real montage and is not.**
 
-`zte-run --spatial exact` is what builds the CSV, through `mne`, and publishes it to the persistent artifact store so
-later sessions stage the same file rather than rebuilding a possibly different one. Every arm the evidence-suite
-notebook trains passes it.
+`zte-run --spatial exact` is what wires the CSV, and it no longer depends on the machine. The ZuCo-105 montage ships
+inside the package (`zte/data/montage/gsn_hydrocel_105.csv`: the 105 retained GSN-HydroCel electrodes in native EGI
+order, built once from `mne` and byte-identical to what `mne` rebuilds), so `build_montage_csv` serves the default
+request from that copy when `mne` is absent and only a different net or channel subset needs the optional
+dependency. The CSV is still published to the persistent artifact store so later sessions stage the same file. And
+the request is enforced: `--spatial exact` refuses to train when provisioning left no montage wired, refuses to
+`--resume` a run whose `last.pt` carries the placeholder, and refuses to continue past training if the encoder it
+built is approximate — a run that asked for real coordinates and did not get them stops with the reason. Every run
+records what it trained on under `electrode_geometry` in `manifest.json` and in its README.
 
 `approximate` is a **persistent** buffer beside the harmonic basis, so it travels inside the checkpoint and reports
 the geometry the numbers were computed under rather than whatever the loading machine can find. Read
-`SphericalHarmonicEncoding.approximate_geometry`; never re-derive it from the config, which says only what was asked
-for and not what was found.
+`SphericalHarmonicEncoding.approximate_geometry`; `SpatialChannelMixer.approximate_geometry` delegates to it rather
+than remembering what the build machine found, and never re-derive it from the config, which says only what was
+asked for and not what was found. The coordinates are recovered on the same principle: the basis is a deterministic
+function of the electrode positions, so `zte.lens.montage.resolve_checkpoint_montage` accepts a CSV only when the
+basis rebuilt from it equals the checkpointed one (`SphericalHarmonicEncoding.matches_geometry`). A scalp map is
+therefore drawn on the head the model was trained on or not at all, and `zte-colab geometry --ckpt` reports both the
+flag and the verified source for any checkpoint.
 
 What this costs, precisely:
 

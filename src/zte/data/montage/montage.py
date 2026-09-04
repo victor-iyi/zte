@@ -1,14 +1,17 @@
 """Build the `channel,x,y,z,label,region` montage CSV that `dataset.montage_csv` points at.
 
 Spatial encoding is exact for whatever coordinates it is given, so the only approximation is in the coordinates; reading
-them from an MNE standard montage replaces the coordinate-free fallback and makes region importance exact too. Requires
-the optional `mne` dependency, but only when no cached CSV exists.
+them from an MNE standard montage replaces the coordinate-free fallback and makes region importance exact too. The
+ZuCo-105 montage ships inside the package, so building it needs `mne` only for a montage other than that one.
 """
 
 from __future__ import annotations
 
 import csv
+import shutil
+from importlib import resources
 from pathlib import Path
+from typing import Final
 
 from zte.logging_utils import get_logger
 
@@ -16,6 +19,21 @@ _LOG = get_logger('data.montage')
 
 DEFAULT_MONTAGE: str = 'GSN-HydroCel-129'
 """The EGI net ZuCo recorded with; `zuco105_labels`/`build_montage_csv` default to it."""
+
+# The montage is fixed per net, so a copy built once from `mne` is the montage; shipping it means a fresh checkout
+# without `mne` still trains on the real coordinates instead of degrading to the placeholder cap.
+PACKAGED_MONTAGE_NAME: Final[str] = 'gsn_hydrocel_105.csv'
+"""File name of the ZuCo-105 montage shipped with the package, in the native EGI channel order."""
+
+
+def packaged_montage_csv() -> Path:
+    """Returns the path of the ZuCo-105 montage CSV shipped with the package.
+
+    Returns:
+        Path: The `channel,x,y,z,label,region` file for the 105 retained GSN-HydroCel electrodes.
+    """
+    with resources.as_file(resources.files('zte.data.montage') / PACKAGED_MONTAGE_NAME) as path:
+        return Path(path)
 
 
 def zuco105_labels(montage: str = DEFAULT_MONTAGE) -> list[str]:
@@ -64,6 +82,8 @@ def build_montage_csv(
     """Writes a `channel,x,y,z,label,region` montage CSV and returns its path.
 
     Coordinates drive the spatial encoding and `region` drives region-importance analysis, so one CSV serves both.
+    The default request -- ZuCo's 105 electrodes on the GSN-HydroCel net -- is served from the packaged copy when
+    `mne` is not installed, so only a different net or channel subset needs the optional dependency.
 
     Args:
         out (str | Path): Destination CSV path (parent dirs created).
@@ -77,7 +97,7 @@ def build_montage_csv(
         Path: The written (or reused) CSV path.
 
     Raises:
-        ImportError: If `mne` is not installed and no cached CSV exists (needed to read coordinates).
+        ImportError: If `mne` is not installed and the request is not the packaged ZuCo-105 montage.
     """
     out = Path(out)
     if out.is_file() and not overwrite:
@@ -86,10 +106,19 @@ def build_montage_csv(
 
     from zte.models.spatial import ScalpGeometry
 
-    if keep is None and zuco105:
-        keep = zuco105_labels(montage)
+    try:
+        if keep is None and zuco105:
+            keep = zuco105_labels(montage)
+        geo = ScalpGeometry.from_mne(montage, keep=keep)
+    except ImportError:
+        if keep is not None or not zuco105 or montage != DEFAULT_MONTAGE:
+            raise
 
-    geo = ScalpGeometry.from_mne(montage, keep=keep)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(packaged_montage_csv(), out)
+        _LOG.info('mne is not installed; wrote the packaged ZuCo-105 montage to %s instead of rebuilding it.', out)
+        return out
+
     labels = geo.labels or tuple(f'ch{c:03d}' for c in range(geo.n_channels))
     regions = regions_from_geometry(geo.xyz)
 

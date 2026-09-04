@@ -455,7 +455,8 @@ def run_attention(args: argparse.Namespace) -> Path:
     artifacts = [target / 'attention.json', target / 'attention.md']
     sig = signature(
         args,
-        tool='lens-attention',
+        # Versioned with the artifact schema, so a profile written before the montage was verified is rebuilt.
+        tool='lens-attention/2',
         extra={'ckpt_sha256': checkpoint_digest(args.ckpt), 'dataset': dataset_key(config.dataset)},
         ignore=('ckpt',),
     )

@@ -3,6 +3,7 @@
 import builtins
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -14,7 +15,7 @@ from torch import nn
 from zte.cli.lens import parse_arguments, run_attention
 from zte.config import DatasetConfig, MissingConfig, ModelConfig, ZTEConfig
 from zte.data.dataset import ZuCoDataset
-from zte.data.montage.montage import regions_from_geometry
+from zte.data.montage.montage import packaged_montage_csv, regions_from_geometry
 from zte.data.torch_dataset import ZuCoTorchDataset, build_subject_vocab, collate_sentences
 from zte.device import resolve_device
 from zte.inference.embed import ZTEEmbedder
@@ -30,6 +31,7 @@ from zte.lens.attention import (
     render_markdown,
     write_figures,
 )
+from zte.lens.montage import checkpoint_geometry
 from zte.models.embedding import ZTEModel, build_model
 from zte.models.spatial import ScalpGeometry
 
@@ -553,3 +555,136 @@ def test_scalp_map_falls_back_to_the_in_house_projection_without_mne(
     assert written['topomap'] == str(tmp_path / 'figs' / 'attention_topomap.png')
     assert Path(written['topomap']).stat().st_size > 0
     assert written['topomap_reason'] is None
+
+
+# ---- The geometry a scalp map is drawn on ---- #
+
+
+def _state(dataset: ZuCoDataset, montage_csv: str | None) -> dict[str, Any]:
+    """The weights of a model built with `montage_csv` on this machine: the checkpoint the lens will receive."""
+    return _embedder_with(dataset, montage_csv).model.state_dict()
+
+
+def _embedder_with(dataset: ZuCoDataset, montage_csv: str | None) -> ZTEEmbedder:
+    """`_embedder`, but built against an explicit montage path rather than the dataset's."""
+    assert dataset.raw_eeg is not None
+    torch.manual_seed(0)
+    c, t = int(dataset.raw_eeg.shape[1]), int(dataset.raw_eeg.shape[2])
+    config = ZTEConfig(run_name='attention_test', model=_model_config())
+    config.train.loso_holdout_subject = 'ZAB'
+    model = build_model(config.model, raw_shape=(c, t), n_channels=c, montage_csv=montage_csv)
+
+    return ZTEEmbedder(model, config, resolve_device('cpu'))
+
+
+def _rotate_montage(path: Path) -> None:
+    """Rewrites a montage CSV with every electrode a quarter turn round the head: a real file, the wrong positions."""
+    n = sum(1 for _ in path.open(encoding='utf-8')) - 1
+    xyz = ScalpGeometry.from_csv(path, n).xyz[:, [1, 0, 2]]
+    regions = regions_from_geometry(xyz)
+    with path.open('w', newline='', encoding='utf-8') as fh:
+        writer = csv.writer(fh)
+        writer.writerow(['channel', 'x', 'y', 'z', 'label', 'region'])
+        for c in range(n):
+            writer.writerow([c, f'{xyz[c, 0]:.6f}', f'{xyz[c, 1]:.6f}', f'{xyz[c, 2]:.6f}', f'E{c + 1}', regions[c]])
+
+
+def test_the_scalp_side_reads_the_checkpoint_flag_not_the_build_machine(
+    raw_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Trained on the montage, a checkpoint stays exact on a machine without it; trained on the cap, it stays approximate."""
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    named = raw_dataset.config.montage_csv
+
+    # The lens's situation on a fresh VM: the CSV is absent when the model is built, then the trained basis loads.
+    stranger = _embedder_with(raw_dataset, None)
+    stranger.model.load_state_dict(_state(raw_dataset, named))
+    _plant_gallery(stranger, raw_dataset, set(), monkeypatch)
+    report = attention_profile(stranger, raw_dataset, 'ZAB', batch_size=3)
+    assert report is not None
+    spatial = report['spatial']
+    assert spatial['approximate_geometry'] is False
+    assert spatial['montage_verified'] is True and spatial['montage_source'] == 'config'
+    assert spatial['montage_path'] == named and spatial['montage_reason'] is None
+    assert spatial['xyz'] is not None and spatial['labels'][0] == 'E1'
+
+    # The reverse: a placeholder checkpoint loaded where the CSV exists must still decline the map.
+    local = _embedder_with(raw_dataset, named)
+    local.model.load_state_dict(_state(raw_dataset, None))
+    _plant_gallery(local, raw_dataset, set(), monkeypatch)
+    report = attention_profile(local, raw_dataset, 'ZAB', batch_size=3)
+    assert report is not None
+    spatial = report['spatial']
+    assert spatial['approximate_geometry'] is True and spatial['montage_verified'] is False
+    assert spatial['xyz'] is None and spatial['regions'] is None and 'approximate' in spatial['montage_reason']
+    written = write_figures(report, tmp_path / 'figs')
+    assert written['topomap'] is None and 'approximate' in str(written['topomap_reason'])
+
+
+def test_a_montage_that_does_not_rebuild_the_basis_is_refused(
+    raw_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CSV that exists but describes a different head is not drawn on: the lens says so instead of inventing a map."""
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    embedder = _embedder(raw_dataset)
+    assert raw_dataset.config.montage_csv is not None
+    _rotate_montage(Path(raw_dataset.config.montage_csv))
+    _plant_gallery(embedder, raw_dataset, set(), monkeypatch)
+
+    report = attention_profile(embedder, raw_dataset, 'ZAB', batch_size=3)
+
+    assert report is not None
+    spatial = report['spatial']
+    assert spatial['approximate_geometry'] is False and spatial['montage_verified'] is False
+    assert spatial['xyz'] is None and 'reproduces' in spatial['montage_reason']
+    assert spatial['labels'][0] == 'ch000'
+    written = write_figures(report, tmp_path / 'figs')
+    assert written['topomap'] is None and 'reproduces' in str(written['topomap_reason'])
+    assert 'unmapped' in render_markdown(report, written)
+
+
+def test_the_packaged_montage_stands_in_for_a_named_file_that_is_gone(
+    raw_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkpoint trained on ZuCo's montage is mapped from the packaged copy when the file it names has vanished."""
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    named = tmp_path / 'res' / 'montage_gsn105.csv'
+    named.parent.mkdir()
+    shutil.copyfile(packaged_montage_csv(), named)
+    raw_dataset.config.montage_csv = str(named)
+    embedder = _embedder(raw_dataset)
+    ckpt = _checkpoint(embedder, raw_dataset, tmp_path / 'best.pt')
+    named.unlink()
+    _plant_gallery(embedder, raw_dataset, set(), monkeypatch)
+
+    report = attention_profile(embedder, raw_dataset, 'ZAB', batch_size=3)
+
+    assert report is not None
+    spatial = report['spatial']
+    assert spatial['approximate_geometry'] is False and spatial['montage_verified'] is True
+    assert spatial['montage_source'] == 'packaged' and spatial['montage_path'] == str(packaged_montage_csv())
+    assert spatial['labels'][0] == 'E1' and spatial['regions'] is not None
+    assert write_figures(report, tmp_path / 'figs')['topomap'] is not None
+
+    geometry = checkpoint_geometry(ckpt)
+    assert geometry['approximate_geometry'] is False and geometry['has_harmonic_basis'] is True
+    assert geometry['topomap_readable'] is True and geometry['montage_verified'] is True
+    assert geometry['montage_source'] == 'packaged' and geometry['montage_csv'] == str(named)
+    assert geometry['n_channels'] == spatial['n_channels'] and geometry['reason'] is None
+
+
+def test_checkpoint_geometry_names_the_placeholder_and_the_absent_basis(
+    raw_dataset: ZuCoDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A placeholder checkpoint is reported unreadable with its reason; a checkpoint without the code has no basis."""
+    monkeypatch.delenv('ZTE_CACHE_REMOTE', raising=False)
+    placeholder = _checkpoint(_embedder_with(raw_dataset, None), raw_dataset, tmp_path / 'placeholder.pt')
+    geometry = checkpoint_geometry(placeholder)
+    assert geometry['has_harmonic_basis'] is True and geometry['approximate_geometry'] is True
+    assert geometry['topomap_readable'] is False and 'approximate' in geometry['reason']
+    assert geometry['run_name'] == 'attention_test' and geometry['train_holdout'] == 'ZAB'
+
+    flat = _checkpoint(_embedder(raw_dataset, spatial=False), raw_dataset, tmp_path / 'flat.pt')
+    geometry = checkpoint_geometry(flat)
+    assert geometry['has_harmonic_basis'] is False and geometry['approximate_geometry'] is None
+    assert geometry['topomap_readable'] is False and 'no spherical-harmonic' in geometry['reason']
