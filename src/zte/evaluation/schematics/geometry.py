@@ -11,7 +11,10 @@ import numpy as np
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Colormap, Normalize
 from matplotlib.contour import ContourSet
+from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Circle, Ellipse, Polygon, Rectangle
+from matplotlib.patheffects import withStroke
+from matplotlib.textpath import TextToPath
 from scipy.special import eval_legendre
 
 from zte.data.montage.regions import SCALP_REGIONS
@@ -23,11 +26,13 @@ from zte.evaluation.schematics._style import (
     HEAD_RADIUS_M,
     INK,
     INK_2,
+    MIN_FONT_PT,
     MUTED,
     RED,
     REGION_CMAP,
     SEQUENTIAL_CMAP,
     SINGLE_COLUMN_IN,
+    TEXT_SCALE,
     Axes,
     arrow,
     blank,
@@ -42,6 +47,7 @@ from zte.models.spatial import ScalpGeometry, degree_of_column, real_spherical_h
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
+    from matplotlib.patheffects import AbstractPathEffect
 
 # The GSN-105 cap reaches 23 degrees below the equator, so a vertex-centred projection throws 29 electrodes outside
 # the scalp circle and mne then paints the field out to their hull. Lowering the projection origin (mne's `sphere`
@@ -73,10 +79,22 @@ _EEG_TINT: Final[str] = '#e6f0fb'
 _DASH: Final[tuple[float, tuple[float, float]]] = (0.0, (3.0, 2.0))
 """The dash pattern of a generated-parameter path."""
 
+# A symbol that must sit on a scalp map is written over sensor dots; a white rim keeps it readable there.
+_HALO: Final[list[AbstractPathEffect]] = [withStroke(linewidth=1.8, foreground='white')]
+"""Path effect for the few labels that sit on a topomap."""
+
+# Clear space, in inches, a label keeps from every dot, outline and neighbouring label at the written size; about a
+# point, which is what separates "beside its dot" from "touching it" at column width.
+_LABEL_PAD: Final[float] = 0.015
+"""Padding around a placed electrode number."""
+
 # The signature is 105 per-channel log scales followed by the upper triangle of the 8 x 8 region tangent matrix.
 _N_SCALE: Final[int] = 105
 _N_TANGENT: Final[int] = 36
 _N_SIGNATURE: Final[int] = _N_SCALE + _N_TANGENT
+
+type _Box = tuple[float, float, float, float]
+"""An axis-aligned rectangle in inches: left, bottom, right, top."""
 
 
 # ---- Geometry shared by the figures ---- #
@@ -172,6 +190,102 @@ def _inset(fig: Figure, x: float, y: float, w: float, h: float) -> Axes:
     return ax
 
 
+def _text_extent(text: str, size: float) -> tuple[float, float]:
+    """Width and height, in inches, of `text` at the size `save_figure` will actually write a `size`-pt label."""
+    written = max(MIN_FONT_PT, size * TEXT_SCALE)
+    w, h, _ = TextToPath().get_text_width_height_descent(
+        text, FontProperties(family='sans-serif', size=written), ismath=False
+    )
+
+    return w / 72.0, h / 72.0
+
+
+def _boxes_touch(a: _Box, b: _Box) -> bool:
+    """Whether two rectangles overlap."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _box_meets_disc(a: _Box, cx: float, cy: float, r: float) -> bool:
+    """Whether a rectangle comes within `r` of the point `(cx, cy)`."""
+    nx, ny = min(max(cx, a[0]), a[2]), min(max(cy, a[1]), a[3])
+
+    return math.hypot(nx - cx, ny - cy) < r
+
+
+def _box_crosses_ring(a: _Box, cx: float, cy: float, r: float) -> bool:
+    """Whether the circle of radius `r` about `(cx, cy)` passes through a rectangle."""
+    nearest = math.hypot(min(max(cx, a[0]), a[2]) - cx, min(max(cy, a[1]), a[3]) - cy)
+    farthest = max(math.hypot(x - cx, y - cy) for x in (a[0], a[2]) for y in (a[1], a[3]))
+
+    return nearest < r + _LABEL_PAD and farthest > r - _LABEL_PAD
+
+
+def _label_layout(
+    dots: np.ndarray,
+    labels: Sequence[str],
+    *,
+    size: float,
+    dot_r: float,
+    centre: tuple[float, float],
+    radius: float,
+    obstacles: Sequence[_Box],
+    bounds: _Box,
+) -> list[tuple[int, float, float]]:
+    """Collision-free numbering: each kept label's index, centre x and baseline y; a number that fits nowhere is dropped."""
+    cx, cy = centre
+    placed: list[_Box] = []
+    layout: list[tuple[int, float, float]] = []
+    # Rim electrodes are placed first: they have the outside of the scalp to lean into, and settling them early keeps
+    # their numbers from drifting into the crowded interior.
+    for i in np.argsort(-np.hypot(dots[:, 0] - cx, dots[:, 1] - cy)):
+        x, y = float(dots[i, 0]), float(dots[i, 1])
+        # Digits have no descender, so the ink box is the whole footprint and the number is set on its baseline.
+        w, h = _text_extent(labels[i], size)
+        for dx, dy in _label_directions(x - cx, y - cy):
+            reach = dot_r + _LABEL_PAD + 0.5 * (abs(dx) * w + abs(dy) * h)
+            lx, ly = x + dx * reach, y + dy * reach
+            candidate = (
+                lx - w / 2 - _LABEL_PAD,
+                ly - h / 2 - _LABEL_PAD,
+                lx + w / 2 + _LABEL_PAD,
+                ly + h / 2 + _LABEL_PAD,
+            )
+            if (
+                candidate[0] < bounds[0]
+                or candidate[1] < bounds[1]
+                or candidate[2] > bounds[2]
+                or candidate[3] > bounds[3]
+            ):
+                continue
+            if _box_crosses_ring(candidate, cx, cy, radius):
+                continue
+            if any(_boxes_touch(candidate, other) for other in (*obstacles, *placed)):
+                continue
+            if any(
+                _box_meets_disc(candidate, float(dots[j, 0]), float(dots[j, 1]), dot_r)
+                for j in range(len(dots))
+                if j != i
+            ):
+                continue
+            placed.append(candidate)
+            layout.append((int(i), lx, ly - h / 2))
+            break
+
+    return layout
+
+
+def _label_directions(rx: float, ry: float) -> list[tuple[float, float]]:
+    """Where to try a number relative to its dot, most readable first: outward, the compass points, then between them."""
+    span = math.hypot(rx, ry) or 1.0
+    away_x, away_y = math.copysign(1.0, rx), math.copysign(1.0, ry)
+    half = math.sqrt(0.5)
+    compass = [(0.0, away_y), (0.0, -away_y), (away_x, 0.0), (-away_x, 0.0)]
+    diagonals = [(sx * half, sy * half) for sy in (away_y, -away_y) for sx in (away_x, -away_x)]
+    between = [(math.cos(a), math.sin(a)) for a in (math.radians(22.5 + 45.0 * k) for k in range(8))]
+
+    return [(rx / span, ry / span), *compass, *diagonals, *between]
+
+
 def _degree_colour(degree: int) -> tuple[float, float, float, float]:
     """The sequential-blue step that stands for harmonic degree `degree` in every figure."""
     return SEQUENTIAL_CMAP(0.15 + 0.85 * degree / _L_MAX)
@@ -265,16 +379,21 @@ def _column(
     ax.add_patch(Rectangle((x, y), w, h, facecolor='none', edgecolor=INK_2, linewidth=0.5, zorder=3))
 
 
-def _signature_strip(ax: Axes, signature: np.ndarray, x: float, y: float, w: float, h: float, *, dims: bool) -> None:
-    """The signature as two framed segments, 105 then 36, each standardised so the split is visible."""
+def _signature_strip(
+    ax: Axes, signature: np.ndarray, x: float, y: float, w: float, h: float, *, dims: bool
+) -> tuple[float, float]:
+    """The signature as two framed segments, 105 then 36, each standardised; returns the two segment centres."""
     split = w * _N_SCALE / _N_SIGNATURE
     scales = _standardised(signature[:_N_SCALE])
     tangent = _standardised(signature[_N_SCALE:])
     _strip(ax, scales, x, y, split - 0.01, h, cmap=DIVERGING_CMAP, vlim=(-2.5, 2.5))
     _strip(ax, tangent, x + split + 0.01, y, w - split - 0.01, h, cmap=DIVERGING_CMAP, vlim=(-2.5, 2.5))
+    centres = (x + (split - 0.01) / 2, x + split + 0.01 + (w - split - 0.01) / 2)
     if dims:
-        ax.text(x + split / 2, y - 0.04, '105', ha='center', va='top', fontsize=5.5, color=INK_2)
-        ax.text(x + (w + split) / 2, y - 0.04, '36', ha='center', va='top', fontsize=5.5, color=INK_2)
+        ax.text(centres[0], y - 0.05, '105', ha='center', va='top', fontsize=5.5, color=INK_2)
+        ax.text(centres[1], y - 0.05, '36', ha='center', va='top', fontsize=5.5, color=INK_2)
+
+    return centres
 
 
 def _reader_glyph(ax: Axes, x: float, y: float, r: float, *, held_out: bool) -> None:
@@ -322,10 +441,12 @@ def _gain_bars(ax: Axes) -> None:
     ax.axhline(1.0, color=INK_2, linewidth=0.4, linestyle=_DASH)
     ax.set_xticks(degrees)
     ax.set_yticks([0, 1])
+    # The first bar stands off the y axis so the tick numbers beside the spine never run into it.
+    ax.set_xlim(-0.95, 6.65)
     ax.set_ylim(0, 1.45)
     ax.set_xlabel(r'$\ell$', fontsize=6.5, labelpad=1)
-    ax.set_ylabel(r'$g_\ell$', fontsize=6.5, labelpad=1)
-    ax.tick_params(labelsize=5.5, length=1.5, width=0.5, pad=1.5)
+    ax.set_ylabel(r'$g_\ell$', fontsize=6.5, labelpad=2)
+    ax.tick_params(labelsize=5.5, length=1.5, width=0.5, pad=2)
     for side in ('top', 'right'):
         ax.spines[side].set_visible(False)
     for side in ('left', 'bottom'):
@@ -379,8 +500,8 @@ def _covariance_cut(
 
 def _unit_circle(ax: Axes, cx: float, cy: float, r: float) -> None:
     """The whitened cut: one ink circle with both readers' rings lying on it."""
-    ax.plot([cx - 1.4 * r, cx + 1.4 * r], [cy, cy], color=INK_2, linewidth=0.4, zorder=1)
-    ax.plot([cx, cx], [cy - 1.4 * r, cy + 1.4 * r], color=INK_2, linewidth=0.4, zorder=1)
+    ax.plot([cx - 1.25 * r, cx + 1.25 * r], [cy, cy], color=INK_2, linewidth=0.4, zorder=1)
+    ax.plot([cx, cx], [cy - 1.25 * r, cy + 1.25 * r], color=INK_2, linewidth=0.4, zorder=1)
     ax.add_patch(Circle((cx, cy), r, facecolor='none', edgecolor=INK, linewidth=0.9, zorder=3))
     ax.add_patch(
         Circle((cx, cy), r, facecolor='none', edgecolor=EEG, linewidth=0.7, linestyle=(0.0, (2.5, 2.5)), zorder=4)
@@ -388,6 +509,12 @@ def _unit_circle(ax: Axes, cx: float, cy: float, r: float) -> None:
     ax.add_patch(
         Circle((cx, cy), r, facecolor='none', edgecolor=RED, linewidth=0.7, linestyle=(2.5, (2.5, 2.5)), zorder=4)
     )
+
+
+def _whitening_arrow(ax: Axes, x0: float, x1: float, y: float, label: str) -> None:
+    """The transport arrow between a cut and its whitened circle, its operator written clear above it."""
+    arrow(ax, x0, y, x1, y)
+    ax.text((x0 + x1) / 2, y + 0.09, label, ha='center', va='bottom', fontsize=7, color=INK)
 
 
 def _colorbar(fig: Figure, cax: Axes, cmap: Colormap, vlim: tuple[float, float], *, horizontal: bool) -> None:
@@ -411,7 +538,7 @@ def montage_map() -> Figure:
     width, height = SINGLE_COLUMN_IN, 3.35
     fig, ax = _canvas(width, height)
     xyz, _, regions = montage()
-    cx, cy, radius = 1.55, 1.62, 1.42
+    cx, cy, radius = 1.50, 1.62, 1.42
     xy = _scalp_xy(xyz) * radius
     head(ax, cx, cy, radius)
     ax.scatter(
@@ -423,46 +550,52 @@ def montage_map() -> Figure:
         linewidths=0.4,
         zorder=3,
     )
-    _region_key(ax, 3.2, cy - radius, cy + radius, 0.08)
+    _region_key(ax, 3.10, cy - radius, cy + radius, 0.08)
     ax.text(cx - radius, cy - radius - 0.02, '105 electrodes', ha='left', va='top', fontsize=6.5, color=INK_2)
 
     return fig
 
 
 def montage_map_labels() -> Figure:
-    """The montage with every electrode numbered, for looking a channel up.
+    """The montage with every electrode numbered that can be numbered without overprinting, for looking a channel up.
 
     Returns:
         Figure: A single-column figure.
     """
-    width, height = SINGLE_COLUMN_IN, 3.6
+    width, height = SINGLE_COLUMN_IN, 3.50
     fig, ax = _canvas(width, height)
     xyz, labels, regions = montage()
-    cx, cy, radius = 1.75, 1.72, 1.6
-    xy = _scalp_xy(xyz) * radius
+    cx, cy, radius = 1.75, 1.68, 1.52
+    dots = _scalp_xy(xyz) * radius + np.array([cx, cy])
     head(ax, cx, cy, radius)
+    dot_r = 0.022
     ax.scatter(
-        cx + xy[:, 0],
-        cy + xy[:, 1],
+        dots[:, 0],
+        dots[:, 1],
         s=9,
         c=[REGION_CMAP(r) for r in _region_rank(regions)],
         edgecolors='none',
         zorder=3,
     )
-    # A number sits above its dot on the front half and below it on the back half, so the labels lean away from the
-    # densest ring around the vertex instead of into it.
-    for (x, y), label in zip(xy, labels, strict=True):
-        above = y >= 0
-        ax.text(
-            cx + x,
-            cy + y + (0.045 if above else -0.045),
-            label.removeprefix('E'),
-            ha='center',
-            va='bottom' if above else 'top',
-            fontsize=5.0,
-            color=INK_2,
-            zorder=4,
-        )
+    # The nose and ears are marks too; a number may lean outside the scalp but never onto them.
+    obstacles = (
+        (cx - 0.1 * radius, cy + 0.98 * radius, cx + 0.1 * radius, cy + 1.16 * radius),
+        (cx - 1.09 * radius, cy - 0.16 * radius, cx - 0.97 * radius, cy + 0.16 * radius),
+        (cx + 0.97 * radius, cy - 0.16 * radius, cx + 1.09 * radius, cy + 0.16 * radius),
+    )
+    numbers = [label.removeprefix('E') for label in labels]
+    layout = _label_layout(
+        dots,
+        numbers,
+        size=5.0,
+        dot_r=dot_r,
+        centre=(cx, cy),
+        radius=radius,
+        obstacles=obstacles,
+        bounds=(0.01, 0.01, width - 0.01, height - 0.01),
+    )
+    for i, x, baseline in layout:
+        ax.text(x, baseline, numbers[i], ha='center', va='baseline', fontsize=5.0, color=INK_2, zorder=4)
 
     return fig
 
@@ -477,7 +610,7 @@ def harmonic_basis() -> Figure:
     geometry = ScalpGeometry.from_xyz(xyz, labels=tuple(labels), normalize=True)
     basis = real_spherical_harmonics(geometry.theta, geometry.phi, 3)
     degrees = degree_of_column(3)
-    cell, left, bottom = 0.955, 0.30, 0.27
+    cell, left, bottom = 0.955, 0.42, 0.22
     rows = 4
     width, height = DOUBLE_COLUMN_IN, bottom + rows * cell + 0.06
     fig, canvas = _canvas(width, height)
@@ -495,7 +628,7 @@ def harmonic_basis() -> Figure:
                 ax, basis[:, column] / limit, xyz, cmap=DIVERGING_CMAP, vlim=(-1.0, 1.0), contours=4 if degree else 0
             )
         canvas.text(
-            left - 0.04,
+            left - 0.05,
             bottom + (rows - 1 - degree) * cell + cell / 2,
             rf'$\ell={degree}$',
             ha='right',
@@ -506,22 +639,22 @@ def harmonic_basis() -> Figure:
     for order in range(-3, 4):
         canvas.text(
             left + (order + 3) * cell + cell / 2,
-            bottom - 0.05,
+            bottom - 0.07,
             f'{order:+d}' if order else '0',
             ha='center',
             va='top',
             fontsize=6.5,
             color=INK,
         )
-    canvas.text(left - 0.04, bottom - 0.05, r'$m$', ha='right', va='top', fontsize=7, color=INK)
+    canvas.text(left - 0.05, bottom - 0.07, r'$m$', ha='right', va='top', fontsize=7, color=INK)
 
     # The two empty top corners carry the gains and the one shared colorbar.
     top_row = bottom + (rows - 1) * cell
-    _gain_bars(_inset(fig, left + 0.55, top_row + 0.28, 2 * cell - 0.7, 0.5))
-    cax = _inset(fig, left + 5 * cell + 0.2, top_row + 0.5, 2 * cell - 0.6, 0.08)
+    _gain_bars(_inset(fig, left + 0.52, top_row + 0.30, 2 * cell - 0.66, 0.5))
+    cax = _inset(fig, left + 5 * cell + 0.15, top_row + 0.50, 2 * cell - 0.55, 0.08)
     _colorbar(fig, cax, DIVERGING_CMAP, (-1.0, 1.0), horizontal=True)
     canvas.text(
-        left + 6 * cell, top_row + 0.66, r'$Y_\ell^m\,/\,\max|Y_\ell|$', ha='center', va='bottom', fontsize=7, color=INK
+        left + 6 * cell, top_row + 0.72, r'$Y_\ell^m\,/\,\max|Y_\ell|$', ha='center', va='bottom', fontsize=7, color=INK
     )
 
     return fig
@@ -533,11 +666,11 @@ def harmonic_kernel() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    width, height = SINGLE_COLUMN_IN, 1.95
+    width, height = SINGLE_COLUMN_IN, 2.0
     fig, canvas = _canvas(width, height)
 
     # (a) P_l(cos gamma) for every degree the model uses, in the degree colours.
-    ax = _inset(fig, 0.40, 0.36, 1.55, 1.42)
+    ax = _inset(fig, 0.40, 0.38, 1.50, 1.42)
     gamma = np.linspace(0.0, math.pi, 400)
     for degree in range(_L_MAX + 1):
         ax.plot(np.degrees(gamma), eval_legendre(degree, np.cos(gamma)), color=_degree_colour(degree), linewidth=0.8)
@@ -555,7 +688,7 @@ def harmonic_kernel() -> Figure:
         ax.spines[side].set_linewidth(0.5)
     for degree in range(_L_MAX + 1):
         ax.add_patch(Rectangle((74 + 8 * degree, 0.72), 8, 0.12, facecolor=_degree_colour(degree), edgecolor='none'))
-    ax.text(71, 0.78, r'$\ell$', ha='right', va='center', fontsize=6.5, color=INK)
+    ax.text(70, 0.78, r'$\ell$', ha='right', va='center', fontsize=6.5, color=INK)
     ax.text(74, 0.88, '0', ha='left', va='bottom', fontsize=5.5, color=INK_2)
     ax.text(130, 0.88, '6', ha='right', va='bottom', fontsize=5.5, color=INK_2)
 
@@ -566,7 +699,7 @@ def harmonic_kernel() -> Figure:
     angles = geometry.geodesic_angles()[reference]
     kernel = _kernel(angles, _DEGREE_GAINS)
     kernel /= kernel[reference]
-    hx = _inset(fig, 2.12, 0.42, 1.28, 1.28)
+    hx = _inset(fig, 2.12, 0.50, 1.28, 1.28)
     # mne's tick-chosen levels include zero, which wanders along the rim where the truncated kernel hovers near it.
     _scalp(hx, kernel, xyz, cmap=DIVERGING_CMAP, vlim=(-1.0, 1.0), contours=0)
     _half_max_ring(hx)
@@ -584,20 +717,31 @@ def harmonic_kernel() -> Figure:
     hx.scatter(*pos[reference], s=16, facecolors='none', edgecolors=INK, linewidths=0.7, zorder=6)
     hx.scatter(*pos[partner], s=16, facecolors='none', edgecolors=INK, linewidths=0.7, zorder=6)
     mid = 0.5 * (pos[reference] + pos[partner])
-    hx.text(mid[0] + 0.014, mid[1] + 0.004, r'$\gamma$', ha='left', va='center', fontsize=7, color=INK, zorder=6)
-    cax = _inset(fig, 2.45, 0.25, 0.62, 0.06)
+    hx.text(
+        mid[0] + 0.014,
+        mid[1] + 0.004,
+        r'$\gamma$',
+        ha='left',
+        va='center',
+        fontsize=7,
+        color=INK,
+        zorder=6,
+        path_effects=_HALO,
+    )
+    cax = _inset(fig, 2.45, 0.37, 0.62, 0.06)
     _colorbar(fig, cax, DIVERGING_CMAP, (-1.0, 1.0), horizontal=True)
+    # The formula sits under the colorbar, the one place in the panel wide enough for it at the floor size.
     canvas.text(
         2.76,
-        1.84,
+        0.11,
         r'$k(\gamma)=\sum_\ell g_\ell^{2}\,\frac{2\ell+1}{4\pi}\,P_\ell(\cos\gamma)$',
         ha='center',
         va='center',
-        fontsize=6.5,
+        fontsize=5.5,
         color=INK,
     )
     canvas.text(0.04, height - 0.04, 'a', ha='left', va='top', fontsize=8, fontweight='bold', color=INK)
-    canvas.text(2.06, height - 0.04, 'b', ha='left', va='top', fontsize=8, fontweight='bold', color=INK)
+    canvas.text(2.02, height - 0.04, 'b', ha='left', va='top', fontsize=8, fontweight='bold', color=INK)
 
     return fig
 
@@ -608,7 +752,7 @@ def covariance_transport() -> Figure:
     Returns:
         Figure: A double-column figure.
     """
-    width, height = DOUBLE_COLUMN_IN, 2.45
+    width, height = DOUBLE_COLUMN_IN, 2.36
     fig, ax = _canvas(width, height)
     xyz, labels, regions = montage()
     order = _anterior_order(xyz, regions)
@@ -622,9 +766,9 @@ def covariance_transport() -> Figure:
     n = xyz.shape[0]
 
     # (a) The covariances, channels sorted front to back so the region strip explains the blocks.
-    size, y0 = 1.36, 0.68
+    size, y0 = 1.28, 0.62
     for i, (cov, colour, held_out, symbol) in enumerate(readers):
-        x0 = 0.36 + i * (size + 0.22)
+        x0 = 0.34 + i * (size + 0.24)
         ax.imshow(
             cov / limit,
             extent=(x0, x0 + size, y0, y0 + size),
@@ -645,10 +789,10 @@ def covariance_transport() -> Figure:
             cmap=REGION_CMAP,
             vlim=(-0.5, len(SCALP_REGIONS) - 0.5),
         )
-        _reader_glyph(ax, x0 + size / 2 - 0.2, y0 + size + 0.16, 0.1, held_out=held_out)
-        ax.text(x0 + size / 2 + 0.02, y0 + size + 0.16, symbol, ha='left', va='center', fontsize=8, color=colour)
-        _signature_strip(ax, _signature(cov, sorted_regions), x0, 0.34, size, 0.14, dims=True)
-        ax.text(x0 - 0.04, 0.41, r'$\sigma$', ha='right', va='center', fontsize=7, color=colour)
+        _reader_glyph(ax, x0 + size / 2 - 0.26, y0 + size + 0.16, 0.1, held_out=held_out)
+        ax.text(x0 + size / 2, y0 + size + 0.16, symbol, ha='left', va='center', fontsize=8, color=colour)
+        _signature_strip(ax, _signature(cov, sorted_regions), x0, 0.26, size, 0.14, dims=True)
+        ax.text(x0 - 0.04, 0.33, r'$\sigma$', ha='right', va='center', fontsize=7, color=colour)
 
     # (b) The cut through the vertex electrode and its most correlated neighbour, before and after whitening.
     reference = int(ScalpGeometry.from_xyz(xyz, normalize=True).theta.argmin())
@@ -657,15 +801,14 @@ def covariance_transport() -> Figure:
     partner = int(np.argsort(first[position] / np.sqrt(first[position, position] * np.diag(first)))[-2])
     pair = (labels[order[position]], labels[order[partner]])
     cuts = [(cov[np.ix_([position, partner], [position, partner])], colour) for cov, colour, _, _ in readers]
-    ox, oy = 3.95, y0 + size / 2
-    _covariance_cut(ax, ox, oy, cuts, pair, reach=0.42)
-    arrow(ax, ox + 0.52, oy, ox + 0.8, oy)
-    ax.text(ox + 0.66, oy + 0.06, r'$R_s^{-1/2}$', ha='center', va='bottom', fontsize=7, color=INK)
-    _unit_circle(ax, 5.05, oy, 0.24)
+    ox, oy = 3.74, y0 + size / 2
+    _covariance_cut(ax, ox, oy, cuts, pair, reach=0.36)
+    _whitening_arrow(ax, 4.36, 4.62, oy, r'$R_s^{-1/2}$')
+    _unit_circle(ax, 4.98, oy, 0.24)
 
     # (c) The identity, on the same colour scale.
-    ix = 5.52
-    arrow(ax, 5.05 + 0.24 * 1.4 + 0.02, oy, ix - 0.02, oy)
+    ix = 5.54
+    arrow(ax, 5.32, oy, ix - 0.04, oy)
     ax.imshow(
         np.eye(n),
         extent=(ix, ix + size, y0, y0 + size),
@@ -677,9 +820,9 @@ def covariance_transport() -> Figure:
     )
     ax.add_patch(Rectangle((ix, y0), size, size, facecolor='none', edgecolor=INK_2, linewidth=0.5, zorder=3))
     ax.text(ix + size / 2, y0 + size + 0.16, r'$R_s^{-1/2}R_sR_s^{-1/2}=I$', ha='center', va='center', fontsize=7.5)
-    cax = _inset(fig, ix + size + 0.08, y0, 0.055, size)
+    cax = _inset(fig, ix + size + 0.06, y0, 0.055, size)
     _colorbar(fig, cax, DIVERGING_CMAP, (-1.0, 1.0), horizontal=False)
-    for letter, x in (('a', 0.04), ('b', 3.42), ('c', 5.42)):
+    for letter, x in (('a', 0.04), ('b', 3.28), ('c', 5.44)):
         ax.text(x, height - 0.04, letter, ha='left', va='top', fontsize=8, fontweight='bold', color=INK)
 
     return fig
@@ -691,7 +834,7 @@ def transport_manifold_only() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    width, height = SINGLE_COLUMN_IN, 1.75
+    width, height = SINGLE_COLUMN_IN, 1.70
     fig, ax = _canvas(width, height)
     xyz, labels, regions = montage()
     order = _anterior_order(xyz, regions)
@@ -701,7 +844,7 @@ def transport_manifold_only() -> Figure:
     ]
 
     # The manifold: a dome with both readers below the crown and the geodesics that carry them to I.
-    cx, cy, a, b = 0.95, 0.42, 0.82, 0.95
+    cx, cy, a, b = 0.90, 0.42, 0.78, 0.95
     t = np.linspace(0.0, math.pi, 120)
     ax.add_patch(
         Polygon(
@@ -714,9 +857,9 @@ def transport_manifold_only() -> Figure:
         )
     )
     ax.plot(cx + a * np.cos(t), cy - 0.16 * np.sin(t), color=EEG, linewidth=0.5, linestyle=_DASH, zorder=1)
-    ax.text(cx - a + 0.02, cy + 0.02, 'SPD(105)', ha='left', va='bottom', fontsize=5.5, color=INK_2)
+    ax.text(cx, cy - 0.21, 'SPD(105)', ha='center', va='top', fontsize=5.5, color=INK_2)
     crown = (cx, cy + b)
-    points = [(cx - 0.52, cy + 0.42, EEG, readers[0][2]), (cx + 0.5, cy + 0.32, RED, readers[1][2])]
+    points = [(cx - 0.50, cy + 0.42, EEG, readers[0][2]), (cx + 0.48, cy + 0.32, RED, readers[1][2])]
     for x, y, colour, symbol in points:
         ax.scatter(x, y, s=14, color=colour, edgecolors='white', linewidths=0.4, zorder=4)
         ax.text(x, y - 0.09, symbol, ha='center', va='top', fontsize=7, color=colour)
@@ -747,11 +890,10 @@ def transport_manifold_only() -> Figure:
     partner = int(np.argsort(first[position] / np.sqrt(first[position, position] * np.diag(first)))[-2])
     pair = (labels[order[position]], labels[order[partner]])
     cuts = [(cov[np.ix_([position, partner], [position, partner])], colour) for cov, colour, _ in readers]
-    ox, oy = 2.2, 0.9
-    _covariance_cut(ax, ox, oy, cuts, pair, reach=0.38)
-    arrow(ax, ox + 0.5, oy, ox + 0.72, oy)
-    ax.text(ox + 0.61, oy + 0.06, r'$R^{-1/2}$', ha='center', va='bottom', fontsize=7, color=INK)
-    _unit_circle(ax, ox + 0.98, oy, 0.19)
+    ox, oy = 2.08, 0.90
+    _covariance_cut(ax, ox, oy, cuts, pair, reach=0.34)
+    _whitening_arrow(ax, 2.68, 2.92, oy, r'$R^{-1/2}$')
+    _unit_circle(ax, 3.22, oy, 0.19)
 
     return fig
 
@@ -762,29 +904,30 @@ def signature_adapter() -> Figure:
     Returns:
         Figure: A double-column figure.
     """
-    width, height = DOUBLE_COLUMN_IN, 2.72
+    width, height = DOUBLE_COLUMN_IN, 2.04
     fig, ax = _canvas(width, height)
     xyz, _, regions = montage()
     rng = np.random.default_rng(5)
-    y_data, y_adapt = 2.05, 0.78
+    y_data, y_adapt, y_label = 1.44, 0.44, 1.86
 
     # The data path: the whitened window, the electrode gains on the head, the frontend, the token, FiLM, onwards.
     tensor_slab(ax, 0.25, y_data - 0.28, 0.95, 0.56, 0.12, dims=('350', '105', ''))
-    ax.text(0.78, y_data + 0.4, r'$R^{-1/2}x$', ha='center', va='bottom', fontsize=7, color=EEG)
+    ax.text(0.78, y_label, r'$R^{-1/2}x$', ha='center', va='bottom', fontsize=7, color=EEG)
     arrow(ax, 1.27, y_data, 1.53, y_data, color=EEG)
     geometry = ScalpGeometry.from_xyz(xyz, normalize=True)
     smooth = geometry.spherical_harmonics(2)[:, 1:] @ rng.standard_normal(8)
     gains = 1.0 + 0.3 * smooth / float(np.abs(smooth).max())
-    hx = _inset(fig, 1.54, y_data - 0.39, 0.78, 0.78)
+    head_x = 1.93
+    hx = _inset(fig, head_x - 0.39, y_data - 0.39, 0.78, 0.78)
     _scalp(hx, gains, xyz, cmap=DIVERGING_CMAP, vlim=(0.7, 1.3), contours=3)
-    ax.text(1.93, y_data - 0.44, r'$\odot\;g$', ha='center', va='top', fontsize=7.5, color=INK)
+    ax.text(head_x, y_label, r'$\odot\;g$', ha='center', va='bottom', fontsize=7.5, color=INK)
     arrow(ax, 2.32, y_data, 2.6, y_data, color=EEG)
     box(ax, 3.1, y_data, 1.0, 0.5, 'conformer', fill=_EEG_TINT, edge=EEG)
     arrow(ax, 3.6, y_data, 3.86, y_data, color=EEG)
     token = np.abs(rng.standard_normal(256))
     _column(ax, token, 3.88, y_data - 0.35, 0.12, 0.7, cmap=SEQUENTIAL_CMAP, vlim=(0.0, 2.5))
-    ax.text(3.94, y_data + 0.4, r'$h$', ha='center', va='bottom', fontsize=8, color=EEG)
-    ax.text(3.94, y_data - 0.4, '256', ha='center', va='top', fontsize=5.5, color=INK_2)
+    ax.text(3.94, y_label, r'$h$', ha='center', va='bottom', fontsize=8, color=EEG)
+    ax.text(3.94, y_data - 0.40, '256', ha='center', va='top', fontsize=5.5, color=INK_2)
     arrow(ax, 4.02, y_data, 4.28, y_data, color=EEG)
     _operator(ax, 4.4, y_data, 0.1, product=True)
     ax.plot([4.5, 4.7], [y_data, y_data], color=EEG, linewidth=0.7, zorder=2)
@@ -800,41 +943,55 @@ def signature_adapter() -> Figure:
         cmap=SEQUENTIAL_CMAP,
         vlim=(0.0, 2.5),
     )
-    ax.text(5.24, y_data + 0.4, r"$h'$", ha='center', va='bottom', fontsize=8, color=EEG)
-    ax.text(4.6, y_data + 0.42, r'$h\odot(1+\gamma)+\beta$', ha='center', va='bottom', fontsize=6.5, color=INK)
+    ax.text(5.24, y_label, r"$h'$", ha='center', va='bottom', fontsize=8, color=EEG)
+    ax.text(4.6, y_label, r'$h\odot(1+\gamma)+\beta$', ha='center', va='bottom', fontsize=6.5, color=INK)
     arrow(ax, 5.32, y_data, 5.58, y_data, color=EEG)
     box(ax, 6.15, y_data, 1.1, 0.5, 'transformer', sub='× 4', fill=FILL, edge=INK_2)
     arrow(ax, 6.7, y_data, 7.0, y_data, color=EEG)
 
     # The adapter path: the held-out reader's own covariance, its signature, the hypernetwork.
-    _reader_glyph(ax, 0.5, y_adapt, 0.2, held_out=True)
-    arrow(ax, 0.74, y_adapt, 0.98, y_adapt, color=RED)
+    _reader_glyph(ax, 0.42, y_adapt, 0.2, held_out=True)
+    arrow(ax, 0.66, y_adapt, 0.90, y_adapt, color=RED)
     order = _anterior_order(xyz, regions)
     cov = _reader_covariance(xyz, seed=11, scale=1.8)[np.ix_(order, order)]
     ax.imshow(
         cov / float(np.abs(cov).max()),
-        extent=(1.0, 1.46, y_adapt - 0.23, y_adapt + 0.23),
+        extent=(0.92, 1.38, y_adapt - 0.23, y_adapt + 0.23),
         cmap=DIVERGING_CMAP,
         vmin=-1.0,
         vmax=1.0,
         interpolation='nearest',
         zorder=2,
     )
-    ax.add_patch(Rectangle((1.0, y_adapt - 0.23), 0.46, 0.46, facecolor='none', edgecolor=RED, linewidth=0.6, zorder=3))
-    ax.text(1.23, y_adapt + 0.27, r"$R_{s'}$", ha='center', va='bottom', fontsize=7, color=RED)
-    arrow(ax, 1.5, y_adapt, 1.74, y_adapt, color=RED)
-    signature = _signature(cov, [regions[i] for i in order])
-    _signature_strip(ax, signature, 1.76, y_adapt - 0.09, 1.6, 0.18, dims=False)
-    split = 1.76 + 1.6 * _N_SCALE / _N_SIGNATURE
-    ax.text((1.76 + split) / 2, y_adapt - 0.13, 'log scale · 105', ha='center', va='top', fontsize=5.5, color=INK_2)
-    ax.text((split + 3.36) / 2, y_adapt - 0.13, 'tangent · 36', ha='center', va='top', fontsize=5.5, color=INK_2)
-    ax.text(
-        2.56, y_adapt + 0.13, r"$\sigma_{s'}\in\mathbb{R}^{141}$", ha='center', va='bottom', fontsize=6.5, color=RED
+    ax.add_patch(
+        Rectangle((0.92, y_adapt - 0.23), 0.46, 0.46, facecolor='none', edgecolor=RED, linewidth=0.6, zorder=3)
     )
-    arrow(ax, 3.4, y_adapt, 3.64, y_adapt, color=RED)
+    ax.text(1.15, y_adapt + 0.27, r"$R_{s'}$", ha='center', va='bottom', fontsize=7, color=RED)
+    arrow(ax, 1.42, y_adapt, 1.64, y_adapt, color=RED)
+    signature = _signature(cov, [regions[i] for i in order])
+    strip_x, strip_w = 1.66, 1.26
+    log_centre, tangent_centre = _signature_strip(ax, signature, strip_x, y_adapt - 0.09, strip_w, 0.18, dims=False)
+    ax.text(log_centre, y_adapt - 0.13, 'log scale', ha='center', va='top', fontsize=5.5, color=INK_2)
+    ax.text(tangent_centre, y_adapt - 0.13, 'tangent', ha='center', va='top', fontsize=5.5, color=INK_2)
+    ax.text(
+        strip_x + strip_w / 2,
+        y_adapt + 0.13,
+        r"$\sigma_{s'}\in\mathbb{R}^{141}$",
+        ha='center',
+        va='bottom',
+        fontsize=6.5,
+        color=RED,
+    )
+    arrow(ax, strip_x + strip_w + 0.04, y_adapt, 3.23, y_adapt, color=RED)
+    hyper_x0, hyper_x1 = 3.25, 4.05
     ax.add_patch(
         Polygon(
-            [[3.66, y_adapt - 0.25], [3.66, y_adapt + 0.25], [4.5, y_adapt + 0.15], [4.5, y_adapt - 0.15]],
+            [
+                [hyper_x0, y_adapt - 0.22],
+                [hyper_x0, y_adapt + 0.22],
+                [hyper_x1, y_adapt + 0.13],
+                [hyper_x1, y_adapt - 0.13],
+            ],
             closed=True,
             facecolor=_EEG_TINT,
             edgecolor=EEG,
@@ -842,18 +999,24 @@ def signature_adapter() -> Figure:
             zorder=2,
         )
     )
-    ax.text(4.06, y_adapt + 0.05, 'hypernet', ha='center', va='center', fontsize=6.5, color=INK, zorder=3)
-    ax.text(4.06, y_adapt - 0.08, '128', ha='center', va='center', fontsize=5.5, color=INK_2, zorder=3)
-    ax.text(4.08, y_adapt - 0.34, r'init: $g=1,\ \gamma=\beta=0$', ha='center', va='top', fontsize=5.5, color=INK_2)
+    ax.text(3.65, y_adapt + 0.05, 'hypernet', ha='center', va='center', fontsize=6.5, color=INK, zorder=3)
+    ax.text(3.65, y_adapt - 0.08, '128', ha='center', va='center', fontsize=5.5, color=INK_2, zorder=3)
+    ax.text(3.65, y_adapt - 0.28, r'init: $g=1,\ \gamma=\beta=0$', ha='center', va='top', fontsize=5.5, color=INK_2)
 
-    # Generated parameters travel dashed: up to the gain head, and up to the two FiLM vectors under their nodes.
-    _dashed_route(ax, [(3.9, y_adapt + 0.22), (3.9, 1.32), (1.93, 1.32), (1.93, y_data - 0.4)])
-    _dashed_route(ax, [(4.5, y_adapt), (4.6, y_adapt), (4.6, 1.1), (4.4, 1.1), (4.4, 1.3)])
-    _dashed_route(ax, [(4.6, 1.1), (4.8, 1.1), (4.8, 1.3)])
+    # Generated parameters travel dashed: the gains land on the head from below, the two FiLM vectors from beneath
+    # their nodes; the hypernetwork sits between both targets so neither lane has far to run.
+    lane_x = 3.40
+    lane_top = y_adapt + 0.22 - 0.09 * (lane_x - hyper_x0) / (hyper_x1 - hyper_x0)
+    _dashed_route(ax, [(lane_x, lane_top), (lane_x, 0.80), (head_x, 0.80), (head_x, y_data - 0.38)])
+    column_bottom = 0.86
+    _dashed_route(ax, [(hyper_x1, y_adapt), (4.4, y_adapt), (4.4, column_bottom - 0.02)])
+    _dashed_route(ax, [(4.4, y_adapt), (4.8, y_adapt), (4.8, column_bottom - 0.02)])
     for x, symbol in ((4.4, r'$\gamma$'), (4.8, r'$\beta$')):
-        _column(ax, rng.standard_normal(256), x - 0.06, 1.32, 0.12, 0.42, cmap=DIVERGING_CMAP, vlim=(-2.5, 2.5))
-        ax.plot([x, x], [1.74, y_data - 0.1], color=EEG, linewidth=0.7, zorder=2)
-        ax.text(x + 0.1, 1.53, symbol, ha='left', va='center', fontsize=7, color=INK)
+        _column(
+            ax, rng.standard_normal(256), x - 0.06, column_bottom, 0.12, 0.42, cmap=DIVERGING_CMAP, vlim=(-2.5, 2.5)
+        )
+        ax.plot([x, x], [column_bottom + 0.42, y_data - 0.1], color=EEG, linewidth=0.7, zorder=2)
+        ax.text(x + 0.1, column_bottom + 0.21, symbol, ha='left', va='center', fontsize=7, color=INK)
 
     return fig
 
@@ -864,7 +1027,7 @@ def harmonic_code_on_head() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    width, height = SINGLE_COLUMN_IN, 1.9
+    width, height = SINGLE_COLUMN_IN, 1.95
     fig, ax = _canvas(width, height)
     xyz, _, _ = montage()
     geometry = ScalpGeometry.from_xyz(xyz, normalize=True)
@@ -878,25 +1041,32 @@ def harmonic_code_on_head() -> Figure:
         code[degrees == degree] /= max(float(np.abs(basis[:, degrees == degree]).max()), 1e-9)
 
     # The head, with the chosen electrode picked out and led to its code.
-    cx, cy, radius = 0.62, 1.0, 0.5
+    cx, cy, radius = 0.60, 1.03, 0.5
     xy = _scalp_xy(xyz) * radius
     head(ax, cx, cy, radius)
     ax.scatter(cx + xy[:, 0], cy + xy[:, 1], s=4, color=INK_2, linewidths=0, zorder=3)
     ax.scatter(cx + xy[chosen, 0], cy + xy[chosen, 1], s=20, color=EEG, edgecolors='white', linewidths=0.4, zorder=4)
-    ax.text(cx + xy[chosen, 0] - 0.06, cy + xy[chosen, 1], r'$c$', ha='right', va='center', fontsize=7, color=EEG)
-    col_x, col_y, col_w, cell = 1.36, 0.3, 0.14, 0.08
+    ax.text(
+        cx + xy[chosen, 0] - 0.06,
+        cy + xy[chosen, 1],
+        r'$c$',
+        ha='right',
+        va='center',
+        fontsize=7,
+        color=EEG,
+        zorder=5,
+        path_effects=_HALO,
+    )
+    col_x, col_y, col_w, cell = 1.36, 0.34, 0.14, 0.08
+    top = col_y + 16 * cell
     ax.plot(
-        [cx + xy[chosen, 0], col_x],
-        [cy + xy[chosen, 1], col_y + 16 * cell],
-        color=INK_2,
-        linewidth=0.5,
-        linestyle=_DASH,
-        zorder=2,
+        [cx + xy[chosen, 0], col_x], [cy + xy[chosen, 1], top], color=INK_2, linewidth=0.5, linestyle=_DASH, zorder=2
     )
     _column(ax, code, col_x, col_y, col_w, 16 * cell, cmap=DIVERGING_CMAP, vlim=(-1.0, 1.0))
-    ax.text(col_x + col_w / 2, col_y + 16 * cell + 0.05, r'$Y_\ell^m(c)$', ha='center', va='bottom', fontsize=7)
-    top = col_y + 16 * cell
     brace_x = col_x + col_w + 0.03
+    # The code's name ends at the column's right edge and the degree header starts past the braces, so the two
+    # never meet above the column.
+    ax.text(col_x + col_w, top + 0.06, r'$Y_\ell^m(c)$', ha='right', va='bottom', fontsize=7)
     for degree in range(4):
         y_top = top - degree * degree * cell
         y_bottom = y_top - (2 * degree + 1) * cell
@@ -907,10 +1077,10 @@ def harmonic_code_on_head() -> Figure:
             linewidth=0.5,
         )
         ax.text(brace_x + 0.08, (y_top + y_bottom) / 2, str(degree), ha='left', va='center', fontsize=5.5, color=INK_2)
-    ax.text(brace_x + 0.08, top + 0.05, r'$\ell$', ha='left', va='bottom', fontsize=7, color=INK)
+    ax.text(brace_x + 0.09, top + 0.06, r'$\ell$', ha='left', va='bottom', fontsize=7, color=INK)
 
     # The gains that weight each degree, then the kernel the weighted code induces from that electrode.
-    bar_x, bar_y = 1.98, 0.62
+    bar_x, bar_y = 2.0, 0.66
     for degree in range(4):
         gain = _DEGREE_GAINS[degree]
         ax.add_patch(
@@ -919,24 +1089,24 @@ def harmonic_code_on_head() -> Figure:
             )
         )
         ax.text(
-            bar_x + 0.11 * degree + 0.045, bar_y - 0.03, str(degree), ha='center', va='top', fontsize=5.5, color=INK_2
+            bar_x + 0.11 * degree + 0.045, bar_y - 0.04, str(degree), ha='center', va='top', fontsize=5.5, color=INK_2
         )
     ax.plot([bar_x - 0.02, bar_x + 0.44], [bar_y, bar_y], color=INK_2, linewidth=0.5)
     ax.plot([bar_x - 0.02, bar_x + 0.44], [bar_y + 0.45, bar_y + 0.45], color=INK_2, linewidth=0.4, linestyle=_DASH)
     ax.text(bar_x + 0.21, bar_y + 0.45 * 1.3 + 0.05, r'$g_\ell$', ha='center', va='bottom', fontsize=7, color=INK)
     ax.text(1.85, bar_y + 0.22, r'$\times$', ha='center', va='center', fontsize=8, color=INK)
-    arrow(ax, 2.46, bar_y + 0.22, 2.6, bar_y + 0.22)
+    arrow(ax, 2.48, bar_y + 0.22, 2.62, bar_y + 0.22)
     kernel = _kernel(geometry.geodesic_angles()[chosen], _DEGREE_GAINS[:4])
     kernel /= kernel[chosen]
-    hx = _inset(fig, 2.42, 0.38, 1.0, 1.0)
+    hx = _inset(fig, 2.44, 0.40, 1.0, 1.0)
     _scalp(hx, kernel, xyz, cmap=DIVERGING_CMAP, vlim=(-1.0, 1.0), contours=0)
     _half_max_ring(hx)
     pos = _mne_xy(xyz)
     hx.scatter(*pos[chosen], s=16, facecolors='none', edgecolors=INK, linewidths=0.7, zorder=6)
-    ax.text(2.92, 1.42, r'$k(c,\cdot)$', ha='center', va='bottom', fontsize=7, color=INK)
+    ax.text(2.94, 1.46, r'$k(c,\cdot)$', ha='center', va='bottom', fontsize=7, color=INK)
     ax.text(
         1.9,
-        0.1,
+        0.14,
         r"$k(c,c')=\sum_\ell g_\ell^{2}\,\frac{2\ell+1}{4\pi}\,P_\ell(\cos\gamma_{cc'})$",
         ha='center',
         va='center',

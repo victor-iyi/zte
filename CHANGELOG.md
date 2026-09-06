@@ -22,7 +22,9 @@
   window and the eye-tracker segmentation. Three more read an artifact: the attention scalp map and temporal
   curve from an `attention.json` whose montage was verified against the checkpoint, and the transfer heatmap from
   a `PARALLAX.json`. Each is written as PNG and SVG at IEEE column widths from one validated role palette, with a
-  contact sheet to pick from. `scripts/build_schematics.py` is the same command; §7 of
+  contact sheet to pick from. Legibility is a property of the package rather than of any one drawing: before a
+  figure is written, every text object is set black and scaled to no smaller than 8 pt, whatever the builder
+  asked for. `scripts/build_schematics.py` is the same command; §7 of
   `notebooks/tbme/zte_attention.ipynb` runs it over the session's real artifacts and packs the figures into the
   download archive.
 - **`zte-colab geometry --ckpt` — what head a checkpoint was trained on.** Reads the harmonic basis, its degree and

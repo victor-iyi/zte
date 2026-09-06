@@ -53,6 +53,17 @@ _POSITIVE_TINT: Final[str] = '#cfeee2'
 _GRID: Final[str] = '#d5d4d0'
 """The fine grid between white cells."""
 
+# Every label is written bold at 7.5 pt or more, so a three-letter monospace reader tag is 0.54 units wide: the lane
+# beside a row header has to hold it with visible air on both sides.
+_TAG_GAP: Final[float] = 0.8
+"""Width of the lane between a row header's box and the square, where the reader tag sits."""
+_ROW_HEADER_W: Final[float] = 0.85
+"""Width of a row header's box as a fraction of the cell, enough for a two-character text id."""
+_COLUMN_HEADER_H: Final[float] = 0.62
+"""Height of a column header's box as a fraction of the cell."""
+_BUS_GAP: Final[float] = 0.3
+"""Length of a comb arrow from a bus into its header strip."""
+
 _READERS: Final[tuple[str, ...]] = ('ZAB', 'ZDM', 'ZDN', 'ZGW', 'ZJM', 'ZJN', 'ZJS', 'ZKB', 'ZKH', 'ZKW', 'ZMG', 'ZPH')
 """The twelve ZuCo readers, in protocol order."""
 # A batch ordered so readings of one text sit together: the positive blocks then fall on the diagonal.
@@ -72,7 +83,9 @@ _WORDS: Final[tuple[str, ...]] = ('The', 'river', 'froze', 'over', 'last', 'nigh
 _SKIPPED: Final[int] = 3
 """The word slot the eye skipped, which has no window."""
 _SENTENCE_LINES: Final[tuple[str, ...]] = ('The river', 'froze over', 'last night')
-"""The same sentence, wrapped for the text tower's input card."""
+"""The same sentence, wrapped for the double-column text card."""
+_SENTENCE_LINES_NARROW: Final[tuple[str, ...]] = ('The river', 'froze', 'over last', 'night')
+"""The same sentence, wrapped to nine monospace columns for the single-column text card."""
 _TRUE_RANK: Final[int] = 21
 """Where the true text lands in the drawn gallery, one-based."""
 
@@ -102,8 +115,8 @@ def _tower(ax: Axes, x: float, y: float, w: float, h_in: float, lines: tuple[str
         )
     )
     ink = INK_2 if frozen else INK
-    ax.text(x + w / 2, y + 0.15, lines[0], ha='center', va='center', fontsize=6.5, color=ink)
-    ax.text(x + w / 2, y - 0.15, lines[1], ha='center', va='center', fontsize=6.5, color=ink)
+    ax.text(x + w / 2, y + 0.21, lines[0], ha='center', va='center', fontsize=6.0, color=ink)
+    ax.text(x + w / 2, y - 0.21, lines[1], ha='center', va='center', fontsize=6.0, color=ink)
     if frozen:
         snowflake(ax, x + w + 0.14, y + h_out / 2 + 0.14, size=0.13)
 
@@ -182,9 +195,16 @@ def _reader(ax: Axes, cx: float, cy: float, r: float, xy: np.ndarray, *, held_ou
     )
 
 
-def _frozen_box(ax: Axes, x: float, y: float, w: float, h: float, label: str) -> None:
+def _ring_code(ax: Axes, cx: float, cy: float, radius: float, ux: float, uy: float, code: str) -> None:
+    """A reader code just outside the ring on its ray, anchored on the side facing the head so it is never rotated."""
+    ha = 'left' if ux > 0.35 else 'right' if ux < -0.35 else 'center'
+    va = 'bottom' if uy > 0.35 else 'top' if uy < -0.35 else 'center'
+    ax.text(cx + radius * ux, cy + radius * uy, code, ha=ha, va=va, fontsize=5, color=INK_2, family='monospace')
+
+
+def _frozen_box(ax: Axes, x: float, y: float, w: float, h: float, label: str, *, size: float = 7.0) -> None:
     """A frozen module: grey fill, dashed grey stroke and a snowflake badge at its top-right corner."""
-    box(ax, x, y, w, h, label, fill=FILL, edge=FROZEN, dashed=True, ink=INK_2)
+    box(ax, x, y, w, h, label, fill=FILL, edge=FROZEN, dashed=True, size=size, ink=INK_2)
     snowflake(ax, x + w / 2 + 0.1, y + h / 2 + 0.12, size=0.13)
 
 
@@ -215,18 +235,16 @@ def _square(ax: Axes, x0: float, y0: float, cell: float, texts: Sequence[str]) -
     ax.add_patch(Rectangle((x0, y0), side, side, facecolor='none', edgecolor=OBJECTIVE, linewidth=0.8, zorder=3))
 
 
-def _row_headers(
-    ax: Axes, x: float, y0: float, cell: float, batch: Sequence[tuple[str, str]], *, tag_gap: float, size: float
-) -> None:
+def _row_headers(ax: Axes, x: float, y0: float, cell: float, batch: Sequence[tuple[str, str]], *, size: float) -> None:
     """The reading strip left of the square: a tinted box per row with its text id, the reader tagged beside it."""
-    w = 0.62 * cell
+    w = _ROW_HEADER_W * cell
     side = len(batch) * cell
     for i, (text, reader) in enumerate(batch):
         cy = y0 + side - (i + 0.5) * cell
         ax.add_patch(Rectangle((x, cy - cell / 2), w, cell, facecolor=_EEG_TINT, edgecolor=EEG, linewidth=0.5))
         ax.text(x + w / 2, cy, text, ha='center', va='center', fontsize=size, color=EEG)
         ax.text(
-            x + w + tag_gap / 2,
+            x + w + _TAG_GAP / 2,
             cy,
             reader,
             ha='center',
@@ -239,7 +257,7 @@ def _row_headers(
 
 def _column_headers(ax: Axes, x0: float, y: float, cell: float, texts: Sequence[str], *, size: float) -> None:
     """The text strip above the square: a tinted box per column with its text id."""
-    h = 0.62 * cell
+    h = _COLUMN_HEADER_H * cell
     for j, text in enumerate(texts):
         ax.add_patch(Rectangle((x0 + j * cell, y), cell, h, facecolor=_TEXT_TINT, edgecolor=TEXT, linewidth=0.5))
         ax.text(x0 + (j + 0.5) * cell, y + h / 2, text, ha='center', va='center', fontsize=size, color=TEXT)
@@ -257,13 +275,13 @@ class _TwoTowerLayout:
     card_x: float
     card_w: float
     card_h: float
+    sentence_lines: tuple[str, ...]
     tower_x: float
     tower_w: float
     tower_h: float
     z_x: float
     z_side: float
     eeg_bus_x: float
-    tag_gap: float
     annotate: bool
 
 
@@ -273,13 +291,13 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
     batch, cell = layout.batch, layout.cell
     texts = [text for text, _ in batch]
     side = len(batch) * cell
-    header = 0.62 * cell
-    header_x = layout.eeg_bus_x + 0.5
-    sq_x0 = header_x + header + layout.tag_gap
+    header_x = layout.eeg_bus_x + _BUS_GAP
+    sq_x0 = header_x + _ROW_HEADER_W * cell + _TAG_GAP
     sq_y0 = layout.square_y0
     sq_x1, sq_y1 = sq_x0 + side, sq_y0 + side
     header_y = sq_y1 + 0.15
-    bus_y = header_y + header + 0.45
+    header_top = header_y + _COLUMN_HEADER_H * cell
+    bus_y = header_top + _BUS_GAP + 0.1
     eeg_y = sq_y0 + side / 2
     label_size = 6.0 if layout.annotate else 5.5
 
@@ -289,7 +307,7 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
     ax.text(
         layout.card_x,
         eeg_y - layout.card_h / 2 - 0.1,
-        'L × 105 × 350',
+        'L×105×350',
         ha='center',
         va='top',
         fontsize=5.5,
@@ -297,10 +315,11 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
         family='monospace',
     )
     _cards(ax, layout.card_x, bus_y, layout.card_w, layout.card_h)
-    for k, line in enumerate(_SENTENCE_LINES):
+    lines, pitch = layout.sentence_lines, 0.36
+    for k, line in enumerate(lines):
         ax.text(
             layout.card_x,
-            bus_y + (1 - k) * 0.24,
+            bus_y + ((len(lines) - 1) / 2 - k) * pitch,
             line,
             ha='center',
             va='center',
@@ -332,10 +351,10 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
         arrow(ax, layout.eeg_bus_x, cy, header_x, cy, color=EEG)
     ax.plot([z_right, column_centres[-1]], [bus_y, bus_y], color=TEXT, linewidth=0.7)
     for cx in column_centres:
-        arrow(ax, cx, bus_y, cx, header_y + header, color=TEXT)
+        arrow(ax, cx, bus_y, cx, header_top, color=TEXT)
 
     # The square is the objective: nothing is written in it, the tinted blocks are the multi-positive mask.
-    _row_headers(ax, header_x, sq_y0, cell, batch, tag_gap=layout.tag_gap, size=label_size)
+    _row_headers(ax, header_x, sq_y0, cell, batch, size=label_size)
     _column_headers(ax, sq_x0, header_y, cell, texts, size=label_size)
     _square(ax, sq_x0, sq_y0, cell, texts)
     formula = r'$S = z\,t^{\top} / \tau$'
@@ -344,15 +363,15 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
 
         return fig
 
-    ax.text(sq_x1 + 0.3, header_y + header / 2, formula, ha='left', va='center', fontsize=8, color=OBJECTIVE)
+    ax.text(sq_x1 + 0.3, (header_y + header_top) / 2, formula, ha='left', va='center', fontsize=8, color=OBJECTIVE)
     # Both softmax directions, read off the square's own axes.
     bracket(ax, sq_x1 + 0.2, sq_y0, sq_y1, 'EEG → text', side=1, size=6)
     _hbrace(ax, sq_x0, sq_x1, sq_y0 - 0.2, 'text → EEG')
-    # One tinted chip and one white chip say what a block is; nothing else needs a legend.
-    chip_x = sq_x1 + 2.0
+    # One tinted chip and one white chip say what a block is; they stack under the brace label so nothing sits far out.
+    chip_x = sq_x1 + 0.6
     for cy, fill, caption in (
-        (eeg_y + 0.5, _POSITIVE_TINT, 'same text · any reader'),
-        (eeg_y - 0.5, 'white', 'other text'),
+        (eeg_y - 1.3, _POSITIVE_TINT, 'same text · any reader'),
+        (eeg_y - 2.2, 'white', 'other text'),
     ):
         ax.add_patch(Rectangle((chip_x, cy - cell / 2), cell, cell, facecolor=fill, edgecolor=_GRID, linewidth=0.5))
         ax.text(chip_x + cell + 0.18, cy, caption, ha='left', va='center', fontsize=6, color=INK_2)
@@ -362,39 +381,39 @@ def _two_tower(layout: _TwoTowerLayout) -> Figure:
 
 _DOUBLE_TOWERS: Final[_TwoTowerLayout] = _TwoTowerLayout(
     width_in=DOUBLE_COLUMN_IN,
-    y_lim=(0.35, 9.0),
+    y_lim=(0.5, 9.6),
     batch=_BATCH,
-    cell=0.68,
+    cell=0.72,
     square_y0=1.3,
-    card_x=1.5,
-    card_w=1.75,
-    card_h=1.05,
-    tower_x=3.2,
-    tower_w=1.25,
-    tower_h=1.7,
-    z_x=5.95,
-    z_side=0.5,
-    eeg_bus_x=6.95,
-    tag_gap=0.6,
+    card_x=1.45,
+    card_w=2.2,
+    card_h=1.5,
+    sentence_lines=_SENTENCE_LINES,
+    tower_x=2.95,
+    tower_w=1.85,
+    tower_h=2.6,
+    z_x=5.45,
+    z_side=0.55,
+    eeg_bus_x=6.2,
     annotate=True,
 )
 """The double-column two-tower figure."""
 _SINGLE_TOWERS: Final[_TwoTowerLayout] = _TwoTowerLayout(
     width_in=SINGLE_COLUMN_IN,
-    y_lim=(0.2, 6.55),
+    y_lim=(0.15, 6.25),
     batch=_BATCH[:6],
-    cell=0.62,
+    cell=0.54,
     square_y0=0.95,
-    card_x=0.85,
-    card_w=1.4,
-    card_h=0.9,
-    tower_x=1.9,
-    tower_w=1.2,
-    tower_h=1.45,
-    z_x=3.7,
+    card_x=1.125,
+    card_w=1.95,
+    card_h=1.65,
+    sentence_lines=_SENTENCE_LINES_NARROW,
+    tower_x=2.38,
+    tower_w=1.55,
+    tower_h=1.9,
+    z_x=4.435,
     z_side=0.45,
-    eeg_bus_x=4.45,
-    tag_gap=0.55,
+    eeg_bus_x=4.96,
     annotate=False,
 )
 """The single-column two-tower figure."""
@@ -424,19 +443,25 @@ def alignment_square() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.05, 10.1))
-    cell = 1.0
+    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.05, 9.9))
+    cell = 0.95
     texts = [text for text, _ in _BATCH]
-    header_x, tag_gap = 0.5, 0.65
-    sq_x0, sq_y0 = header_x + 0.62 * cell + tag_gap, 0.95
+    header_x = 0.5
+    sq_x0, sq_y0 = header_x + _ROW_HEADER_W * cell + _TAG_GAP, 0.95
     side = len(_BATCH) * cell
     header_y = sq_y0 + side + 0.15
-    _row_headers(ax, header_x, sq_y0, cell, _BATCH, tag_gap=tag_gap, size=6.5)
+    _row_headers(ax, header_x, sq_y0, cell, _BATCH, size=6.5)
     _column_headers(ax, sq_x0, header_y, cell, texts, size=6.5)
     _square(ax, sq_x0, sq_y0, cell, texts)
-    ax.text(0.22, sq_y0 + side / 2, 'readings', ha='center', va='center', fontsize=6.5, color=EEG, rotation=90)
+    ax.text(0.2, sq_y0 + side / 2, 'readings', ha='center', va='center', fontsize=6.5, color=EEG, rotation=90)
     ax.text(
-        sq_x0 + side / 2, header_y + 0.62 * cell + 0.12, 'texts', ha='center', va='bottom', fontsize=6.5, color=TEXT
+        sq_x0 + side / 2,
+        header_y + _COLUMN_HEADER_H * cell + 0.12,
+        'texts',
+        ha='center',
+        va='bottom',
+        fontsize=6.5,
+        color=TEXT,
     )
     ax.text(
         sq_x0 + side / 2,
@@ -457,8 +482,8 @@ def alignment_square_pooled_vs_strict() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.15, 8.3))
-    block, x0, top = 0.6, 2.6, 7.5
+    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.0, 9.2))
+    block, x0, top = 0.66, 1.2, 8.5
     for i, reader in enumerate(_READERS):
         y1 = top - i * block
         y0 = y1 - block
@@ -476,7 +501,7 @@ def alignment_square_pooled_vs_strict() -> Figure:
     ax.text(x0 + block / 2, bottom - 0.15, '700 texts', ha='center', va='top', fontsize=5.5, color=INK_2)
 
     # The strict gallery keeps the held-out block alone: the only rows a stranger's score can come from.
-    sx0 = 6.6
+    sx0 = 5.5
     arrow(ax, x0 + block + 0.45, top - block / 2, sx0 - 0.1, top - block / 2, color=RED)
     ax.add_patch(Rectangle((sx0, top - block), block, block, facecolor='white', edgecolor=RED, linewidth=0.7))
     ax.plot([sx0, sx0 + block], [top, top - block], color=OBJECTIVE, linewidth=0.9)
@@ -492,11 +517,14 @@ def alignment_square_pooled_vs_strict() -> Figure:
 
 def _level_panel(ax: Axes, x0: float, level: int) -> None:
     """One level panel at `x0`: word cards, the learned vectors, the ties, and the frozen targets beneath."""
-    centres = [x0 + 0.75 + i for i in range(len(_WORDS))]
+    # A 1.1 pitch leaves air between neighbouring bold words; the panel's centre follows from it.
+    pitch = 1.1
+    centres = [x0 + 0.6 + i * pitch for i in range(len(_WORDS))]
+    centre = (centres[0] + centres[-1]) / 2
     present = [i for i in range(len(_WORDS)) if i != _SKIPPED]
     card_y, card_h, card_w = 4.25, 0.6, 0.82
     top_y, target_y, bar_h = 2.55, 1.2, 0.7
-    ax.text(x0 + 3.25, 5.3, ('sentence', 'word', 'token')[level], ha='center', va='center', fontsize=7.5, color=INK)
+    ax.text(centre, 5.4, ('sentence', 'word', 'token')[level], ha='center', va='center', fontsize=7.5, color=INK)
 
     # The word row is identical in every panel; a skipped word has no window, so it is hatched and feeds nothing.
     for i, (cx, word) in enumerate(zip(centres, _WORDS, strict=True)):
@@ -527,12 +555,11 @@ def _level_panel(ax: Axes, x0: float, level: int) -> None:
     card_bottom = card_y - card_h / 2
     bar_top = top_y + bar_h / 2
     # The frozen row's snowflake sits just left of its first bar, whichever level that bar belongs to.
-    first_bar = {0: x0 + 3.25 - 0.15, 1: centres[present[0]] - 0.15, 2: centres[present[0]] - card_w / 2}[level]
+    first_bar = {0: centre - 0.15, 1: centres[present[0]] - 0.15, 2: centres[present[0]] - card_w / 2}[level]
     snowflake(ax, first_bar - 0.22, target_y, size=0.12)
     if level == 0:
         # Pool: every present window drops onto one collector, and one arrow leaves it.
         collector_y = card_bottom - 0.45
-        centre = x0 + 3.25
         for i in present:
             ax.plot([centres[i]] * 2, [card_bottom, collector_y], color=EEG, linewidth=0.7)
         ax.plot([centres[present[0]], centres[present[-1]]], [collector_y] * 2, color=EEG, linewidth=0.7)
@@ -563,7 +590,7 @@ def three_levels() -> Figure:
     Returns:
         Figure: A double-column figure.
     """
-    fig, ax = _canvas(DOUBLE_COLUMN_IN, (0.6, 5.6))
+    fig, ax = _canvas(DOUBLE_COLUMN_IN, (0.6, 5.7))
     for level in range(3):
         _level_panel(ax, 0.2 + 6.8 * level, level)
 
@@ -610,10 +637,10 @@ def loso_ring() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = _canvas(SINGLE_COLUMN_IN, (2.85, 10.05))
+    fig, ax = _canvas(SINGLE_COLUMN_IN, (2.9, 9.9))
     xy = _montage_xy()
-    cx, cy, ring, r = 3.45, 6.3, 2.45, 0.3
-    box_w, box_h = 1.5, 0.75
+    cx, cy, ring, r = 3.6, 6.3, 2.45, 0.3
+    box_w, box_h = 1.8, 1.0
     held_centre = (cx, cy + ring + 0.65)
     for i, code in enumerate(_READERS):
         angle = math.pi / 2 - 2 * math.pi * i / len(_READERS)
@@ -635,28 +662,19 @@ def loso_ring() -> Figure:
 
         hx, hy = cx + ring * ux, cy + ring * uy
         _reader(ax, hx, hy, r, xy, held_out=False)
-        ax.text(
-            cx + (ring + 0.62) * ux,
-            cy + (ring + 0.62) * uy,
-            code,
-            ha='center',
-            va='center',
-            fontsize=5,
-            color=INK_2,
-            family='monospace',
-        )
+        _ring_code(ax, cx, cy, ring + r + 0.15, ux, uy, code)
         # Each arrow stops on the box's own edge along its ray, so all eleven land cleanly.
         reach = min(box_w / 2 / max(abs(ux), 1e-9), box_h / 2 / max(abs(uy), 1e-9)) + 0.05
         arrow(ax, cx + (ring - r - 0.06) * ux, cy + (ring - r - 0.06) * uy, cx + reach * ux, cy + reach * uy, color=EEG)
-    box(ax, cx, cy, box_w, box_h, 'encoder', sub='× 12', fill=_EEG_TINT, edge=EEG)
+    box(ax, cx, cy, box_w, box_h, 'encoder', sub='× 12', fill=_EEG_TINT, edge=EEG, size=6.0)
     # Where the twelfth arrow would be, there is only the question.
     ax.text(cx, cy + box_h / 2 + 1.35, '?', ha='center', va='center', fontsize=10, color=RED, weight='bold')
 
     # The stranger's readings go through the trained encoder, now frozen, and its 700 texts are ranked.
-    fx, fy = 8.5, 7.3
+    fx, fy = 7.9, 8.3
     ax.plot([held_centre[0] + r + 0.05, fx], [held_centre[1]] * 2, color=RED, linewidth=0.7)
     arrow(ax, fx, held_centre[1], fx, fy + box_h / 2, color=RED)
-    _frozen_box(ax, fx, fy, box_w, box_h, 'encoder')
+    _frozen_box(ax, fx, fy, box_w, box_h, 'encoder', size=6.0)
     strip_top = fy - box_h / 2 - 0.45
     arrow(ax, fx, fy - box_h / 2, fx, strip_top, color=RED)
     _ranked_strip(ax, fx, strip_top, 0.44, 0.34, true_index=2)
@@ -670,9 +688,9 @@ def loso_fold_strip() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.35, 9.0))
+    fig, ax = _canvas(SINGLE_COLUMN_IN, (0.05, 9.4))
     xy = _montage_xy()
-    cell, x0, y1 = 0.5, 2.2, 7.4
+    cell, x0, y1 = 0.52, 1.2, 7.4
     n = len(_READERS)
     for j, code in enumerate(_READERS):
         col_x = x0 + (j + 0.5) * cell
@@ -696,7 +714,7 @@ def loso_fold_strip() -> Figure:
                     zorder=3 if held_out else 2,
                 )
             )
-    ax.text(x0 - 0.75, y1 - n * cell / 2, 'fold', ha='center', va='center', fontsize=6.5, color=INK, rotation=90)
+    ax.text(x0 - 0.95, y1 - n * cell / 2, 'fold', ha='center', va='center', fontsize=6.5, color=INK, rotation=90)
     ax.text(x0 + n * cell / 2, y1 + 1.45, 'reader', ha='center', va='bottom', fontsize=6.5, color=INK)
     bracket(ax, x0 + n * cell + 0.15, y1 - n * cell, y1, '700 queries\nper fold', side=1, size=6)
 
@@ -724,12 +742,14 @@ def retrieval_gallery() -> Figure:
     true_score = float(scores[_TRUE_RANK - 1])
     ax.bar(_TRUE_RANK, true_score, width=4.0, color=RED, linewidth=0)
     ax.plot(_TRUE_RANK, true_score, 'o', color=RED, markersize=3, markeredgewidth=0)
-    ax.text(_TRUE_RANK + 12, true_score + 0.03, 'true text', ha='left', va='bottom', fontsize=6.5, color=RED)
+    # Both captions sit on one line above the tallest bar, so neither can touch the curve.
+    caption_y = float(scores[0]) + 0.02
+    ax.text(_TRUE_RANK + 14, caption_y, 'true text', ha='left', va='bottom', fontsize=6.5, color=RED)
     # A random guess lands, on average, at the gallery's midpoint: rank percentile one half.
     ax.axvline(350.5, color=INK_2, linewidth=0.6, linestyle=(0, (3, 2)))
-    ax.text(350.5, float(scores[0]) + 0.02, 'chance', ha='center', va='bottom', fontsize=6, color=INK_2)
+    ax.text(350.5, caption_y, 'chance', ha='center', va='bottom', fontsize=6, color=INK_2)
     ax.set_xlim(-2, 702)
-    ax.set_ylim(0, float(scores[0]) + 0.09)
+    ax.set_ylim(0, float(scores[0]) + 0.11)
     ax.set_yticks([])
     ax.set_xticks([_TRUE_RANK, 350, 700])
     ax.get_xticklabels()[0].set_color(RED)

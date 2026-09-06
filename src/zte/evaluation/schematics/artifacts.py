@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Rectangle
 
 from zte.evaluation.schematics._style import (
@@ -155,19 +156,15 @@ def transfer_heatmap_figure(parallax_json: str | Path) -> Figure:
         finite = matrix[np.isfinite(matrix)]
         low, high = (float(finite.min()), float(finite.max())) if finite.size else (0.5, 1.0)
         pad = 0.25 * max(high - low, 1e-3)
-        image = ax.imshow(matrix, cmap=SEQUENTIAL_CMAP, vmin=low - pad, vmax=high + pad)
+        # Every cell carries its value in black type, so the ramp stops short of the steps black cannot be read on.
+        light = LinearSegmentedColormap.from_list(
+            'zte_sequential_light', [SEQUENTIAL_CMAP(x) for x in np.linspace(0.0, 0.55, 8)]
+        )
+        image = ax.imshow(matrix, cmap=light, vmin=low - pad, vmax=high + pad)
         for i in range(len(tasks)):
             for j in range(len(tasks)):
                 if np.isfinite(matrix[i, j]):
-                    ax.text(
-                        j,
-                        i,
-                        f'{matrix[i, j]:.4f}',
-                        ha='center',
-                        va='center',
-                        fontsize=7,
-                        color='white' if matrix[i, j] > (low + high) / 2 else INK,
-                    )
+                    ax.text(j, i, f'{matrix[i, j]:.4f}', ha='center', va='center', fontsize=7, color=INK)
                 if novel[i, j]:
                     ax.add_patch(Rectangle((j - 0.5, i - 0.5), 1, 1, facecolor='none', edgecolor=ORANGE, linewidth=1.4))
                 if i == j:

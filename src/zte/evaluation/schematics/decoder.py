@@ -11,6 +11,7 @@ from zte.evaluation.schematics._style import (
     FROZEN,
     INK,
     INK_2,
+    MIN_FONT_PT,
     OBJECTIVE,
     RED,
     SINGLE_COLUMN_IN,
@@ -57,6 +58,10 @@ LM_LAYERS: Final[int] = 24
 SLOTS: Final[int] = 8
 """Soft-prompt slots the bridge writes into the LM's own sequence."""
 
+# Enough hollow positions to read as a sequence the prefix leads; the ellipsis says the model's own tokens follow.
+LM_SLOTS_DRAWN: Final[int] = 12
+"""Hollow sequence positions drawn inside the frozen model before the ellipsis."""
+
 OUTPUT_WORDS: Final[tuple[str, ...]] = ('He', 'was', 'elected', '…')
 """The greedy readout, one token chip at a time; the same sentence the encoder schematics read."""
 
@@ -75,6 +80,11 @@ STACK_FILL: Final[str] = '#d3d2cc'
 
 
 # ---- Glyphs ---- #
+
+
+def _lead(fig: Figure, ax: Axes, span: float) -> float:
+    """The smallest written line height in data units once `span` units fill the axes width: the layout's module."""
+    return MIN_FONT_PT * span / (ax.get_position().width * fig.get_figwidth() * 72.0)
 
 
 def _slot(ax: Axes, cx: float, y0: float, w: float, h: float, *, filled: bool) -> None:
@@ -150,6 +160,12 @@ def _chip(ax: Axes, cx: float, cy: float, w: float, h: float, text: str, *, size
     ax.text(cx, cy, text, ha='center', va='center', fontsize=size, color=INK)
 
 
+def _span(ax: Axes, x0: float, x1: float, y: float, text: str, *, lead: float, size: float = 5.5) -> None:
+    """A horizontal dimension line with its label set clear beneath it, for a size along a bottom edge."""
+    dim_label(ax, x0, y, x1, y, '')
+    ax.text((x0 + x1) / 2, y - 0.8 * lead, text, ha='center', va='center', fontsize=size, color=INK_2)
+
+
 def _card(
     ax: Axes,
     x0: float,
@@ -160,18 +176,21 @@ def _card(
     bar_h: float,
     pitch: float,
     bar_w: float,
-    row_h: float,
+    lead: float,
     size: float,
     film_label: bool,
-) -> tuple[float, float]:
-    """The trainable card: five bridge rows over the eight prefix bars; returns the top row's y and the card top."""
+) -> tuple[float, float, float]:
+    """The trainable card: five bridge rows over the eight prefix bars; returns the top row's y, the FiLM row's y
+    and the card top."""
     cx = (x0 + x1) / 2
-    row_pitch = row_h + 0.09
-    first_row = bars_y + bar_h + 0.2 + row_h / 2
+    row_h = 1.05 * lead
+    row_pitch = row_h + 0.22 * lead
+    first_row = bars_y + bar_h + 0.35 * lead + row_h / 2
     top_row = first_row + (len(_BRIDGE_ROWS) - 1) * row_pitch
-    count_y = top_row + row_pitch
-    title_y = count_y + 0.32
-    y1 = title_y + 0.24
+    film_row = first_row + _BRIDGE_ROWS.index('') * row_pitch
+    count_y = top_row + row_pitch + 0.05 * lead
+    title_y = count_y + 1.4 * lead
+    y1 = title_y + 0.85 * lead
     box(ax, cx, (y0 + y1) / 2, x1 - x0, y1 - y0, fill=EEG_TINT, edge=EEG)
 
     centres = [cx + (j - (SLOTS - 1) / 2) * pitch for j in range(SLOTS)]
@@ -185,24 +204,20 @@ def _card(
         if label:
             _row(ax, cx, y, row_w, row_h, label, size=size)
         else:
+            square = row_h - 0.2 * lead
             for bx in centres:
                 ax.add_patch(
                     Rectangle(
-                        (bx - bar_w / 2, y - (row_h - 0.04) / 2),
-                        bar_w,
-                        row_h - 0.04,
-                        facecolor=EEG,
-                        edgecolor='none',
-                        zorder=3,
+                        (bx - bar_w / 2, y - square / 2), bar_w, square, facecolor=EEG, edgecolor='none', zorder=3
                     )
                 )
             if film_label:
-                ax.text(x0 - 0.1, y, 'FiLM', ha='right', va='center', fontsize=size, color=INK_2)
+                ax.text(x0 - 0.08, y, 'FiLM', ha='right', va='center', fontsize=size, color=INK_2)
         y += row_pitch
     ax.text(cx, count_y, BRIDGE_PARAMS, ha='center', va='center', fontsize=size + 0.5, color=INK_2)
     ax.text(cx, title_y, 'bridge', ha='center', va='center', fontsize=size + 1.5, color=INK)
 
-    return top_row, y1
+    return top_row, film_row, y1
 
 
 def _frozen_lm(
@@ -213,6 +228,7 @@ def _frozen_lm(
     y1: float,
     *,
     interior_x0: float,
+    stack_x1: float,
     bars_y: float,
     bar_h: float,
     pitch: float,
@@ -220,35 +236,56 @@ def _frozen_lm(
     stack_y: tuple[float, float],
     size: float,
 ) -> None:
-    """The long grey frozen box: hollow slots along its input, the layer stack above, name and count on top."""
+    """The grey frozen box: hollow slots then an ellipsis along its input, the layer stack above, name and count on
+    top."""
     box(ax, (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0, fill=FILL, edge=FROZEN, dashed=True)
     cx = interior_x0 + bar_w / 2
-    while cx + bar_w / 2 <= x1 - 0.25:
+    for _ in range(LM_SLOTS_DRAWN):
         _slot(ax, cx, bars_y, bar_w, bar_h, filled=False)
         cx += pitch
-    stack_x1 = x1 - 1.45
+    ax.text(cx + 0.1, bars_y + bar_h / 2, '⋯', ha='left', va='center', fontsize=size, color=FROZEN)
     _layer_stack(ax, interior_x0, stack_x1, *stack_y)
-    bracket(ax, stack_x1 + 0.15, stack_y[0], stack_y[1], f'× {LM_LAYERS}', size=size)
+    bracket(ax, stack_x1 + 0.12, stack_y[0], stack_y[1], f'× {LM_LAYERS}', size=size)
     name_y = (stack_y[1] + y1) / 2
     ax.text(interior_x0, name_y, LM_NAME, ha='left', va='center', fontsize=size, color=INK_2)
     ax.text(stack_x1, name_y, LM_PARAMS, ha='right', va='center', fontsize=size, color=INK_2)
-    snowflake(ax, x1 - 0.42, name_y, size=0.16)
+    snowflake(ax, x1 - 0.38, name_y, size=0.15)
 
 
-def _readout(ax: Axes, lm_x1: float, out_y: float, loop_y: float, *, chip_w: float, chip_h: float, size: float) -> None:
-    """Greedy decoding out of the LM's right end, one chip per token, each fed back into the sequence."""
-    chip_cx = lm_x1 + 0.9 + chip_w / 2 + 0.1
-    arrow(ax, lm_x1, out_y, chip_cx - chip_w / 2, out_y, color=TEXT)
-    ax.text(
-        (lm_x1 + chip_cx - chip_w / 2) / 2, out_y + 0.2, 'greedy', ha='center', va='center', fontsize=size, color=INK_2
-    )
-    y = out_y
-    for word in OUTPUT_WORDS:
-        _chip(ax, chip_cx, y, chip_w, chip_h, word, size=size + 1.0)
-        y -= chip_h + 0.06
+def _readout(
+    ax: Axes,
+    lm_x1: float,
+    out_y: float,
+    loop_y: float,
+    *,
+    reach: float,
+    lead: float,
+    size: float,
+    across: bool,
+) -> float:
+    """Greedy decoding out of the LM's right end, one chip per token in a row or a stack, each fed back into the
+    sequence; returns the readout's right edge."""
+    arrow(ax, lm_x1, out_y, lm_x1 + reach, out_y, color=TEXT)
+    ax.text(lm_x1 + reach / 2, out_y + 1.2 * lead, 'greedy', ha='center', va='center', fontsize=size, color=INK_2)
+    chip_h = 1.25 * lead
+    natural = [0.56 * lead * len(word) + 1.1 * lead for word in OUTPUT_WORDS]
+    widths = natural if across else [max(natural)] * len(natural)
+    x, y = lm_x1 + reach + 0.05, out_y
+    right = x
+    for word, w in zip(OUTPUT_WORDS, widths, strict=True):
+        _chip(ax, x + w / 2, y, w, chip_h, word, size=size + 1.0)
+        right = max(right, x + w)
+        if across:
+            x += w + 0.1
+        else:
+            y -= chip_h + 0.3 * lead
     # No teacher forcing: the token just read out is what enters the next position.
-    ax.plot([chip_cx, chip_cx], [y + chip_h / 2 + 0.06, loop_y], color=TEXT, linewidth=0.7)
-    arrow(ax, chip_cx, loop_y, lm_x1, loop_y, color=TEXT)
+    drop_x = right - widths[-1] / 2
+    drop_y = out_y - chip_h / 2 if across else y + 0.3 * lead + chip_h / 2
+    ax.plot([drop_x, drop_x], [drop_y, loop_y], color=TEXT, linewidth=0.7)
+    arrow(ax, drop_x, loop_y, lm_x1, loop_y, color=TEXT)
+
+    return right
 
 
 # ---- Builders ---- #
@@ -260,56 +297,64 @@ def decoder_bridge() -> Figure:
     Returns:
         Figure: A double-column figure whose trainable-to-frozen area is the argument, with the eight controls beneath.
     """
-    fig, ax = figure(DOUBLE_COLUMN_IN, 1.7)
-    blank(ax, (0, 20), (0.02, 4.6))
-    lm_x0, lm_x1, lm_y0, lm_y1 = 5.6, 16.8, 0.4, 4.3
-    bars_y, bar_h, pitch, bar_w = 0.8, 1.0, 0.32, 0.22
+    fig, ax = figure(DOUBLE_COLUMN_IN, 1.75)
+    width = 18.7
+    lead = _lead(fig, ax, width)
+    bars_y, bar_h, pitch, bar_w = 0.65, 0.45, 0.26, 0.18
+    card_x0, card_x1 = 5.4, 7.7
+    lm_x0, lm_x1, lm_y0 = 5.95, 13.05, 0.45
+    z_y, film_y, card_top = _card(
+        ax,
+        card_x0,
+        card_x1,
+        0.3,
+        bars_y=bars_y,
+        bar_h=bar_h,
+        pitch=pitch,
+        bar_w=bar_w,
+        lead=lead,
+        size=5.5,
+        film_label=True,
+    )
     _frozen_lm(
         ax,
         lm_x0,
         lm_x1,
         lm_y0,
-        lm_y1,
-        interior_x0=7.85,
+        card_top - 0.6 * lead,
+        interior_x0=card_x1 + 0.35,
+        stack_x1=lm_x1 - 1.4,
         bars_y=bars_y,
         bar_h=bar_h,
         pitch=pitch,
         bar_w=bar_w,
-        stack_y=(2.05, 3.6),
-        size=7.0,
+        stack_y=(bars_y + bar_h + 0.9 * lead, z_y - 0.55 * lead),
+        size=6.0,
     )
-    card_x0, card_x1 = 4.55, 7.45
-    z_y, _ = _card(
-        ax,
-        card_x0,
-        card_x1,
-        0.6,
-        bars_y=bars_y,
-        bar_h=bar_h,
-        pitch=pitch,
-        bar_w=bar_w,
-        row_h=0.26,
-        size=5.5,
-        film_label=True,
-    )
-    dim_label(ax, card_x1 - 0.24, 0.3, card_x0 + 0.2, 0.3, f'{SLOTS} × 896')
+    _span(ax, card_x1 - 0.2, card_x0 + 0.2, 0.17, f'{SLOTS} × 896', lead=lead)
 
-    # The encoder is frozen for the staged run drawn here; it hands over only z.
-    enc_cx, enc_w, enc_h = 1.75, 2.8, 1.2
-    box(ax, enc_cx, z_y, enc_w, enc_h, 'ZTE encoder', fill=FILL, edge=FROZEN, dashed=True)
-    snowflake(ax, enc_cx + enc_w / 2 - 0.25, z_y + enc_h / 2 - 0.25, size=0.14)
-    arrow(ax, enc_cx + enc_w / 2, z_y, card_x0, z_y, color=EEG)
-    z_x = (enc_cx + enc_w / 2 + card_x0) / 2
-    ax.text(z_x, z_y + 0.22, 'z', ha='center', va='center', fontsize=8, color=EEG, style='italic')
-    ax.text(z_x, z_y - 0.22, '768', ha='center', va='center', fontsize=5.5, color=INK_2, family='monospace')
+    # The encoder is frozen for the staged run drawn here; it hands over only z. Its label sits left of centre so
+    # the snowflake in the corner has the room it needs.
+    enc_cx, enc_w, enc_h = 2.71, 2.95, 0.95
+    enc_x1 = enc_cx + enc_w / 2
+    box(ax, enc_cx, z_y, enc_w, enc_h, fill=FILL, edge=FROZEN, dashed=True)
+    ax.text(enc_cx - 0.14, z_y, 'ZTE encoder', ha='center', va='center', fontsize=6.5, color=INK)
+    snowflake(ax, enc_x1 - 0.24, z_y + enc_h / 2 - 0.22, size=0.13)
+    arrow(ax, enc_x1, z_y, card_x0, z_y, color=EEG)
+    z_x = (enc_x1 + card_x0) / 2
+    ax.text(z_x, z_y + 0.8 * lead, 'z', ha='center', va='center', fontsize=8, color=EEG, style='italic')
+    ax.text(z_x + 0.1, z_y - 0.8 * lead, '768', ha='center', va='center', fontsize=5.5, color=INK_2, family='monospace')
 
-    # The controls replace z, or the prefix itself, and go through the identical path.
-    tag_w, tag_h = 1.9, 0.34
+    # The controls replace z, or the prefix itself, and go through the identical path; the grid stops short of the
+    # FiLM label so the two never meet.
+    tag_w, tag_h, tag_pitch = 2.5, 1.2 * lead, 1.5 * lead
+    tag_top = film_y - 1.2 * lead
     for k, name in enumerate(CONTROLS):
-        _tag(ax, 1.25 + 2.0 * (k % 2), 2.38 - 0.42 * (k // 2), tag_w, tag_h, name, size=5.5)
-    arrow(ax, z_x - 0.4, 2.58, z_x - 0.4, z_y - 0.06, color=RED)
+        _tag(ax, 1.4 + 2.62 * (k % 2), tag_top - tag_h / 2 - tag_pitch * (k // 2), tag_w, tag_h, name, size=5.5)
+    arrow(ax, enc_x1 + 0.16, tag_top, enc_x1 + 0.16, z_y - 0.06, color=RED)
 
-    _readout(ax, lm_x1, z_y, bars_y + bar_h / 2, chip_w=2.1, chip_h=0.36, size=5.5)
+    _readout(ax, lm_x1, z_y, bars_y + bar_h / 2, reach=1.3, lead=lead, size=5.5, across=True)
+    blank(ax, (0, width), (0.17 - 1.4 * lead, card_top + 0.1))
 
     return fig
 
@@ -320,51 +365,57 @@ def decoder_bridge_compact() -> Figure:
     Returns:
         Figure: A single-column figure with the same geometry and counts as `decoder_bridge`.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 1.9)
-    blank(ax, (0, 10), (0.0, 5.4))
-    lm_x0, lm_x1, lm_y0, lm_y1 = 1.2, 7.7, 1.1, 4.3
-    bars_y, bar_h, pitch, bar_w = 1.5, 0.8, 0.22, 0.15
+    fig, ax = figure(SINGLE_COLUMN_IN, 2.35)
+    width = 14.4
+    lead = _lead(fig, ax, width)
+    # Three columns: a single column cannot hold four monospace tags abreast at a legible size.
+    tag_w, tag_h, tag_pitch = 3.6, 1.2 * lead, 1.5 * lead
+    for k, name in enumerate(CONTROLS):
+        _tag(ax, 1.95 + 3.7 * (k % 3), tag_h / 2 + tag_pitch * (2 - k // 3), tag_w, tag_h, name, size=5.5)
+    tags_top = tag_h + 2 * tag_pitch
+
+    dims_y = tags_top + 1.7 * lead
+    card_y0 = dims_y + 0.12
+    bars_y, bar_h, pitch, bar_w = card_y0 + 0.35, 0.45, 0.33, 0.2
+    card_x0, card_x1 = 0.3, 3.15
+    lm_x0, lm_x1 = 1.0, 10.3
+    z_y, _, card_top = _card(
+        ax,
+        card_x0,
+        card_x1,
+        card_y0,
+        bars_y=bars_y,
+        bar_h=bar_h,
+        pitch=pitch,
+        bar_w=bar_w,
+        lead=lead,
+        size=5.5,
+        film_label=False,
+    )
     _frozen_lm(
         ax,
         lm_x0,
         lm_x1,
-        lm_y0,
-        lm_y1,
-        interior_x0=2.62,
+        card_y0 + 0.15,
+        card_top - 0.6 * lead,
+        interior_x0=card_x1 + 0.3,
+        stack_x1=lm_x1 - 1.7,
         bars_y=bars_y,
         bar_h=bar_h,
         pitch=pitch,
         bar_w=bar_w,
-        stack_y=(2.55, 3.5),
-        size=6.5,
-    )
-    card_x0, card_x1 = 0.3, 2.3
-    z_y, card_top = _card(
-        ax,
-        card_x0,
-        card_x1,
-        1.3,
-        bars_y=bars_y,
-        bar_h=bar_h,
-        pitch=pitch,
-        bar_w=bar_w,
-        row_h=0.22,
-        size=5.0,
-        film_label=False,
+        stack_y=(bars_y + bar_h + 0.9 * lead, z_y - 0.55 * lead),
+        size=6.0,
     )
     card_cx = (card_x0 + card_x1) / 2
-    dim_label(ax, card_x1 - 0.16, 0.98, card_x0 + 0.16, 0.98, f'{SLOTS} × 896', size=5.0)
-    arrow(ax, card_cx, card_top + 0.55, card_cx, card_top, color=EEG)
-    ax.text(card_cx + 0.15, card_top + 0.3, 'z', ha='left', va='center', fontsize=8, color=EEG, style='italic')
-    ax.text(
-        card_cx - 0.15, card_top + 0.3, '768', ha='right', va='center', fontsize=5.0, color=INK_2, family='monospace'
-    )
+    _span(ax, card_x1 - 0.2, card_x0 + 0.2, dims_y, f'{SLOTS} × 896', lead=lead)
+    arrow(ax, card_cx, card_top + 1.8 * lead, card_cx, card_top, color=EEG)
+    z_label_y = card_top + 1.0 * lead
+    ax.text(card_cx + 0.15, z_label_y, 'z', ha='left', va='center', fontsize=8, color=EEG, style='italic')
+    ax.text(card_cx - 0.15, z_label_y, '768', ha='right', va='center', fontsize=5.5, color=INK_2, family='monospace')
 
-    tag_w, tag_h = 1.72, 0.3
-    for k, name in enumerate(CONTROLS):
-        _tag(ax, 1.16 + 1.8 * (k % 4), 0.58 - 0.38 * (k // 4), tag_w, tag_h, name, size=5.0)
-
-    _readout(ax, lm_x1, z_y, bars_y + bar_h / 2, chip_w=1.15, chip_h=0.3, size=5.0)
+    _readout(ax, lm_x1, z_y, bars_y + bar_h / 2, reach=1.7, lead=lead, size=5.5, across=False)
+    blank(ax, (0, width), (0.0, card_top + 1.9 * lead))
 
     return fig
 
@@ -379,44 +430,44 @@ def decoder_controls_ladder() -> Figure:
     Returns:
         Figure: A single-column figure of the eight rungs, the zero line, and the two remaining clauses beneath.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 2.6)
-    blank(ax, (0, 10), (0.0, 7.1))
-    top, step = 6.3, 0.62
-    bar_x0, eeg_len, ctrl_len, bar_h = 2.9, 2.1, 1.55, 0.2
-    zero_x, dot_x, ci = 6.7, 7.9, 0.7
+    fig, ax = figure(SINGLE_COLUMN_IN, 2.7)
+    blank(ax, (0, 10.15), (-0.5, 7.15))
+    top, step = 6.3, 0.66
+    bar_x0, eeg_len, ctrl_len, bar_h = 3.1, 2.0, 1.5, 0.22
+    zero_x, dot_x, ci = 6.6, 7.8, 0.6
     ys = [top - step * k for k in range(len(CONTROLS))]
     for y, name in zip(ys, CONTROLS, strict=True):
-        _tag(ax, 1.4, y, 2.2, 0.36, name, size=5.5)
-        ax.add_patch(Rectangle((bar_x0, y + 0.02), eeg_len, bar_h, facecolor=EEG, edgecolor='none'))
-        ax.add_patch(Rectangle((bar_x0, y - 0.02 - bar_h), ctrl_len, bar_h, facecolor=RED, edgecolor='none'))
+        _tag(ax, 1.5, y, 2.7, 0.4, name, size=5.5)
+        ax.add_patch(Rectangle((bar_x0, y + 0.03), eeg_len, bar_h, facecolor=EEG, edgecolor='none'))
+        ax.add_patch(Rectangle((bar_x0, y - 0.03 - bar_h), ctrl_len, bar_h, facecolor=RED, edgecolor='none'))
         ax.plot([dot_x - ci, dot_x + ci], [y, y], color=INK_2, linewidth=0.7)
         for cap in (dot_x - ci, dot_x + ci):
             ax.plot([cap, cap], [y - 0.09, y + 0.09], color=INK_2, linewidth=0.7)
         ax.add_patch(Circle((dot_x, y), 0.09, facecolor=EEG, edgecolor='none', zorder=3))
     # Direct labels on the first rung stand in for a legend.
-    ax.text(bar_x0 + eeg_len + 0.1, ys[0] + 0.12, 'EEG', ha='left', va='center', fontsize=6, color=EEG)
-    ax.text(bar_x0 + ctrl_len + 0.1, ys[0] - 0.12, 'control', ha='left', va='center', fontsize=6, color=RED)
+    ax.text(bar_x0 + eeg_len + 0.1, ys[0] + 0.19, 'EEG', ha='left', va='center', fontsize=6, color=EEG)
+    ax.text(bar_x0 + ctrl_len + 0.1, ys[0] - 0.19, 'control', ha='left', va='center', fontsize=6, color=RED)
 
     # The delta axis: the rule is that every whisker lies wholly right of zero.
-    ax.plot([zero_x, zero_x], [ys[-1] - 0.35, ys[0] + 0.35], color=INK_2, linewidth=0.6, linestyle=(0, (3, 2)))
+    ax.plot([zero_x, zero_x], [ys[-1] - 0.3, ys[0] + 0.35], color=INK_2, linewidth=0.6, linestyle=(0, (3, 2)))
     ax.text(zero_x, ys[-1] - 0.5, '0', ha='center', va='center', fontsize=6, color=INK_2)
-    ax.text(dot_x, ys[0] + 0.5, 'Δ = EEG − control', ha='center', va='center', fontsize=6.5, color=INK_2)
-    bracket(ax, dot_x + ci + 0.35, ys[-1] - 0.15, ys[0] + 0.15, 'CI > 0\nall 8', size=6.0)
+    ax.text(dot_x, ys[0] + 0.6, 'Δ = EEG − control', ha='center', va='center', fontsize=6.5, color=INK_2)
+    bracket(ax, dot_x + ci + 0.3, ys[-1] - 0.15, ys[0] + 0.15, 'CI > 0\nall 8', size=6.0)
 
     # The remaining clauses of the verdict, ANDed with the ladder.
     ax.text(
         5.0,
-        ys[-1] - 0.95,
+        ys[-1] - 1.02,
         r'$\wedge\;\; p_{\mathrm{perm}} < 0.05 \qquad \wedge\;\; \mathrm{KL}(\mathrm{prefix}) \geq \mathrm{floor}$',
         ha='center',
         va='center',
         fontsize=7,
         color=INK_2,
     )
-    arrow(ax, 5.0, ys[-1] - 1.2, 5.0, ys[-1] - 1.55, color=OBJECTIVE)
+    arrow(ax, 5.0, ys[-1] - 1.3, 5.0, ys[-1] - 1.6, color=OBJECTIVE)
     ax.text(
         5.0,
-        ys[-1] - 1.78,
+        ys[-1] - 1.84,
         'generation_above_controls',
         ha='center',
         va='center',

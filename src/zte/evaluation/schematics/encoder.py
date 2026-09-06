@@ -152,7 +152,7 @@ def _vector(
         if horizontal:
             ax.text(x - w / 2 - 0.1, y, symbol, ha='right', va='center', fontsize=8, color=edge, style='italic')
         else:
-            ax.text(x, y + h / 2 + 0.12, symbol, ha='center', va='bottom', fontsize=8, color=edge, style='italic')
+            ax.text(x, y + h / 2 + 0.22, symbol, ha='center', va='bottom', fontsize=8, color=edge, style='italic')
 
 
 def _cards(ax: Axes, x: float, y: float, w: float, h: float, text: str, *, edge: str = TEXT) -> None:
@@ -252,10 +252,13 @@ def _stacked(
         ax.text(x0 + w + shift + 0.1, y0 + h + shift, times, ha='left', va='center', fontsize=7, color=INK)
 
 
-def _kernel(ax: Axes, x: float, y: float, w: float, h: float, dim: str) -> None:
-    """A convolution kernel drawn inside its input map, its width in samples written above it in the EEG hue."""
+def _kernel(ax: Axes, x: float, y: float, w: float, h: float, dim: str, *, below: bool = False) -> None:
+    """A convolution kernel drawn inside its input map, its width in samples written above (or below) it."""
     ax.add_patch(Rectangle((x, y), w, h, facecolor=EEG, alpha=0.35, edgecolor=EEG, linewidth=0.6, zorder=5))
-    ax.text(x + w / 2, y + h + 0.16, dim, ha='center', va='bottom', fontsize=5.5, color=EEG, zorder=6)
+    if below:
+        ax.text(x + w / 2, y - 0.16, dim, ha='center', va='top', fontsize=5.5, color=EEG, zorder=6)
+    else:
+        ax.text(x + w / 2, y + h + 0.16, dim, ha='center', va='bottom', fontsize=5.5, color=EEG, zorder=6)
 
 
 def _attention_map(ax: Axes, x: float, y: float, s: float, *, dims: str = '350') -> None:
@@ -445,8 +448,8 @@ def _note(ax: Axes, x: float, y: float, text: str, *, size: float = 5.5, color: 
 
 def _pipeline(words: bool) -> Figure:
     """The whole encoder left to right meeting the frozen text tower at the square; `words` toggles the block names."""
-    fig, ax = figure(DOUBLE_COLUMN_IN, 1.95)
-    blank(ax, (0.15, 19.85), (0.3, 5.75))
+    fig, ax = figure(DOUBLE_COLUMN_IN, 1.9)
+    blank(ax, (-0.15, 19.85), (0.5, 5.7))
     y = 4.35
 
     # Raw window: a slab whose front face is real EEG, dims on its edges, depth = the L words of a sentence.
@@ -461,17 +464,18 @@ def _pipeline(words: bool) -> Figure:
 
     # The harmonic electrode code is added, the way a sequence model adds position: a head joined to a plus.
     _plus(ax, 4.35, y, 0.16)
-    ax.plot([4.35, 4.35], [y + 0.16, 4.86], color=INK_2, linewidth=LANE_LW)
-    _harmonic_head(ax, 4.35, 5.22, 0.36)
-    _note(ax, 4.82, 5.22, r'$Y_\ell^{\,m}$', size=6.5, ha='left', va='center')
+    ax.plot([4.35, 4.35], [y + 0.16, y + 0.47], color=INK_2, linewidth=LANE_LW)
+    _harmonic_head(ax, 4.35, y + 0.8, 0.33)
+    _note(ax, 3.94, y + 0.8, r'$Y_\ell^{\,m}$', size=6.5, ha='right', va='center')
     arrow(ax, 4.51, y, 4.95, y, color=EEG)
 
-    # Conformer frontend: (40, 350) map -> 40 -> 256, one token per word.
+    # Conformer frontend: (40, 350) map -> 40 -> 256, one token per word. The kernel width sits under the band and
+    # the map's width label moves left of it, so the container label owns the top edge alone.
     ax.add_patch(
         FancyBboxPatch(
-            (4.95, 3.55),
-            3.7,
-            1.55,
+            (4.95, y - 1.05),
+            3.85,
+            2.0,
             boxstyle='round,pad=0.0,rounding_size=0.2',
             facecolor='white',
             edgecolor=EEG,
@@ -480,37 +484,41 @@ def _pipeline(words: bool) -> Figure:
         )
     )
     if words:
-        _note(ax, 5.1, 4.97, 'conformer', size=6.5, color=EEG, ha='left', va='center')
-    tensor_slab(ax, 5.45, y - 0.18, 1.8, 0.36, 0.2, dims=('350', '40', ''))
-    _kernel(ax, 5.45 + 0.7 * 1.8, y - 0.18, 25 / 350 * 1.8, 0.36, '25')
+        _note(ax, 5.1, y + 0.67, 'conformer', size=6.5, color=EEG, ha='left', va='center')
+    tensor_slab(ax, 5.45, y - 0.18, 1.8, 0.36, 0.2, dims=('', '40', ''))
+    _note(ax, 5.45 + 0.33 * 1.8, y - 0.18 - 0.08, '350', ha='center', va='top')
+    _kernel(ax, 5.45 + 0.7 * 1.8, y - 0.18, 25 / 350 * 1.8, 0.36, '25', below=True)
     arrow(ax, 7.34, y, 7.75, y, color=EEG)
-    _vector(ax, 7.825, y, 0.45, cells=4, dim='40')
+    _vector(ax, 7.825, y, 0.4, cells=4, dim='40')
     arrow(ax, 7.9, y, 8.35, y, color=EEG)
-    _vector(ax, 8.425, y, 0.95, cells=6, dim='256')
-    arrow(ax, 8.5, y, 9.7, y, color=EEG)
-    _note(ax, 9.2, y + 0.12, 'L × 256', ha='center', va='bottom')
+    _vector(ax, 8.425, y, 0.75, cells=6, dim='256')
+    arrow(ax, 8.5, y, 10.35, y, color=EEG)
+    _note(ax, 9.575, y + 0.12, 'L × 256', ha='center', va='bottom')
 
-    # Four rotary blocks over the L tokens, drawn as a plate.
-    plate(ax, 10.6, y, 1.8, 1.0, times='× 4')
+    # Four rotary blocks over the L tokens, drawn as a plate; the count sits on the back copy's corner, above the
+    # pool glyph's top token.
+    plate(ax, 11.5, y, 2.3, 1.1)
+    ax.text(12.89, y + 0.73, '× 4', ha='left', va='bottom', fontsize=7, color=INK)
     if words:
-        ax.text(10.6, y + 0.13, 'transformer', ha='center', va='center', fontsize=7, color=INK)
-        _note(ax, 10.6, y - 0.2, 'RoPE', size=5.5, ha='center', va='center')
-    arrow(ax, 11.5, y, 12.39, y, color=EEG)
+        ax.text(11.5, y + 0.22, 'transformer', ha='center', va='center', fontsize=6.5, color=INK)
+        _note(ax, 11.5, y - 0.22, 'RoPE', size=5.5, ha='center', va='center')
+    arrow(ax, 12.65, y, 13.15, y, color=EEG)
 
-    # Masked attention pool and the projection to the unit sphere.
-    x_pool_out = _pool_glyph(ax, 12.5, y)
+    # Masked attention pool and the projection to the unit sphere; the projection widths go above the box, where
+    # nothing else lives, so the z column's own dimension stays alone beneath.
+    x_pool_out = _pool_glyph(ax, 13.26, y)
     if words:
-        _note(ax, 12.92, y - 0.78, 'pool', size=6, ha='center', va='top')
-    arrow(ax, x_pool_out, y, 13.95, y, color=EEG)
-    box(ax, 14.55, y, 1.2, 0.65, 'proj' if words else '', fill=EEG_TINT, edge=EEG)
-    _note(ax, 14.55, y - 0.48, '256 → 512 → 768', ha='center', va='top')
-    arrow(ax, 15.15, y, 15.6, y, color=EEG)
-    _vector(ax, 15.675, y, 1.35, cells=8, dim='768', symbol='z')
+        _note(ax, 13.68, y - 0.78, 'pool', size=6.5, ha='center', va='top')
+    arrow(ax, x_pool_out, y, 14.65, y, color=EEG)
+    box(ax, 15.25, y, 1.2, 0.65, 'proj' if words else '', fill=EEG_TINT, edge=EEG, size=6.5)
+    _note(ax, 15.25, y + 0.385, '256→512→768', ha='center', va='bottom')
+    arrow(ax, 15.85, y, 16.45, y, color=EEG)
+    _vector(ax, 16.525, y, 1.0, cells=8, dim='768', symbol='z')
 
     # The EEG embeddings run along a bus into the square's column headers.
-    square_x0, square_y0, cell = 17.3, 0.95, 0.4
+    square_x0, square_y0, cell = 17.3, 1.05, 0.4
     side = len(SENTENCES) * cell
-    ax.plot([15.75, square_x0 + side - cell / 2], [y, y], color=EEG, linewidth=LANE_LW, zorder=2)
+    ax.plot([16.6, square_x0 + side - cell / 2], [y, y], color=EEG, linewidth=LANE_LW, zorder=2)
     for k in range(len(SENTENCES)):
         cx = square_x0 + (k + 0.5) * cell
         arrow(ax, cx, y, cx, square_y0 + side + 0.1 + 0.24, color=EEG)
@@ -526,33 +534,38 @@ def _pipeline(words: bool) -> Figure:
         va='center',
     )
 
-    # The frozen text tower: sentence cards, a grey dashed trapezoid with a snowflake, the text embeddings on a bus.
-    ty = square_y0 + cell / 2
-    _cards(ax, 1.25, ty, 1.8, 0.8, '“He was elected …”')
-    arrow(ax, 2.22, ty, 2.7, ty, color=TEXT)
-    _trapezoid(ax, 3.35, ty, 1.3, 1.0, fill=TEXT_TINT, edge=FROZEN, dashed=True, label='text\nencoder' if words else '')
-    snowflake(ax, 3.9, ty + 0.62, 0.15)
-    arrow(ax, 4.0, ty, 4.5, ty, color=TEXT)
-    _vector(ax, 4.575, ty, 1.35, cells=8, fill=TEXT_TINT, edge=TEXT, dim='768', symbol='t')
+    # The frozen text tower sits under the z column, level with the square's middle row, so its bus is short: a
+    # straight run into a vertical bus that combs into every row header.
+    ty = square_y0 + side / 2
+    _cards(ax, 11.9, ty, 2.3, 1.0, '“He was\nelected …”')
+    arrow(ax, 13.07, ty, 13.55, ty, color=TEXT)
+    _trapezoid(ax, 14.5, ty, 1.9, 1.4, fill=TEXT_TINT, edge=FROZEN, dashed=True, label='text\nencoder' if words else '')
+    snowflake(ax, 15.1, ty + 0.75, 0.15)
+    arrow(ax, 15.45, ty, 15.925, ty, color=TEXT)
+    _vector(ax, 16.0, ty, 1.0, cells=8, fill=TEXT_TINT, edge=TEXT, dim='768', symbol='t')
     bus_x = square_x0 - 0.1 - 0.24 - 0.42
-    _lane(ax, [(4.65, ty), (bus_x, ty), (bus_x, square_y0 + side - cell / 2)], color=TEXT, headed=False)
+    ax.plot([16.075, bus_x], [ty, ty], color=TEXT, linewidth=LANE_LW, zorder=2)
+    ax.plot(
+        [bus_x, bus_x], [square_y0 + cell / 2, square_y0 + side - cell / 2], color=TEXT, linewidth=LANE_LW, zorder=2
+    )
     for k in range(len(SENTENCES)):
         ry = square_y0 + side - (k + 0.5) * cell
         arrow(ax, bus_x, ry, square_x0 - 0.1 - 0.24, ry, color=TEXT)
 
-    # The positive definition is the claim: the same sentence read by anyone, so identity has nowhere to live.
-    if words:
-        _chip(ax, 6.3, 2.3, 'same sentence, any reader')
+    # The loss and the positive definition share the text tower's baseline in the free bottom-left: the same
+    # sentence read by anyone is a positive, so identity has nowhere to live.
     _note(
         ax,
-        10.9,
-        2.3,
+        0.35,
+        ty,
         r'$\mathcal{L} = \frac{1}{2}\,[\,\mathrm{InfoNCE}(S) + \mathrm{InfoNCE}(S^{\top})\,]$',
         size=6.5,
         color=OBJECTIVE,
         ha='left',
         va='center',
     )
+    if words:
+        _chip(ax, 6.7, ty, 'same sentence,\nany reader')
 
     return fig
 
@@ -580,7 +593,7 @@ def encoder_overview_minimal() -> Figure:
 
 def _width(features: int) -> float:
     """Box width for a feature count, on a log scale so 40 and 768 both fit one column."""
-    return 1.3 + 1.0 * math.log2(features / 40)
+    return 2.0 + 0.8 * math.log2(features / 40)
 
 
 def encoder_stack() -> Figure:
@@ -589,103 +602,104 @@ def encoder_stack() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 4.9)
-    blank(ax, (0.3, 9.7), (0.2, 14.2))
-    x, gutter, h = 5.0, 8.3, 0.46
+    fig, ax = figure(SINGLE_COLUMN_IN, 5.55)
+    blank(ax, (0.3, 9.9), (0.2, 15.3))
+    x, gutter, h = 5.0, 8.1, 0.46
     w105, w40, w256, w512, w768 = _width(105), _width(40), _width(256), _width(512), _width(768)
 
     def shape(y: float, text: str) -> None:
         ax.text(gutter, y, text, ha='left', va='center', fontsize=6, color=INK_2)
 
+    # A bare operation beside the trunk: the gap it sits in is opened to 0.5 so the word clears both boxes.
     def beside(y: float, text: str) -> None:
         ax.text(x - 0.12, y, text, ha='right', va='center', fontsize=5.5, color=INK_2)
 
-    # Raw window, then the transport by the reader's covariance root.
-    tensor_slab(ax, x - w105 / 2, 0.4, w105, 0.72, 0.0, fill=FILL, edge=INK_2)
-    traces(ax, x, 0.76, w105 - 0.2, 0.58, n=6)
-    shape(0.76, '105 × 350')
-    arrow(ax, x, 1.12, x, 1.7 - h / 2, color=EEG)
-    box(ax, x, 1.7, w105, h, r'$R_s^{-1/2}$', fill=FILL, edge=INK_2)
-    shape(1.7, '105 × 350')
+    # Raw window, then the transport by the reader's covariance root, in a taller box for the superscript.
+    tensor_slab(ax, x - w105 / 2, 0.35, w105, 0.6, 0.0, fill=FILL, edge=INK_2)
+    traces(ax, x, 0.65, w105 - 0.2, 0.48, n=6)
+    shape(0.65, '105 × 350')
+    arrow(ax, x, 0.95, x, 1.5 - 0.28, color=EEG)
+    box(ax, x, 1.5, w105, 0.56, r'$R_s^{-1/2}$', fill=FILL, edge=INK_2)
+    shape(1.5, '105 × 350')
 
     # Per-electrode gain from the signature hypernetwork, then the harmonic code added and mixed with a residual.
-    arrow(ax, x, 1.7 + h / 2, x, 2.35 - 0.14, color=EEG)
-    _times(ax, x, 2.35, 0.14)
-    arrow(ax, x, 2.49, x, 3.0 - 0.14, color=EEG)
-    _plus(ax, x, 3.0, 0.14)
-    ax.plot([3.84, x - 0.14], [3.0, 3.0], color=INK_2, linewidth=LANE_LW)
-    _harmonic_head(ax, 3.56, 3.0, 0.27)
-    ax.text(3.2, 3.0, r'$Y_\ell^{\,m}$', ha='right', va='center', fontsize=6, color=INK_2)
-    arrow(ax, x, 3.14, x, 3.7 - h / 2, color=EEG)
-    beside(3.3, 'LN')
-    box(ax, x, 3.7, w105, h, 'attention', fill=EEG_TINT, edge=EEG)
-    shape(3.7, '105 × 350')
+    arrow(ax, x, 1.78, x, 2.22 - 0.14, color=EEG)
+    _times(ax, x, 2.22, 0.14)
+    arrow(ax, x, 2.36, x, 2.76 - 0.14, color=EEG)
+    _plus(ax, x, 2.76, 0.14)
+    ax.plot([3.97, x - 0.14], [2.76, 2.76], color=INK_2, linewidth=LANE_LW)
+    _harmonic_head(ax, 3.7, 2.76, 0.27)
+    ax.text(3.36, 2.76, r'$Y_\ell^{\,m}$', ha='right', va='center', fontsize=6, color=INK_2)
+    arrow(ax, x, 2.9, x, 3.63 - h / 2, color=EEG)
+    beside(3.15, 'LN')
+    box(ax, x, 3.63, w105, h, 'attention', fill=EEG_TINT, edge=EEG)
+    shape(3.63, '105 × 350')
     lane_x = x + w105 / 2 + 0.3
-    _lane(ax, [(x, 3.3), (lane_x, 3.3), (lane_x, 4.3), (x + 0.14, 4.3)])
-    arrow(ax, x, 3.7 + h / 2, x, 4.3 - 0.14, color=EEG)
-    _plus(ax, x, 4.3, 0.14)
+    _lane(ax, [(x, 3.15), (lane_x, 3.15), (lane_x, 4.26), (x + 0.14, 4.26)])
+    arrow(ax, x, 3.63 + h / 2, x, 4.26 - 0.14, color=EEG)
+    _plus(ax, x, 4.26, 0.14)
 
     # Conformer frontend: two convolutions, two attention layers at width 40, mean over time, the lift to 256.
-    arrow(ax, x, 4.44, x, 4.95 - h / 2, color=EEG)
-    box(ax, x, 4.95, w40, h, 'conv 25', fill=EEG_TINT, edge=EEG)
-    shape(4.95, '40 × 350')
-    arrow(ax, x, 4.95 + h / 2, x, 5.65 - h / 2, color=EEG)
-    beside(5.3, 'GELU')
-    box(ax, x, 5.65, w40, h, 'conv 1', fill=EEG_TINT, edge=EEG)
-    shape(5.65, '40 × 350')
-    arrow(ax, x, 5.65 + h / 2, x, 6.55 - 0.31, color=EEG)
-    beside(6.0, 'GELU · LN')
-    _stacked(ax, x - 0.85, 6.55 - 0.31, 1.7, 0.62, fill=EEG_TINT, edge=EEG, times='× 2')
-    ax.text(x, 6.55, 'attention', ha='center', va='center', fontsize=6.5, color=INK)
-    shape(6.55, '40 × 350')
-    arrow(ax, x, 6.55 + 0.31, x, 7.5 - h / 2, color=EEG)
-    beside(7.14, 'mean')
-    box(ax, x, 7.5, w256, h, 'linear', fill=EEG_TINT, edge=EEG)
-    shape(7.5, '256')
+    arrow(ax, x, 4.4, x, 4.89 - h / 2, color=EEG)
+    box(ax, x, 4.89, w40, h, 'conv 25', fill=EEG_TINT, edge=EEG)
+    shape(4.89, '40 × 350')
+    arrow(ax, x, 4.89 + h / 2, x, 5.85 - h / 2, color=EEG)
+    beside(5.37, 'GELU')
+    box(ax, x, 5.85, w40, h, 'conv 1', fill=EEG_TINT, edge=EEG)
+    shape(5.85, '40 × 350')
+    arrow(ax, x, 5.85 + h / 2, x, 6.89 - 0.31, color=EEG)
+    beside(6.33, 'GELU · LN')
+    _stacked(ax, x - w40 / 2, 6.89 - 0.31, w40, 0.62, fill=EEG_TINT, edge=EEG, times='× 2')
+    ax.text(x, 6.89, 'attention', ha='center', va='center', fontsize=7, color=INK)
+    shape(6.89, '40 × 350')
+    arrow(ax, x, 6.89 + 0.31, x, 7.93 - h / 2, color=EEG)
+    beside(7.45, 'mean')
+    box(ax, x, 7.93, w256, h, 'linear', fill=EEG_TINT, edge=EEG)
+    shape(7.93, '256')
 
     # FiLM from the same hypernetwork, then the four rotary blocks with their residual lanes on the right.
-    arrow(ax, x, 7.5 + h / 2, x, 8.15 - 0.14, color=EEG)
-    _times(ax, x, 8.15, 0.14)
+    arrow(ax, x, 7.93 + h / 2, x, 8.56 - 0.14, color=EEG)
+    _times(ax, x, 8.56, 0.14)
     plate_lane = x + w256 / 2 + 0.3
-    px0, py0, pw, ph = x - w256 / 2 - 0.25, 8.4, w256 + 0.25 + 0.55, 2.95
+    px0, py0, pw, ph = x - w256 / 2 - 0.25, 8.78, w256 + 0.25 + 0.55, 3.19
     _stacked(ax, px0, py0, pw, ph, rounding=0.3)
     ax.text(px0 - 0.15, py0 + ph / 2, '× 4', ha='right', va='center', fontsize=11, color=INK)
     shape(py0 + ph / 2, 'L × 256')
-    arrow(ax, x, 8.29, x, 8.95 - h / 2, color=EEG)
-    beside(8.5, 'LN')
-    _lane(ax, [(x, 8.5), (plate_lane, 8.5), (plate_lane, 9.6), (x + 0.14, 9.6)])
-    box(ax, x, 8.95, w256, h, 'attention', fill=EEG_TINT, edge=EEG)
-    arrow(ax, x, 8.95 + h / 2, x, 9.6 - 0.14, color=EEG)
-    _plus(ax, x, 9.6, 0.14)
-    arrow(ax, x, 9.74, x, 10.3 - h / 2, color=EEG)
-    beside(9.9, 'LN')
-    _lane(ax, [(x, 9.9), (plate_lane, 9.9), (plate_lane, 10.95), (x + 0.14, 10.95)])
-    box(ax, x, 10.3, w256, h, 'feed-forward', fill=EEG_TINT, edge=EEG)
-    arrow(ax, x, 10.3 + h / 2, x, 10.95 - 0.14, color=EEG)
-    _plus(ax, x, 10.95, 0.14)
+    arrow(ax, x, 8.7, x, 9.5 - h / 2, color=EEG)
+    beside(9.02, 'LN')
+    _lane(ax, [(x, 9.02), (plate_lane, 9.02), (plate_lane, 10.13), (x + 0.14, 10.13)])
+    box(ax, x, 9.5, w256, h, 'attention', fill=EEG_TINT, edge=EEG)
+    arrow(ax, x, 9.5 + h / 2, x, 10.13 - 0.14, color=EEG)
+    _plus(ax, x, 10.13, 0.14)
+    arrow(ax, x, 10.27, x, 11.0 - h / 2, color=EEG)
+    beside(10.52, 'LN')
+    _lane(ax, [(x, 10.52), (plate_lane, 10.52), (plate_lane, 11.63), (x + 0.14, 11.63)])
+    box(ax, x, 11.0, w256, h, 'feed-forward', fill=EEG_TINT, edge=EEG)
+    arrow(ax, x, 11.0 + h / 2, x, 11.63 - 0.14, color=EEG)
+    _plus(ax, x, 11.63, 0.14)
 
     # Masked attention pool and the projection head.
-    arrow(ax, x, 11.09, x, 11.75 - h / 2, color=EEG)
-    box(ax, x, 11.75, w256, h, 'pool', fill=EEG_TINT, edge=EEG)
-    shape(11.75, '256')
-    arrow(ax, x, 11.75 + h / 2, x, 12.45 - h / 2, color=EEG)
-    box(ax, x, 12.45, w512, h, 'linear', fill=EEG_TINT, edge=EEG)
-    shape(12.45, '512')
-    arrow(ax, x, 12.45 + h / 2, x, 13.15 - h / 2, color=EEG)
-    beside(12.8, 'GELU')
-    box(ax, x, 13.15, w768, h, 'linear', fill=EEG_TINT, edge=EEG)
-    shape(13.15, '768')
-    arrow(ax, x, 13.15 + h / 2, x, 13.75, color=EEG)
-    ax.text(x, 13.9, 'z', ha='center', va='center', fontsize=8, color=EEG, style='italic')
-    shape(13.9, '‖z‖ = 1')
+    arrow(ax, x, 11.77, x, 12.48 - h / 2, color=EEG)
+    box(ax, x, 12.48, w256, h, 'pool', fill=EEG_TINT, edge=EEG)
+    shape(12.48, '256')
+    arrow(ax, x, 12.48 + h / 2, x, 13.2 - h / 2, color=EEG)
+    box(ax, x, 13.2, w512, h, 'linear', fill=EEG_TINT, edge=EEG)
+    shape(13.2, '512')
+    arrow(ax, x, 13.2 + h / 2, x, 14.16 - h / 2, color=EEG)
+    beside(13.68, 'GELU')
+    box(ax, x, 14.16, w768, h, 'linear', fill=EEG_TINT, edge=EEG)
+    shape(14.16, '768')
+    arrow(ax, x, 14.16 + h / 2, x, 14.85, color=EEG)
+    ax.text(x, 15.0, 'z', ha='center', va='center', fontsize=8, color=EEG, style='italic')
+    shape(15.0, '‖z‖ = 1')
 
     # The signature hypernetwork: fed from the raw window, emitting the gain and the FiLM as dashed weight arrows.
-    hx, hy = 1.35, 5.3
-    _lane(ax, [(x - w105 / 2, 0.76), (hx, 0.76), (hx, 4.05)])
+    hx, hy = 1.4, 5.37
+    _lane(ax, [(x - w105 / 2, 0.65), (hx, 0.65), (hx, 4.15)])
     for k, level in enumerate((0.3, 0.75, 0.5, 0.9)):
         ax.add_patch(
             Rectangle(
-                (hx - 0.4 + 0.2 * k, 4.15),
+                (hx - 0.4 + 0.2 * k, 4.25),
                 0.2,
                 0.2,
                 facecolor=SEQUENTIAL_CMAP(level),
@@ -694,11 +708,11 @@ def encoder_stack() -> Figure:
                 zorder=3,
             )
         )
-    ax.text(hx - 0.5, 4.25, 'σ', ha='right', va='center', fontsize=6.5, color=INK_2, style='italic')
-    arrow(ax, hx, 4.35, hx, hy - h / 2, color=EEG)
-    box(ax, hx, hy, 1.25, h, 'hypernet', fill=EEG_TINT, edge=EEG, size=6.5)
-    _lane(ax, [(hx + 0.625, hy), (2.35, hy), (2.35, 2.35), (x - 0.14, 2.35)], dashed=True)
-    _lane(ax, [(2.35, hy), (2.35, 8.15), (x - 0.14, 8.15)], dashed=True)
+    ax.text(hx - 0.5, 4.35, 'σ', ha='right', va='center', fontsize=6.5, color=INK_2, style='italic')
+    arrow(ax, hx, 4.45, hx, hy - h / 2, color=EEG)
+    box(ax, hx, hy, 1.9, h, 'hypernet', fill=EEG_TINT, edge=EEG, size=6.5)
+    _lane(ax, [(hx + 0.95, hy), (2.65, hy), (2.65, 2.22), (x - 0.14, 2.22)], dashed=True)
+    _lane(ax, [(2.65, hy), (2.65, 8.56), (x - 0.14, 8.56)], dashed=True)
 
     return fig
 
@@ -723,7 +737,7 @@ def transformer_block() -> Figure:
         Figure: A single-column figure.
     """
     fig, ax = figure(SINGLE_COLUMN_IN, 3.75)
-    blank(ax, (0.8, 9.4), (0.0, 9.3))
+    blank(ax, (0.8, 9.6), (0.0, 9.3))
     x, w = 4.4, 3.2
     lane_x = 1.85
 
@@ -780,10 +794,21 @@ def _filter_map(ax: Axes, x: float, y: float, w: float, h: float, depth: float) 
     dx = 0.45 * depth
     ax.text(x + w + dx + 0.08, y, '40', ha='left', va='center', fontsize=5.5, color=INK_2, rotation=90)
 
-    return x + w + dx + 0.34
+    return x + w + dx + 0.5
 
 
-def _frontend(ax: Axes, x0: float, y: float, slab_w: float, *, gap: float, compact: bool) -> None:
+# Every arrow is as long as the word above it needs: `gap` for the one-word ops, `norm_gap` for the two-word one.
+def _frontend(
+    ax: Axes,
+    x0: float,
+    y: float,
+    slab_w: float,
+    *,
+    gap: float,
+    norm_gap: float,
+    plate_size: tuple[float, float, float],
+    compact: bool,
+) -> None:
     """Draws the frontend's slab sequence from `x0` along the baseline `y`; `compact` drops the post-attention map."""
     h105, h40, depth = slab_w * 105 / 350 * 0.95, slab_w * 40 / 350 * 0.95, 0.2
 
@@ -793,7 +818,7 @@ def _frontend(ax: Axes, x0: float, y: float, slab_w: float, *, gap: float, compa
     kx = x0 + 0.66 * slab_w
     kw = 25 / 350 * slab_w
     _kernel(ax, kx, y - h105 / 2, kw, h105, '25')
-    bank_cx, bank_w, bank_h, bank_y = kx + kw / 2 + 0.45, 1.6 if compact else 1.9, 0.7, 0.45
+    bank_cx, bank_w, bank_h, bank_y = kx + kw / 2 + 0.45, 1.4 if compact else 1.9, 0.7, 0.45
     sinusoids(ax, bank_cx, bank_y, bank_w, bank_h, n=4)
     bracket(ax, bank_cx + bank_w / 2 + 0.05, bank_y - bank_h / 2, bank_y + bank_h / 2, '40', size=6)
     ax.plot(
@@ -812,16 +837,16 @@ def _frontend(ax: Axes, x0: float, y: float, slab_w: float, *, gap: float, compa
     exit_x = _filter_map(ax, x, y, slab_w, h40, depth)
     _kernel(ax, x + 0.66 * slab_w, y - h40 / 2, 0.05, h40, '1')
     x = exit_x
-    arrow(ax, x, y, x + gap + 0.3, y, color=EEG)
-    _note(ax, x + (gap + 0.3) / 2, y + 0.1, 'GELU · LN', ha='center', va='bottom')
+    arrow(ax, x, y, x + norm_gap, y, color=EEG)
+    _note(ax, x + norm_gap / 2, y + 0.1, 'GELU\nLN' if compact else 'GELU · LN', ha='center', va='bottom')
 
     # Two attention layers over the 350 samples, drawn as a plate holding a tiny attention map.
-    x += gap + 0.3
-    pw, ph, glyph = (1.6, 1.4, 0.65) if compact else (1.9, 1.55, 0.8)
+    x += norm_gap
+    pw, ph, glyph = plate_size
     _stacked(ax, x, y - ph / 2 - 0.05, pw, ph, fill=EEG_TINT, edge=EEG, times='× 2')
-    _attention_map(ax, x + (pw - glyph) / 2 + 0.1, y - ph / 2 + 0.22, glyph)
-    _note(ax, x + pw / 2, y + ph / 2 - 0.3, 'attention', size=6, color=INK, ha='center', va='center')
-    x += pw
+    _attention_map(ax, x + (pw - glyph) / 2 + 0.2, y - ph / 2 + 0.43, glyph)
+    _note(ax, x + pw / 2, y + ph / 2 - 0.4, 'attn' if compact else 'attention', size=6, color=INK, ha='center')
+    x += pw + 0.18
     if not compact:
         arrow(ax, x, y, x + gap, y, color=EEG)
         x = _filter_map(ax, x + gap, y, slab_w, h40, depth)
@@ -844,9 +869,9 @@ def conformer_frontend() -> Figure:
     Returns:
         Figure: A double-column figure.
     """
-    fig, ax = figure(DOUBLE_COLUMN_IN, 1.2)
-    blank(ax, (0.0, 19.6), (0.0, 3.35))
-    _frontend(ax, 0.35, 2.15, 3.4, gap=1.0, compact=False)
+    fig, ax = figure(DOUBLE_COLUMN_IN, 1.3)
+    blank(ax, (-0.1, 20.25), (0.0, 3.5))
+    _frontend(ax, 0.35, 2.15, 3.2, gap=1.2, norm_gap=1.9, plate_size=(1.9, 1.75, 0.7), compact=False)
 
     return fig
 
@@ -857,9 +882,9 @@ def conformer_frontend_compact() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 1.55)
-    blank(ax, (0.0, 10.3), (0.0, 3.35))
-    _frontend(ax, 0.3, 2.15, 1.8, gap=0.85, compact=True)
+    fig, ax = figure(SINGLE_COLUMN_IN, 1.1)
+    blank(ax, (-0.15, 12.15), (0.0, 3.6))
+    _frontend(ax, 0.35, 2.15, 1.6, gap=1.4, norm_gap=1.4, plate_size=(1.4, 1.75, 0.6), compact=True)
 
     return fig
 
@@ -873,8 +898,8 @@ def encoder_pipeline_vertical() -> Figure:
     Returns:
         Figure: A single-column figure.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 5.0)
-    blank(ax, (0.0, 10.0), (0.0, 14.3))
+    fig, ax = figure(SINGLE_COLUMN_IN, 5.35)
+    blank(ax, (0.0, 10.0), (-0.2, 15.0))
     x = 2.4
 
     # Raw window, transport, harmonic code.
@@ -890,12 +915,12 @@ def encoder_pipeline_vertical() -> Figure:
     _note(ax, 0.95, 2.3, r'$Y_\ell^{\,m}$', size=6.5, ha='center', va='top')
     arrow(ax, x, 2.96, x, 3.4, color=EEG)
 
-    # Conformer: (40, 350) map -> 40 -> 256, stacked upward.
+    # Conformer: (40, 350) map -> 40 -> 256, stacked upward; the kernel sits left so its width clears the 40 label.
     ax.add_patch(
         FancyBboxPatch(
             (x - 1.75, 3.4),
             3.35,
-            2.55,
+            2.75,
             boxstyle='round,pad=0.0,rounding_size=0.2',
             facecolor='white',
             edgecolor=EEG,
@@ -903,47 +928,43 @@ def encoder_pipeline_vertical() -> Figure:
             zorder=1,
         )
     )
-    _note(ax, x - 1.63, 5.8, 'conformer', size=6.5, color=EEG, ha='left', va='center')
-    tensor_slab(ax, x - 0.75, 3.7, 1.5, 0.3, 0.18, dims=('350', '40', ''))
-    _kernel(ax, x - 0.75 + 0.62 * 1.5, 3.7, 25 / 350 * 1.5, 0.3, '25')
-    arrow(ax, x, 4.07, x, 4.55, color=EEG)
-    _vector(ax, x, 4.62, 0.5, cells=4, horizontal=True, dim='40')
-    arrow(ax, x, 4.7, x, 5.2, color=EEG)
-    _vector(ax, x, 5.27, 1.2, cells=6, horizontal=True, dim='256')
-    arrow(ax, x, 5.35, x, 6.45, color=EEG)
-    _note(ax, x + 0.15, 6.15, 'L × 256', ha='left', va='center')
+    _note(ax, x - 1.63, 5.9, 'conformer', size=6.5, color=EEG, ha='left', va='center')
+    tensor_slab(ax, x - 0.75, 3.85, 1.5, 0.3, 0.18, dims=('350', '40', ''))
+    _kernel(ax, x - 0.75 + 0.4 * 1.5, 3.85, 25 / 350 * 1.5, 0.3, '25')
+    arrow(ax, x, 4.22, x, 4.7, color=EEG)
+    _vector(ax, x, 4.77, 0.5, cells=4, horizontal=True, dim='40')
+    arrow(ax, x, 4.85, x, 5.35, color=EEG)
+    _vector(ax, x, 5.42, 1.2, cells=6, horizontal=True, dim='256')
+    arrow(ax, x, 5.5, x, 6.75, color=EEG)
+    _note(ax, x + 0.15, 6.45, 'L × 256', ha='left', va='center')
 
     # Four rotary blocks, the masked pool, the projection, z.
-    plate(ax, x, 6.95, 1.9, 1.0, times='× 4')
-    ax.text(x, 7.08, 'transformer', ha='center', va='center', fontsize=7, color=INK)
-    _note(ax, x, 6.75, 'RoPE', size=5.5, ha='center', va='center')
-    arrow(ax, x, 7.45, x, 8.04, color=EEG)
-    y_out = _pool_glyph(ax, x, 8.15, vertical=True)
-    _note(ax, x + 0.95, 8.55, 'pool', size=6, ha='left', va='center')
-    arrow(ax, x, y_out, x, 9.6, color=EEG)
-    box(ax, x, 9.92, 1.2, 0.65, 'proj', fill=EEG_TINT, edge=EEG)
-    _note(ax, x + 0.7, 9.92, '256 → 512 → 768', ha='left', va='center')
-    arrow(ax, x, 10.25, x, 10.7, color=EEG)
-    _vector(ax, x, 10.77, 1.35, cells=8, horizontal=True, dim='768', symbol='z')
+    plate(ax, x, 7.3, 2.5, 1.1, times='× 4')
+    ax.text(x, 7.52, 'transformer', ha='center', va='center', fontsize=6.5, color=INK)
+    _note(ax, x, 7.08, 'RoPE', size=5.5, ha='center', va='center')
+    arrow(ax, x, 7.85, x, 8.44, color=EEG)
+    y_out = _pool_glyph(ax, x, 8.55, vertical=True)
+    _note(ax, x + 0.95, 8.95, 'pool', size=6.5, ha='left', va='center')
+    arrow(ax, x, y_out, x, 10.0, color=EEG)
+    box(ax, x, 10.325, 1.2, 0.65, 'proj', fill=EEG_TINT, edge=EEG, size=6.5)
+    _note(ax, x + 0.7, 10.325, '256→512→768', ha='left', va='center')
+    arrow(ax, x, 10.65, x, 11.1, color=EEG)
+    _vector(ax, x, 11.17, 1.35, cells=8, horizontal=True, dim='768', symbol='z')
 
     # The square at the top: EEG readings down the side, texts along the top.
-    sq_x0, sq_y0, cell = 4.6, 11.05, 0.36
+    sq_x0, sq_y0, cell = 4.6, 11.5, 0.36
     side = len(SENTENCES) * cell
     _similarity_square(ax, sq_x0, sq_y0, cell, row_hue=EEG, col_hue=TEXT, tags='right')
     bus_x = sq_x0 - 0.1 - 0.24 - 0.42
-    _lane(
-        ax,
-        [(x, 10.85), (x, 10.85 + 0.35), (bus_x, 10.85 + 0.35), (bus_x, sq_y0 + side - cell / 2)],
-        color=EEG,
-        headed=False,
-    )
+    _lane(ax, [(x, 11.25), (x, 11.45), (bus_x, 11.45), (bus_x, sq_y0 + side - cell / 2)], color=EEG, headed=False)
     for k in range(len(SENTENCES)):
         ry = sq_y0 + side - (k + 0.5) * cell
         arrow(ax, bus_x, ry, sq_x0 - 0.1 - 0.24, ry, color=EEG)
+    top_y = sq_y0 + side + 0.1 + 0.24 + 0.35
     _note(
         ax,
         sq_x0 + side / 2,
-        sq_y0 + side + 0.34 + 0.55,
+        top_y + 0.1,
         r'$S_{ij} = z_i^{\top} t_j\,/\,\tau$',
         size=6.5,
         color=OBJECTIVE,
@@ -951,33 +972,32 @@ def encoder_pipeline_vertical() -> Figure:
         va='bottom',
     )
 
-    # The frozen text tower on the right, its embeddings combing down into the column headers.
+    # The frozen text tower on the right, raised so its bus to the column headers is short.
     tx = 7.9
-    _cards(ax, tx, 4.9, 1.9, 0.8, '“He was elected …”')
-    arrow(ax, tx, 5.33, tx, 5.8, color=TEXT)
-    _trapezoid(ax, tx, 6.4, 1.5, 1.2, fill=TEXT_TINT, edge=FROZEN, dashed=True, label='text\nencoder', upward=True)
-    snowflake(ax, tx + 0.72, 6.95, 0.15)
-    arrow(ax, tx, 7.0, tx, 7.45, color=TEXT)
-    _vector(ax, tx, 7.52, 1.35, cells=8, horizontal=True, fill=TEXT_TINT, edge=TEXT, dim='768', symbol='t')
-    top_y = sq_y0 + side + 0.1 + 0.24 + 0.45
-    _lane(ax, [(tx, 7.6), (tx, top_y), (sq_x0 + cell / 2, top_y)], color=TEXT, headed=False)
+    _cards(ax, tx, 7.5, 2.4, 1.0, '“He was\nelected …”')
+    arrow(ax, tx, 8.0, tx, 8.5, color=TEXT)
+    _trapezoid(ax, tx, 9.15, 2.2, 1.3, fill=TEXT_TINT, edge=FROZEN, dashed=True, label='text\nencoder', upward=True)
+    snowflake(ax, tx + 1.05, 9.7, 0.15)
+    arrow(ax, tx, 9.8, tx, 10.25, color=TEXT)
+    _vector(ax, tx, 10.32, 1.35, cells=8, horizontal=True, fill=TEXT_TINT, edge=TEXT, dim='768', symbol='t')
+    _lane(ax, [(tx, 10.4), (tx, top_y), (sq_x0 + cell / 2, top_y)], color=TEXT, headed=False)
     for k in range(len(SENTENCES)):
         cx = sq_x0 + (k + 0.5) * cell
         arrow(ax, cx, top_y, cx, sq_y0 + side + 0.1 + 0.24, color=TEXT)
 
-    # The positive definition and the symmetric loss, in the free corner under the text tower.
-    _chip(ax, 5.2, 3.2, 'same sentence,\nany reader')
+    # The positive definition and the symmetric loss, in the free space under the text tower.
+    _chip(ax, 5.2, 5.6, 'same sentence,\nany reader')
     _note(
         ax,
         5.2,
-        2.3,
+        4.5,
         r'$\mathcal{L} = \frac{1}{2}\,[\,\mathrm{InfoNCE}(S)$',
         size=6.5,
         color=OBJECTIVE,
         ha='left',
         va='center',
     )
-    _note(ax, 5.2, 1.85, r'$\quad + \mathrm{InfoNCE}(S^{\top})\,]$', size=6.5, color=OBJECTIVE, ha='left', va='center')
+    _note(ax, 5.2, 4.0, r'$\quad + \mathrm{InfoNCE}(S^{\top})\,]$', size=6.5, color=OBJECTIVE, ha='left', va='center')
 
     return fig
 

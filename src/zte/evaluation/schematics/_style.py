@@ -43,7 +43,7 @@ AQUA: Final[str] = '#1baf7a'
 YELLOW: Final[str] = '#eda100'
 VIOLET: Final[str] = '#4a3aa7'
 RED: Final[str] = '#e34948'
-INK: Final[str] = '#0b0b0b'
+INK: Final[str] = '#000000'
 INK_2: Final[str] = '#52514e'
 MUTED: Final[str] = '#9a9891'
 SURFACE: Final[str] = '#fcfcfb'
@@ -458,6 +458,30 @@ class Rendered:
     paths: tuple[Path, ...]
 
 
+# A journal figure is read at column width, where a 6 pt grey label vanishes: every text is set black and scaled
+# up before it is written, whatever a builder asked for, so legibility is a property of the package. The weight is
+# left alone: bold glyphs are wider, and a figure that reads without squinting does not need them.
+TEXT_SCALE: Final[float] = 1.35
+"""Factor every font size is multiplied by before a figure is written."""
+MIN_FONT_PT: Final[float] = 8.0
+"""Smallest font size any text is written at."""
+
+
+def harden_text(fig: Figure) -> None:
+    """Sets every text on `fig` black and scales it to a legible size, before the figure is written.
+
+    Args:
+        fig (Figure): The figure whose text is hardened in place.
+    """
+    from matplotlib.text import Text
+
+    for text in fig.findobj(Text):
+        if not text.get_text().strip():
+            continue
+        text.set_color(INK)
+        text.set_fontsize(max(MIN_FONT_PT, float(text.get_fontsize()) * TEXT_SCALE))
+
+
 def save_figure(fig: Figure, out_dir: Path, name: str, formats: Sequence[str] = ('png', 'svg')) -> Rendered:
     """Writes one figure in every requested format and closes it.
 
@@ -472,6 +496,7 @@ def save_figure(fig: Figure, out_dir: Path, name: str, formats: Sequence[str] = 
         Rendered: The written paths.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    harden_text(fig)
     paths: list[Path] = []
     for ext in formats:
         path = out_dir / f'{name}.{ext}'

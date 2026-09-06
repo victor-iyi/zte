@@ -4,7 +4,9 @@ import math
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
+from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
+from matplotlib.textpath import TextPath
 
 from zte.evaluation.schematics._style import (
     DOUBLE_COLUMN_IN,
@@ -13,9 +15,11 @@ from zte.evaluation.schematics._style import (
     FROZEN,
     INK,
     INK_2,
+    MIN_FONT_PT,
     MUTED,
     RED,
     SINGLE_COLUMN_IN,
+    TEXT_SCALE,
     YELLOW,
     Axes,
     arrow,
@@ -143,14 +147,27 @@ def _cap(ax: Axes, cx: float, cy: float, r: float) -> None:
     )
 
 
-def _word_positions(x_left: float, indices: range) -> list[tuple[int, float]]:
-    """Left-to-right centres for one line of words, spaced by an estimate of their set width."""
+def _unit_pt(fig: Figure, ax: Axes, span: float) -> float:
+    """Points per data unit once `span` units fill the axes width."""
+    return ax.get_position().width * fig.get_figwidth() * 72.0 / span
+
+
+def _set_width(text: str, size: float, unit_pt: float) -> float:
+    """Width of `text` in data units at the size `save_figure` will write it, from the glyph outlines."""
+    written = max(MIN_FONT_PT, size * TEXT_SCALE)
+    path = TextPath((0, 0), text, size=written, prop=FontProperties(family=['sans-serif']))
+
+    return float(path.get_extents().width) / unit_pt
+
+
+def _word_positions(x_left: float, indices: range, *, size: float, unit_pt: float) -> list[tuple[int, float]]:
+    """Left-to-right centres for one line of words, spaced by their measured set width."""
     out: list[tuple[int, float]] = []
     x = x_left
     for i in indices:
-        w = 0.135 * len(SENTENCE[i]) + 0.05
+        w = _set_width(SENTENCE[i], size, unit_pt)
         out.append((i, x + w / 2))
-        x += w + 0.22
+        x += w + 0.28
 
     return out
 
@@ -164,16 +181,17 @@ def presence_mask() -> Figure:
     Returns:
         Figure: A double-column figure with the presence row beneath the words and the masked pool taking the ones.
     """
-    fig, ax = figure(DOUBLE_COLUMN_IN, 1.55)
-    blank(ax, (0, 20), (0.0, 4.25))
-    pitch, card_w, card_h = 1.55, 1.3, 0.8
-    centres = [2.05 + pitch * i for i in range(len(SENTENCE))]
+    fig, ax = figure(DOUBLE_COLUMN_IN, 1.4)
+    blank(ax, (0, 20), (0.3, 4.05))
+    pitch, card_w, card_h = 1.5, 1.25, 0.8
+    centres = [2.775 + pitch * i for i in range(len(SENTENCE))]
     mid = (centres[0] + centres[-1]) / 2
-    y_gaze, y_word, y_card, y_cell, cell_h = 3.9, 3.5, 2.65, 1.6, 0.36
+    y_gaze, y_word, y_card, y_cell, cell_h = 3.85, 3.42, 2.62, 1.6, 0.44
 
     fixated = [(centres[i], y_gaze, DWELL_MS[i]) for i in range(len(SENTENCE)) if i not in SKIPPED]
     _scanpath(ax, fixated, scale=0.0003)
-    pool_cx, pool_cy, pool_w, pool_h = mid, 0.32, 2.4, 0.56
+    # The pool sits just under the presence row, so the fan is short and every line is seen to start at a one.
+    pool_cx, pool_cy, pool_w, pool_h = mid, 0.69, 2.4, 0.52
     for i, (word, cx) in enumerate(zip(SENTENCE, centres, strict=True)):
         present = i not in SKIPPED
         ax.text(cx, y_word, word, ha='center', va='center', fontsize=7, color=INK if present else MUTED, zorder=3)
@@ -205,9 +223,9 @@ def presence_mask() -> Figure:
         if present:
             ax.plot([cx, pool_cx + 0.13 * (cx - mid)], [y_cell, pool_cy + pool_h / 2], color=EEG, linewidth=0.55)
     box(ax, pool_cx, pool_cy, pool_w, pool_h, 'pool', fill='#dbe9fa', edge=EEG)
-    arrow(ax, pool_cx + pool_w / 2, pool_cy, pool_cx + pool_w / 2 + 1.1, pool_cy, color=EEG)
+    arrow(ax, pool_cx + pool_w / 2, pool_cy, pool_cx + pool_w / 2 + 1.0, pool_cy, color=EEG)
     ax.text(
-        pool_cx + pool_w / 2 + 1.25, pool_cy, '256', ha='left', va='center', fontsize=6, color=INK_2, family='monospace'
+        pool_cx + pool_w / 2 + 1.15, pool_cy, '256', ha='left', va='center', fontsize=6, color=INK_2, family='monospace'
     )
 
     label_x = centres[0] - card_w / 2 - 0.2
@@ -224,8 +242,8 @@ def word_window() -> Figure:
         Figure: A single-column figure with the offset in red, the padded tail shaded, the 300-500 ms band tinted,
             the axis in ms, and the next word's window as an offset outline that begins inside this one.
     """
-    fig, ax = figure(SINGLE_COLUMN_IN, 1.55)
-    blank(ax, (0, 9.35), (0.45, 4.4))
+    fig, ax = figure(SINGLE_COLUMN_IN, 1.65)
+    blank(ax, (0, 9.35), (0.3, 4.72))
     x0, per_ms = 0.55, 0.0085
     window_ms = 1000 * WINDOW // SAMPLE_HZ
     fixation_ms = DWELL_MS[2]
@@ -250,24 +268,34 @@ def word_window() -> Figure:
             zorder=2,
         )
     )
+    # Four traces leave a clear band along the top of the window for the labels that name its parts.
     rng = np.random.default_rng(6)
     n_signal = fixation_ms * SAMPLE_HZ // 1000
     t = x0 + per_ms * np.arange(WINDOW) * 1000 / SAMPLE_HZ
-    for k in range(6):
-        base = y0 + 0.35 + 0.42 * k
-        signal = 0.16 * _eeg_like(rng, WINDOW)
+    for k in range(4):
+        base = y0 + 0.52 + 0.5 * k
+        signal = 0.14 * _eeg_like(rng, WINDOW)
         signal[n_signal:] = 0.0
         ax.plot(t, base + signal, color=EEG, linewidth=0.55, zorder=3)
     ax.plot([tx(fixation_ms)] * 2, [y0, y0 + h], color=RED, linewidth=0.8, zorder=4)
 
     ax.text(x0, y0 + h + 0.08, SENTENCE[2], ha='left', va='bottom', fontsize=7, color=INK)
-    ax.text(tx(fixation_ms) - 0.06, y0 + h + 0.08, 'offset', ha='right', va='bottom', fontsize=6, color=RED)
-    ax.text(tx(sum(N400_MS) / 2), y0 + h - 0.12, 'N400', ha='center', va='top', fontsize=5.5, color=INK_2, zorder=5)
-    ax.text(tx(600), y0 + 0.12, 'zero-padded', ha='center', va='center', fontsize=5.5, color=INK_2, zorder=5)
+    ax.text(tx(fixation_ms) - 0.08, y0 + h - 0.1, 'offset', ha='right', va='top', fontsize=6, color=RED, zorder=5)
+    ax.text(tx(sum(N400_MS) / 2), y0 + h - 0.1, 'N400', ha='center', va='top', fontsize=5.5, color=INK_2, zorder=5)
+    ax.text(
+        (tx(fixation_ms) + tx(window_ms)) / 2,
+        y0 + 0.22,
+        'zero-padded',
+        ha='center',
+        va='center',
+        fontsize=5.5,
+        color=INK_2,
+        zorder=5,
+    )
 
     # The next word's window opens one saccade after this fixation ends, so the two overlap for most of their span
     # and this word's 300-500 ms lies inside the neighbour's fixation: drawn over everything, so the overlap is seen.
-    next_x0, shift = tx(fixation_ms + SACCADE_MS), 0.35
+    next_x0, shift = tx(fixation_ms + SACCADE_MS), 0.75
     ax.add_patch(
         Rectangle(
             (next_x0, y0 + shift),
@@ -282,7 +310,7 @@ def word_window() -> Figure:
     )
     ax.text(
         next_x0 + win_w - 0.1,
-        y0 + shift + h - 0.1,
+        y0 + shift + h - 0.08,
         SENTENCE[5],
         ha='right',
         va='top',
@@ -306,11 +334,19 @@ def eye_segmentation() -> Figure:
     Returns:
         Figure: A double-column figure: the sentence with its scanpath, the cap, the cut EEG strip, the windows.
     """
-    fig, ax = figure(DOUBLE_COLUMN_IN, 1.8)
-    blank(ax, (0, 20), (0.15, 5.0))
+    fig, ax = figure(DOUBLE_COLUMN_IN, 1.85)
+    width = 20.0
+    blank(ax, (0, width), (-0.05, 5.05))
+    unit_pt = _unit_pt(fig, ax, width)
 
-    # The screen: the sentence on two lines, a dwell disc over each fixated word, the scanpath through the discs.
-    sx0, sy0, sw, sh = 0.3, 2.65, 5.3, 2.3
+    # The screen: the sentence on two lines set by measured width, a dwell disc over each fixated word, the scanpath
+    # through the discs.
+    word_size, sx0, sy0, sh = 6.0, 0.3, 2.45, 2.5
+    lines = (
+        _word_positions(sx0 + 0.35, range(0, 6), size=word_size, unit_pt=unit_pt),
+        _word_positions(sx0 + 0.35, range(6, 12), size=word_size, unit_pt=unit_pt),
+    )
+    sw = max(cx + _set_width(SENTENCE[i], word_size, unit_pt) / 2 for line in lines for i, cx in line) - sx0 + 0.35
     ax.add_patch(
         FancyBboxPatch(
             (sx0, sy0),
@@ -322,14 +358,13 @@ def eye_segmentation() -> Figure:
             linewidth=0.7,
         )
     )
-    lines = (_word_positions(sx0 + 0.42, range(0, 6)), _word_positions(sx0 + 0.42, range(6, 12)))
-    line_ys = (sy0 + sh - 0.62, sy0 + 0.55)
-    disc_lift, sweep_y = 0.34, (line_ys[0] + line_ys[1]) / 2 + 0.19
+    line_ys = (sy0 + sh - 0.68, sy0 + 0.5)
+    disc_lift, sweep_y = 0.44, (line_ys[0] + line_ys[1]) / 2 + 0.19
     fixations: list[tuple[float, float, int]] = []
     route: list[tuple[float, float]] = []
     for line, (positions, y) in enumerate(zip(lines, line_ys, strict=True)):
         for i, cx in positions:
-            ax.text(cx, y, SENTENCE[i], ha='center', va='center', fontsize=7, color=INK, zorder=3)
+            ax.text(cx, y, SENTENCE[i], ha='center', va='center', fontsize=word_size, color=INK, zorder=3)
             if i in SKIPPED:
                 continue
 
@@ -338,20 +373,21 @@ def eye_segmentation() -> Figure:
                 route.extend([(route[-1][0], sweep_y), (cx, sweep_y)])
             fixations.append((cx, y + disc_lift, DWELL_MS[i]))
             route.append((cx, y + disc_lift))
-    _scanpath(ax, fixations, scale=0.00045, path=route)
+    _scanpath(ax, fixations, scale=0.0004, path=route)
 
-    # The cap: real coordinates for the 105 retained electrodes, a hollow ring for the 23 discarded ones.
-    hx, hy, hr = 2.95, 1.45, 0.85
+    # The cap sits under the screen's right half, one short arrow from the strip it feeds.
+    hx, hy, hr = 5.3, 1.35, 0.78
     _cap(ax, hx, hy, hr)
-    ax.text(hx, hy - 1.42 * hr, '128 → 105', ha='center', va='center', fontsize=6, color=INK_2)
+    ax.text(hx, hy - 1.5 * hr, '128 → 105', ha='center', va='center', fontsize=6, color=INK_2)
 
     # The continuous EEG, cut at the fixation onsets the eye-tracker supplies; the tinted spans are what is kept.
-    tx0, ty0, tw, th = 7.0, 1.3, 6.2, 2.6
+    tx0, ty0, tw, th = 7.0, 1.25, 6.0, 2.6
     ax.add_patch(Rectangle((tx0, ty0), tw, th, facecolor='white', edgecolor=INK_2, linewidth=0.6))
     ordered = [i for i in range(len(SENTENCE)) if i not in SKIPPED]
     total_ms = sum(DWELL_MS[i] for i in ordered) + SACCADE_MS * (len(ordered) - 1) + 120
     scale = tw / total_ms
     t_ms = 60
+    marks_y = ty0 + th + 0.4
     marks: list[tuple[float, float, int]] = []
     for i in ordered:
         dwell = DWELL_MS[i]
@@ -359,7 +395,7 @@ def eye_segmentation() -> Figure:
             Rectangle((tx0 + scale * t_ms, ty0), scale * dwell, th, facecolor=EEG_TINT, edgecolor='none', zorder=1)
         )
         ax.plot([tx0 + scale * t_ms] * 2, [ty0, ty0 + th + 0.18], color=INK_2, linewidth=0.5, linestyle=(0, (2, 2)))
-        marks.append((tx0 + scale * (t_ms + dwell / 2), ty0 + th + 0.4, dwell))
+        marks.append((tx0 + scale * (t_ms + dwell / 2), marks_y, dwell))
         t_ms += dwell + SACCADE_MS
     _scanpath(ax, marks, scale=0.0003)
     rng = np.random.default_rng(11)
@@ -369,9 +405,10 @@ def eye_segmentation() -> Figure:
         ax.plot(tt, ty0 + 0.3 + 0.4 * k + 0.11 * _eeg_like(rng, n), color=EEG, linewidth=0.45, zorder=2)
 
     # One window per fixated word: the first three, an ellipsis, the last.
-    card_w, card_h, card_y = 1.15, 0.85, 2.62
+    card_w, card_h, card_y = 1.15, 0.85, 2.55
     shown = (ordered[0], ordered[1], ordered[2], None, ordered[-1])
-    cx = 14.55
+    first_x0 = 13.75
+    cx = first_x0 + card_w / 2
     last_x1 = cx
     for slot in shown:
         if slot is None:
@@ -379,24 +416,17 @@ def eye_segmentation() -> Figure:
             cx += 0.5
             continue
         _card(ax, cx, card_y, card_w, card_h, seed=slot)
-        ax.text(cx, card_y + card_h / 2 + 0.2, SENTENCE[slot], ha='center', va='center', fontsize=6, color=INK)
+        ax.text(cx, card_y + card_h / 2 + 0.26, SENTENCE[slot], ha='center', va='center', fontsize=6, color=INK)
         last_x1 = cx + card_w / 2
         cx += card_w + 0.15
-    first_x0 = 14.55 - card_w / 2
-    ax.text(
-        first_x0,
-        card_y - card_h / 2 - 0.2,
-        '105 × 350',
-        ha='left',
-        va='center',
-        fontsize=5.5,
-        color=INK_2,
-        family='monospace',
-    )
-    dim_label(ax, last_x1, card_y - card_h / 2 - 0.5, first_x0, card_y - card_h / 2 - 0.5, f'× {len(ordered)}')
+    # The window shape at the left, the count at the right, both clear of the dimension line above them.
+    dims_y = card_y - card_h / 2 - 0.2
+    dim_label(ax, last_x1, dims_y, first_x0, dims_y, '')
+    ax.text(first_x0, dims_y - 0.27, '105 × 350', ha='left', va='center', fontsize=5.5, color=INK_2, family='monospace')
+    ax.text(last_x1, dims_y - 0.27, f'× {len(ordered)}', ha='right', va='center', fontsize=5.5, color=INK_2)
 
-    arrow(ax, sx0 + sw, ty0 + th + 0.4, tx0 - 0.08, ty0 + th + 0.4, color=INK_2)
-    arrow(ax, hx + 1.15 * hr, hy, tx0, hy, color=EEG)
+    arrow(ax, sx0 + sw, marks_y, tx0 + 0.12, marks_y, color=INK_2)
+    arrow(ax, hx + 1.2 * hr, hy, tx0, hy, color=EEG)
     arrow(ax, tx0 + tw, card_y, first_x0 - 0.1, card_y, color=EEG)
 
     return fig
